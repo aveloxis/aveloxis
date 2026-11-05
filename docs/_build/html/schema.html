@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.135 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.139 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=7bc0d20d"></script>
+      <script src="_static/documentation_options.js?v=a422fba5"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -6161,7 +6161,7 @@ minutes for a kernel fork). Author identity at read time: the columns below, in 
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code></p></td>
 <td><p>UUID</p></td>
 <td><p>Backfill</p></td>
-<td><p>The <code class="docutils literal notranslate"><span class="pre">commits</span></code> table’s <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> carried by <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code> when the bucket’s resolved commits agree on one (ambiguous: NULL); kept across the facade’s replaces. The facade never stores an id (the deterministic one is the id the resolver wants, not the one it keeps for a legacy row). NULL: resolved at read time — the numeric id, the login, then the house email rule (the contributor’s own emails, then <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>), each only when unambiguous.</p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">commits</span></code> table’s <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> carried by <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code> when the bucket’s resolved commits agree on one (ambiguous: NULL); kept across the facade’s replaces while the bucket’s count is unchanged (0.29.137: a changed count drops it). The facade never stores an id (the deterministic one is the id the resolver wants, not the one it keeps for a legacy row). NULL: resolved at read time — the numeric id, the login, then the house email rule (the contributor’s own emails, then <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code>), each only when unambiguous.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">computed_at</span></code></p></td>
 <td><p>TIMESTAMPTZ NOT NULL</p></td>

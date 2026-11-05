@@ -213,7 +213,13 @@ func TestRewarmSurvivesAPanickingHandler(t *testing.T) {
 // A replay that outlives its own bound (http_timeout_seconds) is a failed
 // replay: the handler's error helper drops a request's end to Debug and
 // writes nothing, which must not read as a success (review round 1,
-// TestRequestPathDeadlinesAreReviewed).
+// TestRequestPathDeadlinesAreReviewed). The handler here returns the
+// instant its context ends — since 0.29.137 that is the leader's own timer
+// (for the replay's deadline since 0.29.139; a window of the same length
+// started later before it) — so the replay's timer may not have run yet
+// when the end is classified: 0.29.138
+// judges the bound by the clock (CI's migrate job on `ccac9f5a`; one run in
+// 400 locally under GOMAXPROCS=2 -race before, none in 2,000 after).
 func TestRewarmCountsAReplayPastItsDeadlineAsFailed(t *testing.T) {
 	hn, logs, _ := rewarmHarness(t, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
 		if hn.state.LastCollected.Year() > 2026 {
@@ -407,6 +413,7 @@ func TestRewarmShutdownDuringAReplayIsNotAFailure(t *testing.T) {
 		}
 		okBody(hn, w, r)
 	})
+	hn.s.BindLifetime(ctx) // as runAPI does: the pass's context is the lifetime a leader's run ends with (0.29.137)
 	hn.get("/api/v1/repos/7/thing?a=1")
 	hn.get("/api/v1/repos/7/thing?a=1")
 	runs()

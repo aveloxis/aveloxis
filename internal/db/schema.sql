@@ -2037,7 +2037,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_commit_daily (
 -- a noreply address names (the facade's writer; the id survives a rename,
 -- the login does not); cntrb_id: the commits table's stored
 -- cmt_ght_author_id when the bucket's resolved commits agree on one (the
--- backfill's writer), kept across replaces. The reader resolves the rest, in
+-- backfill's writer), kept across replaces while the bucket's count is
+-- unchanged (0.29.137; a changed count drops it). The reader resolves the rest, in
 -- that order, each only when unambiguous: the stored id, the numeric id
 -- (contributors.gh_user_id, its partial index built by the migrate), the
 -- login through LOWER(gh_login), the email through the house rule (the

@@ -723,6 +723,10 @@ var deployChecklists = map[string][]deployStep{
 	"0.29.133": v029133DeployChecklist,
 	"0.29.134": v029134DeployChecklist,
 	"0.29.135": v029135DeployChecklist,
+	"0.29.136": v029136DeployChecklist,
+	"0.29.137": v029137DeployChecklist,
+	"0.29.138": v029138DeployChecklist,
+	"0.29.139": v029139DeployChecklist,
 	"0.29.103": v029102DeployChecklist,
 	"0.29.102": v029102DeployChecklist,
 	"0.29.101": v029101DeployChecklist,
@@ -1155,7 +1159,7 @@ func deployStepsFrom(after string, inclusive bool, upTo string) []versionSteps {
 // the stamp under a message that said "this version's steps only").
 func printRange(out io.Writer, list []versionSteps, origin string, ackErr error) {
 	if ackErr != nil {
-		fmt.Fprintf(out, "(could not read the deploy acknowledgements: %v — printing this version's steps only)\n", ackErr)
+		prose(out, "(could not read the deploy acknowledgements: %v — printing this version's steps only)", ackErr)
 	}
 	printStepBlocks(out, list, origin)
 }
@@ -1235,7 +1239,8 @@ func rangeMigrateStep(list []versionSteps, version string) string {
 func printStepBlocks(out io.Writer, list []versionSteps, origin string) {
 	if len(list) > 1 {
 		migrate := strongestMigrate(list)
-		fmt.Fprintf(out, "\n%d releases have deploy steps %s. Stop, migrate and start ONCE, not once per block: `aveloxis stop all`, then %s (the migrate this range needs), then every block's checks, heals and audits, oldest first, then `aveloxis ack-deploy`, then `aveloxis start all` (a step that needs the running release, such as adopt-forge-id or the approvals page, after it). Each block's own stop, migrate, ack and start lines are covered by these, and their notes all apply.\n",
+		fmt.Fprintln(out)
+		prose(out, "%d releases have deploy steps %s. Stop, migrate and start ONCE, not once per block: `aveloxis stop all`, then %s (the migrate this range needs), then every block's checks, heals and audits, oldest first, then `aveloxis ack-deploy`, then `aveloxis start all` (a step that needs the running release, such as adopt-forge-id or the approvals page, after it). Each block's own stop, migrate, ack and start lines are covered by these, and their notes all apply.",
 			len(list), origin, "`"+migrate+"`")
 		// PR #218 fix review r2 F4: a lifted block still prints its own
 		// "NOT --skip-views"; when the header then names --skip-views, say
@@ -1245,7 +1250,7 @@ func printStepBlocks(out io.Writer, list []versionSteps, origin string) {
 			if !migrateSkipsViews(migrate) {
 				break
 			}
-			fmt.Fprintf(out, "%s lifts %s's plain migrate: its block's migrate instruction is superseded here.\n", l.by, l.version)
+			prose(out, "%s lifts %s's plain migrate: its block's migrate instruction is superseded here.", l.by, l.version)
 		}
 	}
 	for _, block := range collapseIdenticalChecklists(list) {
@@ -1361,14 +1366,35 @@ func sameSteps(a, b []deployStep) bool {
 	return true
 }
 
+// printChecklist prints one release's block: the command line of each
+// step whole (it is copied into a shell), its note wrapped under it at the
+// column width, a blank line between steps (0.29.136).
 func printChecklist(out io.Writer, version string, steps []deployStep) {
 	fmt.Fprintf(out, "\n=== Deployment steps for aveloxis %s ===\n", version)
 	fmt.Fprintln(out, "This release heals data that a plain restart does NOT touch. Run, in order:")
+	width := proseWidth()
 	for i, st := range steps {
-		fmt.Fprintf(out, "  %d. %s\n       %s\n", i+1, st.cmd, st.desc)
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintf(out, "  %d. %s\n", i+1, st.cmd)
+		wrapProse(out, stepNoteIndent, width, st.desc)
 	}
-	fmt.Fprintf(out, "Then confirm with:  aveloxis ack-deploy\n\n")
+	fmt.Fprintf(out, "\nThen confirm with:  aveloxis ack-deploy\n\n")
 }
+
+// The class (L10 round 1 F8, round 2 F4; decided as a class): every
+// SENTENCE a cmd/aveloxis printer addresses to the operator, on stdout or
+// stderr, goes through prose — the checklist printers, the start gate,
+// `stop`'s verdict, the Jira canary and project-registration lines. Not
+// prose: a step's command line, a recipe line, a data line (the PID
+// list), a one-line counter RECORD an operator greps (reconcile-repos'
+// interrupted report), and a prompt that ends without a newline.
+
+// stepNoteIndent sets a step's note under its command, past the number:
+// "  1. " is five columns and "  10. " six, so the note starts two columns
+// further in for steps one to nine and one further in from step ten.
+const stepNoteIndent = "       "
 
 // isInteractive reports whether f is a terminal (stdin from a human).
 func isInteractive(f *os.File) bool {
@@ -1465,9 +1491,9 @@ func checkDeployReadinessNaming(ctx context.Context, g deployGate, version strin
 	// (round-5 finding 5, round-8 finding 4). Never blocks (two serves may be deliberate); a
 	// failed probe is said, never folded into "no other serve".
 	if sight, err := g.OtherServeConnected(ctx); err != nil {
-		fmt.Fprintf(out, "(could not check for another aveloxis-serve on this database: %v)\n", err)
+		prose(out, "(could not check for another aveloxis-serve on this database: %v)", err)
 	} else if sight.Connected {
-		fmt.Fprintf(out, "Note: another aveloxis-serve is already connected to this database from %s. %s A second full scheduler competes with the first for the same queue and API keys.\n", sight.Describe(), sight.Advice())
+		prose(out, "Note: another aveloxis-serve is already connected to this database from %s. %s A second full scheduler competes with the first for the same queue and API keys.", sight.Describe(), sight.Advice())
 	}
 	// Evidence before trust (v0.29.4): read the stamp BEFORE the ledger
 	// or any prompt, so a foreign or mistaken ack cannot pass a binary
@@ -1484,7 +1510,7 @@ func checkDeployReadinessNaming(ctx context.Context, g deployGate, version strin
 		list, origin, ackErr := deployRange(ctx, g, stamp, version)
 		migrate = rangeMigrateStep(list, version)
 		if skip {
-			fmt.Fprintf(out, "WARNING: the database schema stamp is %s but this binary is %s — the migrate of the deploy steps %s (`%s`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above), and web, api and the scancode worker refuse to start until the migrate has moved the stamp — start them again afterwards.\n", stamp, version, rangePhrase(origin, version), migrate)
+			prose(out, "WARNING: the database schema stamp is %s but this binary is %s — the migrate of the deploy steps %s (`%s`) has not completed against this database. Proceeding anyway (--skip-deploy-check); serve will still refuse its own startup migration while another aveloxis-serve is connected (see any note above), and web, api and the scancode worker refuse to start until the migrate has moved the stamp — start them again afterwards.", stamp, version, rangePhrase(origin, version), migrate)
 			// Round-11 finding 7: this is the ONE path with EVIDENCE the
 			// steps did not run, so it is the last place to send the
 			// operator away without them. Every other bypass below prints
@@ -1492,9 +1518,9 @@ func checkDeployReadinessNaming(ctx context.Context, g deployGate, version strin
 			printRange(out, list, origin, ackErr)
 			return true, migrate, nil
 		}
-		fmt.Fprintf(out, "Refusing to start: the database schema stamp is %s but this binary is %s — the migrate of the deploy steps %s (`%s`) has not completed against this database.\n", stamp, version, rangePhrase(origin, version), migrate)
-		fmt.Fprintf(out, "Run them from the primary host — `aveloxis deploy-checklist --pending` lists them (`aveloxis stop all`, `%s`, the heals, `aveloxis ack-deploy`) — or pass --skip-deploy-check.\n", migrate)
-		fmt.Fprintln(out, "If this host should only run scancode, use `aveloxis start scancode-worker` instead — `start serve` is the full scheduler regardless of the config's knobs.")
+		prose(out, "Refusing to start: the database schema stamp is %s but this binary is %s — the migrate of the deploy steps %s (`%s`) has not completed against this database.", stamp, version, rangePhrase(origin, version), migrate)
+		prose(out, "Run them from the primary host — `aveloxis deploy-checklist --pending` lists them (`aveloxis stop all`, `%s`, the heals, `aveloxis ack-deploy`) — or pass --skip-deploy-check.", migrate)
+		prose(out, "If this host should only run scancode, use `aveloxis start scancode-worker` instead — `start serve` is the full scheduler regardless of the config's knobs.")
 		return false, migrate, nil
 	}
 	_, hasChecklist := deployChecklistFor(version)
@@ -1516,12 +1542,12 @@ func checkDeployReadinessNaming(ctx context.Context, g deployGate, version strin
 	migrate = rangeMigrateStep(list, version)
 	printRange(out, list, origin, ackErr)
 	if skip {
-		fmt.Fprintln(out, "Proceeding without acknowledgement (--skip-deploy-check).")
+		prose(out, "Proceeding without acknowledgement (--skip-deploy-check).")
 		return true, migrate, nil
 	}
 	if !isInteractive(in) {
-		fmt.Fprintln(out, "Refusing to start: this release's deploy steps are not acknowledged.")
-		fmt.Fprintln(out, "Run them then `aveloxis ack-deploy`, or pass --skip-deploy-check.")
+		prose(out, "Refusing to start: this release's deploy steps are not acknowledged.")
+		prose(out, "Run them then `aveloxis ack-deploy`, or pass --skip-deploy-check.")
 		return false, migrate, nil
 	}
 	fmt.Fprintf(out, "Have you completed these steps for %s? [y/N]: ", version)
@@ -1530,11 +1556,11 @@ func checkDeployReadinessNaming(ctx context.Context, g deployGate, version strin
 		ackCtx, ackCancel := deployAckContext(ctx)
 		defer ackCancel()
 		if err := g.RecordDeployAck(ackCtx, version, "confirmed at start"); err != nil {
-			fmt.Fprintf(out, "warning: could not record acknowledgement: %v\n", err)
+			prose(out, "warning: could not record acknowledgement: %v", err)
 		}
 		return true, migrate, nil
 	}
-	fmt.Fprintln(out, "Not starting. Run the steps above, then `aveloxis ack-deploy` (or start with --skip-deploy-check).")
+	prose(out, "Not starting. Run the steps above, then `aveloxis ack-deploy` (or start with --skip-deploy-check).")
 	return false, migrate, nil
 }
 
@@ -1705,16 +1731,19 @@ func runDeployChecklistPending(ctx context.Context, g deployGate, out io.Writer,
 	// said (SR-5) and changes nothing.
 	hasData, dataErr := g.FleetHasCollectedData(ctx)
 	if dataErr != nil {
-		fmt.Fprintf(out, "(could not read whether this database has collected data: %v)\n", dataErr)
+		prose(out, "(could not read whether this database has collected data: %v)", dataErr)
 	}
 	stamp, err := g.SchemaVersion(ctx)
 	if err != nil {
-		fmt.Fprintf(out, "(could not read the schema stamp: %v — the range below starts from the acknowledgements alone)\n", err)
+		prose(out, "(could not read the schema stamp: %v — the range below starts from the acknowledgements alone)", err)
 		stamp = ""
 	} else if stamp == "" {
-		fmt.Fprintln(out, "(the database carries no schema stamp — no migration has been shown to have completed here, so the steps print as pending)")
+		prose(out, "(the database carries no schema stamp — no migration has been shown to have completed here, so the steps print as pending)")
 	} else if !db.SchemaVersionAtLeast(stamp, stamp) {
-		fmt.Fprintf(out, "(the schema stamp %q is not a version — the steps print as pending)\n", stamp)
+		// The wrapper folds runs of spaces inside the quoted stamp and
+		// reads a backtick in it as opening a span (L10 round 1 F9,
+		// declined): the value is garbage either way and is refused.
+		prose(out, "(the schema stamp %q is not a version — the steps print as pending)", stamp)
 	}
 	// The gate's decision first (PR #218 fix review r4 F1): with the stamp
 	// current, checkDeployReadinessNaming passes a binary with no
@@ -1729,21 +1758,21 @@ func runDeployChecklistPending(ctx context.Context, g deployGate, out io.Writer,
 	// every shape against the gate.
 	if stamp != "" && !deployStepsProvablyUnrun(stamp, version) {
 		if _, has := deployChecklistFor(version); !has {
-			fmt.Fprintf(out, "nothing pending: the schema stamp (%s) is at or ahead of this binary and aveloxis %s has no manual deploy steps.\n", stamp, version)
+			prose(out, "nothing pending: the schema stamp (%s) is at or ahead of this binary and aveloxis %s has no manual deploy steps.", stamp, version)
 			return nil
 		}
 		acked, err := g.DeployAckExists(ctx, version)
 		switch {
 		case err != nil:
-			fmt.Fprintf(out, "(could not read whether %s's deploy steps are acknowledged: %v — printing the range as pending)\n", version, err)
+			prose(out, "(could not read whether %s's deploy steps are acknowledged: %v — printing the range as pending)", version, err)
 		case acked:
-			fmt.Fprintf(out, "nothing pending: the schema stamp (%s) is at or ahead of this binary and aveloxis %s's deploy steps are acknowledged.\n", stamp, version)
+			prose(out, "nothing pending: the schema stamp (%s) is at or ahead of this binary and aveloxis %s's deploy steps are acknowledged.", stamp, version)
 			return nil
 		}
 	}
 	list, origin, ackErr := deployRange(ctx, g, stamp, version)
 	if dataErr == nil && !hasData && len(list) > 0 { // r8 F2: only above steps
-		fmt.Fprintln(out, "(no collected data yet: `aveloxis start serve` does not require these steps on a fresh install; they apply once collection starts)")
+		prose(out, "(no collected data yet: `aveloxis start serve` does not require these steps on a fresh install; they apply once collection starts)")
 	}
 	printRange(out, list, origin, ackErr)
 	if len(list) == 0 {
@@ -1751,7 +1780,7 @@ func runDeployChecklistPending(ctx context.Context, g deployGate, out io.Writer,
 	}
 	// A label that stands alone (PR #218 fix review r12 F2): the blocks above
 	// number their own steps; step 3 is the upgrade page's.
-	fmt.Fprintf(out, "The migrate to run: `%s` (step 3 of the upgrade steps)\n", rangeMigrateStep(list, version))
+	prose(out, "The migrate to run: `%s` (step 3 of the upgrade steps)", rangeMigrateStep(list, version))
 	return nil
 }
 
@@ -1940,6 +1969,22 @@ var v029134DeployChecklist = withStartNote(v029133DeployChecklist, "0.29.134: no
 // v029135DeployChecklist — Copilot's fourteenth review of PR #246: the
 // proxy residual documented. Docs only.
 var v029135DeployChecklist = withStartNote(v029134DeployChecklist, "0.29.135: no schema change, no runtime change — documentation. With HTTP_PROXY/HTTPS_PROXY set, the outbound-address rule's probe connects through the proxy, which resolves the target itself: the rule checks each hop by name, the proxy's resolution is the operator's (SECURITY.md names the residual). A fleet already running 0.29.134 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
+
+// v029136DeployChecklist — the checklist's own rendering: every note wraps
+// at the column width (prose.go); the ladder text is unchanged.
+var v029136DeployChecklist = withStartNote(v029135DeployChecklist, "0.29.136: no schema change and no configuration change. `aveloxis deploy-checklist --pending` (and --since) and this gate's own messages now wrap their notes at the terminal's column width — COLUMNS when it is set (`COLUMNS=120 aveloxis deploy-checklist --pending`), otherwise 80 — with a blank line between steps; a step's command line and a backticked command are never split (a command a note carries without backticks wraps like prose: copy it from the note's lines, not the screen). A fleet already running 0.29.135 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
+
+// v029137DeployChecklist — the chart series' commit arms on the daily table,
+// the page cache's leader finishing after its caller leaves.
+var v029137DeployChecklist = withStartNote(v029136DeployChecklist, "0.29.137: no schema change and no configuration change. The `contributors`, `committers` and `code_change_commits` chart series read the daily commit table for every repository whose picture is complete (the same rule as the weekly series and top contributors: `aveloxis heal-commit-daily` fills a repository collected before the table existed) and count a person once per bucket before the deleted-identity rule, and the API's page cache finishes and stores an answer whose caller left mid-computation (nginx's 120 s read timeout against the API's 180 s bound cut the warm script's contributors chart on kate and discarded the work every pass). A fleet already running 0.29.136 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
+
+// v029138DeployChecklist — the re-warm's replay judges its bound by the clock
+// (CI's migrate job failed once on 0.29.137's head).
+var v029138DeployChecklist = withStartNote(v029137DeployChecklist, "0.29.138: no schema change and no configuration change. The api's re-warm reports a replay that ran out of `http_timeout_seconds` by the clock, not by which of two timers of the same length ran first (since 0.29.137 the page cache's leader runs under its own bound): a replay cut by the bound could be logged as a degraded answer instead (one run in 400 of the test that pins it, under the race detector on two processors; the fleet rate is unmeasured), and was counted as failed either way. A fleet already running 0.29.137 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
+
+// v029139DeployChecklist — the page cache's leader keeps the request's own
+// deadline (Copilot's fifth review of PR #249).
+var v029139DeployChecklist = withStartNote(v029138DeployChecklist, "0.29.139: no schema change and no configuration change. The api's page cache leader (0.29.137: the computation that finishes after its caller leaves) runs under the request's own deadline, kept across the detachment from the caller, and never later than `http_timeout_seconds` from the moment it is claimed; before, its window started at the claim, so a computation could run past the request's deadline by the time authorization and the cache's setup had taken. A fleet already running 0.29.138 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
 
 // v029125DeployChecklist — Copilot's review of PR #246 and its CI failures.
 var v029125DeployChecklist = withStartNote(v029124DeployChecklist, "0.29.125: no schema change. A Jira or mailing-list staged row that commits part of its writes and fails again now stamps its repository each time a retry gets further than before (the api's cached answers show the new data), and a stop between a mail row's issue creation and its message's upsert no longer leaves that issue unstamped. A request whose URI with its parameters in canonical form is longer than 2,684 bytes (a crafted license filter) is answered live and never cached: the saved re-warm list's primary key could not hold it, and one such row failed every save of the list. The saved list's reads and writes carry a deadline (the store refuses one without). The Nightly workflow (0.29.107) named the runner context in a job's env, which GitHub refuses at every push: it never ran on its schedule; the file is valid now, and the schedule runs once this reaches main. A full OWASP ASVS 5.0 review of both repositories closed its findings here. On an existing installation, make the processes' directory and logs the owner's alone once — chmod 700 ~/.aveloxis && chmod 600 ~/.aveloxis/*.log (a new installation is created so; the logs hold sign-ins and administrator actions) — and chmod 600 the aveloxis.json if the start logs 'config file is readable by other users'. A remote database configured with sslmode weaker than require logs a warning at every start (use verify-full, with the server's CA in the process's PGSSLROOTCERT). 'Sign out everywhere' (the account page, POST /api/v1/me/sessions/revoke) needs a sign-in within web.session_idle_minutes, like the address change; an administrator demoted in the web console loses the privilege at the api on the next request; the monitor's prioritize action refuses cross-site requests. Go dependency closures now run the host's own Go toolchain only (no download of the toolchain a cloned go.mod names): a module whose go line is newer than the host's Go logs 'go toolchain invocation failed … GOTOOLCHAIN=local' and its transitive closure is skipped — keep the host's Go current. Nothing to change in aveloxis.json. A fleet already running 0.29.124 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")

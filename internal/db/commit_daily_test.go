@@ -14,14 +14,15 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// summary/49 (2026-10-06): the repository page's two commit answers — the
-// weekly commit series and the commits arm of top contributors — timed out
+// summary/49 (2026-10-06): the repository page's commit answers — the
+// weekly commit series and the commits arm of top contributors then; the
+// contributors, committers and code_change_commits charts since 0.29.137 — timed out
 // on kernel forks because the commits table is one row per FILE per commit
 // and one repository's rows lie about one per page across the whole table
 // (NVIDIA/nova: 118 s, 1.48M heap pages for 337K rows). The facade already
 // walks the whole default branch every run, so it folds what it walks into
 // aveloxis_data.repo_commit_daily — one row per repository, UTC day and
-// author email — and the two readers sum that table when the repository's
+// author email — and the readers sum that table when the repository's
 // picture is complete (repos.commit_daily_complete_at: a trimming walk or
 // the heal fill, never a walk that swallowed writes) and the window is
 // UTC-day aligned, falling back to the commits table otherwise. Author identity at read time is the contract's own rule R5:
@@ -299,6 +300,151 @@ func TestRepoTimeSeriesReadsTheDailyTableWhenFilledAndAligned(t *testing.T) {
 	if got := weekly(since.Add(time.Minute)); got != 1 {
 		t.Fatalf("unaligned window falls back: got %d", got)
 	}
+}
+
+// 0.29.137 (the kate warm run of 2026-11-04: the contributors chart of a
+// 3.2-million-row repository read every commit-file row through the
+// (repo_id, hash) index and discarded 85%% of them on the window, 3.4 s hot
+// and past nginx's 120 s cold): the commit arms of the contributors,
+// committers and code_change_commits series read the daily table on the
+// same rule as the weekly series and top contributors — the picture
+// complete, the window UTC-day aligned — and the commits table otherwise.
+// A repository-id SET is split: the complete repositories' days and the
+// others' commit rows, in one statement.
+func TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_ms004")
+	other := seedCommitDaily(t, store, ctx, "_avcd_ms005") // stays unfilled: its one commit row
+	since := utcDay(time.Now()).AddDate(0, 0, -30)
+
+	sum := func(metric string, ids []int64, since time.Time) float64 {
+		t.Helper()
+		pts, err := store.MetricWeeklySeries(ctx, ids, metric, "week", since, utcDay(time.Now()).AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0.0
+		for _, p := range pts {
+			total += p.Value
+		}
+		return total
+	}
+	one := []int64{fx.repoID}
+	both := []int64{fx.repoID, other.repoID}
+	for _, m := range []string{"code_change_commits", "committers", "contributors"} {
+		if got := sum(m, one, since); got != 1 {
+			t.Fatalf("%s unfilled: the commits table says 1, got %v", m, got)
+		}
+	}
+	// Three days of ONE week (the fixture's day has today's weekday, so
+	// day+1 could be next Monday on a Sunday run — review round 1 F2): the
+	// Monday of its week and the two days after it, all inside the window
+	// (the fixture's day is seven days back; since is thirty, until tomorrow).
+	mon := fx.in.AddDate(0, 0, -int((fx.in.Weekday()+6)%7))
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: mon, AuthorEmail: "_avcd_ms004@x", Commits: 5},                  // alice, through the alias
+		{Day: mon.AddDate(0, 0, 1), AuthorEmail: "_avcd_ms004@x", Commits: 1}, // alice again, the same week
+		{Day: mon.AddDate(0, 0, 2), AuthorEmail: "nobody@x", Commits: 2},      // unresolved: a commit, not a person
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := sum("code_change_commits", one, since); got != 8 {
+		t.Fatalf("filled + aligned: code_change_commits sums the daily rows (5+1+2), got %v", got)
+	}
+	if got := sum("committers", one, since); got != 1 {
+		t.Fatalf("filled + aligned: committers counts alice once for the week (nobody@x resolves to no one), got %v", got)
+	}
+	if got := sum("contributors", one, since); got != 1 {
+		t.Fatalf("filled + aligned: contributors counts alice once for the week, got %v", got)
+	}
+	// The set: the person series mix the arms per repository; the commit
+	// count over a SET keeps the hash path for every repository (Copilot
+	// PR #249 #1: a commit a fork shares with its upstream counts once
+	// across the set, which daily counts cannot) — the two fixtures carry
+	// the same hash, the fork shape, so the set counts it once and reads
+	// none of the daily rows.
+	if got := sum("code_change_commits", both, since); got != 1 {
+		t.Fatalf("a set keeps code_change_commits on the hash path (the shared hash once), got %v", got)
+	}
+	if got := sum("committers", both, since); got != 2 {
+		t.Fatalf("a set mixes the arms per repository: alice and the other fixture's alice, got %v", got)
+	}
+	// An unaligned window falls back to the commits table for every repository.
+	if got := sum("code_change_commits", one, since.Add(time.Hour)); got != 1 {
+		t.Fatalf("unaligned window falls back to the commits table: got %v", got)
+	}
+}
+
+// Copilot PR #249 #1: a commit two repositories share (a fork and its
+// upstream, the same hash in both) counts ONCE across the set on the hash
+// path, whether or not one of them is complete; the single repository's
+// chart takes its daily count.
+func TestCommitCountOverASetDeduplicatesSharedHashes(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	up := seedCommitDaily(t, store, ctx, "_avcd_sh006")
+	fork := seedCommitDaily(t, store, ctx, "_avcd_sh007") // the same hash (c0ffee1) in both: the fork shape
+	since, until := utcDay(time.Now()).AddDate(0, 0, -30), utcDay(time.Now()).AddDate(0, 0, 1)
+	count := func(ids []int64) float64 {
+		t.Helper()
+		pts, err := store.MetricWeeklySeries(ctx, ids, "code_change_commits", "week", since, until)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0.0
+		for _, p := range pts {
+			total += p.Value
+		}
+		return total
+	}
+	set := []int64{up.repoID, fork.repoID}
+	if got := count(set); got != 1 {
+		t.Fatalf("unfilled: the hash path counts the shared commit once across the set, got %v", got)
+	}
+	if err := store.ReplaceRepoCommitDaily(ctx, up.repoID, []CommitDailyRow{{Day: up.in, AuthorEmail: "_avcd_sh006@x", Commits: 1}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(set); got != 1 {
+		t.Fatalf("one repository complete: the set still counts the shared commit once (daily counts would say 2), got %v", got)
+	}
+	if got := count([]int64{up.repoID}); got != 1 {
+		t.Fatalf("the complete repository alone reads its daily count, got %v", got)
+	}
+}
+
+// Copilot PR #249 #3: for a complete repository the commits arm must not be
+// reached at all — the live set ($1) is its positive filter. The retired
+// shape, `repo_id = ANY(all) AND repo_id <> ALL(daily)`, matched every
+// commit-file row of the repository in the index and dropped them after the
+// heap fetch — the scan this release retires. The statement's shape is
+// pinned, read from metricSeriesSQL itself: a plan-based oracle depends on
+// the plan the small test database picks (a sequential scan reports every
+// other row as removed by its filter; a bitmap scan carries its condition
+// under another key — review round 5 R5-2), where production's one plan is
+// the EXPLAIN the operator ran. Each commits arm's WHERE names $1, never $4,
+// and carries no exclusion of the daily set. The value tests pin the Go
+// split (TestMetricSeriesCommitArmsReadTheDailyTableWhenFilledAndAligned:
+// 8, not 9; TestCommitCountOverASetDeduplicatesSharedHashes: 1).
+func TestCommitsArmIsFilteredByTheLiveSetAlone(t *testing.T) {
+	examined := 0
+	for name, q := range metricSeriesSQL {
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
+		for _, arm := range strings.Split(stmt, "FROM aveloxis_data.commits")[1:] {
+			examined++
+			// The arm's WHERE clause: up to the next arm or the grouping.
+			where := arm
+			for _, end := range []string{"UNION ALL", "GROUP BY", ") u"} {
+				if i := strings.Index(where, end); i >= 0 {
+					where = where[:i]
+				}
+			}
+			if !strings.Contains(where, "repo_id = ANY($1)") || strings.Contains(where, "$4") || strings.Contains(where, "<> ALL") || strings.Contains(where, "NOT (") {
+				t.Errorf("%s: the commits arm must be filtered by the live set alone (repo_id = ANY($1), no $4, no exclusion): %q", name, strings.TrimSpace(where))
+			}
+		}
+	}
+	srctest.MinCount(t, "commits arms in metricSeriesSQL", examined, 3)
 }
 
 // The time series ends at the plausible bound on both paths: a commit (and
@@ -604,7 +750,7 @@ func TestReplaceRepoCommitDailyKeepsKnownIdentities(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
-		{Day: fx.in, AuthorEmail: "a@x", Commits: 7}, // no identity known to this walk
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 1}, // no identity known to this walk; the bucket unchanged
 	}, true); err != nil {
 		t.Fatal(err)
 	}
@@ -618,6 +764,35 @@ func TestReplaceRepoCommitDailyKeepsKnownIdentities(t *testing.T) {
 	}
 	if n != 1 || id == nil || *id != fx.alice {
 		t.Fatalf("rows=%d (want 1: gone@x removed), id=%v (want alice kept)", n, id)
+	}
+	// Copilot PR #249 (second round): a stored identity is the backfill's
+	// knowledge of the bucket AS IT WAS — its commits agreed on one. A walk
+	// that reports a different count for the bucket changed the evidence
+	// (commits landed on that day since; a rewritten history), and the
+	// bucket may now carry two identities under the email: the stored id is
+	// dropped and the reader resolves by the login and the email rules, or
+	// to no one. A walk that knows the identity still writes it.
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 7},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT cntrb_id::text FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'a@x'`, fx.repoID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != nil {
+		t.Fatalf("a replace that changed the bucket's count (1 → 7) with no identity of its own must drop the stored id, got %v", *id)
+	}
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: fx.in, AuthorEmail: "a@x", Commits: 9, CntrbID: fx.alice},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT cntrb_id::text FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND author_email = 'a@x'`, fx.repoID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id == nil || *id != fx.alice {
+		t.Fatalf("a replace that knows the identity writes it whatever the count, got %v", id)
 	}
 }
 

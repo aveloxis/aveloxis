@@ -50,6 +50,19 @@ import (
 // $4 = threshold, %s = bucket (validated week|month upstream — same
 // defense-in-depth contract as metricSeriesSQL). Literal % characters
 // are doubled for fmt.Sprintf.
+//
+// Its commits arm still reads the per-file commits table (0.29.137 moved
+// the contributors, committers and code_change_commits arms onto the daily
+// table; decided apart, with two reasons): the daily table could serve it
+// (SUM(commits) for the total, MIN(day) for the first action) only through
+// dailyAuthorIdentitySQL, which resolves merge losers to winners and
+// resolves by login and email where this arm counts the stored
+// cmt_ght_author_id — a change to which contributors are "repeat" and
+// "drive-by", a published metric, to be decided and not slipped in as a
+// cost change; and this scan is unwindowed (the classification is over ALL
+// history), so the switch would hang on the completeness stamp alone, not
+// on the window rule the other readers share. It is now the one series
+// left on the per-file rows; measure it before moving it.
 const retentionSeriesSQL = `
 WITH actions (cntrb, ts) AS (
     -- commits: ONE action per distinct commit hash (per-file table).

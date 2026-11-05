@@ -1445,6 +1445,24 @@ out" for its own cut, while item 3 always leaves the WARN above in the
 Aveloxis log. If neither log has a line, check which hop's timeout is
 shortest before suspecting the database.
 
+**The warm script's `503`s are the same rewrite.** A warm listener in
+front of the api (the GUI's deployment ships one: a loopback server that
+answers every gateway error with a bare `503` so a script sees a status)
+sits behind the same `proxy_read_timeout` as the public site — 120 s in
+the Production Deployment recipe against the api's 180 s bound — so a
+chart the api needs longer than 120 s to compute prints as
+`GET /v1/repos/N/metric-series?… → 503` with "upstream timed out" in
+nginx's error log and nothing in `api.log`. Before 0.29.137 the api
+cancelled the computation with the connection and stored nothing, so every
+later pass failed the same request the same way; since 0.29.137 the
+computation finishes, bounded by `http_timeout_seconds`, and is stored, so
+the next pass (or the next visitor) gets the answer. A computation that
+then runs into the bound itself is the one case `api.log` does report: a
+WARN `repository page cache: a computation its caller left behind ran into
+http_timeout_seconds and was not stored`, naming the path and the query.
+That repository's chart needs `aveloxis heal-commit-daily` (its commit
+arms then read the daily table) or a query report.
+
 **Solution:** Keep Aveloxis's bound the **longest** and tune latency in
 nginx, where a timeout is logged and easy to see: set nginx's timeouts
 for the Aveloxis `location` blocks **below** `http_timeout_seconds` (for

@@ -28,8 +28,9 @@ func healCommitDailyCmd(cfgPath *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "heal-commit-daily",
 		Short: "Fill the daily commit counts for repositories whose picture is not complete (dry run unless --apply)",
-		Long: `The repository page's weekly commit series and the commits column of its
-top contributors read aveloxis_data.repo_commit_daily — distinct commits per
+		Long: `The repository page's weekly commit series, the commits column of its
+top contributors and (since 0.29.137) its contributors, committers and
+code_change_commits charts read aveloxis_data.repo_commit_daily — distinct commits per
 repository, UTC day and author email — which the facade writes after every
 completed walk of a repository's default branch — and use it only once the
 repository's picture is COMPLETE (repos.commit_daily_complete_at, set by a

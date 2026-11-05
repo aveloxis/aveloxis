@@ -403,6 +403,19 @@ paths:
         repository a signed-in session reads is linked into "Shared with
         Me", as on every repository route). Since 0.29.119.
 
+        Commit authorship, for the `contributors` and `committers`
+        metrics, once the repository's daily commit picture is complete
+        (`repos.commit_daily_complete_at`): read from the daily commit
+        table (one row per repository, UTC day and author email), each
+        day's author resolved by the rule `/contributors/top` applies —
+        the stored identity while live, else the forge's numeric user id,
+        the login, then the house email rule. Decided and kept (0.29.137;
+        Copilot's PR #249 review, comment 2, declined): a day on which two
+        distinct live identities authored commits under one email resolves
+        to one person or to none, where the per-file commit rows counted
+        two. A repository whose picture is not complete keeps the per-file
+        rows and their stored identities.
+
         Handler: `handleRepoMetricSeries`.
       tags: [Repositories]
       security: [{sessionToken: []}, {apiToken: []}, {}]
@@ -922,6 +935,16 @@ paths:
         than that bound. The envelope echoes the window in
         effect: `until` is the exclusive upper bound (the day after the
         requested `until`), or `0001-01-01T00:00:00Z` when none was given.
+
+        The commits column reads the daily commit table once the
+        repository's picture is complete (`repos.commit_daily_complete_at`),
+        each day's author resolved by one rule — the stored identity while
+        live, else the forge's numeric user id, the login, then the house
+        email rule — shared with the `contributors` and `committers`
+        metrics of `/metric-series`. Decided and kept (0.29.137; Copilot's
+        PR #249 review, comment 2, declined): a day on which two distinct
+        live identities authored commits under one email credits one of
+        them or neither, never both.
 
         Handler: `handleTopContributors`.
       tags: [Contributors]

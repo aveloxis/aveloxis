@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.135 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.139 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
+      <script src="../_static/documentation_options.js?v=a422fba5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -3068,6 +3068,22 @@ apart by the logs, not the status: nginx’s error log has “upstream timed
 out” for its own cut, while item 3 always leaves the WARN above in the
 Aveloxis log. If neither log has a line, check which hop’s timeout is
 shortest before suspecting the database.</p>
+<p><strong>The warm script’s <code class="docutils literal notranslate"><span class="pre">503</span></code>s are the same rewrite.</strong> A warm listener in
+front of the api (the GUI’s deployment ships one: a loopback server that
+answers every gateway error with a bare <code class="docutils literal notranslate"><span class="pre">503</span></code> so a script sees a status)
+sits behind the same <code class="docutils literal notranslate"><span class="pre">proxy_read_timeout</span></code> as the public site — 120 s in
+the Production Deployment recipe against the api’s 180 s bound — so a
+chart the api needs longer than 120 s to compute prints as
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/repos/N/metric-series?…</span> <span class="pre">→</span> <span class="pre">503</span></code> with “upstream timed out” in
+nginx’s error log and nothing in <code class="docutils literal notranslate"><span class="pre">api.log</span></code>. Before 0.29.137 the api
+cancelled the computation with the connection and stored nothing, so every
+later pass failed the same request the same way; since 0.29.137 the
+computation finishes, bounded by <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>, and is stored, so
+the next pass (or the next visitor) gets the answer. A computation that
+then runs into the bound itself is the one case <code class="docutils literal notranslate"><span class="pre">api.log</span></code> does report: a
+WARN <code class="docutils literal notranslate"><span class="pre">repository</span> <span class="pre">page</span> <span class="pre">cache:</span> <span class="pre">a</span> <span class="pre">computation</span> <span class="pre">its</span> <span class="pre">caller</span> <span class="pre">left</span> <span class="pre">behind</span> <span class="pre">ran</span> <span class="pre">into</span> <span class="pre">http_timeout_seconds</span> <span class="pre">and</span> <span class="pre">was</span> <span class="pre">not</span> <span class="pre">stored</span></code>, naming the path and the query.
+That repository’s chart needs <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">heal-commit-daily</span></code> (its commit
+arms then read the daily table) or a query report.</p>
 <p><strong>Solution:</strong> Keep Aveloxis’s bound the <strong>longest</strong> and tune latency in
 nginx, where a timeout is logged and easy to see: set nginx’s timeouts
 for the Aveloxis <code class="docutils literal notranslate"><span class="pre">location</span></code> blocks <strong>below</strong> <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> (for

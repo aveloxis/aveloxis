@@ -160,7 +160,7 @@ func TestPrintBackendVerdictNeverTargetsOtherHosts(t *testing.T) {
 	if strings.Contains(s, "pg_terminate_backend(") || strings.Contains(s, "WARNING") || strings.Contains(s, "orphan") {
 		t.Errorf("64 other-host backends and none local: no warning, no recipe, no orphan talk:\n%s", s)
 	}
-	if !strings.Contains(s, "64 aveloxis-serve backend(s) are connected from other client addresses") || !strings.Contains(s, "not this host's") {
+	if s := oneLine(s); !strings.Contains(s, "64 aveloxis-serve backend(s) are connected from other client addresses") || !strings.Contains(s, "not this host's") {
 		t.Errorf("the other-address backends must be reported as not this host's:\n%s", s)
 	}
 

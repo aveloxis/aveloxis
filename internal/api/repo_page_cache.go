@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -911,7 +912,7 @@ func (s *Server) servePageCached(pol pagePolicy, h http.HandlerFunc, w http.Resp
 
 	uri := pageRequestURI(r, query)
 	_, replaying := r.Context().Value(rewarmExpectKey{}).(string)
-	res, e := s.runOnce(c, key, authed, h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, authed, uri, h, func(res pageResult, cost time.Duration) *pageEntry {
 		e := &pageEntry{key: key, repoID: repoID, uri: uri, fingerprint: st.Fingerprint(), window: window,
 			body: res.body, contentType: res.contentType, disposition: res.disposition,
 			computed: c.now(), cost: cost, keptWhenOff: pol.keptWhenOff, keptPool: pol.keptPool, onReplayList: replaying}
@@ -977,10 +978,12 @@ func writeEntry(w http.ResponseWriter, contentType, disposition string, body []b
 // releasing the others, who share that answer and its entry without storing
 // anything (PR #226 review: followers replaced the entry, resetting its
 // measured cost and its hits). A follower whose leader produced nothing
-// cacheable (the leader's client left, a partial answer, an error) runs h
-// itself — and stores what it computed — so one caller's failure never
-// becomes another's.
-func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.HandlerFunc,
+// cacheable (the bound or the process's stop ended the leader's run, a
+// partial answer, an error — since 0.29.137 the leader's client leaving is
+// NOT that: leaderContext) runs h itself — and stores what it computed — so
+// one caller's failure never becomes another's. uri is the keyed request
+// as the saved re-warm list spells it, for the log alone.
+func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, uri string, h http.HandlerFunc,
 	store func(pageResult, time.Duration) *pageEntry) (pageResult, *pageEntry) {
 	c.mu.Lock()
 	if f, ok := c.inflight[key]; ok {
@@ -1021,13 +1024,82 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, h http.H
 		c.mu.Unlock()
 		close(f.done)
 	}()
-	res, cost := s.runHandler(r, h)
+	lctx, release := s.leaderContext(r.Context())
+	defer release()
+	res, cost := s.runHandler(r.WithContext(lctx), h)
+	if errors.Is(lctx.Err(), context.DeadlineExceeded) && errors.Is(r.Context().Err(), context.Canceled) {
+		// The caller had LEFT (a disconnect cancels its context; the request
+		// bound's own cut is DeadlineExceeded — the leader's deadline is that
+		// same instant — and the Bound reports that one — round 2 F2) and the
+		// bound ended the run the cache kept alive:
+		// nobody else reports it (serverError classifies the handler's error
+		// as "request ended"), and the next caller will pay the same cost
+		// again (review round 1 F5). The keyed request (the path and the
+		// listed parameters, as the saved re-warm list spells it) names the
+		// repository and the chart — what decides `heal-commit-daily`
+		// (round 2 F4; round 3 R3-2: the caller hands it in, so this is not
+		// a reader of the query).
+		s.logger.Warn("repository page cache: a computation its caller left behind ran into http_timeout_seconds and was not stored",
+			"method", r.Method, "uri", logSafe(uri), "elapsed", cost.Round(time.Millisecond), "bound", s.requestTimeout)
+	}
 	var e *pageEntry
 	if res.cacheable {
 		e = store(res, cost) // before close(f.done): followers find it stored
 	}
 	f.res, f.entry = res, e // written before close(f.done), read only after it
 	return res, e
+}
+
+// leaderContext is the context a leader computes under: the caller's values
+// (the authorization, the re-warm expectation) without the caller's
+// cancellation, bounded by http_timeout_seconds like every request and every
+// re-warm request. A caller that leaves mid-computation — nginx's read
+// timeout is 120 s against the API's 180 s, so the warm script's heaviest
+// chart was cut at 120 s on kate (2026-11-04), the cancellation reached the
+// store through the query, the run was marked uncacheable and the next warm
+// pass failed the same way, forever — no longer discards the work: the
+// answer is stored for whoever asks next, and only the caller that left
+// goes without it. The bound is the request's OWN deadline when it carries
+// one — the Bound's (http.TimeoutHandler) or internalGET's, read before the
+// detachment drops it with the cancellation — and never later than
+// http_timeout_seconds from the claim (Copilot's fifth review of PR #249,
+// 0.29.139: a fresh window started at the claim outlived the request's by
+// whatever authorization and the cache's setup took, and could store an
+// answer the Bound had already answered 503 for; requestTimeout zero and no
+// request deadline: unbounded, as the re-warm's own requests are). Detached
+// from the CALLER only: the process's stop (BindLifetime; `aveloxis stop
+// api`) still ends the run at once, so a deploy's next step never waits on
+// a computation nobody will read (review round 1 F3). The caller releases
+// the returned function when the run ends.
+func (s *Server) leaderContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	until, bounded := ctx.Deadline()
+	if s.requestTimeout > 0 {
+		if own := time.Now().Add(s.requestTimeout); !bounded || own.Before(until) {
+			until, bounded = own, true
+		}
+	}
+	ctx = context.WithoutCancel(ctx)
+	var cancel context.CancelFunc
+	if bounded {
+		ctx, cancel = context.WithDeadline(ctx, until)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	stop := context.AfterFunc(s.lifetimeContext(), cancel)
+	return ctx, func() { stop(); cancel() }
+}
+
+// BindLifetime names the context whose end is the process's stop: a
+// leader's detached run ends with it. Set once by the api command before it
+// serves; unset (the tests, a Server built apart), a run has no lifetime
+// bound beyond the request timeout.
+func (s *Server) BindLifetime(ctx context.Context) { s.lifetime = ctx }
+
+func (s *Server) lifetimeContext() context.Context {
+	if s.lifetime == nil {
+		return context.Background()
+	}
+	return s.lifetime
 }
 
 func (s *Server) runHandler(r *http.Request, h http.HandlerFunc) (pageResult, time.Duration) {
@@ -1049,8 +1121,9 @@ func (s *Server) runHandler(r *http.Request, h http.HandlerFunc) (pageResult, ti
 		body:        cw.buf.Bytes(),
 		contentType: cw.header.Get("Content-Type"),
 		disposition: cw.header.Get("Content-Disposition"),
-		// A run whose request ended (client gone, http_timeout_seconds)
-		// may have written a half answer; only a complete 200 is kept.
+		// A run whose context ended (a follower's client gone or its request
+		// bound; a leader's bound or the process's stop) may have written a
+		// half answer; only a complete 200 is kept.
 		cacheable: status == http.StatusOK && !partial && r.Context().Err() == nil,
 	}, cost
 }

@@ -25,6 +25,10 @@ import (
 // restores this one.
 func TestMain(m *testing.M) {
 	collector.SetOutboundPolicy(outboundtest.Policy())
+	// The prose width is the default for every test (0.29.136, L10 round 1
+	// F1): a developer's exported COLUMNS, or tmux's, must not change what
+	// the printers render; the tests that drive COLUMNS set it themselves.
+	os.Unsetenv("COLUMNS")
 	os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify))
 }
 

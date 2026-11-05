@@ -462,6 +462,12 @@ func runAPI(cfgPath, addr string) error {
 	// and the shutdown below waits for it before the deferred store.Close.
 	rewarmCtx, cancelRewarm := context.WithCancel(ctx)
 	defer cancelRewarm()
+	// A page-cache leader computes on after its caller leaves (0.29.137),
+	// but never past the process's stop: rewarmCtx ends on the stop signal
+	// AND right after serveUntilDone returns on a server failure (ctx alone
+	// stays open on that path — review round 2 F3), so <-rewarmDone below
+	// never waits on a computation nobody will read.
+	apiServer.BindLifetime(rewarmCtx)
 	rewarmDone := make(chan struct{})
 	safego.Go(logger, "repository page cache re-warm", func() {
 		defer close(rewarmDone)

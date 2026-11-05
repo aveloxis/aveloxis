@@ -4,6 +4,7 @@
 package db
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -60,4 +61,68 @@ func TestMetricReadersUseHalfOpenWindows(t *testing.T) {
 	if src := srctest.StripGoComments(srctest.PackageSource(t, "internal/db", 100)); strings.Contains(src, "cmt_author_date::") {
 		t.Error("internal/db casts cmt_author_date: the TEXT date is never read as a DATE (its empty rows fail the query)")
 	}
+}
+
+// 0.29.137 (kate, 2026-11-04: the contributors series probed the contributors
+// primary key once per commit-FILE row — 497,889 nested-loop probes for one
+// repository, 1.5 s of its 5 s): the two person-counting series deduplicate
+// (bucket, person) first and anti-join the deleted-loser rule on the
+// distinct pairs. A cost shape, which no seeded value can observe
+// (TestMetricSeriesExactValuesFromSeededData proves the counts), so the SQL
+// is pinned — the resolved statement from the map itself (round 3 R3-7: a
+// source read folded a misnamed entry into its neighbour): the DISTINCT
+// lies inside the derived table the NOT EXISTS reads from.
+func TestPersonSeriesDeduplicateBeforeTheDeletedLoserAntiJoin(t *testing.T) {
+	for _, metric := range []string{"contributors", "committers"} {
+		q, ok := metricSeriesSQL[metric]
+		if !ok {
+			t.Fatalf("metric %q is not in metricSeriesSQL", metric)
+		}
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
+		distinct := strings.Index(stmt, "SELECT DISTINCT")
+		anti := strings.Index(stmt, "NOT EXISTS")
+		// The derived table's closing alias: the NOT EXISTS must sit past it.
+		// An alias renamed to another p-word still matches by prefix, and a
+		// later p-alias after the NOT EXISTS moves the anchor forward and
+		// fails this pin — the safe direction (round 2 F6).
+		closed := strings.LastIndex(stmt, ") p")
+		if distinct < 0 || anti < 0 || closed < 0 || distinct > anti || anti < closed {
+			t.Errorf("%s: the (bucket, person) DISTINCT must come before the deleted-loser NOT EXISTS, and the NOT EXISTS must sit OUTSIDE the derived table (past its `) p`), so the anti-join probes once per person and bucket (DISTINCT at %d, NOT EXISTS at %d, `) p` at %d)", metric, distinct, anti, closed)
+		}
+		// The outer count is COUNT(*) over the distinct pairs; the identity
+		// expression's own COUNT(DISTINCT c.cntrb_id) = 1 (one live
+		// contributor per rule) is not that count.
+		if strings.Contains(stmt, "COUNT(DISTINCT cntrb)") || strings.Contains(stmt, "COUNT(DISTINCT cmt_ght_author_id)") || !strings.Contains(stmt, "COUNT(*)::float") {
+			t.Errorf("%s: counts the distinct pairs with COUNT(*) over the derived table, not COUNT(DISTINCT) over every row", metric)
+		}
+	}
+}
+
+// 0.29.137, review round 2 F5: the daily-table split is taken by every
+// series that reads the commits table, and MetricWeeklySeries passes it to
+// a statement that names $4 — so a NEW commit-reading series written
+// without the daily arm would silently keep the per-file path. Every
+// metricSeriesSQL statement that reads aveloxis_data.commits must also read
+// repo_commit_daily and take $4; read from the map itself (round 3 R3-7).
+func TestEveryCommitReadingSeriesTakesTheDailySplit(t *testing.T) {
+	srctest.MinCount(t, "metricSeriesSQL entries", len(metricSeriesSQL), 7)
+	readsCommits := 0
+	for name, q := range metricSeriesSQL {
+		// $4 is judged on the RAW statement, as MetricWeeklySeries judges it
+		// (round 4 F4: one predicate — a comment naming $4 would otherwise pass
+		// here and fail at bind time); the tables on the comment-stripped one.
+		takesSplit := strings.Contains(q, "$4")
+		stmt := srctest.StripSQLComments(fmt.Sprintf(q, "week"))
+		if !strings.Contains(stmt, "aveloxis_data.commits") {
+			if takesSplit {
+				t.Errorf("%s: takes $4 without reading the commits table; MetricWeeklySeries would pass a split it has no arm for", name)
+			}
+			continue
+		}
+		readsCommits++
+		if !strings.Contains(stmt, "aveloxis_data.repo_commit_daily") || !takesSplit {
+			t.Errorf("%s reads aveloxis_data.commits but has no repo_commit_daily arm on $4: a complete repository's chart would scan its per-file rows", name)
+		}
+	}
+	srctest.MinCount(t, "commit-reading series", readsCommits, 3)
 }

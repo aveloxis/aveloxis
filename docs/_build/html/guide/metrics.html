@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Metrics — Improvements on CHAOSS metrics &mdash; Aveloxis 0.29.135 documentation</title>
+  <title>Aveloxis Metrics — Improvements on CHAOSS metrics &mdash; Aveloxis 0.29.139 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
+      <script src="../_static/documentation_options.js?v=a422fba5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1820,7 +1820,7 @@ the union for people-counting metrics.</p>
 <ul class="simple">
 <li><p><strong>id</strong>: <code class="docutils literal notranslate"><span class="pre">contributors</span></code> · <strong>kind</strong>: temporal · <strong>unit</strong>: people</p></li>
 <li><p><strong>Our definition</strong>: Distinct people with ANY contribution event (issue, change request, commit, comment, or event action) in the bucket. Soft-deleted merge-loser identities excluded.</p></li>
-<li><p><strong>Improvement on CHAOSS</strong>: Counts resolved platform identities (cntrb_id) across ALL activity types in one pass, rather than per-activity contributor lists.</p></li>
+<li><p><strong>Improvement on CHAOSS</strong>: Counts resolved platform identities (cntrb_id) across ALL activity types in one pass, rather than per-activity contributor lists. Commit authors are read from the daily commit table, resolved as for committers, once the repository’s commit picture is complete (a day on which two live identities authored under one email then counts one person or none, never both: decided, 0.29.137).</p></li>
 <li><p><strong>CHAOSS nominal</strong>: https://chaoss.community/kb/metric-contributors/</p></li>
 </ul>
 </section>
@@ -1874,7 +1874,7 @@ the union for people-counting metrics.</p>
 <ul class="simple">
 <li><p><strong>id</strong>: <code class="docutils literal notranslate"><span class="pre">committers</span></code> · <strong>kind</strong>: temporal · <strong>unit</strong>: people</p></li>
 <li><p><strong>Our definition</strong>: Distinct resolved commit authors per bucket. Commits whose author could not be resolved to a platform identity (~8% fleet-wide) are excluded and documented.</p></li>
-<li><p><strong>Improvement on CHAOSS</strong>: Uses deterministic platform-resolved identities (cmt_ght_author_id), not raw email strings, so renames and aliases collapse correctly.</p></li>
+<li><p><strong>Improvement on CHAOSS</strong>: Uses deterministic platform-resolved identities, not raw email strings, so renames and aliases collapse correctly: the stored cmt_ght_author_id, or — once the repository’s daily commit picture is complete — the daily table’s author resolved by the same rule as its top contributors (the stored identity while live, else the forge’s numeric user id, the login, then the house email rule; a day on which two live identities authored under one email then counts one person or none, never both: decided, 0.29.137).</p></li>
 <li><p><strong>CHAOSS nominal</strong>: https://chaoss.community/kb/metric-committers/</p></li>
 </ul>
 </section>

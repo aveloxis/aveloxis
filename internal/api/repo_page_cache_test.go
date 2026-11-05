@@ -73,6 +73,13 @@ func newPageCacheHarness(t *testing.T, pol pagePolicy, maxBytes int64, h func(hn
 	hn := &pageCacheHarness{t: t, known: true, now: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
 		state: db.RepoCacheState{HasQueueRow: true, LastCollected: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}}
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), pageCache: newRepoPageCache(maxBytes)}
+	// The lifetime production always binds (runAPI: the re-warm context): a
+	// leader's detached run ends with the test, never outliving it (review
+	// round 3 R3-1/R3-8 — a harness with no lifetime and no request bound
+	// modelled an unstoppable leader, a shape production refuses).
+	lifetime, endLifetime := context.WithCancel(context.Background())
+	t.Cleanup(endLifetime)
+	s.BindLifetime(lifetime)
 	s.pageCache.now = func() time.Time { hn.mu.Lock(); defer hn.mu.Unlock(); return hn.now }
 	s.repoStates = func(_ context.Context, ids []int64) (map[int64]db.RepoCacheState, error) {
 		hn.mu.Lock()
@@ -521,6 +528,195 @@ func TestPageCacheZeroBudgetStillRevalidates(t *testing.T) {
 	}
 	if w := hn.get("/api/v1/repos/7/thing", ifNoneMatch(etag)); w.Code != http.StatusNotModified || hn.runs.Load() != 1 {
 		t.Errorf("a zero budget still answers 304 from the state: %d runs %d", w.Code, hn.runs.Load())
+	}
+}
+
+// 0.29.137 (the kate warm run of 2026-11-04): nginx's read timeout cut the
+// warm script's contributors chart at 120 s, which cancelled the leader's
+// context, which marked 120 s of computation uncacheable — and the next
+// pass failed the same request the same way. The leader now runs its
+// handler under a context its caller cannot cancel, so the answer is
+// stored for whoever asks next; the caller that left simply does not get it.
+func TestPageCacheLeaderFinishesAndStoresAfterItsCallerLeaves(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var sawCancel atomic.Bool
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		if hn.runs.Load() == 1 {
+			started <- struct{}{}
+			<-release
+			sawCancel.Store(r.Context().Err() != nil)
+		}
+		okBody(hn, w, r)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	var leader *httptest.ResponseRecorder
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		leader = hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	}()
+	<-started
+	cancel() // the caller leaves mid-computation (nginx's read timeout; a closed tab)
+	close(release)
+	wg.Wait()
+	if sawCancel.Load() {
+		t.Fatal("the leader's handler saw its caller's cancellation: the computation must run under a context the caller cannot end")
+	}
+	if leader.Code != 200 {
+		t.Fatalf("leader answered %d", leader.Code)
+	}
+	w := hn.get("/api/v1/repos/7/thing")
+	if hn.runs.Load() != 1 || w.Header().Get("X-Cache") != "hit" {
+		t.Fatalf("the answer computed after the caller left must be stored: runs %d, X-Cache %q", hn.runs.Load(), w.Header().Get("X-Cache"))
+	}
+}
+
+// The detached run is not unbounded: http_timeout_seconds (Server.
+// requestTimeout, the bound every request and every re-warm request has)
+// ends it, a run it ends is not stored, and — the caller having left, so
+// nobody else reports it — the cut is logged at WARN with the key and the
+// bound (review round 1 F5).
+func TestPageCacheLeaderRunIsBoundedByTheRequestTimeout(t *testing.T) {
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done() // a computation that only the bound ends
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	var logs lockedBuffer
+	hn.s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hn.s.requestTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) }) }()
+	<-started
+	cancel() // the caller leaves; the bound is what ends the run
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leader's run outlived the request timeout: the detached context must carry the bound")
+	}
+	if _, ok := hn.s.pageCache.get(pageKey(testPagePattern, 7, "", "", hn.state)); ok {
+		t.Fatal("a run the bound ended must not be stored")
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "ran into http_timeout_seconds") || !strings.Contains(got, "bound=50ms") {
+		t.Fatalf("a bound-cut computation whose caller left must be logged at WARN with the bound; log:\n%s", got)
+	}
+}
+
+// Round 2 F2: the request's own bound (http.TimeoutHandler derives the
+// request context with the deadline the leader keeps since 0.29.139; a
+// window of the same duration started earlier before it) is never due after
+// the leader's, and the Bound reports that cut itself — a caller
+// still present when its request times out must not be reported a second
+// time as a caller that "left".
+func TestPageCacheLeaderDoesNotDoubleReportTheRequestBound(t *testing.T) {
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	var logs lockedBuffer
+	hn.s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hn.s.requestTimeout = 30 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond) // the request bound, as TimeoutHandler sets it
+	defer cancel()
+	hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	if got := logs.String(); strings.Contains(got, "ran into http_timeout_seconds") {
+		t.Fatalf("a caller whose own request bound fired is not a caller that left; the Bound reports that cut — log:\n%s", got)
+	}
+}
+
+// Copilot PR #249 (second round): NewWithOptions permits a nil logger (a
+// test's server without a sink), and the leader's WARN is the first log
+// call on a path such a server can reach — a caller disconnecting while a
+// bounded leader runs must skip the diagnostic, never panic.
+func TestNilLoggerIsNormalizedByTheConstructor(t *testing.T) {
+	s, err := NewWithOptions(nil, nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.logger == nil {
+		t.Fatal("a nil logger must be normalized to a discarding one: every log call on the server would otherwise panic")
+	}
+	s.logger.Warn("must not panic")
+}
+
+// Copilot's fifth review of PR #249 (0.29.139): leaderContext dropped the
+// request's own deadline together with its cancellation and started a fresh
+// http_timeout_seconds window when the leader was claimed, so the detached
+// run could outlive the request's deadline by whatever authorization and the
+// cache's setup took before the claim — and store an answer the Bound had
+// already answered 503 for. The leader's deadline is the request's own
+// instant when the request carries one (the Bound's, internalGET's), and in
+// no case later than http_timeout_seconds from the claim.
+func TestPageCacheLeaderKeepsTheRequestsOwnDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var seen time.Time
+	var bounded bool
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen, bounded = r.Context().Deadline()
+		mu.Unlock()
+		okBody(hn, w, r)
+	})
+	hn.s.requestTimeout = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute) // the request's bound, as the Bound sets it
+	defer cancel()
+	want, _ := ctx.Deadline()
+	hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	mu.Lock()
+	got, ok := seen, bounded
+	mu.Unlock()
+	if !ok || !got.Equal(want) {
+		t.Fatalf("the leader ran under deadline %v (bounded %v); want the request's own %v — a fresh window from the claim outlives the request", got, ok, want)
+	}
+	// A request bounded later than http_timeout_seconds is still capped by
+	// it (round 1 F1 of 0.29.139: a parameter the route does not list is
+	// dropped from the key, so the request must vary a LISTED one, and the
+	// run count proves the leader ran rather than a hit answering).
+	hn.s.requestTimeout = time.Minute
+	later, cancelLater := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLater()
+	hour, _ := later.Deadline()
+	hn.get("/api/v1/repos/7/thing?a=later", func(r *http.Request) { *r = *r.WithContext(later) })
+	mu.Lock()
+	got, ok = seen, bounded
+	mu.Unlock()
+	if hn.runs.Load() != 2 {
+		t.Fatalf("the second request must run a leader of its own, not be answered from the cache: runs %d", hn.runs.Load())
+	}
+	if !ok || !got.Before(hour) {
+		t.Fatalf("the leader ran under deadline %v (bounded %v); want one before the request's %v — http_timeout_seconds caps every leader", got, ok, hour)
+	}
+}
+
+// Detached from the caller, not from the process (review round 1 F3): a
+// stop (`aveloxis stop api` cancelling the context BindLifetime names) ends
+// a leader's run at once — the deploy's next step must not wait up to
+// http_timeout_seconds on a computation nobody will read — and the run is
+// not stored.
+func TestPageCacheLeaderRunEndsWithTheProcess(t *testing.T) {
+	started := make(chan struct{}, 1)
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+		http.Error(w, "internal error; try again", http.StatusInternalServerError)
+	})
+	lifetime, stop := context.WithCancel(context.Background())
+	hn.s.BindLifetime(lifetime)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hn.get("/api/v1/repos/7/thing") }()
+	<-started
+	stop()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the process's stop must end a leader's detached run at once")
+	}
+	if _, ok := hn.s.pageCache.get(pageKey(testPagePattern, 7, "", "", hn.state)); ok {
+		t.Fatal("a run the stop ended must not be stored")
 	}
 }
 
@@ -1238,7 +1434,7 @@ func TestRunOnceRechecksTheCacheBeforeLeading(t *testing.T) {
 	c.put(stored) // the leader that finished between the caller's miss and its claim
 	runs := 0
 	h := func(w http.ResponseWriter, r *http.Request) { runs++; _, _ = w.Write([]byte("recomputed")) }
-	res, e := s.runOnce(c, key, httptest.NewRequest(http.MethodGet, "/x", nil), h, func(res pageResult, cost time.Duration) *pageEntry {
+	res, e := s.runOnce(c, key, httptest.NewRequest(http.MethodGet, "/x", nil), "/x", h, func(res pageResult, cost time.Duration) *pageEntry {
 		ne := &pageEntry{key: key, repoID: 1, body: res.body, computed: c.now(), cost: cost, keptWhenOff: true}
 		c.put(ne)
 		return ne

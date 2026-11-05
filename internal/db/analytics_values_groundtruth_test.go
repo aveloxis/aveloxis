@@ -102,6 +102,30 @@ func TestMetricSeriesExactValuesFromSeededData(t *testing.T) {
 	if got := bucketDate(issuesM, 2025, time.March, 1); got != 4 {
 		t.Errorf("issues month 2025-03 = %v, want 4", got)
 	}
+
+	// 0.29.137: contributors and committers count a PERSON once per
+	// bucket however many events (and per-file commit rows) carry them;
+	// a soft-deleted merge loser is excluded. Carol has 3 issues, a PR and
+	// 5 commit-file rows in the Mar-3 week; Dave, deleted, has an issue.
+	dave := seed.contributor("_avgt-dave", "User", 1)
+	seed.issue(dave, wed)
+	people, err := store.MetricWeeklySeries(ctx, ids, "contributors", "week", since, until)
+	if err != nil {
+		t.Fatalf("contributors series: %v", err)
+	}
+	if got := bucketDate(people, 2025, time.March, 3); got != 1 {
+		t.Errorf("contributors week 2025-03-03 = %v, want 1 (Carol once; Dave is a deleted loser)", got)
+	}
+	if got := bucketDate(people, 2025, time.March, 10); got != 1 {
+		t.Errorf("contributors week 2025-03-10 = %v, want 1", got)
+	}
+	committers, err := store.MetricWeeklySeries(ctx, ids, "committers", "week", since, until)
+	if err != nil {
+		t.Fatalf("committers series: %v", err)
+	}
+	if got := bucketDate(committers, 2025, time.March, 3); got != 1 {
+		t.Errorf("committers week 2025-03-03 = %v, want 1 (five per-file rows, one author)", got)
+	}
 }
 
 // TestLaborInvestmentMatchesPublishedCOCOMO (audit C4): the COCOMO-II

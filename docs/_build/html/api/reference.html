@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.135 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.139 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=7bc0d20d"></script>
+      <script src="../_static/documentation_options.js?v=a422fba5"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2285,6 +2285,18 @@ moves each Monday, UTC, for <code class="docutils literal notranslate"><span cla
 group, and access is the repository routes’ (an out-of-scope
 repository a signed-in session reads is linked into “Shared with
 Me”, as on every repository route). Since 0.29.119.</p>
+<p>Commit authorship, for the <code class="docutils literal notranslate"><span class="pre">contributors</span></code> and <code class="docutils literal notranslate"><span class="pre">committers</span></code>
+metrics, once the repository’s daily commit picture is complete
+(<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>): read from the daily commit
+table (one row per repository, UTC day and author email), each
+day’s author resolved by the rule <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code> applies —
+the stored identity while live, else the forge’s numeric user id,
+the login, then the house email rule. Decided and kept (0.29.137;
+Copilot’s PR #249 review, comment 2, declined): a day on which two
+distinct live identities authored commits under one email resolves
+to one person or to none, where the per-file commit rows counted
+two. A repository whose picture is not complete keeps the per-file
+rows and their stored identities.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleRepoMetricSeries</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Request Headers<span class="colon">:</span></dt>
@@ -3368,6 +3380,15 @@ time (UTC midnight two days ahead), and a given <code class="docutils literal no
 than that bound. The envelope echoes the window in
 effect: <code class="docutils literal notranslate"><span class="pre">until</span></code> is the exclusive upper bound (the day after the
 requested <code class="docutils literal notranslate"><span class="pre">until</span></code>), or <code class="docutils literal notranslate"><span class="pre">0001-01-01T00:00:00Z</span></code> when none was given.</p>
+<p>The commits column reads the daily commit table once the
+repository’s picture is complete (<code class="docutils literal notranslate"><span class="pre">repos.commit_daily_complete_at</span></code>),
+each day’s author resolved by one rule — the stored identity while
+live, else the forge’s numeric user id, the login, then the house
+email rule — shared with the <code class="docutils literal notranslate"><span class="pre">contributors</span></code> and <code class="docutils literal notranslate"><span class="pre">committers</span></code>
+metrics of <code class="docutils literal notranslate"><span class="pre">/metric-series</span></code>. Decided and kept (0.29.137; Copilot’s
+PR #249 review, comment 2, declined): a day on which two distinct
+live identities authored commits under one email credits one of
+them or neither, never both.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleTopContributors</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Request Headers<span class="colon">:</span></dt>

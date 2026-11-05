@@ -507,10 +507,12 @@ func (s *Server) replay(ctx context.Context, uri, fingerprint string) (status in
 // is not a 200 ("" when it is).
 func (s *Server) internalGET(ctx context.Context, where, uri string) (w *captureWriter, status int, reason string) {
 	rctx := context.WithValue(ctx, authCtxKey{}, authInfo{IsAdmin: true})
+	var bound time.Time // zero: unbounded
 	if s.requestTimeout > 0 {
 		var cancel context.CancelFunc
 		rctx, cancel = context.WithTimeout(rctx, s.requestTimeout)
 		defer cancel()
+		bound, _ = rctx.Deadline()
 	}
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, uri, nil)
 	if err != nil {
@@ -530,7 +532,16 @@ func (s *Server) internalGET(ctx context.Context, where, uri string) (w *capture
 	switch {
 	case panicked:
 		return w, status, "handler panic"
-	case rctx.Err() != nil && ctx.Err() == nil:
+	case ctx.Err() == nil && !bound.IsZero() && !time.Now().Before(bound):
+		// Judged by the clock, not by rctx.Err(): the bound is an instant.
+		// The page cache's leader (0.29.137) runs the handler under its own
+		// timer for this request's deadline (the same instant since 0.29.139;
+		// a window of the same length started later before it), so the
+		// handler returns when THAT timer fires — and this context's timer,
+		// due at the same instant, may not have run its callback yet (two
+		// timers, no order between them), leaving rctx.Err() nil and the
+		// expiry read as a degraded answer (CI's migrate job on `ccac9f5a`,
+		// 2026-11-04; one run in 400 locally under GOMAXPROCS=2 -race).
 		return w, status, "request deadline exceeded (http_timeout_seconds)"
 	case status != http.StatusOK:
 		return w, status, "status"

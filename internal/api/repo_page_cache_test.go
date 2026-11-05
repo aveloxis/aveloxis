@@ -607,8 +607,9 @@ func TestPageCacheLeaderRunIsBoundedByTheRequestTimeout(t *testing.T) {
 }
 
 // Round 2 F2: the request's own bound (http.TimeoutHandler derives the
-// request context with the same duration, started earlier) always fires
-// before the leader's, and the Bound reports that cut itself — a caller
+// request context with the deadline the leader keeps since 0.29.139; a
+// window of the same duration started earlier before it) is never due after
+// the leader's, and the Bound reports that cut itself — a caller
 // still present when its request times out must not be reported a second
 // time as a caller that "left".
 func TestPageCacheLeaderDoesNotDoubleReportTheRequestBound(t *testing.T) {
@@ -640,6 +641,55 @@ func TestNilLoggerIsNormalizedByTheConstructor(t *testing.T) {
 		t.Fatal("a nil logger must be normalized to a discarding one: every log call on the server would otherwise panic")
 	}
 	s.logger.Warn("must not panic")
+}
+
+// Copilot's fifth review of PR #249 (0.29.139): leaderContext dropped the
+// request's own deadline together with its cancellation and started a fresh
+// http_timeout_seconds window when the leader was claimed, so the detached
+// run could outlive the request's deadline by whatever authorization and the
+// cache's setup took before the claim — and store an answer the Bound had
+// already answered 503 for. The leader's deadline is the request's own
+// instant when the request carries one (the Bound's, internalGET's), and in
+// no case later than http_timeout_seconds from the claim.
+func TestPageCacheLeaderKeepsTheRequestsOwnDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var seen time.Time
+	var bounded bool
+	hn := newPageCacheHarness(t, pageExact, 1<<20, func(hn *pageCacheHarness, w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen, bounded = r.Context().Deadline()
+		mu.Unlock()
+		okBody(hn, w, r)
+	})
+	hn.s.requestTimeout = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute) // the request's bound, as the Bound sets it
+	defer cancel()
+	want, _ := ctx.Deadline()
+	hn.get("/api/v1/repos/7/thing", func(r *http.Request) { *r = *r.WithContext(ctx) })
+	mu.Lock()
+	got, ok := seen, bounded
+	mu.Unlock()
+	if !ok || !got.Equal(want) {
+		t.Fatalf("the leader ran under deadline %v (bounded %v); want the request's own %v — a fresh window from the claim outlives the request", got, ok, want)
+	}
+	// A request bounded later than http_timeout_seconds is still capped by
+	// it (round 1 F1 of 0.29.139: a parameter the route does not list is
+	// dropped from the key, so the request must vary a LISTED one, and the
+	// run count proves the leader ran rather than a hit answering).
+	hn.s.requestTimeout = time.Minute
+	later, cancelLater := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLater()
+	hour, _ := later.Deadline()
+	hn.get("/api/v1/repos/7/thing?a=later", func(r *http.Request) { *r = *r.WithContext(later) })
+	mu.Lock()
+	got, ok = seen, bounded
+	mu.Unlock()
+	if hn.runs.Load() != 2 {
+		t.Fatalf("the second request must run a leader of its own, not be answered from the cache: runs %d", hn.runs.Load())
+	}
+	if !ok || !got.Before(hour) {
+		t.Fatalf("the leader ran under deadline %v (bounded %v); want one before the request's %v — http_timeout_seconds caps every leader", got, ok, hour)
+	}
 }
 
 // Detached from the caller, not from the process (review round 1 F3): a

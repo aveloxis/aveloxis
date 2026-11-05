@@ -214,9 +214,10 @@ func TestRewarmSurvivesAPanickingHandler(t *testing.T) {
 // replay: the handler's error helper drops a request's end to Debug and
 // writes nothing, which must not read as a success (review round 1,
 // TestRequestPathDeadlinesAreReviewed). The handler here returns the
-// instant its context ends — since 0.29.137 that is the leader's own bound,
-// a second timer of the same length started after the replay's — so the
-// replay's timer may not have run yet when the end is classified: 0.29.138
+// instant its context ends — since 0.29.137 that is the leader's own timer
+// (for the replay's deadline since 0.29.139; a window of the same length
+// started later before it) — so the replay's timer may not have run yet
+// when the end is classified: 0.29.138
 // judges the bound by the clock (CI's migrate job on `ccac9f5a`; one run in
 // 400 locally under GOMAXPROCS=2 -race before, none in 2,000 after).
 func TestRewarmCountsAReplayPastItsDeadlineAsFailed(t *testing.T) {

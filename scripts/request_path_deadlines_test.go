@@ -59,11 +59,12 @@ func TestRequestPathDeadlinesAreReviewed(t *testing.T) {
 		srctest.SiteKey("internal/api", "boundedFlush"): 1,
 		srctest.SiteKey("internal/api", "capacityTick"): 2,
 		// The page cache's leader (0.29.137): its run is detached from the
-		// caller and re-derives the request bound (http_timeout_seconds).
-		// Its expiry is reported — by runOnce's WARN when the caller had
-		// left (nobody else sees it), and by the Bound's own WARN when the
-		// caller is present (the request's deadline, the same duration
-		// started earlier, fires first); the handler's error helper dropping
+		// caller under the request's own deadline (kept across the
+		// detachment since 0.29.139), capped by http_timeout_seconds from
+		// the claim. Its expiry is reported — by runOnce's WARN when the
+		// caller had left (nobody else sees it), and by the Bound's own
+		// WARN when the caller is present (the request's deadline, the same
+		// instant, is never due later); the handler's error helper dropping
 		// the expiry to Debug is intended, as no caller is listening.
 		srctest.SiteKey("internal/api", "leaderContext"): 1,
 	}

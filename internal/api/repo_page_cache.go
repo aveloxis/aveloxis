@@ -1029,8 +1029,9 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, uri stri
 	res, cost := s.runHandler(r.WithContext(lctx), h)
 	if errors.Is(lctx.Err(), context.DeadlineExceeded) && errors.Is(r.Context().Err(), context.Canceled) {
 		// The caller had LEFT (a disconnect cancels its context; the request
-		// bound's own cut is DeadlineExceeded and the Bound reports that one
-		// — round 2 F2) and the bound ended the run the cache kept alive:
+		// bound's own cut is DeadlineExceeded — the leader's deadline is that
+		// same instant — and the Bound reports that one — round 2 F2) and the
+		// bound ended the run the cache kept alive:
 		// nobody else reports it (serverError classifies the handler's error
 		// as "request ended"), and the next caller will pay the same cost
 		// again (review round 1 F5). The keyed request (the path and the
@@ -1058,18 +1059,29 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, uri stri
 // store through the query, the run was marked uncacheable and the next warm
 // pass failed the same way, forever — no longer discards the work: the
 // answer is stored for whoever asks next, and only the caller that left
-// goes without it. The bound keeps a runaway computation from outliving
-// the request it would have been refused as (requestTimeout zero:
-// unbounded, as the re-warm's own requests are). Detached from the CALLER
-// only: the process's stop (BindLifetime; `aveloxis stop api`) still ends
-// the run at once, so a deploy's next step never waits on a computation
-// nobody will read (review round 1 F3). The caller releases the returned
-// function when the run ends.
+// goes without it. The bound is the request's OWN deadline when it carries
+// one — the Bound's (http.TimeoutHandler) or internalGET's, read before the
+// detachment drops it with the cancellation — and never later than
+// http_timeout_seconds from the claim (Copilot's fifth review of PR #249,
+// 0.29.139: a fresh window started at the claim outlived the request's by
+// whatever authorization and the cache's setup took, and could store an
+// answer the Bound had already answered 503 for; requestTimeout zero and no
+// request deadline: unbounded, as the re-warm's own requests are). Detached
+// from the CALLER only: the process's stop (BindLifetime; `aveloxis stop
+// api`) still ends the run at once, so a deploy's next step never waits on
+// a computation nobody will read (review round 1 F3). The caller releases
+// the returned function when the run ends.
 func (s *Server) leaderContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	until, bounded := ctx.Deadline()
+	if s.requestTimeout > 0 {
+		if own := time.Now().Add(s.requestTimeout); !bounded || own.Before(until) {
+			until, bounded = own, true
+		}
+	}
 	ctx = context.WithoutCancel(ctx)
 	var cancel context.CancelFunc
-	if s.requestTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, s.requestTimeout)
+	if bounded {
+		ctx, cancel = context.WithDeadline(ctx, until)
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}

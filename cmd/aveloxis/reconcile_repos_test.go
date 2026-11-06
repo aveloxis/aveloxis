@@ -79,13 +79,15 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`", write.binding)
 		}
 	}
-	// The two consolidation arms share one spelling; the two enqueue arms
-	// differ since 0.29.140 (the lost-queue-row arm clears a stale gone
-	// stamp with its enqueue, ResurrectRepo; the untracked-redirect arm
-	// enqueues only), so each is one site.
+	// The two consolidation arms share one spelling. Since 0.29.140 the
+	// lost-queue-row arm clears a stale gone stamp with its enqueue
+	// (ResurrectRepo) — under a 2xx ONLY (Copilot PR #252: the probe
+	// returns 403, 429, 5xx and an unresolved 3xx with a nil error, so the
+	// default arm is INDETERMINATE: it enqueues like the untracked-redirect
+	// arm, prelim's own probe decides, and no gone stamp is cleared, SR-16).
 	for write, sites := range map[string]int{
 		"db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {": 2,
-		"store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {":                                          1,
+		"store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {":                                          2,
 		"store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {":                1,
 	} {
 		rest := src
@@ -104,6 +106,10 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 		if seen != sites {
 			t.Errorf("%s: %d sites; want %d", write, seen, sites)
 		}
+	}
+	twoxx, resurrect, dflt := strings.Index(src, "case status >= 200 && status < 300:"), strings.Index(src, "store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile)"), strings.LastIndex(src, "default:")
+	if twoxx < 0 || resurrect < twoxx || dflt < resurrect {
+		t.Errorf("ResurrectRepo (clears a gone stamp) must sit under the 2xx case (%d) and before the indeterminate default arm (%d); at %d", twoxx, dflt, resurrect)
 	}
 	loopEnd, complete := regexIndex(src, `\n\tif ctx\.Err\(\) != nil \{\s*return interrupted\(\)`), strings.Index(src, `fmt.Printf("reconcile-repos%s: dead=`)
 	if loopEnd < 0 || complete < 0 || loopEnd > complete || loopEnd < errArm {

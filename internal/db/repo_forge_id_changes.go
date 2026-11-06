@@ -98,11 +98,30 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 	if oldID == "" || newID == "" || oldID == newID {
 		return fmt.Errorf("adopt forge ID for repo %d: old %q and new %q must be two different IDs", repoID, oldID, newID)
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+	// withRetry and the daily table's per-repository lock FIRST (the fresh
+	// review of the PR #252 round): the restore below writes repo_commit_daily,
+	// whose every other writer goes lock → repos row, and an adoption that
+	// went repos row → lock deadlocked with a trimming walk of the same
+	// repository — a repository with a pending change keeps collecting — with
+	// no retry on its side. Lock first, and the adoption simply waits for a
+	// running walk; a 40P01 victim retries like the other daily writers.
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+		if _, err := tx.Exec(ctx, repoCommitDailyLockSQL, repoID); err != nil {
+			return fmt.Errorf("lock repo_commit_daily for repo %d: %w", repoID, err)
+		}
+		return s.adoptForgeIDInTx(ctx, tx, repoID, oldID, newID, forgeCreatedAt, adoptedBy, note)
+	})
+}
+
+// adoptForgeIDInTx is AdoptForgeID's body once the transaction holds the
+// daily table's lock: the id move, the record, the resurrection of a
+// gone-stamped row, the earlier era's restore, the commit.
+func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE aveloxis_data.repos SET platform_repo_id = $3
 		WHERE repo_id = $1 AND platform_repo_id = $2`, repoID, oldID, newID)
@@ -130,6 +149,23 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 	// a row that is not gone-stamped is left as it is.
 	if err := resurrectInTx(ctx, tx, repoID, resurrectPriority, GoneSourceAdoption); err != nil {
 		return fmt.Errorf("resurrect repo %d on adoption: %w", repoID, err)
+	}
+	// Copilot PR #252: the earlier era's daily buckets a walk trimmed before
+	// this adoption come back from the commits table (restoreEarlierErasInTx),
+	// under the daily table's per-repository lock the transaction took first;
+	// the charts change, so the cache state is stamped when any bucket was
+	// written. Documented residual: the restore is a fold of the repository's
+	// commit rows (minutes for a kernel-sized repository), inside the request
+	// that adopts — the GUI and the API adopt under the request's deadline,
+	// so a very large re-created repository is adopted with the CLI.
+	restored, err := restoreEarlierErasInTx(ctx, tx, repoID)
+	if err != nil {
+		return fmt.Errorf("repo %d: %w", repoID, err)
+	}
+	if restored > 0 {
+		if _, err := tx.Exec(ctx, stampRepoCacheStateSQL+` WHERE repo_id = $1`, repoID); err != nil {
+			return fmt.Errorf("stamp repository %d data changed: %w", repoID, err)
+		}
 	}
 	return tx.Commit(ctx)
 }

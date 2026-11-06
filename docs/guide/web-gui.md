@@ -279,7 +279,10 @@ optional note (at most 1,000 characters), treats the new repository as the
 continuation of the old; a change another adoption superseded is not offered.
 Adopting also brings the repository back when it is gone-stamped (0.29.140:
 the re-created repository exists, so the stamp is cleared and the repository
-re-queued with the adoption), and the repository page keeps both histories:
+re-queued with the adoption) and restores the earlier history's daily
+commit buckets a walk had trimmed (a very large re-created repository is
+adopted with `aveloxis adopt-forge-id` instead: that restore runs inside the
+request, which the proxy's deadline would end), and the repository page keeps both histories:
 the charts mark the boundary and the page lists every stretch the repository
 was not reachable on its forge.
 

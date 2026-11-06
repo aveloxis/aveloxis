@@ -534,3 +534,20 @@ func TestResurrectIfListedDoesNotRepeatAReversedResurrection(t *testing.T) {
 		t.Fatalf("three closed episodes, the last by the org scan: %+v", eps)
 	}
 }
+
+// Copilot PR #252: the dedup carry reads the winner's gone state (the
+// invariant "open episode ⇔ current gone state"); a clearer running beside
+// the merge could close the winner's episode after that read. The winner's
+// repos row is locked FOR UPDATE in the pair transaction before the carry,
+// so every gone-state writer of the winner serialises with it (they all
+// UPDATE that row).
+func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func dedupOnePair("))
+	lock, carry := strings.Index(body, `"lock winner repos row"`), strings.Index(body, `"repoint repo_gone_history"`)
+	if lock < 0 || carry < 0 || lock > carry {
+		t.Fatalf("the winner's row lock (%d) must be a step before the gone-history carry (%d)", lock, carry)
+	}
+	if !strings.Contains(body[lock:carry], "FOR UPDATE") {
+		t.Error("the lock step must take the row FOR UPDATE")
+	}
+}

@@ -260,7 +260,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				}
 				c.enqueued++
 			}
-		default:
+		case status >= 200 && status < 300:
 			// Alive at its own URL — a lost queue row. Restore
 			// scheduler visibility; a stale gone stamp (a gone row the
 			// v0.27.50 step un-archived, before 0.29.140) is cleared with
@@ -269,6 +269,24 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			fmt.Printf("  enqueue (lost queue row): %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
 				if err := store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
+					logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
+					c.skipped++
+					continue
+				}
+			}
+			c.enqueued++
+		default:
+			// Indeterminate (403, 429, 5xx, an unresolved 3xx — the probe
+			// returns them with a nil error; Copilot PR #252): a lost queue
+			// row still, so scheduler visibility is restored, but nothing
+			// is PROVEN about the repository — a gone stamp stays for
+			// prelim's own probe to decide (SR-16: only a 2xx clears it).
+			fmt.Printf("  enqueue (lost queue row; status %d not definitive, prelim decides): %s (repo %d)\n", status, sr.GitURL, sr.RepoID)
+			if !dryRun {
+				if err := store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {
 					if ctx.Err() != nil {
 						return interrupted()
 					}

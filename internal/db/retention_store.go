@@ -57,7 +57,11 @@ import (
 // zephyr, the last series on those rows after 0.29.137 moved the
 // contributors, committers and code_change_commits arms). $5 = the
 // repositories read from the commits table, $6 = those read from the daily
-// table; the split is on the completeness stamp alone, since the
+// table — for a SINGLE repository only: over a set the per-file arm counts
+// a commit two repositories share (a fork and its upstream, one hash) once
+// per author across the set, which daily counts cannot, so a set keeps the
+// hash path for every repository (the code_change_commits rule of 0.29.137;
+// Copilot PR #252). The split is on the completeness stamp alone, since the
 // classification is over ALL history (no window rule applies). Two
 // consequences, decided with the move: a daily action is dated the UTC
 // midnight of its day, which is the same week or month bucket as the exact
@@ -65,51 +69,53 @@ import (
 // the forge's numeric id, else the login, else the email rule — merge losers
 // resolved to their winners), where the per-file arm counts the stored
 // cmt_ght_author_id, so a contributor whose commits the resolver never
-// stamped now counts through her alias, as in every other series.
+// stamped now counts through her alias, as in every other series. An action
+// carries a WEIGHT: one for every row but the daily buckets, which carry
+// their commit count — the classification needs a contributor's total and
+// first action, never one row per commit (Copilot PR #252).
 const retentionSeriesSQL = `
-WITH actions (cntrb, ts) AS (
+WITH actions (cntrb, ts, n) AS (
     -- commits: ONE action per distinct commit hash (per-file table), for a
-    -- repository whose daily picture is not complete.
-    SELECT cmt_ght_author_id, MIN(cmt_author_timestamp)
+    -- repository whose daily picture is not complete (or any of a set).
+    SELECT cmt_ght_author_id, MIN(cmt_author_timestamp), 1
       FROM aveloxis_data.commits
      WHERE repo_id = ANY($5) AND cmt_ght_author_id IS NOT NULL
        AND cmt_author_timestamp IS NOT NULL
      GROUP BY cmt_ght_author_id, cmt_commit_hash
     UNION ALL
-    -- commits from the daily table: one action per commit, dated the UTC
-    -- midnight of its day (0.29.140).
-    SELECT i.cntrb_id, i.day::timestamp AT TIME ZONE 'UTC'
+    -- commits from the daily table: a bucket's commits as one weighted
+    -- action, dated the UTC midnight of its day (0.29.140).
+    SELECT i.cntrb_id, i.day::timestamp AT TIME ZONE 'UTC', i.commits
       FROM (SELECT ` + dailyAuthorIdentitySQL + ` AS cntrb_id, d.day, d.commits
               FROM aveloxis_data.repo_commit_daily d
-             WHERE d.repo_id = ANY($6)) i,
-           generate_series(1, i.commits)
+             WHERE d.repo_id = ANY($6)) i
      WHERE i.cntrb_id IS NOT NULL
     UNION ALL
-    SELECT reporter_id, created_at
+    SELECT reporter_id, created_at, 1
       FROM aveloxis_data.issues
      WHERE repo_id = ANY($1) AND reporter_id IS NOT NULL AND created_at IS NOT NULL
     UNION ALL
-    SELECT author_id, created_at
+    SELECT author_id, created_at, 1
       FROM aveloxis_data.pull_requests
      WHERE repo_id = ANY($1) AND author_id IS NOT NULL AND created_at IS NOT NULL
     UNION ALL
-    SELECT cntrb_id, submitted_at
+    SELECT cntrb_id, submitted_at, 1
       FROM aveloxis_data.pull_request_reviews
      WHERE repo_id = ANY($1) AND cntrb_id IS NOT NULL AND submitted_at IS NOT NULL
     UNION ALL
-    SELECT m.cntrb_id, m.msg_timestamp
+    SELECT m.cntrb_id, m.msg_timestamp, 1
       FROM aveloxis_data.messages m
       JOIN aveloxis_data.issue_message_ref br ON br.msg_id = m.msg_id
      WHERE m.repo_id = ANY($1) AND m.cntrb_id IS NOT NULL AND m.msg_timestamp IS NOT NULL
     UNION ALL
-    SELECT m.cntrb_id, m.msg_timestamp
+    SELECT m.cntrb_id, m.msg_timestamp, 1
       FROM aveloxis_data.messages m
       JOIN aveloxis_data.pull_request_message_ref br ON br.msg_id = m.msg_id
      WHERE m.repo_id = ANY($1) AND m.cntrb_id IS NOT NULL AND m.msg_timestamp IS NOT NULL
 ),
 per_contrib AS (
     -- Classification over ALL collected history (not the window).
-    SELECT a.cntrb, COUNT(*) AS total, MIN(a.ts) AS first_ts
+    SELECT a.cntrb, SUM(a.n) AS total, MIN(a.ts) AS first_ts
       FROM actions a
       JOIN aveloxis_data.contributors c ON c.cntrb_id = a.cntrb
      WHERE COALESCE(c.cntrb_deleted, 0) = 0
@@ -136,18 +142,17 @@ func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs 
 	if threshold < 1 {
 		return nil, nil, fmt.Errorf("retention threshold must be >= 1, got %d", threshold)
 	}
-	daily, err := s.reposWithCompleteCommitDaily(ctx, repoIDs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("contributor retention: %w", err)
-	}
-	live := make([]int64, 0, len(repoIDs))
-	isDaily := make(map[int64]bool, len(daily))
-	for _, id := range daily {
-		isDaily[id] = true
-	}
-	for _, id := range repoIDs {
-		if !isDaily[id] {
-			live = append(live, id)
+	// The daily table serves a single complete repository; a set keeps the
+	// hash path for every repository (see retentionSeriesSQL).
+	live, daily := repoIDs, []int64{}
+	if len(repoIDs) == 1 {
+		served, err := s.reposWithCompleteCommitDaily(ctx, repoIDs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("contributor retention: %w", err)
+		}
+		if len(served) > 0 {
+			daily = served
+			live = complementOf(repoIDs, served)
 		}
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, bucket), repoIDs, since, until, threshold, live, daily)

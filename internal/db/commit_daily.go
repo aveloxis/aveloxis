@@ -236,6 +236,51 @@ func (s *PostgresStore) InvalidateCommitDailyComplete(ctx context.Context, repoI
 // whole picture; run inside the writer's transaction, after the rows.
 const stampCommitDailyCompleteSQL = `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NOW() WHERE repo_id = $1`
 
+// commitDailyFoldColumnsSQL is the fold of the commits table into daily
+// buckets — repository, UTC day, author email, distinct commits, and the
+// stored identity when the bucket's resolved commits agree on one (SR-6) —
+// the one spelling behind the heal fill and the earlier-era restore (the
+// migrate's literal copy is the step-order analyzer's requirement).
+const commitDailyFoldColumnsSQL = `repo_id, (cmt_author_timestamp AT TIME ZONE 'UTC')::date, cmt_author_email,
+			       COUNT(DISTINCT cmt_commit_hash),
+			       CASE WHEN COUNT(DISTINCT cmt_ght_author_id) = 1 THEN MIN(cmt_ght_author_id::text)::uuid END`
+
+// restoreEarlierErasInTx (Copilot PR #252) writes the EARLIER era's daily
+// buckets from the commits table — append-only, so it still holds every
+// commit of the repository that stood at the URL before the forge created
+// the current one — for the days before the repository's era boundary, and
+// only where no bucket exists (a current-era bucket is the walk's truth and
+// stands; a bucket the earlier era and the new history share is the walk's
+// too). The trim keeps earlier-era buckets that still exist; this brings
+// back the ones a walk trimmed before the change was adopted (bobsql's
+// collection between the re-creation and the adoption left 19 of 567). Run
+// in AdoptForgeID's transaction under the daily table's per-repository
+// lock; the ledgered 0.29.140 step runs the same fold once for every
+// repository adopted earlier. Returns the buckets written; the caller stamps
+// the cache state when there are any. When the forge gave no creation date
+// the boundary is the change's first observation, and commits of the current
+// era that a force-push removed before that observation come back with the
+// earlier era — the same ambiguity the trim has without a date.
+func restoreEarlierErasInTx(ctx context.Context, tx rotationExecer, repoID int64) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+			INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+			SELECT `+commitDailyFoldColumnsSQL+`
+			FROM aveloxis_data.commits
+			WHERE repo_id = $1 AND cmt_author_timestamp IS NOT NULL
+			  AND (cmt_author_timestamp AT TIME ZONE 'UTC')::date < (`+commitDailyEraBoundarySQL+`)
+			GROUP BY 1, 2, 3
+			ON CONFLICT (repo_id, day, author_email) DO NOTHING`, repoID)
+	if err != nil {
+		return 0, fmt.Errorf("restore the earlier era's daily buckets: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// restoreEarlierErasLabel is the ledgered migrate step that runs the fold
+// above once for every repository adopted before 0.29.140 (migrate.go holds
+// the literal SQL).
+const restoreEarlierErasLabel = "v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes"
+
 // commitDailyEraBoundarySQL is the first UTC day of a repository's CURRENT
 // era ($1 = repo_id): the forge's creation day of the newest adopted
 // forge-ID change's repository (its first observation when the forge gave no
@@ -344,9 +389,7 @@ func (s *PostgresStore) FillRepoCommitDailyFromCommits(ctx context.Context, repo
 		}
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
-			SELECT repo_id, (cmt_author_timestamp AT TIME ZONE 'UTC')::date, cmt_author_email,
-			       COUNT(DISTINCT cmt_commit_hash),
-			       CASE WHEN COUNT(DISTINCT cmt_ght_author_id) = 1 THEN MIN(cmt_ght_author_id::text)::uuid END
+			SELECT `+commitDailyFoldColumnsSQL+`
 			FROM aveloxis_data.commits
 			WHERE repo_id = $1 AND cmt_author_timestamp IS NOT NULL
 			GROUP BY 1, 2, 3

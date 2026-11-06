@@ -1083,8 +1083,11 @@ redirect check:
   deletes)
 - redirects to an **untracked** URL → re-enqueued (prelim renames it
   in place on the next cycle — rename detection is prelim's job)
-- alive at its own URL → re-enqueued (a lost queue row); a stale gone
-  stamp on the row is cleared with the same statement (0.29.140)
+- alive at its own URL (a 2xx) → re-enqueued (a lost queue row); a stale
+  gone stamp on the row is cleared with the same statement (0.29.140)
+- any other answer (403, 429, 5xx, an unresolved redirect) → re-enqueued
+  only: nothing is proven about the repository, so a gone stamp stays for
+  prelim's own probe to decide
 
 ```bash
 aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
@@ -1212,8 +1215,15 @@ collection first saw the change and who adopted it, and that commits and
 activity before the boundary belong to the earlier repository; every chart
 marks the boundary with a dashed "new upstream" line (0.29.140). The row
 holds data from both upstream repositories: the daily commit table keeps the
-earlier era (the facade's trim stops at the boundary day), issue and pull
-request numbers restart in the new repository. The mismatch ERROR stops once
+earlier era (the facade's trim stops at the boundary day, and the adoption
+restores from the commits table the buckets a walk had already trimmed; a
+set of repositories on the compare page keeps the per-file path, which
+counts a commit shared by a fork and its upstream once), issue and pull
+request numbers restart in the new repository. That restore is a fold of
+the repository's commit rows inside the adoption, so a very large
+re-created repository (minutes of commit rows) is adopted with this command
+rather than from the web GUI or the API, whose request deadline would roll
+the adoption back. The mismatch ERROR stops once
 the change is adopted. An adoption also brings a gone-stamped repository
 back (0.29.140): the re-created repository exists, so the stamp is cleared,
 its gone episode closed and the repository re-queued in the adoption's own

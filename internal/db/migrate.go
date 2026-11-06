@@ -2761,6 +2761,29 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 WHERE r.repo_gone_at IS NOT NULL
 		   AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_gone_history h
 		                   WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL)`)
+
+	// 0.29.140 (Copilot PR #252; commit_daily.go restoreEarlierErasInTx): a
+	// repository adopted before this release had its earlier era trimmed
+	// from the daily table — the buckets before the boundary day (the newest
+	// adopted change's forge creation day, else its first observation) come
+	// back from the append-only commits table, where no bucket exists. The
+	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
+	// analyzer. Once; idempotent (DO NOTHING).
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
+		`INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
+		        COUNT(DISTINCT co.cmt_commit_hash),
+		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
+		 FROM aveloxis_data.commits co
+		 JOIN (SELECT c.repo_id, MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date) AS boundary
+		         FROM aveloxis_data.repo_forge_id_changes c
+		        WHERE c.adopted_at IS NOT NULL
+		        GROUP BY c.repo_id) b ON b.repo_id = co.repo_id
+		 WHERE co.cmt_author_timestamp IS NOT NULL
+		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < b.boundary
+		 GROUP BY 1, 2, 3
+		 ON CONFLICT (repo_id, day, author_email) DO NOTHING`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

@@ -132,6 +132,10 @@ var ledgeredStepLabels = []string{
 	// 0.29.140: one open gone episode per repository stamped before the
 	// history table existed (repo_gone.go, backfillGoneEpisodesLabel).
 	"v0.29.140 open a gone episode for every gone-stamped repository",
+	// 0.29.140 (Copilot PR #252): the earlier era's daily buckets of every
+	// repository adopted before the release (commit_daily.go,
+	// restoreEarlierErasLabel).
+	"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
 }
 
 // TestLedgeredStepRegistry verifies every registered label is present

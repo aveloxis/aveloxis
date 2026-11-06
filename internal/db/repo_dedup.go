@@ -553,6 +553,11 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		// merge when the winner is reachable (no stamp), and is dropped when
 		// the winner is gone itself (its own open episode is its current
 		// state; uq_repo_gone_history_open takes the DO NOTHING).
+		// Copilot PR #252: the carry below reads the winner's gone state; a
+		// clearer beside this transaction (prelim, the recheck, an adoption)
+		// updates that same repos row, so locking it here serialises them —
+		// the winner's state the carry reads is the state it commits against.
+		{"lock winner repos row", `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 FOR UPDATE`, []any{pair.WinnerID}},
 		{"repoint repo_gone_history", `
 			INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
 			                                             tool_source, tool_version, data_source, data_collection_date)

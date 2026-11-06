@@ -90,3 +90,6 @@ aveloxis.nsa.json
 # Sphinx moves the previous .buildinfo here on a config-change rebuild; the live
 # .buildinfo is tracked, the backup is build noise (PR #197 round 15).
 docs/_build/html/.buildinfo.bak
+
+# Production logs copied in for a review session (0.29.140); never committed.
+kate-logs/

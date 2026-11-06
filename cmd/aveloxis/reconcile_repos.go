@@ -8,7 +8,7 @@
 // skip+dequeue; a smaller share are lost-enqueue leftovers.
 //
 // Per stranded repo, classified by LIVE redirect check:
-//   - dead upstream (404/410/451)      → archive (matches prelim's sidelining)
+//   - dead upstream (404/410/451)      → gone-stamped + archived (MarkRepoGone, the outcome prelim applies; 0.29.140)
 //   - redirects to a TRACKED repo  → dataless: HealRenamedDuplicate
 //     (repoint links, delete the dup row); data-bearing: consolidate
 //     via the dedup-repos per-pair machinery (repoints + leaves-first
@@ -152,14 +152,17 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		}
 		switch {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
-			// Dead upstream — the outcome prelim would have applied.
+			// Dead upstream — the outcome prelim applies: the gone stamp
+			// with the archived flag (0.29.140; ArchiveRepo set the flag
+			// alone, so the gone recheck never re-probed these rows and a
+			// transient 404 was final). The episode records this command.
 			fmt.Printf("  dead:        %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
-				if err := store.ArchiveRepo(ctx, sr.RepoID); err != nil {
+				if err := store.MarkRepoGone(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {
 					if ctx.Err() != nil {
 						return interrupted()
 					}
-					logger.Warn("reconcile: archive failed", "repo_id", sr.RepoID, "error", err)
+					logger.Warn("reconcile: mark gone failed", "repo_id", sr.RepoID, "error", err)
 					c.skipped++
 					continue
 				}
@@ -259,10 +262,13 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			}
 		default:
 			// Alive at its own URL — a lost queue row. Restore
-			// scheduler visibility.
+			// scheduler visibility; a stale gone stamp (a gone row the
+			// v0.27.50 step un-archived, before 0.29.140) is cleared with
+			// the same statement, so the page does not say "no longer
+			// publicly available" about a repository that just answered 2xx.
 			fmt.Printf("  enqueue (lost queue row): %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
-				if err := store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {
+				if err := store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {
 					if ctx.Err() != nil {
 						return interrupted()
 					}

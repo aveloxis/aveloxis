@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.140 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a422fba5"></script>
+      <script src="../_static/documentation_options.js?v=c6d77b2e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -784,7 +785,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1564,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2375,9 +2377,9 @@ are left as they are.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 164 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
+<p>Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (108 tables + 22 materialized views) – all collected data</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (109 tables + 22 materialized views) – all collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (52 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
@@ -3046,21 +3048,31 @@ duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share. Each stranded repo is classified by a LIVE
 redirect check:</p>
 <ul class="simple">
-<li><p>dead upstream (404/410/451) → archived (the outcome prelim applies)</p></li>
+<li><p>dead upstream (404/410/451) → gone-stamped and archived, the outcome
+prelim applies (0.29.140; before, the archived flag alone, so these rows
+never joined the gone recheck and a transient 404 was final); the gone
+episode names <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code></p></li>
 <li><p>redirects to a <strong>tracked</strong> repo → dataless duplicates heal onto the
 winner (<code class="docutils literal notranslate"><span class="pre">HealRenamedDuplicate</span></code>); data-bearing duplicates consolidate
 through the dedup-repos per-pair machinery (repoints + leaves-first
 deletes)</p></li>
 <li><p>redirects to an <strong>untracked</strong> URL → re-enqueued (prelim renames it
 in place on the next cycle — rename detection is prelim’s job)</p></li>
-<li><p>alive at its own URL → re-enqueued (a lost queue row)</p></li>
+<li><p>alive at its own URL → re-enqueued (a lost queue row); a stale gone
+stamp on the row is cleared with the same statement (0.29.140)</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>reconcile-repos<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># per-repo classification, no writes</span>
 aveloxis<span class="w"> </span>reconcile-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">  </span><span class="c1"># canary</span>
 aveloxis<span class="w"> </span>reconcile-repos<span class="w">             </span><span class="c1"># everything</span>
 </pre></div>
 </div>
-<p>The scheduler also logs a startup gauge (<code class="docutils literal notranslate"><span class="pre">non-archived</span> <span class="pre">repos</span> <span class="pre">with</span> <span class="pre">no</span> <span class="pre">collection_queue</span> <span class="pre">row</span></code>) pointing here whenever the count is non-zero.
+<p>The scheduler also logs a startup gauge (<code class="docutils literal notranslate"><span class="pre">non-archived</span> <span class="pre">repos</span> <span class="pre">with</span> <span class="pre">no</span> <span class="pre">collection_queue</span> <span class="pre">row</span></code>) pointing here whenever the count is non-zero. Before
+0.29.140 that gauge rose at every deploy: the migrate step that mirrors the
+forge’s archived flag onto <code class="docutils literal notranslate"><span class="pre">repos.repo_archived</span></code> un-archived every
+gone-stamped repository whose last metadata snapshot was not archived (the
+snapshot predates the disappearance), so the gone cohort re-entered the
+stranded set each time; the step leaves gone-stamped rows alone now, and a
+non-zero gauge is a real finding again.
 Re-run until stranded = 0; healed repos drop out of the set. Since
 v0.29.68 <code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code> or a SIGTERM (<code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">&lt;pid&gt;</span></code>) cancels the in-flight probe
 or statement, ends the walk and prints an interruption summary (what was
@@ -3158,12 +3170,20 @@ still reports the stored ID, or when the stored ID changed in the meantime.
 A GitLab repository is only looked up on the configured GitLab instance
 (project IDs are per instance, and the keys stay on that host); a generic
 git repository has no API to ask.</p>
-<p>The repository page then shows: “Note: this repository changed forge
-identifiers on <date>, from <old id> to <new id>. This is unusual, and may
-affect statistics.” The row holds data from both upstream repositories:
-commit history usually lines up (a re-push keeps the hashes), but issue and
-pull request numbers restart in the new repository. The mismatch ERROR
-stops once the change is adopted.</p>
+<p>The repository page then says that two histories share the name: when the
+forge created the new repository (the era boundary), the two forge IDs, when
+collection first saw the change and who adopted it, and that commits and
+activity before the boundary belong to the earlier repository; every chart
+marks the boundary with a dashed “new upstream” line (0.29.140). The row
+holds data from both upstream repositories: the daily commit table keeps the
+earlier era (the facade’s trim stops at the boundary day), issue and pull
+request numbers restart in the new repository. The mismatch ERROR stops once
+the change is adopted. An adoption also brings a gone-stamped repository
+back (0.29.140): the re-created repository exists, so the stamp is cleared,
+its gone episode closed and the repository re-queued in the adoption’s own
+transaction — before, an adopted repository that prelim had probed while it
+was still 404 stayed “no longer publicly available” and out of the queue
+until the 28-day recheck.</p>
 <p>An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under “Re-created repositories”, each with an Adopt
 button, one per recorded change. The button adopts exactly that change, with

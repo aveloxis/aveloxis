@@ -8,6 +8,16 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.140
+
+`GET /api/v1/repos/{id}/stats` carries `gone_history`: every stretch during
+which the repository did not resolve on its forge, oldest first, each with
+`gone_at`, the probe's `status` (404, 410 or 451; absent when unknown), the
+`source` that saw it gone and, once it is back, `restored_at` and
+`restored_source`. An entry without `restored_at` is the current gone state
+(`gone_at` is unchanged). Absent when the repository was never gone. The
+field is additive; nothing else changes.
+
 ## Changes for API clients in 0.29.129
 
 `POST /api/v1/admin/users/{userID}/sessions/revoke` with the caller's own

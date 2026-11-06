@@ -58,7 +58,7 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 	// The binding and its error arm as two anchors (round 6: one hard-coded
 	// newline between them made a comment line a "missing write").
 	for _, write := range []struct{ binding, arm string }{
-		{"store.ArchiveRepo(ctx, sr.RepoID); err != nil {", ""},
+		{"store.MarkRepoGone(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {", ""},
 		{"winnerID, ferr := store.FindRepoByURL(ctx, finalURL)", `^\s*if ferr != nil \{`},
 		{"healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)", `^\s*if herr != nil \{`},
 	} {
@@ -79,7 +79,15 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`", write.binding)
 		}
 	}
-	for _, write := range []string{"db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {", "store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {"} {
+	// The two consolidation arms share one spelling; the two enqueue arms
+	// differ since 0.29.140 (the lost-queue-row arm clears a stale gone
+	// stamp with its enqueue, ResurrectRepo; the untracked-redirect arm
+	// enqueues only), so each is one site.
+	for write, sites := range map[string]int{
+		"db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {": 2,
+		"store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {":                                          1,
+		"store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {":                1,
+	} {
 		rest := src
 		seen := 0
 		for {
@@ -93,8 +101,8 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 			}
 			rest = rest[at+len(write):]
 		}
-		if seen != 2 {
-			t.Errorf("%s: %d sites; want 2", write, seen)
+		if seen != sites {
+			t.Errorf("%s: %d sites; want %d", write, seen, sites)
 		}
 	}
 	loopEnd, complete := regexIndex(src, `\n\tif ctx\.Err\(\) != nil \{\s*return interrupted\(\)`), strings.Index(src, `fmt.Printf("reconcile-repos%s: dead=`)

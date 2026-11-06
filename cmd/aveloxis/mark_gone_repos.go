@@ -197,7 +197,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				tally.stamped++
 				continue
 			}
-			if err := store.MarkRepoGone(ctx, c.RepoID); err != nil {
+			if err := store.MarkRepoGone(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {
 				if ctx.Err() != nil {
 					return interrupted()
 				}
@@ -224,7 +224,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// out of the queueless candidate set). On failure nothing
 			// committed: the repo stays gone-stamped and queueless,
 			// and a plain rerun retries.
-			if err := store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {
+			if err := store.ResurrectRepo(ctx, c.RepoID, 10, db.GoneSourceMarkGoneRepos); err != nil {
 				if ctx.Err() != nil {
 					return interrupted()
 				}

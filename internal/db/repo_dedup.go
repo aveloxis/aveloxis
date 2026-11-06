@@ -546,6 +546,25 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
 				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID, loserForgeID}},
 		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
+		// 0.29.140: the loser's gone episodes are observations about the
+		// same upstream — carried to the winner. The invariant "an open
+		// episode ⇔ the row's current gone state" holds across the merge
+		// (round 2 F1): the loser's OPEN episode arrives CLOSED by this
+		// merge when the winner is reachable (no stamp), and is dropped when
+		// the winner is gone itself (its own open episode is its current
+		// state; uq_repo_gone_history_open takes the DO NOTHING).
+		{"repoint repo_gone_history", `
+			INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
+			                                             tool_source, tool_version, data_source, data_collection_date)
+			SELECT $2, l.gone_at, l.gone_status, l.gone_source,
+			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN NOW() ELSE l.restored_at END,
+			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN '` + GoneSourceDedup + `' ELSE l.restored_source END,
+			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
+			  FROM aveloxis_data.repo_gone_history l
+			  JOIN aveloxis_data.repos w ON w.repo_id = $2
+			 WHERE l.repo_id = $1
+			ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
+		{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, []any{pair.LoserID}},
 
 		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
 		// tables are globally unique — the pair shares ONE row, owned by

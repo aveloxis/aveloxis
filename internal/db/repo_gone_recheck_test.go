@@ -125,7 +125,7 @@ func TestGoneRecheckCandidatesEndToEnd(t *testing.T) {
 	}
 	gone := mk("gone")
 	alive := mk("alive")
-	if err := store.MarkRepoGone(ctx, gone); err != nil {
+	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	ids := func(cs []GoneProbeCandidate) map[int64]bool {
@@ -197,7 +197,7 @@ func TestGoneRecheckCandidatesEndToEnd(t *testing.T) {
 		t.Error("MarkRepoGoneChecked must not stamp a row that is not gone")
 	}
 	// Resurrection clears the gone stamp; the row leaves the candidate set.
-	if err := store.ResurrectRepo(ctx, gone, 10); err != nil {
+	if err := store.ResurrectRepo(ctx, gone, 10, GoneSourceRecheck); err != nil {
 		t.Fatal(err)
 	}
 	got, err = store.GetGoneRecheckCandidates(ctx, 0, 100)

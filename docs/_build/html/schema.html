@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.140 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=a422fba5"></script>
+      <script src="_static/documentation_options.js?v=c6d77b2e"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -342,6 +342,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -783,7 +784,7 @@
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1562,6 +1563,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-gone-history">repo_gone_history</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#email-message-ref">email_message_ref</a></li>
@@ -2034,6 +2036,72 @@
 <p><strong>Unique constraint:</strong> <code class="docutils literal notranslate"><span class="pre">(repo_git)</span></code></p>
 <hr class="docutils" />
 <p><strong>Operational lifecycle columns on <code class="docutils literal notranslate"><span class="pre">repos</span></code></strong> (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (<code class="docutils literal notranslate"><span class="pre">scancode_last_run</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_version</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_locked_at/pid/boot_id/host</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_output_path</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_failed_attempts</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_timeout_attempts</span></code>, <code class="docutils literal notranslate"><span class="pre">scancode_skip_reason</span></code>), the distribution worker family (<code class="docutils literal notranslate"><span class="pre">distribution_last_run</span></code>, <code class="docutils literal notranslate"><span class="pre">distribution_scan_complete</span></code>, <code class="docutils literal notranslate"><span class="pre">distribution_failed_attempts</span></code>, <code class="docutils literal notranslate"><span class="pre">distribution_last_failed_at</span></code>), <code class="docutils literal notranslate"><span class="pre">whitespace_head_hash</span></code> (incremental whitespace-walk marker), <code class="docutils literal notranslate"><span class="pre">added_at</span></code> (stable fleet-entry stamp), <code class="docutils literal notranslate"><span class="pre">data_changed_at</span></code> (v0.29.73 — stamped in the same transaction as each write of data the repository’s pages show that can happen outside a collection job: every scorecard write (the job’s phase and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">run-scorecard</span></code>), every scancode snapshot, every vulnerability insert or resolution, the CVSS rescore of <code class="docutils literal notranslate"><span class="pre">heal-vulnerabilities</span> <span class="pre">--rescore-only</span></code> and <code class="docutils literal notranslate"><span class="pre">heal-libyear</span> <span class="pre">--apply</span></code> on the repositories whose rows they change, and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code> at the end of each repository’s run — so the API replaces its cached answers for that repository; NULL = never stamped), <code class="docutils literal notranslate"><span class="pre">vuln_scan_last_run</span></code> (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), <code class="docutils literal notranslate"><span class="pre">repo_gone_at</span></code> (v0.28.1 — the distinct “no longer reachable on its forge” state, cleared on resurrection), <code class="docutils literal notranslate"><span class="pre">repo_gone_checked_at</span></code> (v0.29.7 — when that state was last re-verified; the scheduler’s recheck ticker claims on it), and <code class="docutils literal notranslate"><span class="pre">metadata_backfill_attempted_at</span></code> (v0.29.69 — when the startup metadata backfill last got an answer from the forge for this repository: metadata written, or a definitive not-found; NULL = never answered; the repository is not asked again until one recollect interval has passed), and <code class="docutils literal notranslate"><span class="pre">repo_unavailable_reason</span></code> / <code class="docutils literal notranslate"><span class="pre">repo_unavailable_url</span></code> (v0.29.70 — the forge’s own message for a blocked or disabled repository and its https notice link; shown on the repository page; cleared when a clone succeeds or the gone state is lifted), and <code class="docutils literal notranslate"><span class="pre">first_commit_at</span></code> / <code class="docutils literal notranslate"><span class="pre">last_commit_at</span></code> (v0.29.70 — the MIN and MAX of the repository’s plausibly dated commit author timestamps (from 1970-01-02 to two UTC days from now; a bogus date never becomes a bound, and a stored one is repaired on the next walk — 2026-10-07), maintained by the facade so the repository page and chart floors never scan a large repository’s commit rows; NULL until the repository’s next collection, or for a gone repository its next gone recheck, fills them), and <code class="docutils literal notranslate"><span class="pre">commit_daily_complete_at</span></code> (v0.29.75 — when <code class="docutils literal notranslate"><span class="pre">repo_commit_daily</span></code> last became the repository’s complete daily picture: a facade walk whose every commit was proven written, or <code class="docutils literal notranslate"><span class="pre">heal-commit-daily</span></code>’s fill; NULL = the daily rows, if any, are not authoritative, the readers take the commits table and the heal command lists the repository; the migrate that adds the column stamps, on that run only, every repository that already has rows). See <code class="docutils literal notranslate"><span class="pre">schema.sql</span></code> for the authoritative column list.</p>
+</section>
+<section id="repo-gone-history">
+<h4>repo_gone_history<a class="headerlink" href="#repo-gone-history" title="Link to this heading"></a></h4>
+<p>The gone HISTORY (0.29.140): one row per stretch during which a repository did not
+resolve on its forge. <code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> is the current state only and is cleared
+when the repository comes back; this table keeps every episode so the repository
+page can say “not reachable from the 4th to the 5th” after the fact (the
+2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
+back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> in the same statement as the stamp,
+closed by whichever clearer lifts it (<code class="docutils literal notranslate"><span class="pre">ClearRepoGone</span></code>, <code class="docutils literal notranslate"><span class="pre">ResurrectRepo</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ResurrectIfListed</span></code>, a forge-ID adoption), or by the dedup merge when a merged
+duplicate’s open episode arrives on a reachable winner; at most one open episode per repository
+(<code class="docutils literal notranslate"><span class="pre">uq_repo_gone_history_open</span></code>). Born empty on every fleet; the ledgered 0.29.140
+migrate step opens an episode for each row already stamped (status <code class="docutils literal notranslate"><span class="pre">0</span></code>, source
+<code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>). Shown on the repository page as <code class="docutils literal notranslate"><span class="pre">gone_history</span></code> of <code class="docutils literal notranslate"><span class="pre">/stats</span></code>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">episode_id</span></code></p></td>
+<td><p>BIGSERIAL PK</p></td>
+<td><p>—</p></td>
+<td><p>Row identity.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL FK → repos</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code></p></td>
+<td><p>The repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gone_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> (<code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> of the same statement; the backfill copies the stored stamp)</p></td>
+<td><p>When the probe saw the repository gone.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gone_status</span></code></p></td>
+<td><p>SMALLINT NOT NULL DEFAULT 0</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> from the probe’s HTTP status (404, 410, 451)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> = unknown (backfilled rows).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gone_source</span></code></p></td>
+<td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code></p></td>
+<td><p>The writer that saw it gone: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restored_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>the clearer, in its statement</p></td>
+<td><p>When the repository was seen again; NULL while the episode is open.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">restored_source</span></code></p></td>
+<td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
+<td><p>the clearer</p></td>
+<td><p>The writer that saw it back: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">forge-id-adoption</span></code>, <code class="docutils literal notranslate"><span class="pre">org-scan</span></code>; <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code> closes a merged loser’s open episode on a reachable winner.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code>, <code class="docutils literal notranslate"><span class="pre">tool_version</span></code>, <code class="docutils literal notranslate"><span class="pre">data_source</span></code>, <code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
+<td><p>TEXT / TIMESTAMPTZ</p></td>
+<td><p>schema defaults</p></td>
+<td><p>Provenance.</p></td>
+</tr>
+</tbody>
+</table>
 </section>
 <section id="repo-groups-list-serve">
 <h4>repo_groups_list_serve<a class="headerlink" href="#repo-groups-list-serve" title="Link to this heading"></a></h4>

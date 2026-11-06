@@ -18,4 +18,11 @@ type OwnerRepo struct {
 	Name      string
 	ForgeID   string
 	CreatedAt time.Time
+	// Private is true when the listing says the repository is not public
+	// (GitHub `private`; a GitLab visibility other than `public`, `internal`
+	// included). A member token lists an organization's private
+	// repositories too; prelim's probe is unauthenticated and answers 404
+	// for them, so a private listing is no sign of life for a gone-stamped
+	// row (0.29.140, ResurrectIfListed is skipped for it).
+	Private bool
 }

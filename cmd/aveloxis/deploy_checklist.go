@@ -726,6 +726,7 @@ var deployChecklists = map[string][]deployStep{
 	"0.29.136": v029136DeployChecklist,
 	"0.29.137": v029137DeployChecklist,
 	"0.29.138": v029138DeployChecklist,
+	"0.29.140": v029140DeployChecklist,
 	"0.29.139": v029139DeployChecklist,
 	"0.29.103": v029102DeployChecklist,
 	"0.29.102": v029102DeployChecklist,
@@ -1981,6 +1982,11 @@ var v029137DeployChecklist = withStartNote(v029136DeployChecklist, "0.29.137: no
 // v029138DeployChecklist — the re-warm's replay judges its bound by the clock
 // (CI's migrate job failed once on 0.29.137's head).
 var v029138DeployChecklist = withStartNote(v029137DeployChecklist, "0.29.138: no schema change and no configuration change. The api's re-warm reports a replay that ran out of `http_timeout_seconds` by the clock, not by which of two timers of the same length ran first (since 0.29.137 the page cache's leader runs under its own bound): a replay cut by the bound could be logged as a degraded answer instead (one run in 400 of the test that pins it, under the race detector on two processors; the fleet rate is unmeasured), and was counted as failed either way. A fleet already running 0.29.137 needs only the stop, the migrate (a version stamp) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
+
+// v029140DeployChecklist — the gone history, resurrection on a definitive
+// sign of life, the earlier era kept on an adopted forge-ID change, the
+// retention series on the daily table (the kate review of 2026-11-05).
+var v029140DeployChecklist = withStartNote(v029139DeployChecklist, "0.29.140: one new table, aveloxis_data.repo_gone_history (schema.sql creates it; a ledgered step opens an episode for every repository already stamped gone), no configuration change. A repository that stops resolving on its forge now keeps a HISTORY of it: each stretch (the probe's status, who saw it, who saw it back) is a row the repository page lists after the repository is back. A gone-stamped repository comes back when the forge shows a definitive sign of life — an org scan listing it publicly under the forge ID the row stores (once per gone stretch), or the operator adopting its forge-ID change — not only at the 28-day recheck. The migrate step that mirrors the forge's archived flag leaves gone-stamped rows alone (it un-archived every gone repository whose last snapshot was not archived at every migrate, which is where the start gauge's stranded count came from); reconcile-repos' dead arm stamps gone like prelim, and its lost-queue-row arm clears a stale stamp with the enqueue. A repository re-created upstream under the same URL keeps its earlier history in the charts once the change is adopted (the daily commit table's trim stops at the new repository's creation day; the page says two histories share the name and the charts mark the boundary). The contributor_retention series reads the daily commit table for a repository whose picture is complete. Once after the start: run `aveloxis mark-gone-repos` so the queueless repositories reconcile-repos archived without a gone stamp (its dead arm before this release) get one and join the recheck. Database-side, for the api's slow contributors answers on the largest repositories: `ALTER TABLE aveloxis_data.messages SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_insert_scale_factor = 0.01)` and the same on aveloxis_data.issues, then one `VACUUM (VERBOSE) aveloxis_data.messages` — their covering indexes fell back to the heap with a third of the pages not all-visible. A fleet already running 0.29.139 needs the stop, the migrate (the table and the one-shot step) and this start; a fleet on an older release takes the notes below in the same one migrate. ")
 
 // v029139DeployChecklist — the page cache's leader keeps the request's own
 // deadline (Copilot's fifth review of PR #249).

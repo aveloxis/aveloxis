@@ -485,7 +485,6 @@ internal/db/code_review_round_2026_09_06_test.go internal/db/mailinglist_sender_
 internal/db/collections_store_test.go internal/db/collections_store.go
 internal/db/column_write_policy_test.go internal/db/contributors.go
 internal/db/column_write_policy_test.go internal/db/migrate.go
-internal/db/column_write_policy_test.go internal/db/postgres.go
 internal/db/column_write_policy_test.go internal/db/repo_forge_id_changes.go
 internal/db/column_write_policy_test.go internal/db/repo_gone.go
 internal/db/column_write_policy_test.go internal/db/repo_metadata.go

@@ -277,6 +277,11 @@ Below them, the forge-ID changes collection observed: a repository deleted
 and re-created under the same URL on its forge. Adopting one, with an
 optional note (at most 1,000 characters), treats the new repository as the
 continuation of the old; a change another adoption superseded is not offered.
+Adopting also brings the repository back when it is gone-stamped (0.29.140:
+the re-created repository exists, so the stamp is cleared and the repository
+re-queued with the adoption), and the repository page keeps both histories:
+the charts mark the boundary and the page lists every stretch the repository
+was not reachable on its forge.
 
 **Users** (`/admin/users`) is every account with its login, e-mail, forge,
 role, join date and last sign-in; promote or demote with one button, and

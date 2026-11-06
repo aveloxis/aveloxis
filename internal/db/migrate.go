@@ -2398,6 +2398,11 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// analytics are unaffected (DequeueNext and the matviews do not
 	// filter repo_archived). Going forward, staged Phase 0's
 	// UpdateRepoMetadata keeps the flag current in both directions.
+	// 0.29.140: a gone-stamped row is left alone — MarkRepoGone set its
+	// flag, and its snapshot predates its disappearance, so this step
+	// un-archived 426 gone repositories on kate (2026-11-05) into the
+	// stranded class (non-archived, no queue row) at every deploy; the 469
+	// "stranded" repositories reconcile-repos then walked.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.50 reconcile repo_archived from forge status",
 		`UPDATE aveloxis_data.repos r
@@ -2408,6 +2413,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		     ORDER BY repo_id, data_collection_date DESC
 		 ) latest
 		 WHERE r.repo_id = latest.repo_id
+		   AND r.repo_gone_at IS NULL
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
@@ -2741,6 +2747,20 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		    PRIMARY KEY (user_id, collection_id)
 		)`)
+
+	// 0.29.140: the gone history (repo_gone.go). The table itself is
+	// schema.sql's (born empty on every fleet); this opens an episode for
+	// every repository stamped gone before the history existed, starting at
+	// the row's own stamp, status unknown (0), source 'backfill-0.29.140'
+	// (GoneSourceBackfill) — once, idempotent by the NOT EXISTS.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.140 open a gone episode for every gone-stamped repository",
+		`INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+		 SELECT r.repo_id, r.repo_gone_at, 0, 'backfill-0.29.140'
+		 FROM aveloxis_data.repos r
+		 WHERE r.repo_gone_at IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_gone_history h
+		                   WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

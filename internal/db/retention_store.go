@@ -51,26 +51,39 @@ import (
 // defense-in-depth contract as metricSeriesSQL). Literal % characters
 // are doubled for fmt.Sprintf.
 //
-// Its commits arm still reads the per-file commits table (0.29.137 moved
-// the contributors, committers and code_change_commits arms onto the daily
-// table; decided apart, with two reasons): the daily table could serve it
-// (SUM(commits) for the total, MIN(day) for the first action) only through
-// dailyAuthorIdentitySQL, which resolves merge losers to winners and
-// resolves by login and email where this arm counts the stored
-// cmt_ght_author_id — a change to which contributors are "repeat" and
-// "drive-by", a published metric, to be decided and not slipped in as a
-// cost change; and this scan is unwindowed (the classification is over ALL
-// history), so the switch would hang on the completeness stamp alone, not
-// on the window rule the other readers share. It is now the one series
-// left on the per-file rows; measure it before moving it.
+// The commits arm reads the daily table for a repository whose picture is
+// complete (0.29.140, operator decision 2026-11-05; measured on kate: the
+// per-file arm alone ran past the API's 3-minute bound for nixpkgs and
+// zephyr, the last series on those rows after 0.29.137 moved the
+// contributors, committers and code_change_commits arms). $5 = the
+// repositories read from the commits table, $6 = those read from the daily
+// table; the split is on the completeness stamp alone, since the
+// classification is over ALL history (no window rule applies). Two
+// consequences, decided with the move: a daily action is dated the UTC
+// midnight of its day, which is the same week or month bucket as the exact
+// timestamp; and the author is dailyAuthorIdentitySQL's (the stored id, else
+// the forge's numeric id, else the login, else the email rule — merge losers
+// resolved to their winners), where the per-file arm counts the stored
+// cmt_ght_author_id, so a contributor whose commits the resolver never
+// stamped now counts through her alias, as in every other series.
 const retentionSeriesSQL = `
 WITH actions (cntrb, ts) AS (
-    -- commits: ONE action per distinct commit hash (per-file table).
+    -- commits: ONE action per distinct commit hash (per-file table), for a
+    -- repository whose daily picture is not complete.
     SELECT cmt_ght_author_id, MIN(cmt_author_timestamp)
       FROM aveloxis_data.commits
-     WHERE repo_id = ANY($1) AND cmt_ght_author_id IS NOT NULL
+     WHERE repo_id = ANY($5) AND cmt_ght_author_id IS NOT NULL
        AND cmt_author_timestamp IS NOT NULL
      GROUP BY cmt_ght_author_id, cmt_commit_hash
+    UNION ALL
+    -- commits from the daily table: one action per commit, dated the UTC
+    -- midnight of its day (0.29.140).
+    SELECT i.cntrb_id, i.day::timestamp AT TIME ZONE 'UTC'
+      FROM (SELECT ` + dailyAuthorIdentitySQL + ` AS cntrb_id, d.day, d.commits
+              FROM aveloxis_data.repo_commit_daily d
+             WHERE d.repo_id = ANY($6)) i,
+           generate_series(1, i.commits)
+     WHERE i.cntrb_id IS NOT NULL
     UNION ALL
     SELECT reporter_id, created_at
       FROM aveloxis_data.issues
@@ -123,7 +136,21 @@ func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs 
 	if threshold < 1 {
 		return nil, nil, fmt.Errorf("retention threshold must be >= 1, got %d", threshold)
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, bucket), repoIDs, since, until, threshold)
+	daily, err := s.reposWithCompleteCommitDaily(ctx, repoIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("contributor retention: %w", err)
+	}
+	live := make([]int64, 0, len(repoIDs))
+	isDaily := make(map[int64]bool, len(daily))
+	for _, id := range daily {
+		isDaily[id] = true
+	}
+	for _, id := range repoIDs {
+		if !isDaily[id] {
+			live = append(live, id)
+		}
+	}
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, bucket), repoIDs, since, until, threshold, live, daily)
 	if err != nil {
 		return nil, nil, fmt.Errorf("contributor retention: %w", err)
 	}

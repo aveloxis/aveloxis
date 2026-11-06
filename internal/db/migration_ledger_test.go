@@ -129,6 +129,9 @@ var ledgeredStepLabels = []string{
 	// an unledgered step forced a full recollect of every GitLab repo on
 	// EVERY migrate (each version bump).
 	"v0.27.37 force full recollect for GitLab repos (main-path comment drop heal)",
+	// 0.29.140: one open gone episode per repository stamped before the
+	// history table existed (repo_gone.go, backfillGoneEpisodesLabel).
+	"v0.29.140 open a gone episode for every gone-stamped repository",
 }
 
 // TestLedgeredStepRegistry verifies every registered label is present

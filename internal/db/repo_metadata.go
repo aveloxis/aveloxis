@@ -73,7 +73,7 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- accurate repo_info.status (17,665 forge-archived
 			    -- repos had the flag false). Both directions: an
 			    -- un-archived repo flips back to false. prelim's
-			    -- dead-repo ArchiveRepo path is unaffected — those
+			    -- dead-repo MarkRepoGone path is unaffected — those
 			    -- repos are dequeued and never reach Phase 0.
 			    repo_archived    = $5,
 			    -- v0.27.78: fork lineage from the forge (upstream

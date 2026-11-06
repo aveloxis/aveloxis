@@ -616,8 +616,9 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- primary_language and repo_archived are NOT written here —
 				-- InsertOnly for this statement in the SR-11 registry
 				-- (column_write_policy_test.go). Phase 0's UpdateRepoMetadata
-				-- is their collection writer; ArchiveRepo, MarkRepoGone and
-				-- the v0.27.50 backfill set repo_archived on their own paths.
+				-- is their collection writer; MarkRepoGone and the v0.27.50
+				-- step set repo_archived on their own paths (ArchiveRepo was
+				-- removed in 0.29.140).
 				-- No UpsertRepo caller carries them from the forge (org scans
 				-- pass the forge ID only), so the previous EXCLUDED writes
 				-- blanked a collected repository's description, language and
@@ -865,15 +866,6 @@ func (s *PostgresStore) resolveCaseVariantURL(ctx context.Context, gitURL string
 		return "", err
 	}
 	return stored, nil
-}
-
-// ArchiveRepo marks a repo as archived/dead. Data is kept, but the repo
-// will not be collected again unless manually un-archived and re-queued.
-func (s *PostgresStore) ArchiveRepo(ctx context.Context, repoID int64) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE aveloxis_data.repos SET repo_archived = TRUE, data_collection_date = NOW() WHERE repo_id = $1`,
-		repoID)
-	return err
 }
 
 // refuseRenameTarget is the rename writers' one check of a new repo_git

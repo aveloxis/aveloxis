@@ -423,9 +423,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 164 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (108 tables + 22 materialized views) -- all collected data
+- **`aveloxis_data`** (109 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (52 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -1073,14 +1073,18 @@ duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share. Each stranded repo is classified by a LIVE
 redirect check:
 
-- dead upstream (404/410/451) → archived (the outcome prelim applies)
+- dead upstream (404/410/451) → gone-stamped and archived, the outcome
+  prelim applies (0.29.140; before, the archived flag alone, so these rows
+  never joined the gone recheck and a transient 404 was final); the gone
+  episode names `reconcile-repos`
 - redirects to a **tracked** repo → dataless duplicates heal onto the
   winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
   through the dedup-repos per-pair machinery (repoints + leaves-first
   deletes)
 - redirects to an **untracked** URL → re-enqueued (prelim renames it
   in place on the next cycle — rename detection is prelim's job)
-- alive at its own URL → re-enqueued (a lost queue row)
+- alive at its own URL → re-enqueued (a lost queue row); a stale gone
+  stamp on the row is cleared with the same statement (0.29.140)
 
 ```bash
 aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
@@ -1089,7 +1093,13 @@ aveloxis reconcile-repos             # everything
 ```
 
 The scheduler also logs a startup gauge (`non-archived repos with no
-collection_queue row`) pointing here whenever the count is non-zero.
+collection_queue row`) pointing here whenever the count is non-zero. Before
+0.29.140 that gauge rose at every deploy: the migrate step that mirrors the
+forge's archived flag onto `repos.repo_archived` un-archived every
+gone-stamped repository whose last metadata snapshot was not archived (the
+snapshot predates the disappearance), so the gone cohort re-entered the
+stranded set each time; the step leaves gone-stamped rows alone now, and a
+non-zero gauge is a real finding again.
 Re-run until stranded = 0; healed repos drop out of the set. Since
 v0.29.68 `Ctrl-C` or a SIGTERM (`kill <pid>`) cancels the in-flight probe
 or statement, ends the walk and prints an interruption summary (what was
@@ -1196,12 +1206,20 @@ A GitLab repository is only looked up on the configured GitLab instance
 (project IDs are per instance, and the keys stay on that host); a generic
 git repository has no API to ask.
 
-The repository page then shows: "Note: this repository changed forge
-identifiers on <date>, from <old id> to <new id>. This is unusual, and may
-affect statistics." The row holds data from both upstream repositories:
-commit history usually lines up (a re-push keeps the hashes), but issue and
-pull request numbers restart in the new repository. The mismatch ERROR
-stops once the change is adopted.
+The repository page then says that two histories share the name: when the
+forge created the new repository (the era boundary), the two forge IDs, when
+collection first saw the change and who adopted it, and that commits and
+activity before the boundary belong to the earlier repository; every chart
+marks the boundary with a dashed "new upstream" line (0.29.140). The row
+holds data from both upstream repositories: the daily commit table keeps the
+earlier era (the facade's trim stops at the boundary day), issue and pull
+request numbers restart in the new repository. The mismatch ERROR stops once
+the change is adopted. An adoption also brings a gone-stamped repository
+back (0.29.140): the re-created repository exists, so the stamp is cleared,
+its gone episode closed and the repository re-queued in the adoption's own
+transaction — before, an adopted repository that prelim had probed while it
+was still 404 stayed "no longer publicly available" and out of the queue
+until the 28-day recheck.
 
 An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under "Re-created repositories", each with an Adopt

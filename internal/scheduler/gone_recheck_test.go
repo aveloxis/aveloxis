@@ -110,7 +110,7 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.MarkRepoGone(ctx, id); err != nil {
+		if err := store.MarkRepoGone(ctx, id, 404, db.GoneSourcePrelim); err != nil {
 			t.Fatal(err)
 		}
 		// Age the sideline stamp so every row is due.

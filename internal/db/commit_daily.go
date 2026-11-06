@@ -177,9 +177,20 @@ func (s *PostgresStore) ReplaceRepoCommitDaily(ctx context.Context, repoID int64
 			}
 		}
 		if trim {
+			// 0.29.140 (operator decision 2026-11-05, microsoft/bobsql): a
+			// row older than the repository's era boundary is an EARLIER
+			// ERA — the commits of the repository that stood at this URL
+			// before the forge created the one the walk clones (an adopted
+			// forge-ID change; the boundary is the newest adopted change's
+			// forge creation day, or its first observation when the forge
+			// gave no date). The walk can never see those commits again, so
+			// they are history, not rows the walk missed: kept. Rows the new
+			// history re-states (a re-creation from a mirror keeps the old
+			// author dates) are rewritten above like any other.
 			if _, err := tx.Exec(ctx, `
 				DELETE FROM aveloxis_data.repo_commit_daily d
 				WHERE d.repo_id = $1
+				  AND d.day >= COALESCE((`+commitDailyEraBoundarySQL+`), DATE '-infinity')
 				  AND NOT EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) AS u(dd, e)
 				                  WHERE u.dd::date = d.day AND u.e = d.author_email)`,
 				repoID, days, emails); err != nil {
@@ -224,6 +235,16 @@ func (s *PostgresStore) InvalidateCommitDailyComplete(ctx context.Context, repoI
 // stampCommitDailyCompleteSQL marks the repository's daily rows as its
 // whole picture; run inside the writer's transaction, after the rows.
 const stampCommitDailyCompleteSQL = `UPDATE aveloxis_data.repos SET commit_daily_complete_at = NOW() WHERE repo_id = $1`
+
+// commitDailyEraBoundarySQL is the first UTC day of a repository's CURRENT
+// era ($1 = repo_id): the forge's creation day of the newest adopted
+// forge-ID change's repository (its first observation when the forge gave no
+// date), or NULL for a repository with no adopted change. ReplaceRepoCommitDaily's
+// trim keeps every daily row before it (the earlier era, 0.29.140).
+const commitDailyEraBoundarySQL = `
+				    SELECT MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date)
+				    FROM aveloxis_data.repo_forge_id_changes c
+				    WHERE c.repo_id = $1 AND c.adopted_at IS NOT NULL`
 
 // RepoCommitDailyComplete reports whether the repository's daily rows are
 // its complete picture (repos.commit_daily_complete_at is set): only then

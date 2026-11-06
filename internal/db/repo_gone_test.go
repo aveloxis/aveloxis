@@ -217,7 +217,7 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 	}
 
 	// Stamp gone → surfaced; archived flag set too.
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	st, err = store.GetRepoStats(ctx, repoID)
@@ -229,10 +229,10 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 	}
 
 	// Clear → nil again; second clear is a no-op.
-	if err := store.ClearRepoGone(ctx, repoID); err != nil {
+	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ClearRepoGone(ctx, repoID); err != nil {
+	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
@@ -251,7 +251,7 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 
 	// Candidate selection: this queueless repo (has data) appears;
 	// after stamping it stays (GoneStamped=true).
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	cands, err := store.GetGoneProbeCandidates(ctx, 0)
@@ -285,10 +285,10 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
 	})
 
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+	if err := store.ResurrectRepo(ctx, repoID, 10, GoneSourceMarkGoneRepos); err != nil {
 		t.Fatal(err)
 	}
 	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
@@ -305,7 +305,7 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 		t.Errorf("queue row: status=%q priority=%d, want queued/10", status, priority)
 	}
 	// Idempotent re-run (the rerun-after-partial-failure shape).
-	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+	if err := store.ResurrectRepo(ctx, repoID, 10, GoneSourceMarkGoneRepos); err != nil {
 		t.Fatalf("ResurrectRepo must be idempotent: %v", err)
 	}
 }
@@ -365,7 +365,7 @@ func TestRepoStatsBatchGoneEndToEnd(t *testing.T) {
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, gone)
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, tracked)
 	})
-	if err := store.MarkRepoGone(ctx, gone); err != nil {
+	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	// The tracked repo has a queue row with cached counts.

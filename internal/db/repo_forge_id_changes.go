@@ -122,6 +122,15 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 		repoID, oldID, newID, forgeCreatedAt, adoptedBy, note); err != nil {
 		return fmt.Errorf("record adopted forge ID for repo %d: %w", repoID, err)
 	}
+	// 0.29.140: the adoption says the re-created repository is this row's
+	// continuation — and it exists, so a gone stamp on the row is stale
+	// (bobsql: adopted at 15:49, still "no longer publicly available" and
+	// absent from the monitor until reconcile-repos happened to re-enqueue
+	// it). Cleared, its episode closed and re-enqueued in this transaction;
+	// a row that is not gone-stamped is left as it is.
+	if err := resurrectInTx(ctx, tx, repoID, resurrectPriority, GoneSourceAdoption); err != nil {
+		return fmt.Errorf("resurrect repo %d on adoption: %w", repoID, err)
+	}
 	return tx.Commit(ctx)
 }
 

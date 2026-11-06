@@ -27,11 +27,13 @@ type ForgeIDChange struct {
 	AdoptedAt       *time.Time `json:"adopted_at,omitempty"`
 	AdoptedBy       string     `json:"adopted_by,omitempty"`
 	Note            string     `json:"note,omitempty"`
-	// ObservedPrivate (0.29.140): the listing that last observed the change
-	// was not public (GitHub private; GitLab internal or private). The
-	// adoption of such a change moves the id but leaves a gone stamp in
-	// place — an unauthenticated probe cannot see the repository.
-	ObservedPrivate bool `json:"observed_private,omitempty"`
+	// ObservedPrivate (0.29.140): whether the listing that last observed the
+	// change was not public (GitHub private; GitLab internal or private);
+	// nil = unknown (recorded before the column, or by a path that carried
+	// no visibility). The adoption resurrects a gone-stamped repository only
+	// when this is a known false — an unauthenticated probe cannot see a
+	// private repository, and unknown is not proof.
+	ObservedPrivate *bool `json:"observed_private,omitempty"`
 	// Listing fields (ListForgeIDChanges): the repository as stored, and
 	// whether a pending change is SUPERSEDED — its old ID is no longer the
 	// stored one (usually because another change was adopted), so it can no
@@ -66,6 +68,13 @@ func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int
 	return err
 }
 
+// ListedPrivate reports a KNOWN not-public listing; VisibilityKnown whether
+// any listing's visibility was recorded. PubliclyListed is the adoption's
+// gate: known public.
+func (c ForgeIDChange) ListedPrivate() bool   { return c.ObservedPrivate != nil && *c.ObservedPrivate }
+func (c ForgeIDChange) VisibilityKnown() bool { return c.ObservedPrivate != nil }
+func (c ForgeIDChange) PubliclyListed() bool  { return c.ObservedPrivate != nil && !*c.ObservedPrivate }
+
 // ErrNoPendingForgeIDChange — AdoptPendingForgeIDChange found no
 // recorded, unadopted change with that (old, new) pair for the repository.
 var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change with that pair for this repository")
@@ -80,7 +89,7 @@ var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change with that
 // it; `aveloxis adopt-forge-id` instead asks the forge live.
 func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID int64, oldID, newID, adoptedBy, note string) error {
 	var created *time.Time
-	var private bool
+	var private *bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT forge_created_at, observed_private
 		  FROM aveloxis_data.repo_forge_id_changes
@@ -92,7 +101,10 @@ func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID in
 	if err != nil {
 		return fmt.Errorf("repo %d pending forge-ID change: %w", repoID, err)
 	}
-	return s.AdoptForgeID(ctx, repoID, oldID, newID, created, adoptedBy, note, !private)
+	// Known public only (Copilot PR #252, third review): a change recorded
+	// before the column, or whose listing carried no visibility, is adopted
+	// with the stamp kept until a scan observes it again.
+	return s.AdoptForgeID(ctx, repoID, oldID, newID, created, adoptedBy, note, private != nil && !*private)
 }
 
 // AdoptForgeID is the operator's approval of a forge-ID change: in one

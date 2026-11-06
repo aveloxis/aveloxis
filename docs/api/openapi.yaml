@@ -8665,7 +8665,7 @@ components:
           description: Adopted changes only.
         observed_private:
           type: boolean
-          description: The listing that last observed the change was not public (GitHub private; GitLab internal or private). Adopting such a change moves the id but does not lift a gone stamp. Since 0.29.140; absent when false.
+          description: Whether the listing that last observed the change was not public (GitHub private; GitLab internal or private). Absent when unknown (a change recorded before 0.29.140). Adopting a change that is not KNOWN public (`false`) moves the id but does not lift a gone stamp.
         adopted_by:
           type: string
         note:

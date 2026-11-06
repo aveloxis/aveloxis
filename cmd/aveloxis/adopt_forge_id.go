@@ -167,8 +167,11 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 					if c.AdoptedAt != nil {
 						state = "adopted " + c.AdoptedAt.UTC().Format("2006-01-02")
 					}
-					if c.ObservedPrivate {
+					switch {
+					case c.ListedPrivate():
 						state += "  listed private (adopting keeps it gone)"
+					case !c.VisibilityKnown() && c.AdoptedAt == nil:
+						state += "  visibility not recorded (adopting from the admin page keeps it gone; this command asks the forge)"
 					}
 					fmt.Printf("repo %d  %s  %s → %s  first seen %s  %s\n", c.RepoID, c.RepoGit, c.OldForgeID, c.NewForgeID,
 						c.FirstObservedAt.UTC().Format("2006-01-02"), state)

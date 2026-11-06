@@ -1233,7 +1233,10 @@ answer here, the scan's recorded listing on the admin page: the stamp is
 cleared, its gone episode closed and the repository re-queued in the
 adoption's own transaction. A private or GitLab-internal re-creation is
 adopted as the continuation but stays gone (an unauthenticated probe cannot
-see it; `--list` and the admin page mark such a change "listed private").
+see it; `--list` and the admin page mark such a change "listed private"), and
+so is a change whose listing's visibility was never recorded (one recorded
+before 0.29.140, marked "visibility not recorded") when adopted from the admin
+page — this command asks the forge and decides on its answer.
 Before, an adopted repository that prelim had probed while it was still 404
 stayed "no longer publicly available" and out of the queue until the 28-day
 recheck.

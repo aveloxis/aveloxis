@@ -102,7 +102,7 @@ resolve on its forge. `repos.repo_gone_at` is the current state only and is clea
 when the repository comes back; this table keeps every episode so the repository
 page can say "not reachable from the 4th to the 5th" after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
-back a day later). Opened by `MarkRepoGone` in the same statement as the stamp,
+back a day later). Opened by `MarkRepoGone` and prelim's `SidelineRepo` in the same statement as the stamp,
 closed by whichever clearer lifts it (`ClearRepoGone`, `ResurrectRepo`,
 `ResurrectIfListed`, a forge-ID adoption), or by the dedup merge when a merged
 duplicate's open episode arrives on a reachable winner; at most one open episode per repository
@@ -118,7 +118,7 @@ migrate step opens an episode for each row already stamped (status `0`, source
 | `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `MarkRepoGone` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows). |
 | `gone_source` | TEXT NOT NULL DEFAULT '' | `MarkRepoGone` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`. |
 | `restored_at` | TIMESTAMPTZ | the clearer, in its statement | When the repository was seen again; NULL while the episode is open. |
-| `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` closes a merged loser's open episode on a reachable winner. |
+| `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` and `rename-heal` close a merged duplicate's open episode on a reachable winner. |
 | `tool_source`, `tool_version`, `data_source`, `data_collection_date` | TEXT / TIMESTAMPTZ | schema defaults | Provenance. |
 
 #### repo_groups_list_serve

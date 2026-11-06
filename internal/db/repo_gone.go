@@ -154,24 +154,39 @@ func (s *PostgresStore) SidelineRepo(ctx context.Context, repoID int64, status i
 // winner is reachable (its stamp NULL — the invariant "open episode ⇔ current
 // gone state" holds across the merge) or dropped when the winner is gone
 // itself (uq_repo_gone_history_open takes the DO NOTHING). Provenance travels
-// with the row. The caller holds the winner's repos row FOR UPDATE, so the
-// state this reads is the state it commits against. Shared by the dedup
-// merge and the dataless rename heal (one spelling).
+// with the row, and the winner's cache state is stamped in the same statement
+// when anything was carried (its page's gone history changed; Copilot PR
+// #252, third review). The caller holds BOTH repos rows FOR UPDATE
+// (lockRepoRowsSQL), so the loser can gain no episode after the copy and the
+// winner's state read here is the state the merge commits against. Shared by
+// the dedup merge and the dataless rename heal (one spelling).
 const carryGoneHistorySQL = `
-			INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
-			                                             tool_source, tool_version, data_source, data_collection_date)
-			SELECT $2, l.gone_at, l.gone_status, l.gone_source,
-			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN NOW() ELSE l.restored_at END,
-			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN $3 ELSE l.restored_source END,
-			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
-			  FROM aveloxis_data.repo_gone_history l
-			  JOIN aveloxis_data.repos w ON w.repo_id = $2
-			 WHERE l.repo_id = $1
-			ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING`
+			WITH carried AS (
+				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
+				                                             tool_source, tool_version, data_source, data_collection_date)
+				SELECT $2, l.gone_at, l.gone_status, l.gone_source,
+				       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN NOW() ELSE l.restored_at END,
+				       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN $3 ELSE l.restored_source END,
+				       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
+				  FROM aveloxis_data.repo_gone_history l
+				  JOIN aveloxis_data.repos w ON w.repo_id = $2
+				 WHERE l.repo_id = $1
+				ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING
+				RETURNING repo_id
+			)
+			UPDATE aveloxis_data.repos SET data_changed_at = NOW()
+			WHERE repo_id = $2 AND EXISTS (SELECT 1 FROM carried)`
 
-// lockWinnerRowSQL takes the staying repository's repos row FOR UPDATE ($1)
-// before a merge reads its gone state.
-const lockWinnerRowSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 FOR UPDATE`
+// lockRepoRowsSQL takes a merge's two repos rows FOR UPDATE, in id order ($1
+// = both ids) and BEFORE any queue-row lock — the same order as the gone
+// writers (SidelineRepo: the repos row, then the queue row), so a merge and a
+// concurrent sideline or resurrection never deadlock, and a loser can gain no
+// episode between the carry and its delete (Copilot PR #252, third review).
+// The one reverse edge left is the daily-table writers (heal-commit-daily:
+// its advisory lock and the loser's daily rows, THEN the repos row); a merge
+// beside such a fill can be a deadlock victim, and every merge caller retries
+// on 40P01 (the batch and DedupRenamedRepoPair), as the fill does.
+const lockRepoRowsSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = ANY($1::bigint[]) ORDER BY repo_id FOR UPDATE`
 
 // MarkRepoGoneChecked records that the gone state was re-verified
 // against the forge and the repo is STILL gone (or the probe was not
@@ -378,8 +393,8 @@ func (s *PostgresStore) repoGoneHistoryBatch(ctx context.Context, repoIDs []int6
 // step-order analyzer reads them there): the v0.27.50 mirror of the forge's
 // archived flag, which since 0.29.140 leaves gone-stamped rows alone, and the
 // ledgered 0.29.140 backfill that opens an episode for every repository
-// stamped before this history existed (its label is backfillGoneEpisodesLabel).
-const backfillGoneEpisodesLabel = "v0.29.140 open a gone episode for every gone-stamped repository"
+// stamped before this history existed ("v0.29.140 open a gone episode for
+// every gone-stamped repository").
 
 // GoneProbeCandidate is one row of the mark-gone-repos work list.
 type GoneProbeCandidate struct {

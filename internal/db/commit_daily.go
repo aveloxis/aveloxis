@@ -276,10 +276,9 @@ func restoreEarlierErasInTx(ctx context.Context, tx rotationExecer, repoID int64
 	return tag.RowsAffected(), nil
 }
 
-// restoreEarlierErasLabel is the ledgered migrate step that runs the fold
-// above once for every repository adopted before 0.29.140 (migrate.go holds
-// the literal SQL).
-const restoreEarlierErasLabel = "v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes"
+// The ledgered migrate step "v0.29.140 restore the earlier era's daily
+// buckets of adopted forge-ID changes" runs the fold above once for every
+// repository adopted before 0.29.140 (migrate.go holds the literal SQL).
 
 // commitDailyEraBoundarySQL is the first UTC day of a repository's CURRENT
 // era ($1 = repo_id): the forge's creation day of the newest adopted

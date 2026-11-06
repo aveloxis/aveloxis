@@ -205,7 +205,7 @@ func TestHealRenamedDuplicateEndToEnd(t *testing.T) {
 // episodes (probed 404 once, re-added, then redirected onto a collected
 // winner); the heal's repos delete cascaded them away. They are carried to
 // the winner like the dedup merge's — an open one closed by the heal on a
-// reachable winner — under the winner's row lock.
+// reachable winner — under both repos rows' locks.
 func TestHealRenamedDuplicateCarriesTheDuplicatesGoneEpisodes(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
@@ -277,5 +277,11 @@ func TestHealRenamedDuplicateCarriesTheDuplicatesGoneEpisodes(t *testing.T) {
 	var left int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, dup).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("the duplicate's rows go with it: %d %v", left, err)
+	}
+	// The winner's page changed (its gone history): the cache state is
+	// stamped in the carry's statement (Copilot PR #252, third review).
+	var stamped *time.Time
+	if err := pool.QueryRow(ctx, `SELECT data_changed_at FROM aveloxis_data.repos WHERE repo_id = $1`, winner).Scan(&stamped); err != nil || stamped == nil {
+		t.Fatalf("the carry stamps the winner's data_changed_at: %v %v", stamped, err)
 	}
 }

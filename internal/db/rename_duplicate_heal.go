@@ -80,6 +80,10 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		sql         string
 		needsWinner bool
 	}{
+		// Both repos rows first, in id order (Copilot PR #252, third review):
+		// the gone writers go repos row → queue row, and the duplicate can
+		// gain no episode between the carry below and its delete.
+		{"lock repository rows", lockRepoRowsSQL, true},
 		{"repoint stars", `
 			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
 			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
@@ -97,17 +101,16 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		// still have gone episodes (probed 404 once, re-added, then redirected
 		// here); the repos delete would cascade them away silently. Carried
 		// to the winner like the dedup merge's (carryGoneHistorySQL: an open
-		// one closed by this heal on a reachable winner), under the winner's
-		// row lock.
-		{"lock winner repos row", lockWinnerRowSQL, true},
+		// one closed by this heal on a reachable winner; the winner's cache
+		// state stamped when anything was carried), under the row locks above.
 		{"repoint repo_gone_history", carryGoneHistorySQL, true},
 		{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
 	}
 	for _, st := range steps {
 		args := []any{dupRepoID}
 		switch {
-		case st.label == "lock winner repos row":
-			args = []any{winnerRepoID}
+		case st.label == "lock repository rows":
+			args = []any{[]int64{dupRepoID, winnerRepoID}}
 		case st.label == "repoint repo_gone_history":
 			args = []any{dupRepoID, winnerRepoID, GoneSourceRenameHeal}
 		case st.needsWinner:

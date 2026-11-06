@@ -2116,7 +2116,9 @@ continuation of the old; a change another adoption superseded is not offered.
 Adopting also brings the repository back when it is gone-stamped and the
 scan listed the re-created repository publicly (0.29.140: the stamp is
 cleared and the repository re-queued with the adoption; a change the scan
-saw as a private listing is marked so and keeps the repository gone) and restores the earlier history’s daily
+saw as a private listing is marked so and keeps the repository gone, as does
+one whose listing’s visibility was never recorded — marked “visibility not
+recorded” — until a scan lists it again) and restores the earlier history’s daily
 commit buckets a walk had trimmed (a very large re-created repository is
 adopted with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code> instead: that restore runs inside the
 request, which the proxy’s deadline would end), and the repository page keeps both histories:

@@ -394,6 +394,13 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 	// Deleting a 'collecting' repo's rows would corrupt the in-flight
 	// job (its CompleteJob would also resurrect a queue row for a repo
 	// we just deleted).
+	// Both repos rows first, in id order, before the queue row (Copilot PR
+	// #252, third review): the gone writers go repos row → queue row, so the
+	// merge agrees with them, and neither row can gain a gone episode
+	// between the history carry below and the loser's delete.
+	if _, err := tx.Exec(ctx, lockRepoRowsSQL, []int64{pair.LoserID, pair.WinnerID}); err != nil {
+		return fmt.Errorf("lock repository rows: %w", err)
+	}
 	var loserStatus string
 	err = tx.QueryRow(ctx,
 		`SELECT COALESCE(status, '') FROM aveloxis_ops.collection_queue
@@ -524,11 +531,15 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"repoint repo_forge_id_changes", `
 			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
 				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
-				 tool_source, tool_version, data_source, data_collection_date)
+				 observed_private, tool_source, tool_version, data_source, data_collection_date)
 			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
 			       CASE WHEN carries THEN l.adopted_at END,
 			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
 			       CASE WHEN carries THEN l.note ELSE '' END,
+			       -- 0.29.140 (Copilot PR #252, third review): the listing's
+			       -- visibility moves with the observation; on a conflict the
+			       -- LATER observation's answer wins (below).
+			       l.observed_private,
 			       -- The moved row keeps its provenance (PR #212 review: an
 			       -- INSERT without these restamped it with this binary and NOW()).
 			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
@@ -542,6 +553,9 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
 				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
 				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
+				observed_private  = CASE WHEN EXCLUDED.last_observed_at > c.last_observed_at THEN EXCLUDED.observed_private
+				                         WHEN EXCLUDED.last_observed_at < c.last_observed_at THEN c.observed_private
+				                         ELSE COALESCE(c.observed_private, EXCLUDED.observed_private) END,
 				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
 				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
 				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID, loserForgeID}},
@@ -557,7 +571,6 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		// clearer beside this transaction (prelim, the recheck, an adoption)
 		// updates that same repos row, so locking it here serialises them —
 		// the winner's state the carry reads is the state it commits against.
-		{"lock winner repos row", lockWinnerRowSQL, []any{pair.WinnerID}},
 		{"repoint repo_gone_history", carryGoneHistorySQL, []any{pair.LoserID, pair.WinnerID, GoneSourceDedup}},
 		{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, []any{pair.LoserID}},
 

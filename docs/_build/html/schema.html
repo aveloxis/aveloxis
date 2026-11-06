@@ -2044,7 +2044,7 @@ resolve on its forge. <code class="docutils literal notranslate"><span class="pr
 when the repository comes back; this table keeps every episode so the repository
 page can say “not reachable from the 4th to the 5th” after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
-back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> in the same statement as the stamp,
+back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> and prelim’s <code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> in the same statement as the stamp,
 closed by whichever clearer lifts it (<code class="docutils literal notranslate"><span class="pre">ClearRepoGone</span></code>, <code class="docutils literal notranslate"><span class="pre">ResurrectRepo</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ResurrectIfListed</span></code>, a forge-ID adoption), or by the dedup merge when a merged
 duplicate’s open episode arrives on a reachable winner; at most one open episode per repository
@@ -2093,7 +2093,7 @@ migrate step opens an episode for each row already stamped (status <code class="
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">restored_source</span></code></p></td>
 <td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
 <td><p>the clearer</p></td>
-<td><p>The writer that saw it back: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">forge-id-adoption</span></code>, <code class="docutils literal notranslate"><span class="pre">org-scan</span></code>; <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code> closes a merged loser’s open episode on a reachable winner.</p></td>
+<td><p>The writer that saw it back: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">forge-id-adoption</span></code>, <code class="docutils literal notranslate"><span class="pre">org-scan</span></code>; <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code> and <code class="docutils literal notranslate"><span class="pre">rename-heal</span></code> close a merged duplicate’s open episode on a reachable winner.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code>, <code class="docutils literal notranslate"><span class="pre">tool_version</span></code>, <code class="docutils literal notranslate"><span class="pre">data_source</span></code>, <code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
 <td><p>TEXT / TIMESTAMPTZ</p></td>

@@ -42,6 +42,13 @@ func migrateStepSQL(t *testing.T, label string) string {
 // gone-stamped rows alone (it un-archived 426 of them on 2026-11-05, the 469
 // "stranded" repositories reconcile-repos then walked).
 
+// The ledgered steps' labels, as migrate.go spells them (test-only names: the
+// production code holds the literals).
+const (
+	backfillGoneEpisodesLabel = "v0.29.140 open a gone episode for every gone-stamped repository"
+	restoreEarlierErasLabel   = "v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes"
+)
+
 func seedGoneHistoryRepo(t *testing.T, store *PostgresStore, ctx context.Context, name string) int64 {
 	t.Helper()
 	repoID := seedRepoForDeps(t, store, ctx, "_avgonehist", name)
@@ -543,19 +550,27 @@ func TestResurrectIfListedDoesNotRepeatAReversedResurrection(t *testing.T) {
 // UPDATE that row).
 func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func dedupOnePair("))
-	lock, carry := strings.Index(body, `"lock winner repos row"`), strings.Index(body, `"repoint repo_gone_history"`)
+	lock, carry := strings.Index(body, "lockRepoRowsSQL"), strings.Index(body, `"repoint repo_gone_history"`)
 	if lock < 0 || carry < 0 || lock > carry {
-		t.Fatalf("the winner's row lock (%d) must be a step before the gone-history carry (%d)", lock, carry)
+		t.Fatalf("the repos-row lock (%d) must precede the gone-history carry (%d)", lock, carry)
 	}
-	if !strings.Contains(body[lock:carry], "lockWinnerRowSQL") || !strings.Contains(lockWinnerRowSQL, "FOR UPDATE") {
-		t.Error("the lock step must take the row FOR UPDATE (lockWinnerRowSQL)")
+	if !strings.Contains(body[:carry], "lockRepoRowsSQL") || !strings.Contains(lockRepoRowsSQL, "FOR UPDATE") || !strings.Contains(lockRepoRowsSQL, "ORDER BY repo_id") {
+		t.Error("both repos rows must be locked FOR UPDATE in id order (lockRepoRowsSQL) before the carry")
 	}
-	// The dataless rename heal carries the same way, under the same lock
+	// The repos rows come BEFORE the loser's queue-row lock (Copilot PR #252,
+	// third review): the gone writers go repos row → queue row.
+	if q := strings.Index(body, "WHERE repo_id = $1 FOR UPDATE`, pair.LoserID)"); q < 0 || strings.Index(body, "lockRepoRowsSQL") > q {
+		t.Error("dedupOnePair must lock the repos rows before the loser's queue row")
+	}
+	// The dataless rename heal carries the same way, under the same locks
 	// (Copilot PR #252, second review).
 	heal := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) HealRenamedDuplicate("))
-	hl, hc, del := strings.Index(heal, "lockWinnerRowSQL"), strings.Index(heal, "carryGoneHistorySQL"), strings.Index(heal, `"delete dup repos row"`)
+	hl, hc, del := strings.Index(heal, "lockRepoRowsSQL"), strings.Index(heal, "carryGoneHistorySQL"), strings.Index(heal, `"delete dup repos row"`)
 	if hl < 0 || hc < hl || del < hc {
-		t.Errorf("HealRenamedDuplicate must lock the winner (%d), carry the episodes (%d) and only then delete the duplicate's repos row (%d)", hl, hc, del)
+		t.Errorf("HealRenamedDuplicate must lock both rows (%d), carry the episodes (%d) and only then delete the duplicate's repos row (%d)", hl, hc, del)
+	}
+	if q := strings.Index(heal, `"delete dup queue row"`); q < hl {
+		t.Errorf("HealRenamedDuplicate must lock the repos rows (%d) before touching the queue row (%d) — the gone writers' order", hl, q)
 	}
 }
 
@@ -649,14 +664,35 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[int64]bool{}
+	seen := map[int64]string{}
 	for _, c := range pending {
 		if c.RepoID == private || c.RepoID == public {
-			seen[c.RepoID] = c.ObservedPrivate
+			switch {
+			case c.ListedPrivate():
+				seen[c.RepoID] = "private"
+			case c.PubliclyListed():
+				seen[c.RepoID] = "public"
+			default:
+				seen[c.RepoID] = "unknown"
+			}
 		}
 	}
-	if !seen[private] || seen[public] {
+	if seen[private] != "private" || seen[public] != "public" {
 		t.Fatalf("the recorded change carries the listing's visibility: %v", seen)
+	}
+	// A change recorded before the column (visibility NULL, Copilot PR #252
+	// third review): adopted with the stamp KEPT — unknown is not proof.
+	legacy := seedGoneHistoryRepo(t, store, ctx, "adopt-legacy")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, legacy)
+	if err := store.MarkRepoGone(ctx, legacy, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id) VALUES ($1, '95336057', '1438985131')`, legacy)
+	if err := store.AdoptPendingForgeIDChange(ctx, legacy, "95336057", "1438985131", "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, legacy) == nil || hasQueueRow(ctx, t, store, legacy) {
+		t.Error("a change with no recorded visibility is adopted but keeps the stamp")
 	}
 	// The admin page adopts from the record.
 	for _, id := range []int64{private, public} {
@@ -748,3 +784,67 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 		t.Fatalf("the org scan's closed episode, then the sideline's open one: %+v", eps)
 	}
 }
+
+// The dedup merge carries a forge-ID change's recorded visibility (Copilot PR
+// #252, third review): a loser's private observation moved onto the winner
+// stays private, and when both rows observed the same change the LATER
+// observation's answer wins — an older unknown or public does not overwrite a
+// newer private, nor the reverse.
+func TestDedupOnePairCarriesTheObservedVisibility(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		winnerPrivate *bool // the winner's own observation (nil = none recorded)
+		winnerNewer   bool
+		loserPrivate  bool
+		want          string
+	}{
+		{"winner has no observation", nil, false, true, "private"},
+		{"loser's observation is newer", boolPtr(false), false, true, "private"},
+		{"winner's observation is newer", boolPtr(false), true, true, "public"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, store := caseConnect(t)
+			const slug = "_avdedup_vis"
+			cleanupDedupRepos(ctx, t, store, slug)
+			t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+			winnerURL := "https://github.com/" + slug + "_Org/Repo"
+			winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+			for _, id := range []int64{winnerID, loserID} {
+				mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '11' WHERE repo_id = $1`, id)
+			}
+			loserAge, winnerAge := "2 days", "3 days"
+			if tc.winnerNewer {
+				loserAge, winnerAge = "3 days", "2 days"
+			}
+			mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, observed_private)
+				VALUES ($1, '11', '22', NOW() - interval '9 days', NOW() - ($2)::interval, $3)`, loserID, loserAge, tc.loserPrivate)
+			if tc.winnerPrivate != nil {
+				mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, observed_private)
+					VALUES ($1, '11', '22', NOW() - interval '9 days', NOW() - ($2)::interval, $3)`, winnerID, winnerAge, *tc.winnerPrivate)
+			}
+			pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+			if pair == nil {
+				t.Fatal("candidate query did not surface the seeded pair")
+			}
+			if err := dedupOnePair(ctx, store, *pair); err != nil {
+				t.Fatalf("dedupOnePair: %v", err)
+			}
+			var got *bool
+			if err := store.pool.QueryRow(ctx, `SELECT observed_private FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1 AND old_forge_id = '11' AND new_forge_id = '22'`, winnerID).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			state := "unknown"
+			switch {
+			case got != nil && *got:
+				state = "private"
+			case got != nil:
+				state = "public"
+			}
+			if state != tc.want {
+				t.Errorf("after the merge the winner's change reads %s, want %s", state, tc.want)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

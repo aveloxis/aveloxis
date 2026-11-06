@@ -2762,10 +2762,12 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		   AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_gone_history h
 		                   WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL)`)
 
-	// 0.29.140 (Copilot PR #252, second review): the listing's visibility
-	// travels with a recorded forge-ID change, so an adoption resurrects a
-	// gone-stamped repository only for a public re-creation (repo_forge_id_changes.go).
-	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_forge_id_changes", "observed_private", "BOOLEAN NOT NULL DEFAULT FALSE")
+	// 0.29.140 (Copilot PR #252, second and third reviews): the listing's
+	// visibility travels with a recorded forge-ID change, so an adoption
+	// resurrects a gone-stamped repository only for a re-creation KNOWN to be
+	// public; rows recorded before the column stay NULL (unknown) until a
+	// scan observes them again — unknown is not proof (repo_forge_id_changes.go).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_forge_id_changes", "observed_private", "BOOLEAN")
 
 	// 0.29.140 (Copilot PR #252; commit_daily.go restoreEarlierErasInTx): a
 	// repository adopted before this release had its earlier era trimmed

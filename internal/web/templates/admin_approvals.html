@@ -43,7 +43,7 @@
 <td data-label="Repository" class="urls">{{.RepoGit}}</td>
 <td data-label="Old ID">{{.OldForgeID}}</td>
 <td data-label="New ID">{{.NewForgeID}}</td>
-<td data-label="Re-created">{{if .ForgeCreatedAt}}{{.ForgeCreatedAt.UTC.Format "2006-01-02"}}{{else}}-{{end}}{{if .ObservedPrivate}} <span class="muted">(listed private: adopting keeps it gone)</span>{{end}}</td>
+<td data-label="Re-created">{{if .ForgeCreatedAt}}{{.ForgeCreatedAt.UTC.Format "2006-01-02"}}{{else}}-{{end}}{{if .ListedPrivate}} <span class="muted">(listed private: adopting keeps it gone)</span>{{else if not .VisibilityKnown}} <span class="muted">(visibility not recorded: adopting keeps it gone until a scan lists it)</span>{{end}}</td>
 <td data-label="First seen">{{.FirstObservedAt.UTC.Format "2006-01-02 15:04"}}</td>
 <td data-label="Decision">
 <form method="POST" action="/admin/forge-id-changes/{{.RepoID}}/adopt" class="inline-form"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="old_forge_id" value="{{.OldForgeID}}"><input type="hidden" name="new_forge_id" value="{{.NewForgeID}}"><input type="text" name="note" class="note-input" placeholder="Note (optional)" maxlength="{{$.NoteMax}}"><button class="btn btn-approve" type="submit">Adopt</button></form>

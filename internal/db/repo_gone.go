@@ -20,7 +20,7 @@
 // re-created upstream on 2026-10-29, probed while still 404 on 11-04, back
 // on 11-05 — operator decision 2026-11-05: keep and show every such
 // stretch). aveloxis_data.repo_gone_history holds one row per EPISODE:
-// opened by MarkRepoGone in the same statement as the stamp (the probe's
+// opened by SidelineRepo in the same statement as the stamp (the probe's
 // status and the writer that saw it), closed by whichever clearer lifts the
 // stamp (its source recorded) — or by the dedup merge, when a loser's open
 // episode arrives on a reachable winner — at most one open episode per repository
@@ -77,28 +77,14 @@ type GoneEpisode struct {
 	RestoredSource string     `json:"restored_source,omitempty"`
 }
 
-// MarkRepoGone stamps the gone state in ONE statement — both
-// repo_archived (so every archived-filtered surface keeps excluding
-// the row) and repo_gone_at. Single-statement on purpose: prelim's
-// sideline contract (v0.27.39) is archive-must-succeed-before-
-// dequeue, and splitting the two column writes would mint a partial
-// state the recovery reasoning can't classify. v0.29.7: the sideline
-// probe IS a check, so repo_gone_checked_at lands in the same
-// statement — a freshly-gone repo waits a full recheck cadence before
-// the scheduler probes it again. 0.29.140: the same statement opens the
-// repository's gone episode (status = the probe's HTTP status, source =
-// the writer) when none is open — a repository marked again while gone
-// keeps its first observation — and stamps the cache state.
-func (s *PostgresStore) MarkRepoGone(ctx context.Context, repoID int64, status int, source string) error {
-	_, err := s.pool.Exec(ctx, `WITH `+markGoneCTEs+`
-		SELECT COUNT(*) FROM episode`, repoID, status, source)
-	return err
-}
-
 // markGoneCTEs is the gone stamp as data-modifying CTEs — `marked` (the
-// repos row: archived, stamped, checked, cache state) and `episode` (the
-// history row, opened when none is open) — shared by MarkRepoGone and
-// SidelineRepo ($1 repo, $2 status, $3 source). One spelling (SR-17).
+// repos row: archived — so every archived-filtered surface keeps excluding
+// the row — stamped, checked, cache state) and `episode` (the history row,
+// opened when none is open; a repository marked again while gone keeps its
+// first observation) — SidelineRepo's one statement ($1 repo, $2 status, $3
+// source). v0.29.7: the sideline probe IS a check, so repo_gone_checked_at
+// lands here too — a freshly-gone repo waits a full recheck cadence before
+// the scheduler probes it again. One spelling (SR-17).
 const markGoneCTEs = `
 		marked AS (
 			UPDATE aveloxis_data.repos
@@ -114,22 +100,29 @@ const markGoneCTEs = `
 			RETURNING repo_id
 		)`
 
-// SidelineRepo is prelim's sideline as ONE transaction (Copilot PR #252, second
-// review): the gone stamp with its episode, then the queue row's removal,
-// committed together. As two separate statements (MarkRepoGone, then
-// DequeueRepo) an org scan's ResurrectIfListed could land between them —
-// clear the stamp and re-enqueue — and the dequeue then left the repository
-// unstamped AND queueless: the stranded shape nothing but reconcile-repos
-// reaches. Here the stamp statement takes the repos row's lock, so the two
-// writers serialise on it, and the dequeue runs as a SECOND statement on
-// purpose: a statement's snapshot is taken before its lock wait, so a single
-// statement waiting on a resurrection could not see the queue row that
-// resurrection inserted (the fresh review's two-session probe); the second
-// statement's snapshot is taken after the wait and sees it. Either order
-// then ends consistent — resurrected then sidelined is gone and queueless
-// (prelim saw the 404 last), sidelined then resurrected is clear and queued
-// — and a failure of either statement commits nothing (the next cycle
-// retries); a 40P01 victim retries here.
+// SidelineRepo is THE gone marker (Copilot PR #252, second and sixth
+// reviews): the gone stamp with its episode, then the queue row's removal,
+// committed together — prelim's sideline, mark-gone-repos' and
+// reconcile-repos' dead arms all go through it, so "gone" always means
+// "and out of the queue" in the same transaction (SR-18). As two separate
+// statements (a stamp, then DequeueRepo) an org scan's ResurrectIfListed
+// could land between them — clear the stamp and re-enqueue — and the dequeue
+// then left the repository unstamped AND queueless: the stranded shape
+// nothing but reconcile-repos reaches; and a stamp WITHOUT a dequeue (the two
+// CLIs, before the sixth review) left a resurrected repository gone and
+// queued when the resurrection landed between the candidate read and the
+// stamp. Here the stamp statement takes the repos row's lock, so the writers
+// serialise on it, and the dequeue runs as a SECOND statement on purpose: a
+// statement's snapshot is taken before its lock wait, so a single statement
+// waiting on a resurrection could not see the queue row that resurrection
+// inserted (the fresh review's two-session probe); the second statement's
+// snapshot is taken after the wait and sees it. Either order then ends
+// consistent — resurrected then sidelined is gone and queueless (the probe
+// saw the 404 last), sidelined then resurrected is clear and queued — and a
+// failure of either statement commits nothing (the next cycle retries); a
+// 40P01 victim retries here. A queued gone-stamped row exists only as a
+// pending re-probe: a user's re-add (EnqueueRepo) of a gone repository,
+// which prelim's next probe clears or sidelines.
 func (s *PostgresStore) SidelineRepo(ctx context.Context, repoID int64, status int, source string) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
@@ -203,7 +196,7 @@ const lockRepoRowsSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = ANY($
 // on prelim's healthy path, ResurrectRepo on the recheck/CLI path —
 // review round 2, L11) null the check stamp with it, so a reachable
 // repo carries no check stamp and a later gone→recheck cycle starts
-// from MarkRepoGone's own stamp.
+// from the sideline's own stamp.
 func (s *PostgresStore) MarkRepoGoneChecked(ctx context.Context, repoID int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos

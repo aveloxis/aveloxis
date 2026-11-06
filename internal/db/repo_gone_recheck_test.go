@@ -32,22 +32,13 @@ func TestGoneCheckedColumnDeclaredAndMigrated(t *testing.T) {
 	}
 }
 
-// The sideline probe IS a check: MarkRepoGone stamps checked_at in the
-// same single statement so a freshly-gone repo waits a full cadence
-// before its first recheck, and the statement count pin
-// (TestMarkRepoGoneIsSingleStatement) still holds.
+// The sideline probe IS a check: the gone stamp (markGoneCTEs, run by
+// SidelineRepo) sets checked_at in the same single statement so a
+// freshly-gone repo waits a full cadence before its first recheck, and the
+// statement count pin (TestMarkRepoGoneIsSingleStatement) still holds.
 func TestMarkRepoGoneStampsCheckedAt(t *testing.T) {
-	src := readSourceFile(t, "repo_gone.go")
-	i := strings.Index(src, "func (s *PostgresStore) MarkRepoGone(")
-	if i < 0 {
-		t.Fatal("MarkRepoGone missing")
-	}
-	body := src[i:]
-	if end := strings.Index(body, "\nfunc "); end > 0 {
-		body = body[:end]
-	}
-	if !strings.Contains(body, "repo_gone_checked_at = NOW()") {
-		t.Error("MarkRepoGone must stamp repo_gone_checked_at in the same UPDATE")
+	if !strings.Contains(markGoneCTEs, "repo_gone_checked_at = NOW()") {
+		t.Error("the gone stamp must set repo_gone_checked_at in the same UPDATE")
 	}
 }
 
@@ -125,7 +116,7 @@ func TestGoneRecheckCandidatesEndToEnd(t *testing.T) {
 	}
 	gone := mk("gone")
 	alive := mk("alive")
-	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	ids := func(cs []GoneProbeCandidate) map[int64]bool {
@@ -141,7 +132,7 @@ func TestGoneRecheckCandidatesEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ids(got)[gone] {
-		t.Error("a repo stamped gone moments ago must not be due for recheck (MarkRepoGone counts as a check)")
+		t.Error("a repo stamped gone moments ago must not be due for recheck (the sideline counts as a check)")
 	}
 	if ids(got)[alive] {
 		t.Error("a reachable repo must never be a recheck candidate")

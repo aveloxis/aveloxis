@@ -2044,7 +2044,7 @@ resolve on its forge. <code class="docutils literal notranslate"><span class="pr
 when the repository comes back; this table keeps every episode so the repository
 page can say “not reachable from the 4th to the 5th” after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
-back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> and prelim’s <code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> in the same statement as the stamp,
+back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> — the one gone marker (prelim, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>), which removes the queue row in the same transaction — in the same statement as the stamp,
 closed by whichever clearer lifts it (<code class="docutils literal notranslate"><span class="pre">ClearRepoGone</span></code>, <code class="docutils literal notranslate"><span class="pre">ResurrectRepo</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ResurrectIfListed</span></code>, a forge-ID adoption), or by the dedup merge when a merged
 duplicate’s open episode arrives on a reachable winner; at most one open episode per repository
@@ -2067,22 +2067,22 @@ migrate step opens an episode for each row already stamped (status <code class="
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
 <td><p>BIGINT NOT NULL FK → repos</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code></p></td>
 <td><p>The repository.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gone_at</span></code></p></td>
 <td><p>TIMESTAMPTZ NOT NULL</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> (<code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> of the same statement; the backfill copies the stored stamp)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> (<code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> of the same statement; the backfill copies the stored stamp)</p></td>
 <td><p>When the probe saw the repository gone.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gone_status</span></code></p></td>
 <td><p>SMALLINT NOT NULL DEFAULT 0</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code> from the probe’s HTTP status (404, 410, 451)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> from the probe’s HTTP status (404, 410, 451)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> = unknown (backfilled rows).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gone_source</span></code></p></td>
 <td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MarkRepoGone</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code></p></td>
 <td><p>The writer that saw it gone: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restored_at</span></code></p></td>

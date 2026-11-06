@@ -48,7 +48,7 @@ func TestIngestDiscoveredResurrectsAPublicListingUnderTheStoredID(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkRepoGone(ctx, repoID, 404, db.GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, db.GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DequeueRepo(ctx, repoID); err != nil {

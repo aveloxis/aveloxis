@@ -102,7 +102,7 @@ resolve on its forge. `repos.repo_gone_at` is the current state only and is clea
 when the repository comes back; this table keeps every episode so the repository
 page can say "not reachable from the 4th to the 5th" after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
-back a day later). Opened by `MarkRepoGone` and prelim's `SidelineRepo` in the same statement as the stamp,
+back a day later). Opened by `SidelineRepo` — the one gone marker (prelim, `mark-gone-repos`, `reconcile-repos`), which removes the queue row in the same transaction — in the same statement as the stamp,
 closed by whichever clearer lifts it (`ClearRepoGone`, `ResurrectRepo`,
 `ResurrectIfListed`, a forge-ID adoption), or by the dedup merge when a merged
 duplicate's open episode arrives on a reachable winner; at most one open episode per repository
@@ -113,10 +113,10 @@ migrate step opens an episode for each row already stamped (status `0`, source
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|
 | `episode_id` | BIGSERIAL PK | — | Row identity. |
-| `repo_id` | BIGINT NOT NULL FK → repos | `MarkRepoGone` | The repository. |
-| `gone_at` | TIMESTAMPTZ NOT NULL | `MarkRepoGone` (`repos.repo_gone_at` of the same statement; the backfill copies the stored stamp) | When the probe saw the repository gone. |
-| `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `MarkRepoGone` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows). |
-| `gone_source` | TEXT NOT NULL DEFAULT '' | `MarkRepoGone` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`. |
+| `repo_id` | BIGINT NOT NULL FK → repos | `SidelineRepo` | The repository. |
+| `gone_at` | TIMESTAMPTZ NOT NULL | `SidelineRepo` (`repos.repo_gone_at` of the same statement; the backfill copies the stored stamp) | When the probe saw the repository gone. |
+| `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `SidelineRepo` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows). |
+| `gone_source` | TEXT NOT NULL DEFAULT '' | `SidelineRepo` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`. |
 | `restored_at` | TIMESTAMPTZ | the clearer, in its statement | When the repository was seen again; NULL while the episode is open. |
 | `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` and `rename-heal` close a merged duplicate's open episode on a reachable winner. |
 | `tool_source`, `tool_version`, `data_source`, `data_collection_date` | TEXT / TIMESTAMPTZ | schema defaults | Provenance. |

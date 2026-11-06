@@ -2398,7 +2398,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// analytics are unaffected (DequeueNext and the matviews do not
 	// filter repo_archived). Going forward, staged Phase 0's
 	// UpdateRepoMetadata keeps the flag current in both directions.
-	// 0.29.140: a gone-stamped row is left alone — MarkRepoGone set its
+	// 0.29.140: a gone-stamped row is left alone — SidelineRepo set its
 	// flag, and its snapshot predates its disappearance, so this step
 	// un-archived 426 gone repositories on kate (2026-11-05) into the
 	// stranded class (non-archived, no queue row) at every deploy; the 469

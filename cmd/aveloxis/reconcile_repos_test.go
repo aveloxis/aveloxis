@@ -58,7 +58,7 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 	// The binding and its error arm as two anchors (round 6: one hard-coded
 	// newline between them made a comment line a "missing write").
 	for _, write := range []struct{ binding, arm string }{
-		{"store.MarkRepoGone(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {", ""},
+		{"store.SidelineRepo(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {", ""},
 		{"winnerID, ferr := store.FindRepoByURL(ctx, finalURL)", `^\s*if ferr != nil \{`},
 		{"healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)", `^\s*if herr != nil \{`},
 	} {

@@ -472,7 +472,6 @@ internal/db/capacity_day_rule_pin_test.go internal/db/capacity_store.go
 internal/db/capacity_day_rule_pin_test.go internal/db/org_link_reconcile.go
 internal/db/capacity_day_rule_pin_test.go internal/db/signup_escrow.go
 internal/db/capacity_writer_pin_test.go internal/db/capacity_store.go
-internal/db/capacity_writer_pin_test.go internal/db/rename_duplicate_heal.go
 internal/db/capacity_writer_pin_test.go internal/db/repo_dedup.go
 internal/db/case_insensitive_backfill_test.go internal/db/commit_resolver_store.go
 internal/db/check_schema_version_test.go internal/db/migrate.go

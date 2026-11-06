@@ -12,8 +12,10 @@
 // "gone upstream" from "operator removed from tracking" — and is
 // BIDIRECTIONAL + idempotent:
 //
-//   - DEFINITIVE 404/410/451 → MarkRepoGone (repo_archived + repo_gone_at
-//     in one statement).
+//   - DEFINITIVE 404/410/451 → SidelineRepo (repo_archived + repo_gone_at +
+//     the gone episode in one statement, the queue row removed in the same
+//     transaction — 0.29.140, Copilot PR #252 sixth review: a stamp alone
+//     left a concurrently resurrected repository gone AND queued).
 //   - DEFINITIVE 200 on an already-gone-stamped repo → ResurrectRepo
 //     (clear + re-enqueue in one transaction, v0.28.6), so collection
 //     resumes if the org re-publicizes.
@@ -197,7 +199,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				tally.stamped++
 				continue
 			}
-			if err := store.MarkRepoGone(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {
+			if err := store.SidelineRepo(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {
 				if ctx.Err() != nil {
 					return interrupted()
 				}

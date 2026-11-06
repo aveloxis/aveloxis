@@ -26,7 +26,7 @@ import (
 // of UpsertRepo carries those three from the forge (verified 2026-09-26: org
 // scans pass the forge ID only); Phase 0's UpdateRepoMetadata is their
 // collection writer, and repo_archived is otherwise set only by the
-// lifecycle writers (MarkRepoGone, the v0.27.50 migrate step) —
+// lifecycle writers (SidelineRepo, the v0.27.50 migrate step) —
 // all registered in the SR-11 registry, which pins the conflict arm at the
 // unit tier. So the conflict arm leaves them alone: a re-upsert of a
 // collected repository, by any spelling, changes none of them.

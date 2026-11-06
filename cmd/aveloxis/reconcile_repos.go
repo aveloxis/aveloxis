@@ -8,7 +8,7 @@
 // skip+dequeue; a smaller share are lost-enqueue leftovers.
 //
 // Per stranded repo, classified by LIVE redirect check:
-//   - dead upstream (404/410/451)      → gone-stamped + archived (MarkRepoGone, the outcome prelim applies; 0.29.140)
+//   - dead upstream (404/410/451)      → gone-stamped + archived + dequeued (SidelineRepo, the outcome prelim applies; 0.29.140)
 //   - redirects to a TRACKED repo  → dataless: HealRenamedDuplicate
 //     (repoint links, delete the dup row); data-bearing: consolidate
 //     via the dedup-repos per-pair machinery (repoints + leaves-first
@@ -47,7 +47,7 @@ func reconcileReposCmd(cfgPath *string) *cobra.Command {
 		Short: "Heal non-archived repos that have no collection_queue row (v0.27.39)",
 		Long: `Finds repos rows the scheduler can never see (non-archived, no queue row —
 mostly rename-duplicate leftovers from prelim's skip+dequeue) and heals each
-by live redirect classification: dead repos archive, dataless rename
+by live redirect classification: dead repos are sidelined (gone-stamped, archived, out of the queue), dataless rename
 duplicates heal onto their tracked winner, data-bearing rename duplicates
 consolidate via the dedup-repos machinery, and everything else re-enqueues.
 
@@ -153,12 +153,15 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		switch {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
 			// Dead upstream — the outcome prelim applies: the gone stamp
-			// with the archived flag (0.29.140; ArchiveRepo set the flag
-			// alone, so the gone recheck never re-probed these rows and a
-			// transient 404 was final). The episode records this command.
+			// with the archived flag and, in the same transaction, no queue
+			// row (0.29.140; ArchiveRepo set the flag alone, so the gone
+			// recheck never re-probed these rows and a transient 404 was
+			// final; a stamp alone left a repository a concurrent resurrection
+			// had just re-queued gone AND queued). The episode records this
+			// command.
 			fmt.Printf("  dead:        %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
-				if err := store.MarkRepoGone(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {
+				if err := store.SidelineRepo(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {
 					if ctx.Err() != nil {
 						return interrupted()
 					}

@@ -616,7 +616,7 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 				-- primary_language and repo_archived are NOT written here —
 				-- InsertOnly for this statement in the SR-11 registry
 				-- (column_write_policy_test.go). Phase 0's UpdateRepoMetadata
-				-- is their collection writer; MarkRepoGone and the v0.27.50
+				-- is their collection writer; SidelineRepo and the v0.27.50
 				-- step set repo_archived on their own paths (ArchiveRepo was
 				-- removed in 0.29.140).
 				-- No UpsertRepo caller carries them from the forge (org scans

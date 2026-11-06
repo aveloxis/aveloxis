@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted
     -- upstream; the department-of-veterans-affairs class). Distinct
     -- from repo_archived, which also covers "GitHub says archived"
-    -- (still public). Set by MarkRepoGone, cleared by ClearRepoGone
+    -- (still public). Set by SidelineRepo (with the dequeue, one
+    -- transaction), cleared by ClearRepoGone
     -- (prelim) or ResurrectRepo (mark-gone-repos, the recheck ticker)
     -- when the same probe later sees the repo alive again.
     repo_gone_at            TIMESTAMPTZ,
@@ -2174,7 +2175,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_repo_forge_id_changes
 -- 0.29.140: the gone HISTORY (operator decision 2026-11-05, microsoft/bobsql).
 -- repos.repo_gone_at is the current state only and is cleared when the
 -- repository comes back; one row here per EPISODE keeps every stretch the
--- repository did not resolve on its forge: opened by MarkRepoGone in the same
+-- repository did not resolve on its forge: opened by SidelineRepo in the same
 -- statement as the stamp (the probe's HTTP status, the writer), closed by the
 -- clearer that lifted the stamp (its source), at most one open episode per
 -- repository. Shown on the repository page. Born empty on every fleet (the

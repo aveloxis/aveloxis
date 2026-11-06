@@ -109,7 +109,7 @@ func hasQueueRow(ctx context.Context, t *testing.T, store *PostgresStore, repoID
 	return n == 1
 }
 
-// MarkRepoGone opens ONE episode (a second mark while gone changes nothing in
+// The sideline opens ONE episode (a second mark while gone changes nothing in
 // the history: the first observation is the episode's start) and stamps the
 // cache state; ClearRepoGone closes it with the source that cleared it.
 func TestMarkRepoGoneOpensAnEpisodeAndClearingClosesIt(t *testing.T) {
@@ -120,7 +120,7 @@ func TestMarkRepoGoneOpensAnEpisodeAndClearingClosesIt(t *testing.T) {
 		t.Fatalf("fixture: a fresh repository carries no cache stamp, got %v", before)
 	}
 
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	eps := goneEpisodes(ctx, t, store, repoID)
@@ -130,7 +130,7 @@ func TestMarkRepoGoneOpensAnEpisodeAndClearingClosesIt(t *testing.T) {
 	if ga := repoGoneAt(ctx, t, store, repoID); ga == nil || !eps[0].goneAt.Equal(*ga) {
 		t.Errorf("the episode's gone_at is the row's stamp (%v), got %v", ga, eps[0].goneAt)
 	}
-	if err := store.MarkRepoGone(ctx, repoID, 410, GoneSourceMarkGoneRepos); err != nil { // a later probe while still gone
+	if err := store.SidelineRepo(ctx, repoID, 410, GoneSourceMarkGoneRepos); err != nil { // a later probe while still gone
 		t.Fatal(err)
 	}
 	eps = goneEpisodes(ctx, t, store, repoID)
@@ -142,7 +142,7 @@ func TestMarkRepoGoneOpensAnEpisodeAndClearingClosesIt(t *testing.T) {
 	}
 	stampAfterMark := repoDataChangedAt(ctx, t, store, repoID)
 	if stampAfterMark == nil {
-		t.Fatal("MarkRepoGone changes what the repository page shows (gone_at, the history): it stamps data_changed_at in the same statement")
+		t.Fatal("the sideline changes what the repository page shows (gone_at, the history): it stamps data_changed_at in the same statement")
 	}
 
 	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
@@ -160,7 +160,7 @@ func TestMarkRepoGoneOpensAnEpisodeAndClearingClosesIt(t *testing.T) {
 	}
 
 	// A second gone stretch is a second episode.
-	if err := store.MarkRepoGone(ctx, repoID, 451, GoneSourceReconcile); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 451, GoneSourceReconcile); err != nil {
 		t.Fatal(err)
 	}
 	eps = goneEpisodes(ctx, t, store, repoID)
@@ -178,7 +178,7 @@ func TestResurrectRepoClosesTheEpisodeAndEnqueues(t *testing.T) {
 	gone := seedGoneHistoryRepo(t, store, ctx, "resurrect-gone")
 	never := seedGoneHistoryRepo(t, store, ctx, "resurrect-never-gone")
 
-	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ResurrectRepo(ctx, gone, 10, GoneSourceRecheck); err != nil {
@@ -212,7 +212,7 @@ func TestResurrectIfListedResurrectsOnlyUnderTheStoredForgeID(t *testing.T) {
 	t.Cleanup(store.Close)
 	repoID := seedGoneHistoryRepo(t, store, ctx, "listed")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,7 +258,7 @@ func TestAdoptForgeIDResurrectsAGoneRepository(t *testing.T) {
 	for _, id := range []int64{gone, alive} {
 		mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, id)
 	}
-	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
@@ -292,13 +292,13 @@ func TestRepoStatsBatchCarriesTheGoneHistory(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
 	repoID := seedGoneHistoryRepo(t, store, ctx, "stats")
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkRepoGone(ctx, repoID, 451, GoneSourceRecheck); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 451, GoneSourceRecheck); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := store.GetRepoStatsBatch(ctx, []int64{repoID})
@@ -330,7 +330,7 @@ func TestArchivedReconcileStepLeavesGoneRowsArchived(t *testing.T) {
 	for _, id := range []int64{gone, live} {
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES ($1, 'Active', NOW())`, id)
 	}
-	if err := store.MarkRepoGone(ctx, gone, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_archived = TRUE WHERE repo_id = $1`, live)
@@ -365,7 +365,7 @@ func TestGoneEpisodeBackfillOpensOneEpisodePerGoneRepo(t *testing.T) {
 	never := seedGoneHistoryRepo(t, store, ctx, "backfill-never")
 	// A pre-0.29.140 gone row: the stamp without the history.
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_archived = TRUE, repo_gone_at = NOW() - interval '30 days' WHERE repo_id = $1`, stamped)
-	if err := store.MarkRepoGone(ctx, withEpisode, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, withEpisode, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	backfill := migrateStepSQL(t, backfillGoneEpisodesLabel)
@@ -430,7 +430,7 @@ func TestDedupOnePairCarriesTheLosersGoneEpisodes(t *testing.T) {
 				VALUES ($1, NOW() - interval '10 days', 404, 'prelim', NOW() - interval '9 days', 'gone-recheck', '0.29.140', NOW() - interval '10 days'),
 				       ($1, NOW() - interval '2 days', 451, 'mark-gone-repos', NULL, '', '0.29.140', NOW() - interval '2 days')`, loserID)
 			if winnerOpen {
-				if err := store.MarkRepoGone(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+				if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -496,14 +496,14 @@ func TestResurrectIfListedDoesNotRepeatAReversedResurrection(t *testing.T) {
 	t.Cleanup(store.Close)
 	repoID := seedGoneHistoryRepo(t, store, ctx, "flap")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || !back {
 		t.Fatalf("the first listing resurrects: %v %v", back, err)
 	}
 	// prelim probes the re-queued repository: still 404.
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DequeueRepo(ctx, repoID); err != nil {
@@ -529,7 +529,7 @@ func TestResurrectIfListedDoesNotRepeatAReversedResurrection(t *testing.T) {
 	}
 	// Per gone STRETCH, not per repository (round 2 F2): the last restoration
 	// was the recheck's, so a later stretch is the org scan's to end again.
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DequeueRepo(ctx, repoID); err != nil {
@@ -630,13 +630,20 @@ func TestSidelineRepoIsOneStatementThatOrdersWithResurrection(t *testing.T) {
 }
 
 // Prelim's gone path is the one statement: SidelineRepo, no separate
-// MarkRepoGone + DequeueRepo pair (the window the race needed).
+// stamp + DequeueRepo pair (the window the race needed).
 func TestPrelimSidelinesInOneStatement(t *testing.T) {
 	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func RunPrelim("))
 	if !strings.Contains(src, "store.SidelineRepo(ctx, repo.ID, statusCode, db.GoneSourcePrelim)") {
 		t.Fatal("prelim's sideline must be store.SidelineRepo (stamp + episode + dequeue in one statement)")
 	}
-	if strings.Contains(src, "store.MarkRepoGone(") {
+	// The gone arm ends with the sideline: no DequeueRepo of its own follows
+	// it before the arm returns (the stamp-only marker is gone from the store;
+	// TestMarkRepoGoneIsSingleStatement pins that side).
+	arm := src[strings.Index(src, "store.SidelineRepo("):]
+	if end := strings.Index(arm, "\n\t}\n"); end > 0 {
+		arm = arm[:end]
+	}
+	if strings.Contains(arm, "DequeueRepo") {
 		t.Error("prelim must not mark gone and dequeue in two statements — an org scan's resurrection between them strands the repository")
 	}
 }
@@ -653,7 +660,7 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	public := seedGoneHistoryRepo(t, store, ctx, "adopt-public")
 	for _, id := range []int64{private, public} {
 		mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, id)
-		if err := store.MarkRepoGone(ctx, id, 404, GoneSourcePrelim); err != nil {
+		if err := store.SidelineRepo(ctx, id, 404, GoneSourcePrelim); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -689,7 +696,7 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	// third review): adopted with the stamp KEPT — unknown is not proof.
 	legacy := seedGoneHistoryRepo(t, store, ctx, "adopt-legacy")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, legacy)
-	if err := store.MarkRepoGone(ctx, legacy, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, legacy, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id) VALUES ($1, '95336057', '1438985131')`, legacy)
@@ -725,7 +732,7 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	}
 	direct := seedGoneHistoryRepo(t, store, ctx, "adopt-direct")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, direct)
-	if err := store.MarkRepoGone(ctx, direct, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, direct, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AdoptForgeID(ctx, direct, "95336057", "1438985131", &created, "operator", "", false); err != nil {
@@ -746,7 +753,7 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 	t.Cleanup(store.Close)
 	repoID := seedGoneHistoryRepo(t, store, ctx, "sideline-race")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
-	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err) // the pre-state: gone and queueless
 	}
 	holder, err := store.pool.Begin(ctx)

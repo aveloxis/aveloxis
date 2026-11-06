@@ -113,7 +113,7 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	closureArm := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return\s*\n`)
 	for write, arm := range map[string]*regexp.Regexp{
 		"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {":                              closureArm,
-		"store.MarkRepoGone(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {": loopArm,
+		"store.SidelineRepo(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {": loopArm,
 		"store.ResurrectRepo(ctx, c.RepoID, 10, db.GoneSourceMarkGoneRepos); err != nil {":    loopArm,
 	} {
 		at := strings.Index(stripped, write)

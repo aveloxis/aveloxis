@@ -19,8 +19,11 @@ which the repository did not resolve on its forge, oldest first, each with
 field is additive. `ForgeIDChange` (the admin listing and the stats
 `forge_id_changes`) gains `observed_private`: whether the listing that last
 observed the change was not public; absent when unknown (recorded before
-0.29.140). Adopting a change that is not known public moves the id but does
-not lift a gone stamp. Nothing else changes.
+0.29.140, or read by an api started before the migrate added the column — the
+readers fall back to the older projection instead of failing the page).
+Adopting a change that is not known public moves the id but does not lift a
+gone stamp; the admin page's adoption keeps the recorded value (unknown stays
+unknown), the CLI records the forge's answer. Nothing else changes.
 
 ## Changes for API clients in 0.29.129
 

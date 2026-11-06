@@ -35,7 +35,7 @@ import (
 type adoptForgeIDStore interface {
 	GetRepoByID(ctx context.Context, repoID int64) (*model.Repo, error)
 	GetRepoForgeID(ctx context.Context, repoID int64) (string, error)
-	AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, publiclyReachable bool) error
+	AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, observedPrivate *bool) error
 }
 
 type repoInfoFetcher interface {
@@ -84,8 +84,9 @@ func adoptForgeIDFor(ctx context.Context, store adoptForgeIDStore, clientFor fun
 		created = &c
 	}
 	// The forge's own answer on visibility decides whether a gone stamp is
-	// lifted with the adoption (a private re-creation stays gone).
-	if err := store.AdoptForgeID(ctx, repoID, stored, info.PlatformRepoID, created, adoptedBy, note, !info.Private); err != nil {
+	// lifted with the adoption (a private re-creation stays gone), and is
+	// recorded on the change.
+	if err := store.AdoptForgeID(ctx, repoID, stored, info.PlatformRepoID, created, adoptedBy, note, &info.Private); err != nil {
 		return err
 	}
 	when := "an unknown date"

@@ -27,8 +27,13 @@ type fakeAdoptStore struct {
 
 func (f *fakeAdoptStore) GetRepoByID(context.Context, int64) (*model.Repo, error) { return f.repo, nil }
 func (f *fakeAdoptStore) GetRepoForgeID(context.Context, int64) (string, error)   { return f.stored, nil }
-func (f *fakeAdoptStore) AdoptForgeID(_ context.Context, _ int64, oldID, newID string, created *time.Time, _, _ string, publiclyReachable bool) error {
-	f.reachable = append(f.reachable, publiclyReachable)
+func (f *fakeAdoptStore) AdoptForgeID(_ context.Context, _ int64, oldID, newID string, created *time.Time, _, _ string, observedPrivate *bool) error {
+	// The CLI asked the forge: its answer is always KNOWN (never nil).
+	if observedPrivate == nil {
+		f.reachable = append(f.reachable, false)
+		return errors.New("the CLI must pass the forge's own answer, never unknown")
+	}
+	f.reachable = append(f.reachable, !*observedPrivate)
 	d := "nil"
 	if created != nil {
 		d = created.Format("2006-01-02")

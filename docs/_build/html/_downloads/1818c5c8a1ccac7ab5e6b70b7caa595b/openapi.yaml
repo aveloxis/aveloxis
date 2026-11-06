@@ -8665,7 +8665,7 @@ components:
           description: Adopted changes only.
         observed_private:
           type: boolean
-          description: Whether the listing that last observed the change was not public (GitHub private; GitLab internal or private). Absent when unknown (a change recorded before 0.29.140). Adopting a change that is not KNOWN public (`false`) moves the id but does not lift a gone stamp.
+          description: Whether the listing that last observed the change was not public (GitHub private; GitLab internal or private). Absent when unknown (a change recorded before 0.29.140, or read before the migrate added the column). Adopting a change that is not KNOWN public (`false`) moves the id but does not lift a gone stamp; an adoption from the admin page keeps the recorded value (unknown stays unknown), `aveloxis adopt-forge-id` records the forge's own answer.
         adopted_by:
           type: string
         note:

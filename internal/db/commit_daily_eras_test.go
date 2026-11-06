@@ -35,7 +35,7 @@ func TestReplaceRepoCommitDailyKeepsAnEarlierEraOnAnAdoptedChange(t *testing.T) 
 	// is fx.in; a row dated the day before belongs to the earlier era.
 	created := fx.in.Add(16*time.Hour + 38*time.Minute)
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", true); err != nil {
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", publicListing()); err != nil {
 		t.Fatal(err)
 	}
 	old, boundary, next := fx.in.AddDate(0, 0, -1), fx.in, fx.in.AddDate(0, 0, 1)
@@ -173,7 +173,8 @@ func TestAdoptForgeIDRestoresTheEarlierErasDailyBuckets(t *testing.T) {
 	}
 	created := fx.in.Add(16 * time.Hour)
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", true); err != nil {
+	isPrivate := false
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", &isPrivate); err != nil {
 		t.Fatal(err)
 	}
 	rows := func() map[string]int {
@@ -210,10 +211,18 @@ func TestAdoptForgeIDRestoresTheEarlierErasDailyBuckets(t *testing.T) {
 	// The repair step for repositories adopted before 0.29.140: idempotent,
 	// the same rows.
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day < $2`, fx.repoID, fx.in)
+	// Copilot PR #252, seventh review: the repair changes the charts the
+	// same way the adoption does, so it stamps the cache state of every
+	// repository it restored a bucket for, in the same statement — and only
+	// those (the idempotent second run inserts nothing and stamps nothing).
 	repair := migrateStepSQL(t, restoreEarlierErasLabel)
 	for i := 0; i < 2; i++ {
+		mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET data_changed_at = NULL WHERE repo_id = $1`, fx.repoID)
 		if _, err := store.pool.Exec(ctx, repair); err != nil {
 			t.Fatal(err)
+		}
+		if at := repoDataChangedAt(ctx, t, store, fx.repoID); (at != nil) != (i == 0) {
+			t.Errorf("run %d: the repair stamps exactly the repositories it restored buckets for (stamped: %v)", i+1, at != nil)
 		}
 	}
 	if got := rows(); got[old.Format("2006-01-02")+" old@x"] != 1 || got[fx.in.Format("2006-01-02")+" _avcd_era03@x"] != 3 || len(got) != 2 {
@@ -258,7 +267,7 @@ func TestDailyLockPrecedesEveryReposWriteInItsTaker(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"ReplaceRepoCommitDaily", "InvalidateCommitDailyComplete", "FillRepoCommitDailyFromCommits", "AdoptForgeID"} {
+	for _, want := range []string{"ReplaceRepoCommitDaily", "InvalidateCommitDailyComplete", "FillRepoCommitDailyFromCommits", "adoptForgeIDUnderLock"} {
 		if !takers[want] {
 			t.Errorf("%s must take repoCommitDailyLockSQL (it writes repo_commit_daily or the completeness stamp); takers seen: %v", want, takers)
 		}
@@ -286,7 +295,8 @@ func TestAdoptForgeIDWaitsForTheDailyLock(t *testing.T) {
 	}
 	short, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	err = store.AdoptForgeID(short, fx.repoID, "95336057", "1438985131", nil, "operator", "", true)
+	isPrivate := false
+	err = store.AdoptForgeID(short, fx.repoID, "95336057", "1438985131", nil, "operator", "", &isPrivate)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("with the daily lock held the adoption waits and the deadline ends it, got %v", err)
 	}
@@ -297,7 +307,7 @@ func TestAdoptForgeIDWaitsForTheDailyLock(t *testing.T) {
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", nil, "operator", "", true); err != nil {
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", nil, "operator", "", &isPrivate); err != nil {
 		t.Fatalf("with the lock free the adoption goes through: %v", err)
 	}
 }

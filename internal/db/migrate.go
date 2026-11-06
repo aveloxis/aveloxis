@@ -2775,10 +2775,15 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// adopted change's forge creation day, else its first observation) come
 	// back from the append-only commits table, where no bucket exists. The
 	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
-	// analyzer. Once; idempotent (DO NOTHING).
+	// analyzer. Once; idempotent (DO NOTHING). The charts change for every
+	// repository a bucket came back for, so the same statement stamps their
+	// cache state (data_changed_at, as the adoption's own restore does —
+	// Copilot PR #252, seventh review: a cached chart answer from before
+	// the migrate stayed valid otherwise) and only theirs.
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
-		`INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+		`WITH restored AS (
+		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
 		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
 		        COUNT(DISTINCT co.cmt_commit_hash),
 		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
@@ -2790,7 +2795,10 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 WHERE co.cmt_author_timestamp IS NOT NULL
 		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < b.boundary
 		 GROUP BY 1, 2, 3
-		 ON CONFLICT (repo_id, day, author_email) DO NOTHING`)
+		 ON CONFLICT (repo_id, day, author_email) DO NOTHING
+		 RETURNING repo_id)
+		 UPDATE aveloxis_data.repos SET data_changed_at = NOW()
+		  WHERE repo_id IN (SELECT DISTINCT repo_id FROM restored)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

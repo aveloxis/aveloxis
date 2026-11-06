@@ -53,12 +53,12 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 
 	// 2. Adoption with a stale expectation refuses and changes nothing.
 	created := time.Date(2026, 9, 16, 21, 26, 15, 0, time.UTC)
-	if err := store.AdoptForgeID(ctx, repoID, "999", "1373652440", &created, "operator", "", true); !errors.Is(err, ErrForgeIDNotAsExpected) {
+	if err := store.AdoptForgeID(ctx, repoID, "999", "1373652440", &created, "operator", "", publicListing()); !errors.Is(err, ErrForgeIDNotAsExpected) {
 		t.Fatalf("adopting over a stored ID that is not the expected old one must refuse, got %v", err)
 	}
 
 	// 3. Adoption moves the stored ID and stamps the record.
-	if err := store.AdoptForgeID(ctx, repoID, "861974784", "1373652440", &created, "operator", "upstream re-created; treated as a continuation", true); err != nil {
+	if err := store.AdoptForgeID(ctx, repoID, "861974784", "1373652440", &created, "operator", "upstream re-created; treated as a continuation", publicListing()); err != nil {
 		t.Fatalf("AdoptForgeID: %v", err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&stored); err != nil || stored != "1373652440" {
@@ -92,7 +92,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	// older log) creates the record in the same step.
 	repo2 := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-change-2")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '318353587' WHERE repo_id = $1`, repo2)
-	if err := store.AdoptForgeID(ctx, repo2, "318353587", "1373725939", nil, "operator", "", true); err != nil {
+	if err := store.AdoptForgeID(ctx, repo2, "318353587", "1373725939", nil, "operator", "", publicListing()); err != nil {
 		t.Fatalf("adopt without a prior observation: %v", err)
 	}
 	if s2, err := store.GetRepoStats(ctx, repo2); err != nil || len(s2.ForgeIDChanges) != 1 || s2.ForgeIDChanges[0].ForgeCreatedAt != nil {

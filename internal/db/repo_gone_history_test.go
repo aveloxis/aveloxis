@@ -5,11 +5,14 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -263,7 +266,7 @@ func TestAdoptForgeIDResurrectsAGoneRepository(t *testing.T) {
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
 
-	if err := store.AdoptForgeID(ctx, gone, "95336057", "1438985131", &created, "sgoggins", "", true); err != nil {
+	if err := store.AdoptForgeID(ctx, gone, "95336057", "1438985131", &created, "sgoggins", "", publicListing()); err != nil {
 		t.Fatal(err)
 	}
 	if repoGoneAt(ctx, t, store, gone) != nil {
@@ -279,7 +282,7 @@ func TestAdoptForgeIDResurrectsAGoneRepository(t *testing.T) {
 
 	// A repository that was never gone is adopted as before: no queue row
 	// is invented for it (its queue state is its own).
-	if err := store.AdoptForgeID(ctx, alive, "95336057", "1438985131", &created, "sgoggins", "", true); err != nil {
+	if err := store.AdoptForgeID(ctx, alive, "95336057", "1438985131", &created, "sgoggins", "", publicListing()); err != nil {
 		t.Fatal(err)
 	}
 	if hasQueueRow(ctx, t, store, alive) {
@@ -706,6 +709,13 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	if repoGoneAt(ctx, t, store, legacy) == nil || hasQueueRow(ctx, t, store, legacy) {
 		t.Error("a change with no recorded visibility is adopted but keeps the stamp")
 	}
+	// Copilot PR #252, seventh review: the adoption used to record unknown as
+	// PRIVATE (NOT false), and once the stored id equals the listed one a
+	// same-ID scan records nothing, so the record never recovered. Unknown
+	// stays NULL through the adoption.
+	if v := observedPrivateOf(ctx, t, store, legacy, "95336057", "1438985131"); v != nil {
+		t.Errorf("an adoption keeps an unknown visibility unknown, got %v", *v)
+	}
 	// The admin page adopts from the record.
 	for _, id := range []int64{private, public} {
 		if err := store.AdoptPendingForgeIDChange(ctx, id, "95336057", "1438985131", "admin", ""); err != nil {
@@ -735,11 +745,206 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	if err := store.SidelineRepo(ctx, direct, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdoptForgeID(ctx, direct, "95336057", "1438985131", &created, "operator", "", false); err != nil {
+	isPrivate := true
+	if err := store.AdoptForgeID(ctx, direct, "95336057", "1438985131", &created, "operator", "", &isPrivate); err != nil {
 		t.Fatal(err)
 	}
 	if repoGoneAt(ctx, t, store, direct) == nil {
 		t.Error("the CLI's adoption of a private re-creation keeps the stamp")
+	}
+	if v := observedPrivateOf(ctx, t, store, direct, "95336057", "1438985131"); v == nil || !*v {
+		t.Error("the CLI records the forge's own answer on the change it creates")
+	}
+}
+
+// publicListing is a KNOWN public visibility for AdoptForgeID.
+func publicListing() *bool { v := false; return &v }
+
+// observedPrivateOf reads one change's recorded visibility (nil = unknown).
+func observedPrivateOf(ctx context.Context, t *testing.T, store *PostgresStore, repoID int64, oldID, newID string) *bool {
+	t.Helper()
+	var v *bool
+	if err := store.pool.QueryRow(ctx, `SELECT observed_private FROM aveloxis_data.repo_forge_id_changes
+		WHERE repo_id = $1 AND old_forge_id = $2 AND new_forge_id = $3`, repoID, oldID, newID).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// The admin page's adoption decides on the observation committed BEFORE it,
+// never an older one (Copilot PR #252, seventh review): the record's
+// visibility was read outside the adoption's transaction, so a scan that
+// re-recorded the change as private between that read and the adoption's
+// upsert was overwritten by the stale "public" — the upsert waited for the
+// scan's commit, then resurrected a repository whose latest listing was
+// private. The read is now inside the transaction, on the locked row.
+func TestAdoptPendingForgeIDChangeReadsTheObservationItWaitedFor(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "adopt-toctou")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
+	// The scan first listed the re-creation PUBLIC ...
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
+		t.Fatal(err)
+	}
+	// ... and a later scan is re-recording it PRIVATE, not yet committed.
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := holder.Exec(ctx, recordForgeIDObservationSQL, repoID, "95336057", "1438985131", &created, true); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.AdoptPendingForgeIDChange(ctx, repoID, "95336057", "1438985131", "admin", "") }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%repo_forge_id_changes%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the adoption never waited on the scan's row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if v := observedPrivateOf(ctx, t, store, repoID, "95336057", "1438985131"); v == nil || !*v {
+		t.Error("the adoption keeps the scan's later PRIVATE observation, never the stale public one")
+	}
+	if repoGoneAt(ctx, t, store, repoID) == nil || hasQueueRow(ctx, t, store, repoID) {
+		t.Error("a repository whose latest listing was private stays gone and unqueued")
+	}
+	var stored string
+	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&stored); err != nil || stored != "1438985131" {
+		t.Fatalf("the id is still adopted: %q %v", stored, err)
+	}
+}
+
+// The admin page's adoption locks the repos row BEFORE the change row (the
+// L10 pass on the seventh-review fix): the dedup merge goes repos rows →
+// change rows, and an adoption that took the change row first deadlocked
+// with a `dedup-repos` of the same repository. Probed from the outside: while
+// the adoption waits on a held repos row, the change row is still free — a
+// scan's re-recording of the change goes through at once, and the adoption
+// then decides on it.
+func TestAdoptPendingForgeIDChangeLocksTheRepositoryBeforeTheChange(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "adopt-order")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
+		t.Fatal(err)
+	}
+	// A merge holds the repos row the way dedupOnePair does.
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := holder.Exec(ctx, lockRepoRowsSQL, []int64{repoID}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.AdoptPendingForgeIDChange(ctx, repoID, "95336057", "1438985131", "admin", "") }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM aveloxis_data.repos WHERE repo_id = ANY%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the adoption never waited on the repos row")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The change row is free: the scan's re-recording does not wait.
+	short, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, err := store.pool.Exec(short, recordForgeIDObservationSQL, repoID, "95336057", "1438985131", &created, true); err != nil {
+		t.Fatalf("the change row must not be locked while the adoption waits on the repos row: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if v := observedPrivateOf(ctx, t, store, repoID, "95336057", "1438985131"); v == nil || !*v {
+		t.Error("the adoption decided on the observation recorded while it waited")
+	}
+	if repoGoneAt(ctx, t, store, repoID) == nil {
+		t.Error("listed private: the stamp stays")
+	}
+}
+
+// The forge-ID change readers tolerate a 0.29.139 schema (Copilot PR #252,
+// seventh review): the table exists, observed_private does not until the
+// migrate adds it, and an api or web process started first answered 42703 —
+// which the stats batch degrades only for a missing TABLE (a column typo
+// must fail loudly). On 42703 the readers fall back to the pre-column
+// projection: the notice is served, the visibility unknown.
+func TestForgeIDChangeReadersTolerateASchemaWithoutObservedPrivate(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "old-schema")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	isPrivate := false
+	if err := store.AdoptForgeID(ctx, repoID, "95336057", "1438985131", nil, "operator", "", &isPrivate); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes DROP COLUMN observed_private`)
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
+	})
+	stats, err := store.GetRepoStatsBatch(ctx, []int64{repoID})
+	if err != nil {
+		t.Fatalf("stats on the older schema: %v", err)
+	}
+	if st := stats[repoID]; st == nil || len(st.ForgeIDChanges) != 1 || st.ForgeIDChanges[0].NewForgeID != "1438985131" || st.ForgeIDChanges[0].VisibilityKnown() {
+		t.Fatalf("the notice is served with the visibility unknown: %+v", stats[repoID])
+	}
+	all, err := store.ListForgeIDChanges(ctx, false)
+	if err != nil {
+		t.Fatalf("the admin listing on the older schema: %v", err)
+	}
+	found := false
+	for _, c := range all {
+		if c.RepoID == repoID {
+			found = true
+			if c.VisibilityKnown() {
+				t.Error("the listing's visibility is unknown without the column")
+			}
+		}
+	}
+	if !found {
+		t.Error("the admin listing serves the change")
+	}
+	// Any other column failure still fails loudly (SR-5).
+	if isUndefinedColumn(&pgconn.PgError{Code: "42P01"}) || !isUndefinedColumn(&pgconn.PgError{Code: "42703"}) || isUndefinedColumn(errors.New("x")) {
+		t.Error("isUndefinedColumn is 42703 alone")
 	}
 }
 

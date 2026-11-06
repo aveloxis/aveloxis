@@ -202,7 +202,12 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
 			if !errors.Is(healErr, context.Canceled) {
-				logger.Warn("prelim: rename-duplicate heal failed — falling back to dequeue",
+				// An ERROR (the heal retries a deadlock itself; this is the
+				// database or its precondition): the duplicate is dequeued
+				// below as before, so its links stay unrepaired until
+				// `aveloxis reconcile-repos` heals it — the stranded gauge at
+				// start names that command (Copilot PR #252, fifth review).
+				logger.Error("prelim: rename-duplicate heal failed — falling back to dequeue; the duplicate's user links stay until `aveloxis reconcile-repos` heals it",
 					"old_repo_id", repo.ID, "new_repo_id", existingID, "error", healErr)
 			}
 		case healed:

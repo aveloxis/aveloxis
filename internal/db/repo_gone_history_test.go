@@ -5,6 +5,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -554,8 +555,12 @@ func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
 	if lock < 0 || carry < 0 || lock > carry {
 		t.Fatalf("the repos-row lock (%d) must precede the gone-history carry (%d)", lock, carry)
 	}
-	if !strings.Contains(body[:carry], "lockRepoRowsSQL") || !strings.Contains(lockRepoRowsSQL, "FOR UPDATE") || !strings.Contains(lockRepoRowsSQL, "ORDER BY repo_id") {
-		t.Error("both repos rows must be locked FOR UPDATE in id order (lockRepoRowsSQL) before the carry")
+	// FOR NO KEY UPDATE, never FOR UPDATE (Copilot's fifth review): the
+	// writers to exclude UPDATE non-key columns; a child's FK check (a star)
+	// must not wait on the merge, or the merge's own ON CONFLICT insert of
+	// that star and the star deadlock.
+	if !strings.Contains(body[:carry], "lockRepoRowsSQL") || !strings.Contains(lockRepoRowsSQL, "FOR NO KEY UPDATE") || !strings.Contains(lockRepoRowsSQL, "ORDER BY repo_id") {
+		t.Error("both repos rows must be locked FOR NO KEY UPDATE in id order (lockRepoRowsSQL) before the carry")
 	}
 	// The repos rows come BEFORE the loser's queue-row lock (Copilot PR #252,
 	// third review): the gone writers go repos row → queue row.
@@ -906,5 +911,58 @@ func TestMergeLocksSerialiseWithASidelineOfTheLoser(t *testing.T) {
 	}
 	if repoGoneAt(ctx, t, store, loser) == nil || hasQueueRow(ctx, t, store, loser) {
 		t.Fatal("the sideline's outcome stands: gone and queueless")
+	}
+}
+
+// Copilot's fifth review (PR #252): a user starring the WINNER while a merge
+// or heal holds its repos row. user_repo_stars.repo_id references repos, so
+// the star's deferred FK check takes KEY SHARE on the winner's row; the merge
+// also inserts the repointed star (user, winner) ON CONFLICT DO NOTHING, which
+// waits for a concurrent uncommitted insert of the same key to decide. With
+// the rows held FOR UPDATE the two waited on each other (a deadlock, one
+// victim; the heal's victim fell back to a dequeue with the duplicate's links
+// unrepaired). FOR NO KEY UPDATE still excludes every writer that UPDATEs the
+// row (the gone writers, the adoption) but lets the FK's KEY SHARE through,
+// so the star commits and the merge's insert sees it — no cycle.
+func TestMergeLocksDoNotBlockAStarOfTheWinner(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	winner := seedGoneHistoryRepo(t, store, ctx, "star-winner")
+	loser := seedGoneHistoryRepo(t, store, ctx, "star-loser")
+	var userID int
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.users (login_name, oauth_provider, email, admin)
+		VALUES ($1, 'github', '', FALSE) RETURNING user_id`, fmt.Sprintf("_avstar_%d", time.Now().UnixNano())).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`, userID)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
+	})
+	merge, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer merge.Rollback(ctx) //nolint:errcheck // released below
+	if _, err := merge.Exec(ctx, lockRepoRowsSQL, []int64{loser, winner}); err != nil {
+		t.Fatal(err)
+	}
+	// The user stars the winner while the merge holds its row: the star
+	// must COMMIT (its FK check is not excluded by the merge's lock).
+	short, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := store.StarRepo(short, userID, winner); err != nil {
+		t.Fatalf("a star of the winner must not wait on the merge's row lock (nor deadlock with it): %v", err)
+	}
+	// The merge's repoint of the same star then sees the committed row.
+	if _, err := merge.Exec(ctx, `INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, winner); err != nil {
+		t.Fatalf("the merge's repoint after the star: %v", err)
+	}
+	if err := merge.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.user_repo_stars WHERE user_id = $1 AND repo_id = $2`, userID, winner).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("one star row: %d %v", n, err)
 	}
 }

@@ -177,16 +177,24 @@ const carryGoneHistorySQL = `
 			UPDATE aveloxis_data.repos SET data_changed_at = NOW()
 			WHERE repo_id = $2 AND EXISTS (SELECT 1 FROM carried)`
 
-// lockRepoRowsSQL takes a merge's two repos rows FOR UPDATE, in id order ($1
-// = both ids) and BEFORE any queue-row lock — the same order as the gone
-// writers (SidelineRepo: the repos row, then the queue row), so a merge and a
-// concurrent sideline or resurrection never deadlock, and a loser can gain no
-// episode between the carry and its delete (Copilot PR #252, third review).
-// The one reverse edge left is the daily-table writers (heal-commit-daily:
-// its advisory lock and the loser's daily rows, THEN the repos row); a merge
-// beside such a fill can be a deadlock victim, and every merge caller retries
-// on 40P01 (the batch and DedupRenamedRepoPair), as the fill does.
-const lockRepoRowsSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = ANY($1::bigint[]) ORDER BY repo_id FOR UPDATE`
+// lockRepoRowsSQL takes a merge's two repos rows FOR NO KEY UPDATE, in id
+// order ($1 = both ids) and BEFORE any queue-row lock — the same order as the
+// gone writers (SidelineRepo: the repos row, then the queue row), so a merge
+// and a concurrent sideline or resurrection never deadlock, and a loser can
+// gain no episode between the carry and its delete (Copilot PR #252, third
+// review). NO KEY UPDATE, not FOR UPDATE (fifth review): every writer this
+// must exclude UPDATEs non-key columns of the row and so takes NO KEY UPDATE
+// itself, which conflicts; a foreign-key check from a child table
+// (user_repo_stars.repo_id — a user starring the winner) takes KEY SHARE,
+// which conflicts with FOR UPDATE but not with this, so the star commits
+// instead of waiting on the merge while the merge's own ON CONFLICT insert
+// of that star waits on it — the deadlock whose heal-side victim left the
+// duplicate dequeued with its links unrepaired. The one reverse edge left is
+// the daily-table writers (heal-commit-daily: its advisory lock and the
+// loser's daily rows, THEN the repos row); a merge beside such a fill can be
+// a deadlock victim, and every merge caller retries on 40P01 (the batch,
+// DedupRenamedRepoPair and HealRenamedDuplicate), as the fill does.
+const lockRepoRowsSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = ANY($1::bigint[]) ORDER BY repo_id FOR NO KEY UPDATE`
 
 // MarkRepoGoneChecked records that the gone state was re-verified
 // against the forge and the repo is STILL gone (or the probe was not

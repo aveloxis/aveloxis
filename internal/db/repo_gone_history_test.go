@@ -883,8 +883,9 @@ func TestSetPlatformRepoIDIfEmptySeenReportsAGoneRowUnderTheListedID(t *testing.
 	// The scan resurrects only on the report (the filter), and never for a
 	// private listing.
 	code := srctest.StripGoComments(srctest.PackageFunc(t, "internal/scheduler", "func (s *Scheduler) ingestDiscovered("))
-	if !strings.Contains(code, "if !item.Private && goneUnderListedID {") || strings.Count(code, "ResurrectIfListed(") != 1 {
-		t.Error("ingestDiscovered asks ResurrectIfListed only for a public listing of a row the id backfill saw gone under the listed id")
+	// A backfill error is not "not gone" (SR-5): the public listing asks.
+	if !strings.Contains(code, "if !item.Private && (goneUnderListedID || idErr != nil) {") || strings.Count(code, "ResurrectIfListed(") != 1 {
+		t.Error("ingestDiscovered asks ResurrectIfListed only for a public listing of a row the id backfill saw gone under the listed id, or whose backfill failed")
 	}
 }
 

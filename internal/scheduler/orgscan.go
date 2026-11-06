@@ -80,7 +80,7 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 				return out, idErr
 			}
 			if idErr != nil {
-				s.logger.Warn("org scan: forge-ID backfill failed", "repo_id", repoID, "error", idErr)
+				s.logger.Warn("org scan: forge-ID backfill failed — the gone state is unknown, so a public listing still asks for the resurrection", "repo_id", repoID, "error", idErr)
 			}
 			// 0.29.140: the forge lists this repository PUBLICLY — a
 			// gone-stamped row that stores the listed forge ID is reachable
@@ -97,8 +97,10 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 			// for a row the id backfill saw gone-stamped under the listed id
 			// (Copilot PR #252, ninth review: one more statement per public
 			// repository of every scan, almost all of them not gone); the
-			// store re-checks every condition in the statement itself.
-			if !item.Private && goneUnderListedID {
+			// store re-checks every condition in the statement itself. A
+			// backfill ERROR is not "not gone" (SR-5): the listing then asks
+			// as before, and the statement decides.
+			if !item.Private && (goneUnderListedID || idErr != nil) {
 				back, rerr := s.store.ResurrectIfListed(ctx, repoID, item.ForgeID, 100)
 				if errors.Is(rerr, context.Canceled) {
 					return out, rerr

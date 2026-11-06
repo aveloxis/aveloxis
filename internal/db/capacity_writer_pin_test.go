@@ -26,16 +26,16 @@ var userReposInsert = regexp.MustCompile(`(?i)insert\s+into\s+aveloxis_ops\.user
 // addPasteWithinCap (v0.29.90); new repositories are admitted by
 // decideWithinCap (linkWithinCap's fast path links nothing new; linkHeld
 // takes a place holdRepoPlaces already decided; the decide → refuse →
-// insert order is pinned for the paste writer). The two other INSERTs
-// re-point existing links from a
-// duplicate repository to its survivor (the count of distinct
-// repositories an account reaches can only fall). Exact counts: a new
+// insert order is pinned for the paste writer). The one other INSERT
+// re-points existing links from a duplicate repository to its survivor
+// (the count of distinct repositories an account reaches can only fall):
+// repointGroupLinksSQL in repo_dedup.go, one spelling since 0.29.140, which
+// the case-variant merge and the rename heal both run. Exact counts: a new
 // writer anywhere in the module, or a re-pointer that moved, fails.
 func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	want := map[string]int{
-		"internal/db/capacity_store.go":        1, // insertLinksSQL (linkWithinCap ×3, addPasteWithinCap ×1)
-		"internal/db/repo_dedup.go":            1, // repoint user_repos (case-variant merge)
-		"internal/db/rename_duplicate_heal.go": 1, // repoint group links (rename duplicate)
+		"internal/db/capacity_store.go": 1, // insertLinksSQL (linkWithinCap ×3, addPasteWithinCap ×1)
+		"internal/db/repo_dedup.go":     1, // repointGroupLinksSQL (the merge and the heal)
 	}
 	root := srctest.Root(t)
 	got := map[string]int{}

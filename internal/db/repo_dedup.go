@@ -377,6 +377,27 @@ var loserHygieneDeletes = []string{
 // Augur-legacy no-write-path tables (repos_fetch_log, working_commits,
 // repo_test_coverage, network_beyond_augur*).
 
+// repointGroupLinksSQL and repointStarsSQL move a merged duplicate's
+// user-facing links ($1 loser, $2 winner) onto the repository that stays, as
+// ONE statement each: the delete and the insert read one snapshot, so a link
+// a user adds to the loser while the merge runs is either moved (it existed
+// when the statement ran) or refused at the merge's commit by the loser's
+// delete (the fail-safe), never seen by the delete and missed by the insert
+// (the fresh review of the fifth round's fix: two statements had that window
+// once the row lock let the star's FK check through; group links had it
+// before). Shared by the dedup merge and the dataless rename heal.
+const repointGroupLinksSQL = `
+			WITH moved AS (DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1 RETURNING group_id)
+			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
+			SELECT group_id, $2 FROM moved
+			ON CONFLICT DO NOTHING`
+
+const repointStarsSQL = `
+			WITH moved AS (DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1 RETURNING user_id)
+			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
+			SELECT user_id, $2 FROM moved
+			ON CONFLICT DO NOTHING`
+
 // dedupOnePair merges one loser into its winner inside a single
 // transaction. Statement order matters — most child FKs are ON DELETE
 // RESTRICT, which checks immediately even though the constraints are
@@ -473,18 +494,11 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		sql   string
 		args  []any
 	}{
-		{"repoint user_repos", `
-			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-			SELECT group_id, $2 FROM aveloxis_ops.user_repos WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete loser user_repos", `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, []any{pair.LoserID}},
+		// One statement each (delete + insert on one snapshot; repo_gone.go).
+		{"repoint user_repos", repointGroupLinksSQL, []any{pair.LoserID, pair.WinnerID}},
 		// v0.27.4: per-user stars are links like user_repos — repoint so
 		// a user who starred either case variant keeps their star.
-		{"repoint user_repo_stars", `
-			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
-			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete loser user_repo_stars", `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1`, []any{pair.LoserID}},
+		{"repoint user_repo_stars", repointStarsSQL, []any{pair.LoserID, pair.WinnerID}},
 		{"delete loser collection_queue", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},

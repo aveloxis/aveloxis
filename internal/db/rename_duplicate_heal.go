@@ -90,16 +90,12 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 			// the gone writers go repos row → queue row, and the duplicate can
 			// gain no episode between the carry below and its delete.
 			{"lock repository rows", lockRepoRowsSQL, true},
-			{"repoint stars", `
-			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
-			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, true},
-			{"delete dup stars", `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1`, false},
-			{"repoint group links", `
-			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-			SELECT group_id, $2 FROM aveloxis_ops.user_repos WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, true},
-			{"delete dup group links", `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, false},
+			// One statement each — delete + insert on one snapshot (repo_gone.go):
+			// a link a user adds to the duplicate while the heal runs is moved, or
+			// refused at the commit by the duplicate's delete (the fail-safe), never
+			// deleted unseen by the insert.
+			{"repoint user_repo_stars", repointStarsSQL, true},
+			{"repoint user_repos", repointGroupLinksSQL, true},
 			{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
 			{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
 			{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},

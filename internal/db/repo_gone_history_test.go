@@ -966,3 +966,55 @@ func TestMergeLocksDoNotBlockAStarOfTheWinner(t *testing.T) {
 		t.Fatalf("one star row: %d %v", n, err)
 	}
 }
+
+// A star of the LOSER landing while the merge runs (the fresh review of the
+// fifth round's fix): the repoint is one statement, so the star is either
+// moved — it existed when the statement ran — or, landing after, refused at
+// the merge's commit by the loser's delete (the fail-safe the callers treat
+// as "not healed"); never deleted by a later statement that saw it while the
+// earlier insert did not.
+func TestMergeRepointNeverLosesALateStarOfTheLoser(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	loser := seedGoneHistoryRepo(t, store, ctx, "late-star-loser")
+	winner := seedGoneHistoryRepo(t, store, ctx, "late-star-winner")
+	var userID int
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.users (login_name, oauth_provider, email, admin)
+		VALUES ($1, 'github', '', FALSE) RETURNING user_id`, fmt.Sprintf("_avlatestar_%d", time.Now().UnixNano())).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repo_stars WHERE user_id = $1`, userID)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, userID)
+	})
+	merge, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer merge.Rollback(ctx) //nolint:errcheck // ends in Commit below
+	if _, err := merge.Exec(ctx, lockRepoRowsSQL, []int64{loser, winner}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := merge.Exec(ctx, repointStarsSQL, loser, winner); err != nil {
+		t.Fatal(err)
+	}
+	// The user stars the LOSER after the repoint ran (it commits: the
+	// merge's lock mode lets the FK check through).
+	if err := store.StarRepo(ctx, userID, loser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := merge.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, loser); err != nil {
+		t.Fatal(err)
+	}
+	// The deferred FK from the late star refuses the merge's commit: the
+	// fail-safe, not a lost star.
+	err = merge.Commit(ctx)
+	if !isFKViolation(err) {
+		t.Fatalf("a star landing after the repoint must refuse the merge's commit (23503), got %v", err)
+	}
+	var onLoser int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.user_repo_stars WHERE user_id = $1 AND repo_id = $2`, userID, loser).Scan(&onLoser); err != nil || onLoser != 1 {
+		t.Fatalf("the late star survives on the loser for the next attempt to move: %d %v", onLoser, err)
+	}
+}

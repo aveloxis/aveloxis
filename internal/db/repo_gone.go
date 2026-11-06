@@ -156,7 +156,7 @@ func (s *PostgresStore) SidelineRepo(ctx context.Context, repoID int64, status i
 // itself (uq_repo_gone_history_open takes the DO NOTHING). Provenance travels
 // with the row, and the winner's cache state is stamped in the same statement
 // when anything was carried (its page's gone history changed; Copilot PR
-// #252, third review). The caller holds BOTH repos rows FOR UPDATE
+// #252, third review). The caller holds BOTH repos rows FOR NO KEY UPDATE
 // (lockRepoRowsSQL), so the loser can gain no episode after the copy and the
 // winner's state read here is the state the merge commits against. Shared by
 // the dedup merge and the dataless rename heal (one spelling).

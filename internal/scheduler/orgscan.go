@@ -75,7 +75,7 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 	if repoID > 0 {
 		out.repoID = repoID
 		if item.ForgeID != "" {
-			idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt, item.Private)
+			goneUnderListedID, idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt, item.Private)
 			if errors.Is(idErr, context.Canceled) {
 				return out, idErr
 			}
@@ -93,8 +93,12 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 			// bobsql (2026-11-05) sat gone-stamped and dequeued for a day
 			// after the scan had listed it. A PRIVATE listing (a member
 			// token lists them too) is no sign of life: prelim's probe is
-			// unauthenticated and answers 404 for it (round 1 F1).
-			if !item.Private {
+			// unauthenticated and answers 404 for it (round 1 F1). Asked only
+			// for a row the id backfill saw gone-stamped under the listed id
+			// (Copilot PR #252, ninth review: one more statement per public
+			// repository of every scan, almost all of them not gone); the
+			// store re-checks every condition in the statement itself.
+			if !item.Private && goneUnderListedID {
 				back, rerr := s.store.ResurrectIfListed(ctx, repoID, item.ForgeID, 100)
 				if errors.Is(rerr, context.Canceled) {
 					return out, rerr

@@ -285,10 +285,12 @@ one whose listing's visibility was never recorded — marked "visibility not
 recorded" — until a scan lists it again) and restores the earlier history's daily
 commit buckets a walk had trimmed (a very large re-created repository is
 adopted with `aveloxis adopt-forge-id` instead: that restore runs inside the
-request, which the proxy's deadline would end). The public repository page
-(aveloxis-gui, drawn from the API's `/stats`) keeps both histories: its charts
-mark the boundary and it lists every stretch the repository was not reachable
-on its forge; this built-in page shows the counts and the charts only.
+request, which the proxy's deadline would end). Both repository pages keep
+both histories: this built-in page says two histories share the name (the
+change's dates and ids, the note) and lists every stretch the repository was
+not reachable on its forge, the current one marked; the public page
+(aveloxis-gui, drawn from the API's `/stats`) does the same and its charts
+mark the boundary.
 
 **Users** (`/admin/users`) is every account with its login, e-mail, forge,
 role, join date and last sign-in; promote or demote with one button, and

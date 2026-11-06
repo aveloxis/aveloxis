@@ -679,10 +679,10 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
 	// The org scan's observations: one private listing, one public.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, true); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, public, "1438985131", created, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, public, "1438985131", created, false); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := store.ListForgeIDChanges(ctx, true)
@@ -747,7 +747,7 @@ func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
 	}
 	// A later PUBLIC listing of the same change flips the record (the last
 	// observation wins), and the CLI passes the forge's own answer.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, false); err != nil {
 		t.Fatal(err) // adopted already: the stored id now equals the listed one, nothing recorded; no error
 	}
 	direct := seedGoneHistoryRepo(t, store, ctx, "adopt-direct")
@@ -798,7 +798,7 @@ func TestAdoptPendingForgeIDChangeReadsTheObservationItWaitedFor(t *testing.T) {
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
 	// The scan first listed the re-creation PUBLIC ...
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
 		t.Fatal(err)
 	}
 	// ... and a later scan is re-recording it PRIVATE, not yet committed.
@@ -847,6 +847,44 @@ func TestAdoptPendingForgeIDChangeReadsTheObservationItWaitedFor(t *testing.T) {
 	var stored string
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&stored); err != nil || stored != "1438985131" {
 		t.Fatalf("the id is still adopted: %q %v", stored, err)
+	}
+}
+
+// The id backfill reports a gone-stamped row that stores the listed id, from
+// the rows it touches anyway (Copilot PR #252, ninth review): the org scan
+// asks for a resurrection only then, instead of one statement per public
+// repository of every scan.
+func TestSetPlatformRepoIDIfEmptySeenReportsAGoneRowUnderTheListedID(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "ingest-gone")
+	// 1. The fill arm on a gone row: reported.
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "95336057", time.Time{}, false); err != nil || !gone {
+		t.Fatalf("a gone row whose id is filled by this listing: gone=%v err=%v", gone, err)
+	}
+	// 2. The already-set arm, same id: reported.
+	if gone, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "95336057", time.Time{}, false); err != nil || !gone {
+		t.Fatalf("a gone row already storing the listed id: gone=%v err=%v", gone, err)
+	}
+	// 3. Another id: a pending change, not a resurrection candidate.
+	if gone, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", time.Time{}, false); err != nil || gone {
+		t.Fatalf("a listing under another id is the pending change, never reported gone-under-listed: gone=%v err=%v", gone, err)
+	}
+	// 4. Not gone: not reported.
+	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if gone, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "95336057", time.Time{}, false); err != nil || gone {
+		t.Fatalf("a reachable row: gone=%v err=%v", gone, err)
+	}
+	// The scan resurrects only on the report (the filter), and never for a
+	// private listing.
+	code := srctest.StripGoComments(srctest.PackageFunc(t, "internal/scheduler", "func (s *Scheduler) ingestDiscovered("))
+	if !strings.Contains(code, "if !item.Private && goneUnderListedID {") || strings.Count(code, "ResurrectIfListed(") != 1 {
+		t.Error("ingestDiscovered asks ResurrectIfListed only for a public listing of a row the id backfill saw gone under the listed id")
 	}
 }
 
@@ -921,7 +959,7 @@ func TestAdoptPendingForgeIDChangeLocksTheRepositoryBeforeTheChange(t *testing.T
 		t.Fatal(err)
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1438985131", created, false); err != nil {
 		t.Fatal(err)
 	}
 	// A merge holds the repos row the way dedupOnePair does.

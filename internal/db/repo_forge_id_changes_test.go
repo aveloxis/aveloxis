@@ -24,10 +24,10 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '861974784' WHERE repo_id = $1`, repoID)
 
 	// 1. The scan observes a different forge ID: recorded, repos untouched.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
 		t.Fatalf("SetPlatformRepoIDIfEmptySeen: %v", err)
 	}
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil { // the next 4-hourly scan
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil { // the next 4-hourly scan
 		t.Fatalf("second observation: %v", err)
 	}
 	pending, err := store.ListForgeIDChanges(ctx, true)
@@ -80,7 +80,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	}
 
 	// 4. The next scan agrees with the stored ID: nothing new is recorded.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	all, _ := store.ListForgeIDChanges(ctx, false)
@@ -124,7 +124,7 @@ func TestAdoptPendingForgeIDChange(t *testing.T) {
 		t.Fatalf("nothing observed yet: want ErrNoPendingForgeIDChange, got %v", err)
 	}
 	created := time.Date(2026, 9, 16, 23, 25, 49, 0, time.UTC)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "318353587", "1373725939", "admin@example.org", "from the admin page"); err != nil {
@@ -155,11 +155,11 @@ func TestAdoptPendingForgeIDChangeAdoptsTheClickedPair(t *testing.T) {
 	ctx := context.Background()
 	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-pair")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = 'A1' WHERE repo_id = $1`, repoID)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "B2", time.Time{}, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "B2", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_forge_id_changes SET last_observed_at = NOW() - interval '1 hour' WHERE repo_id = $1`, repoID)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "C3", time.Time{}, false); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "C3", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "A1", "Z9", "admin", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {

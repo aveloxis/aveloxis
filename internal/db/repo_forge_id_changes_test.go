@@ -24,10 +24,10 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '861974784' WHERE repo_id = $1`, repoID)
 
 	// 1. The scan observes a different forge ID: recorded, repos untouched.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
 		t.Fatalf("SetPlatformRepoIDIfEmptySeen: %v", err)
 	}
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil { // the next 4-hourly scan
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil { // the next 4-hourly scan
 		t.Fatalf("second observation: %v", err)
 	}
 	pending, err := store.ListForgeIDChanges(ctx, true)
@@ -53,12 +53,12 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 
 	// 2. Adoption with a stale expectation refuses and changes nothing.
 	created := time.Date(2026, 9, 16, 21, 26, 15, 0, time.UTC)
-	if err := store.AdoptForgeID(ctx, repoID, "999", "1373652440", &created, "operator", ""); !errors.Is(err, ErrForgeIDNotAsExpected) {
+	if err := store.AdoptForgeID(ctx, repoID, "999", "1373652440", &created, "operator", "", true); !errors.Is(err, ErrForgeIDNotAsExpected) {
 		t.Fatalf("adopting over a stored ID that is not the expected old one must refuse, got %v", err)
 	}
 
 	// 3. Adoption moves the stored ID and stamps the record.
-	if err := store.AdoptForgeID(ctx, repoID, "861974784", "1373652440", &created, "operator", "upstream re-created; treated as a continuation"); err != nil {
+	if err := store.AdoptForgeID(ctx, repoID, "861974784", "1373652440", &created, "operator", "upstream re-created; treated as a continuation", true); err != nil {
 		t.Fatalf("AdoptForgeID: %v", err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&stored); err != nil || stored != "1373652440" {
@@ -80,7 +80,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	}
 
 	// 4. The next scan agrees with the stored ID: nothing new is recorded.
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373652440", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	all, _ := store.ListForgeIDChanges(ctx, false)
@@ -92,7 +92,7 @@ func TestForgeIDChangeLifecycle(t *testing.T) {
 	// older log) creates the record in the same step.
 	repo2 := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-change-2")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '318353587' WHERE repo_id = $1`, repo2)
-	if err := store.AdoptForgeID(ctx, repo2, "318353587", "1373725939", nil, "operator", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, repo2, "318353587", "1373725939", nil, "operator", "", true); err != nil {
 		t.Fatalf("adopt without a prior observation: %v", err)
 	}
 	if s2, err := store.GetRepoStats(ctx, repo2); err != nil || len(s2.ForgeIDChanges) != 1 || s2.ForgeIDChanges[0].ForgeCreatedAt != nil {
@@ -124,7 +124,7 @@ func TestAdoptPendingForgeIDChange(t *testing.T) {
 		t.Fatalf("nothing observed yet: want ErrNoPendingForgeIDChange, got %v", err)
 	}
 	created := time.Date(2026, 9, 16, 23, 25, 49, 0, time.UTC)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "1373725939", created, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "318353587", "1373725939", "admin@example.org", "from the admin page"); err != nil {
@@ -155,11 +155,11 @@ func TestAdoptPendingForgeIDChangeAdoptsTheClickedPair(t *testing.T) {
 	ctx := context.Background()
 	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-pair")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = 'A1' WHERE repo_id = $1`, repoID)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "B2", time.Time{}); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "B2", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_forge_id_changes SET last_observed_at = NOW() - interval '1 hour' WHERE repo_id = $1`, repoID)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "C3", time.Time{}); err != nil {
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, "C3", time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "A1", "Z9", "admin", ""); !errors.Is(err, ErrNoPendingForgeIDChange) {
@@ -206,7 +206,7 @@ func TestPhase0RecordsAForgeIDChange(t *testing.T) {
 	repoID := seedRepoForDeps(t, store, ctx, "aveloxis-it", "forge-id-phase0")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '555' WHERE repo_id = $1`, repoID)
 	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "777", created, created); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "777", created, created, false); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := store.ListForgeIDChanges(ctx, true)

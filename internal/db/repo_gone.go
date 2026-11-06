@@ -61,6 +61,7 @@ const (
 	GoneSourceOrgScan       = "org-scan"
 	GoneSourceBackfill      = "backfill-0.29.140"
 	GoneSourceDedup         = "dedup-repos" // closes a merged loser's open episode on a reachable winner
+	GoneSourceRenameHeal    = "rename-heal" // the same, for a dataless duplicate the heal removes
 )
 
 // GoneEpisode is one stretch during which a repository did not resolve on
@@ -89,19 +90,88 @@ type GoneEpisode struct {
 // the writer) when none is open — a repository marked again while gone
 // keeps its first observation — and stamps the cache state.
 func (s *PostgresStore) MarkRepoGone(ctx context.Context, repoID int64, status int, source string) error {
-	_, err := s.pool.Exec(ctx, `
-		WITH marked AS (
+	_, err := s.pool.Exec(ctx, `WITH `+markGoneCTEs+`
+		SELECT COUNT(*) FROM episode`, repoID, status, source)
+	return err
+}
+
+// markGoneCTEs is the gone stamp as data-modifying CTEs — `marked` (the
+// repos row: archived, stamped, checked, cache state) and `episode` (the
+// history row, opened when none is open) — shared by MarkRepoGone and
+// SidelineRepo ($1 repo, $2 status, $3 source). One spelling (SR-17).
+const markGoneCTEs = `
+		marked AS (
 			UPDATE aveloxis_data.repos
 			SET repo_archived = TRUE, repo_gone_at = NOW(), repo_gone_checked_at = NOW(),
 			    data_collection_date = NOW(), data_changed_at = NOW()
 			WHERE repo_id = $1
 			RETURNING repo_id, repo_gone_at
-		)
-		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
-		SELECT repo_id, repo_gone_at, $2, $3 FROM marked
-		ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING`, repoID, status, source)
-	return err
+		),
+		episode AS (
+			INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+			SELECT repo_id, repo_gone_at, $2, $3 FROM marked
+			ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING
+			RETURNING repo_id
+		)`
+
+// SidelineRepo is prelim's sideline as ONE transaction (Copilot PR #252, second
+// review): the gone stamp with its episode, then the queue row's removal,
+// committed together. As two separate statements (MarkRepoGone, then
+// DequeueRepo) an org scan's ResurrectIfListed could land between them —
+// clear the stamp and re-enqueue — and the dequeue then left the repository
+// unstamped AND queueless: the stranded shape nothing but reconcile-repos
+// reaches. Here the stamp statement takes the repos row's lock, so the two
+// writers serialise on it, and the dequeue runs as a SECOND statement on
+// purpose: a statement's snapshot is taken before its lock wait, so a single
+// statement waiting on a resurrection could not see the queue row that
+// resurrection inserted (the fresh review's two-session probe); the second
+// statement's snapshot is taken after the wait and sees it. Either order
+// then ends consistent — resurrected then sidelined is gone and queueless
+// (prelim saw the 404 last), sidelined then resurrected is clear and queued
+// — and a failure of either statement commits nothing (the next cycle
+// retries); a 40P01 victim retries here.
+func (s *PostgresStore) SidelineRepo(ctx context.Context, repoID int64, status int, source string) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `WITH `+markGoneCTEs+`
+			SELECT COUNT(*) FROM episode`, repoID, status, source); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	})
 }
+
+// carryGoneHistorySQL moves a merged duplicate's gone episodes onto the
+// repository that stays ($1 loser, $2 winner, $3 the merge's source): closed
+// episodes as they are, and the loser's OPEN one closed by the merge when the
+// winner is reachable (its stamp NULL — the invariant "open episode ⇔ current
+// gone state" holds across the merge) or dropped when the winner is gone
+// itself (uq_repo_gone_history_open takes the DO NOTHING). Provenance travels
+// with the row. The caller holds the winner's repos row FOR UPDATE, so the
+// state this reads is the state it commits against. Shared by the dedup
+// merge and the dataless rename heal (one spelling).
+const carryGoneHistorySQL = `
+			INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
+			                                             tool_source, tool_version, data_source, data_collection_date)
+			SELECT $2, l.gone_at, l.gone_status, l.gone_source,
+			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN NOW() ELSE l.restored_at END,
+			       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN $3 ELSE l.restored_source END,
+			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
+			  FROM aveloxis_data.repo_gone_history l
+			  JOIN aveloxis_data.repos w ON w.repo_id = $2
+			 WHERE l.repo_id = $1
+			ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING`
+
+// lockWinnerRowSQL takes the staying repository's repos row FOR UPDATE ($1)
+// before a merge reads its gone state.
+const lockWinnerRowSQL = `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 FOR UPDATE`
 
 // MarkRepoGoneChecked records that the gone state was re-verified
 // against the forge and the repo is STILL gone (or the probe was not

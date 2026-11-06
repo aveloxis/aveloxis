@@ -100,7 +100,11 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 // without a forge call (the api process holds no API keys). The plain
 // SetPlatformRepoIDIfEmpty was removed in v0.29.63 once every scan passed
 // the date (dead code, not deprecated).
-func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time) error {
+//
+// private (0.29.140) says whether the listing that carried the id was not
+// public; a recorded change keeps the LAST observation's answer, and the
+// adoption resurrects a gone-stamped repository only for a public one.
+func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time, private bool) error {
 	if forgeID == "" {
 		return nil
 	}
@@ -145,7 +149,7 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID
 				"remediation", forgeIDMismatchRemediation)
 			// v0.29.62: the observation is RECORDED, not only logged, so the
 			// operator has a list to act on. repos is still untouched.
-			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt); rerr != nil {
+			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt, private); rerr != nil {
 				return fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
 			}
 		}

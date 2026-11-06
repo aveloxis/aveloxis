@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestReplaceRepoCommitDailyKeepsAnEarlierEraOnAnAdoptedChange(t *testing.T) 
 	// is fx.in; a row dated the day before belongs to the earlier era.
 	created := fx.in.Add(16*time.Hour + 38*time.Minute)
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", true); err != nil {
 		t.Fatal(err)
 	}
 	old, boundary, next := fx.in.AddDate(0, 0, -1), fx.in, fx.in.AddDate(0, 0, 1)
@@ -172,7 +173,7 @@ func TestAdoptForgeIDRestoresTheEarlierErasDailyBuckets(t *testing.T) {
 	}
 	created := fx.in.Add(16 * time.Hour)
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", true); err != nil {
 		t.Fatal(err)
 	}
 	rows := func() map[string]int {
@@ -220,31 +221,40 @@ func TestAdoptForgeIDRestoresTheEarlierErasDailyBuckets(t *testing.T) {
 	}
 }
 
-// Every taker of the daily table's per-repository lock takes it BEFORE any
-// write of the repository's repos row (the fresh review of the PR #252 round):
-// the facade's trimming walk, the heal fill and the completeness clear all go
+// Every taker of the daily table's per-repository lock takes it as the FIRST
+// use of its transaction (the fresh review of the PR #252 round): the
+// facade's trimming walk, the heal fill and the completeness clear all go
 // lock → repos row, and an adoption that went repos row → lock deadlocked
 // with a walk of the same repository (reproduced with two sessions), with no
-// retry on its side. One order for every taker, and the four known takers
-// are REQUIRED (a floor count let a phantom taker — the const's own
-// package-level chunk under a cut-at-`func` split — absorb the loss of a real
-// one: the fresh review's mutant that dropped the adoption's lock passed).
+// retry on its side. The rule is structural, not a list of write spellings
+// (a list let a write hidden in a helper call pass — the review's mutant
+// hoisted Commit into the caller and reordered): between `.Begin(ctx)` and
+// the lock statement, the transaction is not used at all — no `tx` token in
+// any spelling (a method, an argument, an alias, a struct field) — except its
+// deferred Rollback. The four known takers
+// are REQUIRED (a floor count let a phantom taker absorb the loss of a real
+// one).
 func TestDailyLockPrecedesEveryReposWriteInItsTaker(t *testing.T) {
 	takers := map[string]bool{}
 	for _, file := range srctest.PackageFiles(t, "internal/db", 30) {
 		for name, body := range srctest.FuncParts(t, srctest.StripGoComments(file)) {
-			if name == srctest.PackageLevel {
-				continue // the declaration lives here
-			}
-			lock := strings.Index(body, "repoCommitDailyLockSQL")
-			if lock < 0 {
+			if name == srctest.PackageLevel || !strings.Contains(body, "repoCommitDailyLockSQL") {
 				continue
 			}
 			takers[name] = true
-			for _, write := range []string{"UPDATE aveloxis_data.repos", "stampCommitDailyCompleteSQL", "stampRepoCacheStateSQL", "resurrectInTx(", "resurrectSQL("} {
-				if at := strings.Index(body, write); at >= 0 && at < lock {
-					t.Errorf("%s writes the repos row (%s at %d) before taking repoCommitDailyLockSQL (%d): every other taker locks first, and the reverse order deadlocks with a trimming walk", name, write, at, lock)
-				}
+			lock := strings.Index(body, "tx.Exec(ctx, repoCommitDailyLockSQL")
+			begin := strings.Index(body, ".Begin(ctx)")
+			if lock < 0 || begin < 0 || begin > lock {
+				t.Errorf("%s: the lock must be taken as `tx.Exec(ctx, repoCommitDailyLockSQL …)` on a transaction begun before it (begin %d, lock %d)", name, begin, lock)
+				continue
+			}
+			// Any `tx` token at all (the fresh review's third round: a list of
+			// spellings let an alias, a wrapped call with tx on its own line
+			// and a struct-carried tx all pass); the declaration sits before
+			// the segment, and the deferred Rollback is stripped first.
+			between := strings.ReplaceAll(body[begin:lock], "tx.Rollback(ctx)", "")
+			if regexp.MustCompile(`\btx\b`).MatchString(between) {
+				t.Errorf("%s uses its transaction before taking repoCommitDailyLockSQL — every taker locks FIRST (a repos-row write first, inline or through a helper, deadlocks with a trimming walk):\n%s", name, between)
 			}
 		}
 	}
@@ -276,7 +286,7 @@ func TestAdoptForgeIDWaitsForTheDailyLock(t *testing.T) {
 	}
 	short, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	err = store.AdoptForgeID(short, fx.repoID, "95336057", "1438985131", nil, "operator", "")
+	err = store.AdoptForgeID(short, fx.repoID, "95336057", "1438985131", nil, "operator", "", true)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("with the daily lock held the adoption waits and the deadline ends it, got %v", err)
 	}
@@ -287,7 +297,7 @@ func TestAdoptForgeIDWaitsForTheDailyLock(t *testing.T) {
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", nil, "operator", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", nil, "operator", "", true); err != nil {
 		t.Fatalf("with the lock free the adoption goes through: %v", err)
 	}
 }

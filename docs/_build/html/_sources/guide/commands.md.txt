@@ -1076,7 +1076,10 @@ redirect check:
 - dead upstream (404/410/451) → gone-stamped and archived, the outcome
   prelim applies (0.29.140; before, the archived flag alone, so these rows
   never joined the gone recheck and a transient 404 was final); the gone
-  episode names `reconcile-repos`
+  episode names `reconcile-repos`. Prelim's own sideline is one statement
+  since 0.29.140 (stamp, episode and dequeue together), so an org scan's
+  resurrection can no longer land between the stamp and the dequeue and
+  leave a repository unstamped and queueless.
 - redirects to a **tracked** repo → dataless duplicates heal onto the
   winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
   through the dedup-repos per-pair machinery (repoints + leaves-first
@@ -1225,11 +1228,15 @@ re-created repository (minutes of commit rows) is adopted with this command
 rather than from the web GUI or the API, whose request deadline would roll
 the adoption back. The mismatch ERROR stops once
 the change is adopted. An adoption also brings a gone-stamped repository
-back (0.29.140): the re-created repository exists, so the stamp is cleared,
-its gone episode closed and the repository re-queued in the adoption's own
-transaction — before, an adopted repository that prelim had probed while it
-was still 404 stayed "no longer publicly available" and out of the queue
-until the 28-day recheck.
+back (0.29.140) when the re-created repository is PUBLIC — the forge's own
+answer here, the scan's recorded listing on the admin page: the stamp is
+cleared, its gone episode closed and the repository re-queued in the
+adoption's own transaction. A private or GitLab-internal re-creation is
+adopted as the continuation but stays gone (an unauthenticated probe cannot
+see it; `--list` and the admin page mark such a change "listed private").
+Before, an adopted repository that prelim had probed while it was still 404
+stayed "no longer publicly available" and out of the queue until the 28-day
+recheck.
 
 An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under "Re-created repositories", each with an Adopt

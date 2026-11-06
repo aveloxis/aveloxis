@@ -277,9 +277,10 @@ Below them, the forge-ID changes collection observed: a repository deleted
 and re-created under the same URL on its forge. Adopting one, with an
 optional note (at most 1,000 characters), treats the new repository as the
 continuation of the old; a change another adoption superseded is not offered.
-Adopting also brings the repository back when it is gone-stamped (0.29.140:
-the re-created repository exists, so the stamp is cleared and the repository
-re-queued with the adoption) and restores the earlier history's daily
+Adopting also brings the repository back when it is gone-stamped and the
+scan listed the re-created repository publicly (0.29.140: the stamp is
+cleared and the repository re-queued with the adoption; a change the scan
+saw as a private listing is marked so and keeps the repository gone) and restores the earlier history's daily
 commit buckets a walk had trimmed (a very large re-created repository is
 adopted with `aveloxis adopt-forge-id` instead: that restore runs inside the
 request, which the proxy's deadline would end), and the repository page keeps both histories:

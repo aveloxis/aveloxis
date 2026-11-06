@@ -55,7 +55,7 @@ func TestUpsertRepoKeepsCollectedMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Phase 0 fills the metadata.
-	if err := store.UpdateRepoMetadata(ctx, id, "collected description", "Go", nil, true, "", "", time.Time{}, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, id, "collected description", "Go", nil, true, "", "", time.Time{}, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, spelling := range []string{canonical, canonical + ".git", canonical + "/"} {

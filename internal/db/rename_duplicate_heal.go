@@ -93,11 +93,24 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
 		{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
 		{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},
+		// Copilot PR #252 (second review): a never-collected duplicate can
+		// still have gone episodes (probed 404 once, re-added, then redirected
+		// here); the repos delete would cascade them away silently. Carried
+		// to the winner like the dedup merge's (carryGoneHistorySQL: an open
+		// one closed by this heal on a reachable winner), under the winner's
+		// row lock.
+		{"lock winner repos row", lockWinnerRowSQL, true},
+		{"repoint repo_gone_history", carryGoneHistorySQL, true},
 		{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
 	}
 	for _, st := range steps {
 		args := []any{dupRepoID}
-		if st.needsWinner {
+		switch {
+		case st.label == "lock winner repos row":
+			args = []any{winnerRepoID}
+		case st.label == "repoint repo_gone_history":
+			args = []any{dupRepoID, winnerRepoID, GoneSourceRenameHeal}
+		case st.needsWinner:
 			args = append(args, winnerRepoID)
 		}
 		if _, err := tx.Exec(ctx, st.sql, args...); err != nil {

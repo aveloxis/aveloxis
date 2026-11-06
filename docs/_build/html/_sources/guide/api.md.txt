@@ -16,7 +16,10 @@ which the repository did not resolve on its forge, oldest first, each with
 `source` that saw it gone and, once it is back, `restored_at` and
 `restored_source`. An entry without `restored_at` is the current gone state
 (`gone_at` is unchanged). Absent when the repository was never gone. The
-field is additive; nothing else changes.
+field is additive. `ForgeIDChange` (the admin listing and the stats
+`forge_id_changes`) gains `observed_private`: the listing that last observed
+the change was not public, so adopting it moves the id but does not lift a
+gone stamp. Nothing else changes.
 
 ## Changes for API clients in 0.29.129
 

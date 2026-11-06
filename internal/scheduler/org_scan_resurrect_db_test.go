@@ -38,6 +38,7 @@ func TestIngestDiscoveredResurrectsAPublicListingUnderTheStoredID(t *testing.T) 
 	cleanup := func() {
 		store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = $1)`, slug)
 		store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = $1)`, slug)
+		store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_owner = $1)`, slug)
 		store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_owner = $1`, slug)
 	}
 	cleanup()
@@ -79,11 +80,18 @@ func TestIngestDiscoveredResurrectsAPublicListingUnderTheStoredID(t *testing.T) 
 
 	other := item
 	other.ForgeID = "1438985131"
+	other.Private = true
 	if _, err := s.ingestDiscovered(ctx, other, model.PlatformGitHub, ingestTargets{}); err != nil {
 		t.Fatal(err)
 	}
 	if gone, queued := state(); !gone || queued {
 		t.Fatalf("a listing under ANOTHER forge id is a pending change, not a resurrection: gone=%v queued=%v", gone, queued)
+	}
+	// The pending change carries the listing's visibility (Copilot PR #252,
+	// second review): adopting it will move the id and keep the stamp.
+	var observedPrivate bool
+	if err := store.Pool().QueryRow(ctx, `SELECT observed_private FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1 AND new_forge_id = '1438985131'`, repoID).Scan(&observedPrivate); err != nil || !observedPrivate {
+		t.Fatalf("the recorded change notes the private listing: %v %v", observedPrivate, err)
 	}
 
 	out, err := s.ingestDiscovered(ctx, item, model.PlatformGitHub, ingestTargets{})

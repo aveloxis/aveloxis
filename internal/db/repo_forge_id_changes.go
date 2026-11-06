@@ -27,6 +27,11 @@ type ForgeIDChange struct {
 	AdoptedAt       *time.Time `json:"adopted_at,omitempty"`
 	AdoptedBy       string     `json:"adopted_by,omitempty"`
 	Note            string     `json:"note,omitempty"`
+	// ObservedPrivate (0.29.140): the listing that last observed the change
+	// was not public (GitHub private; GitLab internal or private). The
+	// adoption of such a change moves the id but leaves a gone stamp in
+	// place — an unauthenticated probe cannot see the repository.
+	ObservedPrivate bool `json:"observed_private,omitempty"`
 	// Listing fields (ListForgeIDChanges): the repository as stored, and
 	// whether a pending change is SUPERSEDED — its old ID is no longer the
 	// stored one (usually because another change was adopted), so it can no
@@ -44,19 +49,20 @@ var ErrForgeIDNotAsExpected = errors.New("stored forge ID is not the expected ol
 // recordForgeIDObservation writes what the org scan saw: stored ≠
 // observed. A repeat observation only moves last_observed_at. It never
 // touches repos (the observation-only rule, SR-7).
-func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int64, stored, observed string, forgeCreatedAt time.Time) error {
+func (s *PostgresStore) recordForgeIDObservation(ctx context.Context, repoID int64, stored, observed string, forgeCreatedAt time.Time, private bool) error {
 	var created *time.Time
 	if !forgeCreatedAt.IsZero() {
 		c := forgeCreatedAt.UTC()
 		created = &c
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, forge_created_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, forge_created_at, observed_private)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
 			last_observed_at = NOW(),
-			forge_created_at = COALESCE(EXCLUDED.forge_created_at, repo_forge_id_changes.forge_created_at)`,
-		repoID, stored, observed, created)
+			forge_created_at = COALESCE(EXCLUDED.forge_created_at, repo_forge_id_changes.forge_created_at),
+			observed_private = EXCLUDED.observed_private`,
+		repoID, stored, observed, created, private)
 	return err
 }
 
@@ -74,18 +80,19 @@ var ErrNoPendingForgeIDChange = errors.New("no pending forge-ID change with that
 // it; `aveloxis adopt-forge-id` instead asks the forge live.
 func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID int64, oldID, newID, adoptedBy, note string) error {
 	var created *time.Time
+	var private bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT forge_created_at
+		SELECT forge_created_at, observed_private
 		  FROM aveloxis_data.repo_forge_id_changes
 		 WHERE repo_id = $1 AND old_forge_id = $2 AND new_forge_id = $3 AND adopted_at IS NULL`,
-		repoID, oldID, newID).Scan(&created)
+		repoID, oldID, newID).Scan(&created, &private)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("repo %d %s→%s: %w", repoID, oldID, newID, ErrNoPendingForgeIDChange)
 	}
 	if err != nil {
 		return fmt.Errorf("repo %d pending forge-ID change: %w", repoID, err)
 	}
-	return s.AdoptForgeID(ctx, repoID, oldID, newID, created, adoptedBy, note)
+	return s.AdoptForgeID(ctx, repoID, oldID, newID, created, adoptedBy, note, !private)
 }
 
 // AdoptForgeID is the operator's approval of a forge-ID change: in one
@@ -93,8 +100,13 @@ func (s *PostgresStore) AdoptPendingForgeIDChange(ctx context.Context, repoID in
 // if it still holds oldID (ErrForgeIDNotAsExpected otherwise) — and
 // records the change as adopted, creating the record when the scan never
 // observed it. forgeCreatedAt (nil = unknown) is the forge's creation date
-// of the new repository, the date the page shows.
-func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string) error {
+// of the new repository, the date the page shows. publiclyReachable says
+// the re-created repository was seen PUBLIC (the listing's visibility the
+// scan recorded; the forge's answer to the CLI): only then does the adoption
+// resurrect a gone-stamped row — a private or internal re-creation is
+// adopted as the continuation but stays gone, since an unauthenticated probe
+// cannot see it (Copilot PR #252, second review).
+func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, publiclyReachable bool) error {
 	if oldID == "" || newID == "" || oldID == newID {
 		return fmt.Errorf("adopt forge ID for repo %d: old %q and new %q must be two different IDs", repoID, oldID, newID)
 	}
@@ -114,14 +126,14 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 		if _, err := tx.Exec(ctx, repoCommitDailyLockSQL, repoID); err != nil {
 			return fmt.Errorf("lock repo_commit_daily for repo %d: %w", repoID, err)
 		}
-		return s.adoptForgeIDInTx(ctx, tx, repoID, oldID, newID, forgeCreatedAt, adoptedBy, note)
+		return s.adoptForgeIDInTx(ctx, tx, repoID, oldID, newID, forgeCreatedAt, adoptedBy, note, publiclyReachable)
 	})
 }
 
 // adoptForgeIDInTx is AdoptForgeID's body once the transaction holds the
 // daily table's lock: the id move, the record, the resurrection of a
 // gone-stamped row, the earlier era's restore, the commit.
-func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string) error {
+func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, publiclyReachable bool) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE aveloxis_data.repos SET platform_repo_id = $3
 		WHERE repo_id = $1 AND platform_repo_id = $2`, repoID, oldID, newID)
@@ -133,12 +145,13 @@ func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID 
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO aveloxis_data.repo_forge_id_changes
-			(repo_id, old_forge_id, new_forge_id, forge_created_at, adopted_at, adopted_by, note)
-		VALUES ($1, $2, $3, $4, NOW(), $5, $6)
+			(repo_id, old_forge_id, new_forge_id, forge_created_at, adopted_at, adopted_by, note, observed_private)
+		VALUES ($1, $2, $3, $4, NOW(), $5, $6, NOT $7::boolean)
 		ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
 			forge_created_at = COALESCE(EXCLUDED.forge_created_at, repo_forge_id_changes.forge_created_at),
-			adopted_at = NOW(), adopted_by = EXCLUDED.adopted_by, note = EXCLUDED.note`,
-		repoID, oldID, newID, forgeCreatedAt, adoptedBy, note); err != nil {
+			adopted_at = NOW(), adopted_by = EXCLUDED.adopted_by, note = EXCLUDED.note,
+			observed_private = EXCLUDED.observed_private`,
+		repoID, oldID, newID, forgeCreatedAt, adoptedBy, note, publiclyReachable); err != nil {
 		return fmt.Errorf("record adopted forge ID for repo %d: %w", repoID, err)
 	}
 	// 0.29.140: the adoption says the re-created repository is this row's
@@ -147,8 +160,10 @@ func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID 
 	// absent from the monitor until reconcile-repos happened to re-enqueue
 	// it). Cleared, its episode closed and re-enqueued in this transaction;
 	// a row that is not gone-stamped is left as it is.
-	if err := resurrectInTx(ctx, tx, repoID, resurrectPriority, GoneSourceAdoption); err != nil {
-		return fmt.Errorf("resurrect repo %d on adoption: %w", repoID, err)
+	if publiclyReachable {
+		if err := resurrectInTx(ctx, tx, repoID, resurrectPriority, GoneSourceAdoption); err != nil {
+			return fmt.Errorf("resurrect repo %d on adoption: %w", repoID, err)
+		}
 	}
 	// Copilot PR #252: the earlier era's daily buckets a walk trimmed before
 	// this adoption come back from the commits table (restoreEarlierErasInTx),
@@ -179,7 +194,8 @@ func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
 		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, COALESCE(r.repo_git, ''),
-		       (c.adopted_at IS NULL AND c.old_forge_id IS DISTINCT FROM r.platform_repo_id) AS superseded
+		       (c.adopted_at IS NULL AND c.old_forge_id IS DISTINCT FROM r.platform_repo_id) AS superseded,
+		       c.observed_private
 		  FROM aveloxis_data.repo_forge_id_changes c
 		  JOIN aveloxis_data.repos r USING (repo_id)
 		 WHERE NOT $1 OR (c.adopted_at IS NULL AND c.old_forge_id = r.platform_repo_id)
@@ -193,7 +209,7 @@ func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool
 	for rows.Next() {
 		var c ForgeIDChange
 		if err := rows.Scan(&c.RepoID, &c.OldForgeID, &c.NewForgeID, &c.FirstObservedAt, &c.LastObservedAt,
-			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.RepoGit, &c.Superseded); err != nil {
+			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.RepoGit, &c.Superseded, &c.ObservedPrivate); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -208,7 +224,7 @@ func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool
 func (s *PostgresStore) repoForgeIDChangesAdoptedBatch(ctx context.Context, repoIDs []int64) (map[int64][]ForgeIDChange, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at,
-		       forge_created_at, adopted_at, adopted_by, note
+		       forge_created_at, adopted_at, adopted_by, note, observed_private
 		  FROM aveloxis_data.repo_forge_id_changes
 		 WHERE repo_id = ANY($1) AND adopted_at IS NOT NULL
 		 ORDER BY repo_id, adopted_at, change_id`, repoIDs)
@@ -220,7 +236,7 @@ func (s *PostgresStore) repoForgeIDChangesAdoptedBatch(ctx context.Context, repo
 	for rows.Next() {
 		var c ForgeIDChange
 		if err := rows.Scan(&c.RepoID, &c.OldForgeID, &c.NewForgeID, &c.FirstObservedAt, &c.LastObservedAt,
-			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note); err != nil {
+			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.ObservedPrivate); err != nil {
 			return nil, err
 		}
 		out[c.RepoID] = append(out[c.RepoID], c)

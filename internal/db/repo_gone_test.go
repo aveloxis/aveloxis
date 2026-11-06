@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.28.1 (A6) — the distinct "gone" state. Incident: the
@@ -36,19 +38,28 @@ func TestMigrateAddsRepoGoneAt(t *testing.T) {
 // (archive-before-dequeue) can't classify.
 func TestMarkRepoGoneIsSingleStatement(t *testing.T) {
 	src := readSourceFile(t, "repo_gone.go")
-	i := strings.Index(src, "func (s *PostgresStore) MarkRepoGone(")
-	if i < 0 {
-		t.Fatal("MarkRepoGone missing")
+	// 0.29.140: the stamp lives in markGoneCTEs, shared by MarkRepoGone (one
+	// statement) and SidelineRepo (one transaction: the stamp statement, then
+	// the dequeue on a fresh snapshot). The CTEs hold exactly one UPDATE with
+	// both column writes; each function runs the CTEs once.
+	if !strings.Contains(markGoneCTEs, "repo_archived = TRUE") || !strings.Contains(markGoneCTEs, "repo_gone_at = NOW()") {
+		t.Error("markGoneCTEs must set repo_archived AND repo_gone_at in the same UPDATE")
 	}
-	body := src[i:]
-	if end := strings.Index(body, "\nfunc "); end > 0 {
-		body = body[:end]
+	if strings.Count(markGoneCTEs, "UPDATE") != 1 {
+		t.Error("markGoneCTEs must hold exactly ONE UPDATE")
 	}
-	if !strings.Contains(body, "repo_archived = TRUE") || !strings.Contains(body, "repo_gone_at = NOW()") {
-		t.Error("MarkRepoGone must set repo_archived AND repo_gone_at in the same UPDATE")
+	for _, fn := range []string{"func (s *PostgresStore) MarkRepoGone(", "func (s *PostgresStore) SidelineRepo("} {
+		body := srctest.StripGoComments(srctest.FuncBody(t, src, fn))
+		if !strings.Contains(body, "markGoneCTEs") {
+			t.Errorf("%s must stamp through markGoneCTEs", fn)
+		}
+		if strings.Count(body, "UPDATE") != 0 {
+			t.Errorf("%s must not spell a second UPDATE of its own", fn)
+		}
 	}
-	if strings.Count(body, "UPDATE") != 1 {
-		t.Error("MarkRepoGone must be exactly ONE statement")
+	sideline := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) SidelineRepo("))
+	if strings.Count(sideline, "DELETE FROM aveloxis_ops.collection_queue") != 1 || !strings.Contains(sideline, ".Begin(ctx)") || !strings.Contains(sideline, "tx.Commit(ctx)") {
+		t.Error("SidelineRepo must dequeue once, as a second statement of the same transaction")
 	}
 }
 
@@ -101,11 +112,14 @@ func TestPrelimStampsAndClearsGone(t *testing.T) {
 	if end := strings.Index(body, "\nfunc "); end > 0 {
 		body = body[:end]
 	}
-	if !strings.Contains(body, "store.MarkRepoGone(") {
-		t.Error("prelim's 404/410/451 sideline must stamp via MarkRepoGone")
+	// 0.29.140 (Copilot PR #252, second review): the sideline is SidelineRepo
+	// — stamp, episode and dequeue in one statement; a separate MarkRepoGone
+	// + DequeueRepo pair left a window for an org scan's resurrection.
+	if !strings.Contains(body, "store.SidelineRepo(") {
+		t.Error("prelim's 404/410/451 sideline must stamp via SidelineRepo (one statement with the dequeue)")
 	}
-	if strings.Contains(body, "store.ArchiveRepo(") {
-		t.Error("the bare ArchiveRepo call must be gone from RunPrelim — MarkRepoGone supersedes it in the sideline")
+	if strings.Contains(body, "store.MarkRepoGone(") || strings.Contains(body, "store.ArchiveRepo(") {
+		t.Error("RunPrelim must not stamp in a statement separate from the dequeue (MarkRepoGone/ArchiveRepo)")
 	}
 	if !strings.Contains(body, "store.ClearRepoGone(") {
 		t.Error("prelim's healthy path must clear a stale gone stamp (symmetric resurrection)")

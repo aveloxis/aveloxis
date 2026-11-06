@@ -75,7 +75,7 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 	if repoID > 0 {
 		out.repoID = repoID
 		if item.ForgeID != "" {
-			idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt)
+			idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt, item.Private)
 			if errors.Is(idErr, context.Canceled) {
 				return out, idErr
 			}

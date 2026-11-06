@@ -19,14 +19,16 @@ import (
 )
 
 type fakeAdoptStore struct {
-	repo    *model.Repo
-	stored  string
-	adopted []string
+	repo      *model.Repo
+	stored    string
+	adopted   []string
+	reachable []bool
 }
 
 func (f *fakeAdoptStore) GetRepoByID(context.Context, int64) (*model.Repo, error) { return f.repo, nil }
 func (f *fakeAdoptStore) GetRepoForgeID(context.Context, int64) (string, error)   { return f.stored, nil }
-func (f *fakeAdoptStore) AdoptForgeID(_ context.Context, _ int64, oldID, newID string, created *time.Time, _, _ string) error {
+func (f *fakeAdoptStore) AdoptForgeID(_ context.Context, _ int64, oldID, newID string, created *time.Time, _, _ string, publiclyReachable bool) error {
+	f.reachable = append(f.reachable, publiclyReachable)
 	d := "nil"
 	if created != nil {
 		d = created.Format("2006-01-02")
@@ -92,6 +94,11 @@ func TestAdoptForgeIDDecisions(t *testing.T) {
 			}
 			if err != nil || len(store.adopted) != 1 || store.adopted[0] != tc.wantDone {
 				t.Fatalf("err=%v adopted=%v, want %s", err, store.adopted, tc.wantDone)
+			}
+			// The forge's own visibility answer reaches the store (Copilot PR
+			// #252, second review): a public re-creation lifts a gone stamp.
+			if len(store.reachable) != 1 || !store.reachable[0] {
+				t.Fatalf("a public repository is passed as publicly reachable, got %v", store.reachable)
 			}
 			if !strings.Contains(out.String(), "2026-09-16") {
 				t.Errorf("the operator is told the creation date: %s", out.String())
@@ -163,5 +170,21 @@ func TestAdoptEachKeepsFailuresAcrossAnInterrupt(t *testing.T) {
 				t.Errorf("only the real failure is logged at ERROR:\n%s", logs.String())
 			}
 		})
+	}
+}
+
+// A PRIVATE re-creation (the forge says so) is adopted but passed as not
+// publicly reachable, so the store keeps a gone stamp (Copilot PR #252).
+func TestAdoptForgeIDForPassesAPrivateReCreationAsUnreachable(t *testing.T) {
+	store := &fakeAdoptStore{repo: &model.Repo{ID: 7, Platform: model.PlatformGitHub, GitURL: "https://github.com/o/r", Owner: "o", Name: "r"}, stored: "1"}
+	clientFor := func(*model.Repo) (repoInfoFetcher, error) {
+		return fakeInfo{info: &model.RepoInfo{PlatformRepoID: "2", Private: true}}, nil
+	}
+	var out strings.Builder
+	if err := adoptForgeIDFor(context.Background(), store, clientFor, 7, "operator", "", &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.adopted) != 1 || len(store.reachable) != 1 || store.reachable[0] {
+		t.Fatalf("adopted=%v reachable=%v: a private re-creation is adopted and passed as unreachable", store.adopted, store.reachable)
 	}
 }

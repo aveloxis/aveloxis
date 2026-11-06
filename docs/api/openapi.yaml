@@ -8636,7 +8636,7 @@ components:
           description: When the repository was seen again; absent while the episode is open.
         restored_source:
           type: string
-          description: The writer that saw it back (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` for a merged duplicate's episode closed by the merge).
+          description: The writer that saw it back (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` or `rename-heal` for a merged duplicate's episode closed by the merge).
     ForgeIDChange:
       type: object
       description: A recorded forge-ID change (`db.ForgeIDChange`).
@@ -8663,6 +8663,9 @@ components:
           type: string
           format: date-time
           description: Adopted changes only.
+        observed_private:
+          type: boolean
+          description: The listing that last observed the change was not public (GitHub private; GitLab internal or private). Adopting such a change moves the id but does not lift a gone stamp. Since 0.29.140; absent when false.
         adopted_by:
           type: string
         note:

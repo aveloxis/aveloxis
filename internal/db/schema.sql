@@ -2156,6 +2156,11 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_forge_id_changes (
     adopted_at        TIMESTAMPTZ,
     adopted_by        TEXT NOT NULL DEFAULT '',
     note              TEXT NOT NULL DEFAULT '',
+    -- 0.29.140: whether the listing that last observed the change was not
+    -- public (GitHub private; a GitLab visibility other than public). An
+    -- adoption resurrects a gone-stamped repository only when the
+    -- re-created one was listed publicly — prelim's probe is unauthenticated.
+    observed_private  BOOLEAN NOT NULL DEFAULT FALSE,
     tool_source       TEXT DEFAULT 'aveloxis',
     tool_version      TEXT,
     data_source       TEXT DEFAULT 'forge',

@@ -1982,6 +1982,7 @@ answers zeros to an unscoped caller (a scoped caller gets the <code class="docut
 <li><p><strong>forge_id_changes[].last_observed_at</strong> (<em>string:date-time, required</em>)</p></li>
 <li><p><strong>forge_id_changes[].forge_created_at</strong> (<em>string:date-time</em>) – When the forge created the new repository; absent when the scan did not list it.</p></li>
 <li><p><strong>forge_id_changes[].adopted_at</strong> (<em>string:date-time</em>) – Adopted changes only.</p></li>
+<li><p><strong>forge_id_changes[].observed_private</strong> (<em>boolean</em>) – The listing that last observed the change was not public (GitHub private; GitLab internal or private). Adopting such a change moves the id but does not lift a gone stamp. Since 0.29.140; absent when false.</p></li>
 <li><p><strong>forge_id_changes[].adopted_by</strong> (<em>string</em>)</p></li>
 <li><p><strong>forge_id_changes[].note</strong> (<em>string</em>)</p></li>
 <li><p><strong>forge_id_changes[].repo_git</strong> (<em>string</em>) – The repository’s stored URL.</p></li>
@@ -2076,6 +2077,7 @@ longer in the collection queue fall back to live counts.</p>
 <li><p><strong>{repo_id}.forge_id_changes[].last_observed_at</strong> (<em>string:date-time, required</em>)</p></li>
 <li><p><strong>{repo_id}.forge_id_changes[].forge_created_at</strong> (<em>string:date-time</em>) – When the forge created the new repository; absent when the scan did not list it.</p></li>
 <li><p><strong>{repo_id}.forge_id_changes[].adopted_at</strong> (<em>string:date-time</em>) – Adopted changes only.</p></li>
+<li><p><strong>{repo_id}.forge_id_changes[].observed_private</strong> (<em>boolean</em>) – The listing that last observed the change was not public (GitHub private; GitLab internal or private). Adopting such a change moves the id but does not lift a gone stamp. Since 0.29.140; absent when false.</p></li>
 <li><p><strong>{repo_id}.forge_id_changes[].adopted_by</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.forge_id_changes[].note</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.forge_id_changes[].repo_git</strong> (<em>string</em>) – The repository’s stored URL.</p></li>
@@ -6628,6 +6630,7 @@ cannot be adopted.</p>
 <li><p><strong>changes[].last_observed_at</strong> (<em>string:date-time, required</em>)</p></li>
 <li><p><strong>changes[].forge_created_at</strong> (<em>string:date-time</em>) – When the forge created the new repository; absent when the scan did not list it.</p></li>
 <li><p><strong>changes[].adopted_at</strong> (<em>string:date-time</em>) – Adopted changes only.</p></li>
+<li><p><strong>changes[].observed_private</strong> (<em>boolean</em>) – The listing that last observed the change was not public (GitHub private; GitLab internal or private). Adopting such a change moves the id but does not lift a gone stamp. Since 0.29.140; absent when false.</p></li>
 <li><p><strong>changes[].adopted_by</strong> (<em>string</em>)</p></li>
 <li><p><strong>changes[].note</strong> (<em>string</em>)</p></li>
 <li><p><strong>changes[].repo_git</strong> (<em>string</em>) – The repository’s stored URL.</p></li>

@@ -1819,7 +1819,10 @@ which the repository did not resolve on its forge, oldest first, each with
 <code class="docutils literal notranslate"><span class="pre">source</span></code> that saw it gone and, once it is back, <code class="docutils literal notranslate"><span class="pre">restored_at</span></code> and
 <code class="docutils literal notranslate"><span class="pre">restored_source</span></code>. An entry without <code class="docutils literal notranslate"><span class="pre">restored_at</span></code> is the current gone state
 (<code class="docutils literal notranslate"><span class="pre">gone_at</span></code> is unchanged). Absent when the repository was never gone. The
-field is additive; nothing else changes.</p>
+field is additive. <code class="docutils literal notranslate"><span class="pre">ForgeIDChange</span></code> (the admin listing and the stats
+<code class="docutils literal notranslate"><span class="pre">forge_id_changes</span></code>) gains <code class="docutils literal notranslate"><span class="pre">observed_private</span></code>: the listing that last observed
+the change was not public, so adopting it moves the id but does not lift a
+gone stamp. Nothing else changes.</p>
 </section>
 <section id="changes-for-api-clients-in-0-29-129">
 <h2>Changes for API clients in 0.29.129<a class="headerlink" href="#changes-for-api-clients-in-0-29-129" title="Link to this heading"></a></h2>

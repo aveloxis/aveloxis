@@ -255,7 +255,7 @@ func TestAdoptForgeIDResurrectsAGoneRepository(t *testing.T) {
 	}
 	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
 
-	if err := store.AdoptForgeID(ctx, gone, "95336057", "1438985131", &created, "sgoggins", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, gone, "95336057", "1438985131", &created, "sgoggins", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if repoGoneAt(ctx, t, store, gone) != nil {
@@ -271,7 +271,7 @@ func TestAdoptForgeIDResurrectsAGoneRepository(t *testing.T) {
 
 	// A repository that was never gone is adopted as before: no queue row
 	// is invented for it (its queue state is its own).
-	if err := store.AdoptForgeID(ctx, alive, "95336057", "1438985131", &created, "sgoggins", ""); err != nil {
+	if err := store.AdoptForgeID(ctx, alive, "95336057", "1438985131", &created, "sgoggins", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if hasQueueRow(ctx, t, store, alive) {
@@ -547,7 +547,204 @@ func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
 	if lock < 0 || carry < 0 || lock > carry {
 		t.Fatalf("the winner's row lock (%d) must be a step before the gone-history carry (%d)", lock, carry)
 	}
-	if !strings.Contains(body[lock:carry], "FOR UPDATE") {
-		t.Error("the lock step must take the row FOR UPDATE")
+	if !strings.Contains(body[lock:carry], "lockWinnerRowSQL") || !strings.Contains(lockWinnerRowSQL, "FOR UPDATE") {
+		t.Error("the lock step must take the row FOR UPDATE (lockWinnerRowSQL)")
+	}
+	// The dataless rename heal carries the same way, under the same lock
+	// (Copilot PR #252, second review).
+	heal := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) HealRenamedDuplicate("))
+	hl, hc, del := strings.Index(heal, "lockWinnerRowSQL"), strings.Index(heal, "carryGoneHistorySQL"), strings.Index(heal, `"delete dup repos row"`)
+	if hl < 0 || hc < hl || del < hc {
+		t.Errorf("HealRenamedDuplicate must lock the winner (%d), carry the episodes (%d) and only then delete the duplicate's repos row (%d)", hl, hc, del)
+	}
+}
+
+// Prelim's sideline is ONE statement (Copilot PR #252, second review): the
+// stamp, the episode and the queue row's removal. As two statements an org
+// scan's resurrection between them left the repository unstamped AND
+// queueless. Either order of the two writers ends consistent.
+func TestSidelineRepoIsOneStatementThatOrdersWithResurrection(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "sideline")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	if err := store.EnqueueRepo(ctx, repoID, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, repoID) == nil || hasQueueRow(ctx, t, store, repoID) {
+		t.Fatal("sidelined: gone-stamped and queueless in one statement")
+	}
+	if eps := goneEpisodes(ctx, t, store, repoID); len(eps) != 1 || eps[0].status != 404 || eps[0].source != GoneSourcePrelim || eps[0].restoredAt != nil {
+		t.Fatalf("the sideline opens the episode: %+v", eps)
+	}
+	// Sidelined, then listed: clear and queued.
+	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || !back {
+		t.Fatalf("resurrect after sideline: %v %v", back, err)
+	}
+	if repoGoneAt(ctx, t, store, repoID) != nil || !hasQueueRow(ctx, t, store, repoID) {
+		t.Fatal("sidelined then resurrected: clear and queued")
+	}
+	// Listed, then sidelined (prelim probed the re-queued repository and
+	// saw 404 last): gone and queueless — never unstamped-and-queueless.
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, repoID) == nil || hasQueueRow(ctx, t, store, repoID) {
+		t.Fatal("resurrected then sidelined: gone and queueless")
+	}
+	if eps := goneEpisodes(ctx, t, store, repoID); len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan || eps[1].restoredAt != nil {
+		t.Fatalf("two episodes, the first closed by the org scan, the second open: %+v", eps)
+	}
+	// The sideline on a row that was never queued is the stamp alone — no
+	// error, nothing to delete.
+	other := seedGoneHistoryRepo(t, store, ctx, "sideline-unqueued")
+	if err := store.SidelineRepo(ctx, other, 410, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, other) == nil {
+		t.Fatal("the stamp lands without a queue row to delete")
+	}
+}
+
+// Prelim's gone path is the one statement: SidelineRepo, no separate
+// MarkRepoGone + DequeueRepo pair (the window the race needed).
+func TestPrelimSidelinesInOneStatement(t *testing.T) {
+	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func RunPrelim("))
+	if !strings.Contains(src, "store.SidelineRepo(ctx, repo.ID, statusCode, db.GoneSourcePrelim)") {
+		t.Fatal("prelim's sideline must be store.SidelineRepo (stamp + episode + dequeue in one statement)")
+	}
+	if strings.Contains(src, "store.MarkRepoGone(") {
+		t.Error("prelim must not mark gone and dequeue in two statements — an org scan's resurrection between them strands the repository")
+	}
+}
+
+// An adoption lifts a gone stamp only for a PUBLIC re-creation (Copilot PR
+// #252, second review): the org scan records private listings too, and the
+// admin page adopts from that record without asking the forge. A private
+// observation is adopted as the continuation and stays gone; its episode
+// stays open; nothing is queued.
+func TestAdoptForgeIDKeepsTheStampForAPrivateReCreation(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	private := seedGoneHistoryRepo(t, store, ctx, "adopt-private")
+	public := seedGoneHistoryRepo(t, store, ctx, "adopt-public")
+	for _, id := range []int64{private, public} {
+		mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, id)
+		if err := store.MarkRepoGone(ctx, id, 404, GoneSourcePrelim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	created := time.Date(2026, 10, 29, 21, 38, 11, 0, time.UTC)
+	// The org scan's observations: one private listing, one public.
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, public, "1438985131", created, false); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListForgeIDChanges(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]bool{}
+	for _, c := range pending {
+		if c.RepoID == private || c.RepoID == public {
+			seen[c.RepoID] = c.ObservedPrivate
+		}
+	}
+	if !seen[private] || seen[public] {
+		t.Fatalf("the recorded change carries the listing's visibility: %v", seen)
+	}
+	// The admin page adopts from the record.
+	for _, id := range []int64{private, public} {
+		if err := store.AdoptPendingForgeIDChange(ctx, id, "95336057", "1438985131", "admin", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stored string
+	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, private).Scan(&stored); err != nil || stored != "1438985131" {
+		t.Fatalf("the private re-creation IS adopted as the continuation: %q %v", stored, err)
+	}
+	if repoGoneAt(ctx, t, store, private) == nil || hasQueueRow(ctx, t, store, private) {
+		t.Error("a private re-creation stays gone and unqueued: an unauthenticated probe cannot see it")
+	}
+	if eps := goneEpisodes(ctx, t, store, private); len(eps) != 1 || eps[0].restoredAt != nil {
+		t.Errorf("its episode stays open: %+v", eps)
+	}
+	if repoGoneAt(ctx, t, store, public) != nil || !hasQueueRow(ctx, t, store, public) {
+		t.Error("a public re-creation is resurrected by the adoption")
+	}
+	// A later PUBLIC listing of the same change flips the record (the last
+	// observation wins), and the CLI passes the forge's own answer.
+	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, private, "1438985131", created, false); err != nil {
+		t.Fatal(err) // adopted already: the stored id now equals the listed one, nothing recorded; no error
+	}
+	direct := seedGoneHistoryRepo(t, store, ctx, "adopt-direct")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, direct)
+	if err := store.MarkRepoGone(ctx, direct, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdoptForgeID(ctx, direct, "95336057", "1438985131", &created, "operator", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, direct) == nil {
+		t.Error("the CLI's adoption of a private re-creation keeps the stamp")
+	}
+}
+
+// The blocked ordering (the fresh review's two-session probe): a resurrection
+// holds the repos row while the sideline waits on it. The sideline's dequeue
+// is a second statement, so its snapshot is taken after the wait and sees the
+// queue row the resurrection inserted — the repository ends gone AND
+// queueless (prelim saw the 404 last), never gone-and-queued.
+func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "sideline-race")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	if err := store.MarkRepoGone(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err) // the pre-state: gone and queueless
+	}
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := holder.Exec(ctx, resurrectSQL(listedGuardSQL), repoID, GoneSourceOrgScan, 100, false, "95336057"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim) }()
+	// Wait until the sideline is blocked on the row (an ungranted lock of
+	// another backend on this database), then let the resurrection commit.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%marked AS%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sideline never blocked on the resurrection's row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if repoGoneAt(ctx, t, store, repoID) == nil || hasQueueRow(ctx, t, store, repoID) {
+		t.Fatal("resurrected while the sideline waited: the sideline must still end gone AND queueless")
+	}
+	if eps := goneEpisodes(ctx, t, store, repoID); len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan || eps[1].restoredAt != nil {
+		t.Fatalf("the org scan's closed episode, then the sideline's open one: %+v", eps)
 	}
 }

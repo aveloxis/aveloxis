@@ -119,7 +119,13 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 		// state as "queued for first collection" (the
 		// department-of-veterans-affairs incident: 477 privatized
 		// repos, 430 with real data behind a false queued banner).
-		if err := store.MarkRepoGone(ctx, repo.ID, statusCode, db.GoneSourcePrelim); err != nil {
+		//
+		// 0.29.140 (Copilot PR #252, second review): the stamp, the episode
+		// and the queue row's removal are ONE statement (SidelineRepo) — as
+		// two, an org scan's resurrection between them left the repository
+		// unstamped and queueless. A failure keeps everything as it was; the
+		// next cycle retries.
+		if err := store.SidelineRepo(ctx, repo.ID, statusCode, db.GoneSourcePrelim); err != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.
@@ -128,16 +134,6 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 					"repo_id", repo.ID, "error", err)
 			}
 			return result, nil
-		}
-		// Remove from queue entirely — this repo will never be collected again
-		// unless manually re-added.
-		if err := store.DequeueRepo(ctx, repo.ID); err != nil {
-			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-			// defect. Only the log is suppressed — surrounding behaviour is
-			// unchanged and the work is retried on the next cycle.
-			if !errors.Is(err, context.Canceled) {
-				logger.Warn("prelim: failed to dequeue dead repo", "repo_id", repo.ID, "error", err)
-			}
 		}
 		return result, nil
 	}

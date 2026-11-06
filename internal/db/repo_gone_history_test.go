@@ -812,6 +812,11 @@ func TestAdoptPendingForgeIDChangeReadsTheObservationItWaitedFor(t *testing.T) {
 		if waiting > 0 {
 			break
 		}
+		select {
+		case err := <-done:
+			t.Fatalf("the adoption ended before it waited on the scan's row lock: %v", err)
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("the adoption never waited on the scan's row lock")
 		}
@@ -874,6 +879,11 @@ func TestAdoptPendingForgeIDChangeLocksTheRepositoryBeforeTheChange(t *testing.T
 		}
 		if waiting > 0 {
 			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the adoption ended before it waited on the repos row: %v", err)
+		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the adoption never waited on the repos row")

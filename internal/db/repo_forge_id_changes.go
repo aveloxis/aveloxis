@@ -175,8 +175,9 @@ func (s *PostgresStore) adoptForgeIDUnderLock(ctx context.Context, repoID int64,
 	})
 }
 
-// adoptForgeIDInTx is AdoptForgeID's body once the transaction holds the
-// daily table's lock: the id move, the record, the resurrection of a
+// adoptForgeIDInTx is both adoptions' body once the transaction holds the
+// daily table's lock (the admin path's has locked the repos row and read the
+// change row too): the id move, the record, the resurrection of a
 // gone-stamped row, the earlier era's restore, the commit.
 func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, observedPrivate *bool) error {
 	if oldID == "" || newID == "" || oldID == newID {

@@ -848,3 +848,63 @@ func TestDedupOnePairCarriesTheObservedVisibility(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// A merge (its first statement: both repos rows FOR UPDATE, lockRepoRowsSQL)
+// beside prelim's sideline of the loser: the sideline WAITS on the row and
+// completes once the merge's transaction ends — the two never deadlock, and
+// the loser ends gone and queueless (the verification Copilot's fourth
+// review asked for: lock ordering under concurrency, run against a database).
+func TestMergeLocksSerialiseWithASidelineOfTheLoser(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	loser := seedGoneHistoryRepo(t, store, ctx, "merge-race-loser")
+	winner := seedGoneHistoryRepo(t, store, ctx, "merge-race-winner")
+	if err := store.EnqueueRepo(ctx, loser, 100); err != nil {
+		t.Fatal(err)
+	}
+	merge, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer merge.Rollback(ctx) //nolint:errcheck // released below
+	if _, err := merge.Exec(ctx, lockRepoRowsSQL, []int64{loser, winner}); err != nil {
+		t.Fatal(err)
+	}
+	// The merge also touches the loser's queue row, as dedupOnePair does
+	// right after the repos rows.
+	var status string
+	if err := merge.QueryRow(ctx, `SELECT COALESCE(status, '') FROM aveloxis_ops.collection_queue WHERE repo_id = $1 FOR UPDATE`, loser).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.SidelineRepo(ctx, loser, 404, GoneSourcePrelim) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%marked AS%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the sideline never blocked on the merge's row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the sideline returned while the merge still held the rows: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := merge.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the sideline must complete once the merge releases, never a deadlock: %v", err)
+	}
+	if repoGoneAt(ctx, t, store, loser) == nil || hasQueueRow(ctx, t, store, loser) {
+		t.Fatal("the sideline's outcome stands: gone and queueless")
+	}
+}

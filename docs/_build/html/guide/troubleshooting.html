@@ -1565,6 +1565,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2962,32 +2963,52 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <h2>Dead repo sidelining and un-sidelining<a class="headerlink" href="#dead-repo-sidelining-and-un-sidelining" title="Link to this heading"></a></h2>
 <section id="how-sidelining-works">
 <h3>How sidelining works<a class="headerlink" href="#how-sidelining-works" title="Link to this heading"></a></h3>
-<p>When the prelim phase detects a 404/410/451 response:</p>
+<p>When the prelim phase detects a 404/410/451 response, the repository is
+sidelined in one transaction (<code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code>, 0.29.140):</p>
 <ul class="simple">
-<li><p>The repo is marked <code class="docutils literal notranslate"><span class="pre">repo_archived</span> <span class="pre">=</span> <span class="pre">TRUE</span></code></p></li>
-<li><p>It is removed from the collection queue</p></li>
-<li><p>All previously collected data is preserved</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> is stamped (the “not reachable on its forge” state)
+and <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> set, so every archived-filtered surface excludes it</p></li>
+<li><p>a gone episode opens in <code class="docutils literal notranslate"><span class="pre">repo_gone_history</span></code> (shown on the repository page)</p></li>
+<li><p>it is removed from the collection queue</p></li>
+<li><p>all previously collected data is preserved</p></li>
 </ul>
 </section>
 <section id="un-sidelining-a-repo">
 <h3>Un-sidelining a repo<a class="headerlink" href="#un-sidelining-a-repo" title="Link to this heading"></a></h3>
-<p>If a repo comes back (e.g., was temporarily private), you can un-sideline it:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Un-sideline the repo</span>
-<span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;https://github.com/owner/repo&#39;</span><span class="p">;</span>
-</pre></div>
-</div>
-<p>Then re-add it to the queue:</p>
+<p>A repository that comes back is un-sidelined by Aveloxis itself on a
+definitive sign of life: the gone recheck (every
+<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code>, default 28), an org scan that lists it
+publicly under the forge ID the row stores, or an administrator adopting its
+recorded forge-ID change whose listing was seen public (a change observed
+before 0.29.140 carries no visibility, so adopting it keeps the repository
+gone until a scan lists it). Each clears the stamp, closes the episode, puts
+<code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> back to the forge’s latest recorded status and re-queues the
+repository. To bring ONE repository back sooner, re-add it: the next cycle’s
+prelim probe clears the stamp on a 2xx.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-repo<span class="w"> </span>https://github.com/owner/repo
 </pre></div>
 </div>
+<p>To probe the whole queueless cohort now (every row that is gone-stamped,
+archived or has commits but no queue row — one unauthenticated request each,
+<code class="docutils literal notranslate"><span class="pre">serve</span></code> may keep running):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>mark-gone-repos
+</pre></div>
+</div>
+<p>A 2xx clears the stamp and re-queues; a definitive 404/410/451 leaves it
+gone (and stamps a row that was archived without the stamp); anything else
+changes nothing. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> is the wider heal for every
+stranded row. Do not edit <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> by hand: the stamp, not the flag,
+is the sidelined state, and the flag is rewritten from the forge on the next
+collection.</p>
 </section>
 <section id="list-all-sidelined-repos">
 <h3>List all sidelined repos<a class="headerlink" href="#list-all-sidelined-repos" title="Link to this heading"></a></h3>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span>
+<p>The sidelined state is the gone stamp. <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> alone also covers
+repositories the forge archived and still serves (tens of thousands on a
+large fleet), so it is not the filter.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span><span class="p">,</span><span class="w"> </span><span class="n">repo_gone_at</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">TRUE</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_gone_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">;</span>
 </pre></div>
 </div>

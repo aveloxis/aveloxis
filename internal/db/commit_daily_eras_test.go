@@ -104,7 +104,7 @@ func TestContributorRetentionSeriesReadsTheDailyTableWhenComplete(t *testing.T) 
 	fx := seedCommitDaily(t, store, ctx, "_avcd_ret01")
 	other := seedCommitDaily(t, store, ctx, "_avcd_ret02") // stays on the commits table
 	since, until := utcDay(time.Now()).AddDate(0, 0, -60), utcDay(time.Now()).AddDate(0, 0, 1)
-	sum := func(ids []int64) (driveBy, repeat float64) {
+	sumIn := func(ids []int64, since, until time.Time) (driveBy, repeat float64) {
 		t.Helper()
 		d, r, err := store.ContributorRetentionSeries(ctx, ids, "week", since, until, 4)
 		if err != nil {
@@ -117,6 +117,14 @@ func TestContributorRetentionSeriesReadsTheDailyTableWhenComplete(t *testing.T) 
 			repeat += p.Value
 		}
 		return driveBy, repeat
+	}
+	sum := func(ids []int64) (driveBy, repeat float64) { return sumIn(ids, since, until) }
+	// Zero bounds mean "unbounded" here as in every other series (Copilot PR
+	// #252, eighth review: a zero until answered nothing).
+	if d0, r0 := sumIn([]int64{fx.repoID}, time.Time{}, time.Time{}); d0+r0 == 0 {
+		t.Error("an unbounded window answers the repository's contributors, not nothing")
+	} else if d, r := sum([]int64{fx.repoID}); d0+r0 != d+r {
+		t.Errorf("unbounded %v vs the 60-day window %v: the fixture lies inside the window", d0+r0, d+r)
 	}
 	if d, r := sum([]int64{fx.repoID}); d != 1 || r != 0 {
 		t.Fatalf("unfilled: the commits table says one drive-by, got drive_by=%v repeat=%v", d, r)

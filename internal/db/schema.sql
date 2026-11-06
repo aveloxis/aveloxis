@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- upstream; the department-of-veterans-affairs class). Distinct
     -- from repo_archived, which also covers "GitHub says archived"
     -- (still public). Set by SidelineRepo (with the dequeue, one
-    -- transaction), cleared by ClearRepoGone
+    -- transaction; repo_archived goes TRUE with it and back to the latest
+    -- repo_info status when the stamp is cleared), cleared by ClearRepoGone
     -- (prelim) or ResurrectRepo (mark-gone-repos, the recheck ticker)
     -- when the same probe later sees the repo alive again.
     repo_gone_at            TIMESTAMPTZ,

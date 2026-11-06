@@ -142,6 +142,12 @@ func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs 
 	if threshold < 1 {
 		return nil, nil, fmt.Errorf("retention threshold must be >= 1, got %d", threshold)
 	}
+	// The window's zero values mean "unbounded", as for every other series
+	// (resolveWindow; Copilot PR #252, eighth review: this was the one
+	// series that handed a zero `until` to its `< $3` predicate, which
+	// answered nothing — the API's callers bound the window themselves, the
+	// store does not rely on it).
+	since, until = resolveWindow(since, until)
 	// The daily table serves a single complete repository; a set keeps the
 	// hash path for every repository (see retentionSeriesSQL).
 	live, daily := repoIDs, []int64{}

@@ -240,12 +240,25 @@ func (s *PostgresStore) GetGoneRecheckCandidates(ctx context.Context, olderThan 
 // `cleared`, shared by every clearer (one spelling, SR-17): the stamp, the
 // check stamp and the forge's unavailability notice go together, the cache
 // state is stamped, and only a gone-stamped row is touched ($1 = repo_id;
-// %s = an extra guard, or nothing).
+// %s = an extra guard, or nothing). The archived flag the stamp set
+// (markGoneCTEs: repo_archived = TRUE, so every archived-filtered surface
+// kept excluding the row) goes back to the forge's LAST WORD — the latest
+// repo_info snapshot's status, FALSE when there is none (Copilot PR #252,
+// eighth review: the clearers left it TRUE, so a recovered repository kept
+// the archived collection cadence, archivedStretchCaseSQL, and the archived
+// badge until its next metadata collection rewrote the flag). The same
+// rule as the v0.27.50 migrate step's, which skips gone-stamped rows and
+// so never reaches these; the latest snapshot is picked the fleet's way
+// (data_collection_date DESC NULLS LAST, repo_info_id DESC).
 const clearGoneCTE = `
 		cleared AS (
 			UPDATE aveloxis_data.repos
 			SET repo_gone_at = NULL, repo_gone_checked_at = NULL,
 			    repo_unavailable_reason = NULL, repo_unavailable_url = NULL,
+			    repo_archived = COALESCE((SELECT ri.status = 'Archived' FROM aveloxis_data.repo_info ri
+			                              WHERE ri.repo_id = $1
+			                              ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
+			                              LIMIT 1), FALSE),
 			    data_changed_at = NOW()
 			WHERE repo_id = $1 AND repo_gone_at IS NOT NULL%s
 			RETURNING repo_id

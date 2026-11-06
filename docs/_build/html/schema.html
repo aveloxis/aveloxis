@@ -1564,6 +1564,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repos">repos</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#email-message-ref">email_message_ref</a></li>
@@ -2099,6 +2100,88 @@ migrate step opens an episode for each row already stamped (status <code class="
 <td><p>TEXT / TIMESTAMPTZ</p></td>
 <td><p>schema defaults</p></td>
 <td><p>Provenance.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="repo-forge-id-changes">
+<h4>repo_forge_id_changes<a class="headerlink" href="#repo-forge-id-changes" title="Link to this heading"></a></h4>
+<p>A repository deleted and re-created upstream under the same URL (v0.29.62; intel/Enterprise-RAG,
+GNOME/gimp-macos-build on 2026-09-16; microsoft/bobsql on 2026-10-29): the org scan sees a forge ID
+other than the stored one and RECORDS it here — observation only (SR-7), <code class="docutils literal notranslate"><span class="pre">repos</span></code> untouched — until an
+administrator adopts the change (the admin Approvals page or <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code>), which moves
+<code class="docutils literal notranslate"><span class="pre">repos.platform_repo_id</span></code> and stamps the row. The repository page shows adopted changes
+(<code class="docutils literal notranslate"><span class="pre">forge_id_changes</span></code> of <code class="docutils literal notranslate"><span class="pre">/stats</span></code>) because the statistics cover two histories; the charts mark the
+boundary. Read with a fallback when <code class="docutils literal notranslate"><span class="pre">observed_private</span></code> does not exist yet (an api started before
+the 0.29.140 migrate): the visibility is then unknown.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">change_id</span></code></p></td>
+<td><p>BIGSERIAL PK</p></td>
+<td><p>sequence</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT NOT NULL FK → repos</p></td>
+<td><p>the org scan (<code class="docutils literal notranslate"><span class="pre">recordForgeIDObservation</span></code>), or the adoption when the scan never saw the change</p></td>
+<td><p>The repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">old_forge_id</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>the org scan: <code class="docutils literal notranslate"><span class="pre">repos.platform_repo_id</span></code> at observation; the adoption: the stored id it replaces</p></td>
+<td><p>One row per (repo, old, new) pair.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">new_forge_id</span></code></p></td>
+<td><p>TEXT NOT NULL</p></td>
+<td><p>the org scan: the listing’s id; the CLI: the forge’s answer</p></td>
+<td><p>The re-created repository’s id.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">first_observed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p>default <code class="docutils literal notranslate"><span class="pre">NOW()</span></code> at the first observation</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">last_observed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ NOT NULL</p></td>
+<td><p>the org scan, every repeat observation</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">forge_created_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>the org scan (the listing’s <code class="docutils literal notranslate"><span class="pre">created_at</span></code>); the CLI (the forge’s); kept when a later observation lacks it</p></td>
+<td><p>When the forge created the new repository: the era boundary the charts mark (its first observation when absent).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">adopted_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">adoptForgeIDInTx</span></code> (the admin page’s <code class="docutils literal notranslate"><span class="pre">AdoptPendingForgeIDChange</span></code>, the CLI’s <code class="docutils literal notranslate"><span class="pre">AdoptForgeID</span></code>)</p></td>
+<td><p>NULL = pending.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">adopted_by</span></code></p></td>
+<td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
+<td><p>the adoption: the administrator’s login (<code class="docutils literal notranslate"><span class="pre">user</span> <span class="pre">&lt;id&gt;</span></code> when the lookup fails, <code class="docutils literal notranslate"><span class="pre">operator</span></code> for an operator actor); the CLI: the invoking OS user’s login, else <code class="docutils literal notranslate"><span class="pre">operator</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">note</span></code></p></td>
+<td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
+<td><p>the adoption: the administrator’s note (≤ 1,000 characters)</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">observed_private</span></code></p></td>
+<td><p>BOOLEAN</p></td>
+<td><p>the org scan (0.29.140: GitHub <code class="docutils literal notranslate"><span class="pre">private</span></code>, GitLab <code class="docutils literal notranslate"><span class="pre">visibility</span> <span class="pre">&lt;&gt;</span> <span class="pre">'public'</span></code>), every observation — the last listing wins; the CLI’s adoption records the forge’s answer; the admin page’s adoption keeps the recorded value</p></td>
+<td><p>NULL = unknown (recorded before 0.29.140, or by a scan that carried no visibility). An adoption resurrects a gone-stamped repository only when this is FALSE (KNOWN public): prelim’s probe is unauthenticated, unknown is not proof.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code> / <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> / <code class="docutils literal notranslate"><span class="pre">data_source</span></code> / <code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
+<td><p>TEXT / TEXT / TEXT / TIMESTAMPTZ</p></td>
+<td><p>defaults; <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> via <code class="docutils literal notranslate"><span class="pre">setToolVersionDefaults()</span></code></p></td>
+<td><p>Augur provenance columns.</p></td>
 </tr>
 </tbody>
 </table>

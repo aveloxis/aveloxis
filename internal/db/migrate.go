@@ -2410,7 +2410,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 FROM (
 		     SELECT DISTINCT ON (repo_id) repo_id, status
 		     FROM aveloxis_data.repo_info
-		     ORDER BY repo_id, data_collection_date DESC
+		     ORDER BY repo_id, data_collection_date DESC NULLS LAST, repo_info_id DESC
 		 ) latest
 		 WHERE r.repo_id = latest.repo_id
 		   AND r.repo_gone_at IS NULL

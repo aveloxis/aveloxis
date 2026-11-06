@@ -121,6 +121,33 @@ migrate step opens an episode for each row already stamped (status `0`, source
 | `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` and `rename-heal` close a merged duplicate's open episode on a reachable winner. |
 | `tool_source`, `tool_version`, `data_source`, `data_collection_date` | TEXT / TIMESTAMPTZ | schema defaults | Provenance. |
 
+
+#### repo_forge_id_changes
+
+A repository deleted and re-created upstream under the same URL (v0.29.62; intel/Enterprise-RAG,
+GNOME/gimp-macos-build on 2026-09-16; microsoft/bobsql on 2026-10-29): the org scan sees a forge ID
+other than the stored one and RECORDS it here — observation only (SR-7), `repos` untouched — until an
+administrator adopts the change (the admin Approvals page or `aveloxis adopt-forge-id`), which moves
+`repos.platform_repo_id` and stamps the row. The repository page shows adopted changes
+(`forge_id_changes` of `/stats`) because the statistics cover two histories; the charts mark the
+boundary. Read with a fallback when `observed_private` does not exist yet (an api started before
+the 0.29.140 migrate): the visibility is then unknown.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `change_id` | BIGSERIAL PK | sequence | |
+| `repo_id` | BIGINT NOT NULL FK → repos | the org scan (`recordForgeIDObservation`), or the adoption when the scan never saw the change | The repository. |
+| `old_forge_id` | TEXT NOT NULL | the org scan: `repos.platform_repo_id` at observation; the adoption: the stored id it replaces | One row per (repo, old, new) pair. |
+| `new_forge_id` | TEXT NOT NULL | the org scan: the listing's id; the CLI: the forge's answer | The re-created repository's id. |
+| `first_observed_at` | TIMESTAMPTZ NOT NULL | default `NOW()` at the first observation | |
+| `last_observed_at` | TIMESTAMPTZ NOT NULL | the org scan, every repeat observation | |
+| `forge_created_at` | TIMESTAMPTZ | the org scan (the listing's `created_at`); the CLI (the forge's); kept when a later observation lacks it | When the forge created the new repository: the era boundary the charts mark (its first observation when absent). |
+| `adopted_at` | TIMESTAMPTZ | `adoptForgeIDInTx` (the admin page's `AdoptPendingForgeIDChange`, the CLI's `AdoptForgeID`) | NULL = pending. |
+| `adopted_by` | TEXT NOT NULL DEFAULT '' | the adoption: the administrator's login (`user <id>` when the lookup fails, `operator` for an operator actor); the CLI: the invoking OS user's login, else `operator` | |
+| `note` | TEXT NOT NULL DEFAULT '' | the adoption: the administrator's note (≤ 1,000 characters) | |
+| `observed_private` | BOOLEAN | the org scan (0.29.140: GitHub `private`, GitLab `visibility <> 'public'`), every observation — the last listing wins; the CLI's adoption records the forge's answer; the admin page's adoption keeps the recorded value | NULL = unknown (recorded before 0.29.140, or by a scan that carried no visibility). An adoption resurrects a gone-stamped repository only when this is FALSE (KNOWN public): prelim's probe is unauthenticated, unknown is not proof. |
+| `tool_source` / `tool_version` / `data_source` / `data_collection_date` | TEXT / TEXT / TEXT / TIMESTAMPTZ | defaults; `tool_version` via `setToolVersionDefaults()` | Augur provenance columns. |
+
 #### repo_groups_list_serve
 
 Mailing list registry + per-list collection state. Each row is a list the MailingListWorker collects; the `mlls_*` columns (v0.25.7) carry the claim/checkpoint/lock state. See [Mailing-list ingestion](architecture/mailing-list.md).

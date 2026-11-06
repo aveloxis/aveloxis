@@ -333,6 +333,10 @@ func TestArchivedReconcileStepLeavesGoneRowsArchived(t *testing.T) {
 	for _, id := range []int64{gone, live} {
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES ($1, 'Active', NOW())`, id)
 	}
+	// An undated legacy snapshot that says Archived: the latest-snapshot rule
+	// (NULLS LAST) ranks it behind the dated Active one — a bare DESC took it
+	// first and left the live repository archived (L10-L F2/F4).
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES ($1, 'Archived', NULL)`, live)
 	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +357,7 @@ func TestArchivedReconcileStepLeavesGoneRowsArchived(t *testing.T) {
 		t.Error("a gone-stamped repository stays archived whatever its (older) snapshot says")
 	}
 	if archived(live) {
-		t.Error("a reachable repository still follows the forge's snapshot (Active → not archived)")
+		t.Error("a reachable repository follows the forge's LATEST dated snapshot (Active → not archived; the undated Archived row ranks last)")
 	}
 }
 
@@ -398,6 +402,12 @@ func TestGoneEpisodeBackfillOpensOneEpisodePerGoneRepo(t *testing.T) {
 func TestGoneHistoryMigrateWiring(t *testing.T) {
 	if sql := migrateStepSQL(t, "v0.27.50 reconcile repo_archived from forge status"); !strings.Contains(sql, "AND r.repo_gone_at IS NULL") {
 		t.Error("the v0.27.50 step must leave gone-stamped rows alone: `AND r.repo_gone_at IS NULL`")
+	} else if !strings.Contains(sql, "ORDER BY repo_id, data_collection_date DESC NULLS LAST, repo_info_id DESC") {
+		// The L10 pass on the eighth-review fix: the step picked the latest
+		// snapshot with a bare DESC (NULLS FIRST), so an undated legacy row won
+		// over a dated one and the step disagreed with clearGoneCTE on exactly
+		// those rows — one latest-snapshot rule (SR-17).
+		t.Error("the v0.27.50 step picks the latest repo_info snapshot the fleet's way: data_collection_date DESC NULLS LAST, repo_info_id DESC")
 	}
 	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func migrateStage10RecentReleases("))
 	at := strings.Index(src, `"`+backfillGoneEpisodesLabel+`"`)
@@ -838,6 +848,61 @@ func TestAdoptPendingForgeIDChangeReadsTheObservationItWaitedFor(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT platform_repo_id FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&stored); err != nil || stored != "1438985131" {
 		t.Fatalf("the id is still adopted: %q %v", stored, err)
 	}
+}
+
+// Every clearer puts repo_archived back to the forge's last word (Copilot PR
+// #252, eighth review): the stamp sets it TRUE, and a recovered repository
+// kept the archived cadence and badge until its next metadata collection.
+// The latest repo_info snapshot decides (NULLS LAST, then the newest row);
+// no snapshot = FALSE. One spelling of the clear (clearGoneCTE), so two
+// clearers stand for all of them.
+func TestClearersRestoreTheArchivedFlagToTheForgesLastWord(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	archived := seedGoneHistoryRepo(t, store, ctx, "clear-archived")
+	plain := seedGoneHistoryRepo(t, store, ctx, "clear-plain")
+	// The forge said Active, then Archived (the newest snapshot wins), with
+	// an undated legacy row that must sort last.
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES
+		($1, 'Active', NOW() - INTERVAL '2 days'), ($1, 'Archived', NOW() - INTERVAL '1 day'), ($1, 'Active', NULL)`, archived)
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repo_info WHERE repo_id = $1`, archived)
+	})
+	for _, id := range []int64{archived, plain} {
+		if err := store.SidelineRepo(ctx, id, 404, GoneSourcePrelim); err != nil {
+			t.Fatal(err)
+		}
+		if !repoArchived(ctx, t, store, id) {
+			t.Fatal("the stamp sets the flag")
+		}
+	}
+	if err := store.ClearRepoGone(ctx, archived, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if !repoArchived(ctx, t, store, archived) {
+		t.Error("the forge's latest snapshot says Archived: the flag stays TRUE")
+	}
+	if err := store.ResurrectRepo(ctx, plain, 10, GoneSourceRecheck); err != nil {
+		t.Fatal(err)
+	}
+	if repoArchived(ctx, t, store, plain) {
+		t.Error("no snapshot says Archived: the flag goes back to FALSE with the clear")
+	}
+	// One clear spelling: the archived reset rides it, so every clearer has it.
+	src := srctest.StripGoComments(srctest.PackageSource(t, "internal/db", 100))
+	if strings.Count(src, "repo_gone_at = NULL") != 1 || !strings.Contains(clearGoneCTE, "repo_archived = COALESCE((SELECT ri.status = 'Archived'") {
+		t.Error("the gone stamp is cleared in clearGoneCTE alone, which puts repo_archived back to the latest repo_info status")
+	}
+}
+
+// repoArchived reads repos.repo_archived (NULL = FALSE).
+func repoArchived(ctx context.Context, t *testing.T, store *PostgresStore, repoID int64) bool {
+	t.Helper()
+	var v bool
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(repo_archived, FALSE) FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 // The admin page's adoption locks the repos row BEFORE the change row (the

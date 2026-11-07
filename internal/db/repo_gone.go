@@ -363,20 +363,33 @@ func (s *PostgresStore) ResurrectArchivedSideline(ctx context.Context, repoID in
 }
 
 // listedGuardSQL is ResurrectIfListed's extra predicate on the clear: the
-// row stores the listed forge id ($5), and the repository's LATEST closed
-// episode was not the org scan's own restoration — a repository the forge
-// lists but whose page an unauthenticated probe cannot see (a blocked one
-// the listing still carries) would otherwise flap at every org refresh, an
-// episode per cycle (round 1 F1). Once per gone stretch: the scan's
-// restoration reversed by prelim's next mark is not repeated, while a later
-// stretch whose last restoration was the recheck's, an adoption's or
-// prelim's is the scan's to end again (round 2 F2: a predicate over EVERY
-// earlier org-scan restoration refused for the repository's lifetime). The
-// recheck, an adoption and prelim's own 2xx are not bounded by it.
+// row stores the listed forge id ($5), and the org scan's own last
+// restoration, if the repository's latest closed episode is one, was not
+// REVERSED — a repository the forge lists but whose page an unauthenticated
+// probe cannot see (a blocked one the listing still carries) would otherwise
+// flap at every org refresh, an episode per cycle (round 1 F1). Reversed
+// means no collection succeeded after that restoration: no metadata snapshot
+// (repo_info, written by a collection's metadata phase, which runs only
+// after prelim's probe answered; or repo_info_history, where the rotation
+// moves it — it runs in its own transaction before the insert, so a failed
+// insert leaves the stretch's snapshot only there) is dated after it — prelim's next mark
+// undid it. A restoration followed by a collected stretch is not reversed,
+// so a later, unrelated outage is the scan's to end again (Copilot PR #252,
+// thirteenth review: "the latest closer was the org scan" refused it until
+// the 28-day recheck); so is a stretch whose last restoration was the
+// recheck's, an adoption's or prelim's (round 2 F2). The recheck, an
+// adoption and prelim's own 2xx are not bounded by it.
 const listedGuardSQL = ` AND platform_repo_id = $5
-			  AND COALESCE((SELECT h.restored_source FROM aveloxis_data.repo_gone_history h
-			                WHERE h.repo_id = $1 AND h.restored_at IS NOT NULL
-			                ORDER BY h.restored_at DESC, h.episode_id DESC LIMIT 1), '') <> '` + GoneSourceOrgScan + `'`
+			  AND NOT EXISTS (
+			      SELECT 1 FROM (SELECT h.restored_source, h.restored_at FROM aveloxis_data.repo_gone_history h
+			                      WHERE h.repo_id = $1 AND h.restored_at IS NOT NULL
+			                      ORDER BY h.restored_at DESC, h.episode_id DESC LIMIT 1) last
+			      WHERE last.restored_source = '` + GoneSourceOrgScan + `'
+			        AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_info ri
+			                        WHERE ri.repo_id = $1 AND ri.data_collection_date > last.restored_at
+			                        UNION ALL
+			                        SELECT 1 FROM aveloxis_data.repo_info_history rh
+			                        WHERE rh.repo_id = $1 AND rh.data_collection_date > last.restored_at))`
 
 // ResurrectIfListed is the org scan's resurrection (0.29.140): the forge
 // listed the repository (publicly — the caller checks) under forgeID, so a

@@ -89,7 +89,8 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 			// (ResurrectIfListed; nothing for a row that is not gone, or
 			// whose stored ID differs — that is the pending forge-ID change
 			// above, observation-only; and once per gone stretch — the store
-			// refuses after an org-scan resurrection prelim reversed).
+			// refuses after an org-scan resurrection prelim reversed, i.e.
+			// one no collection followed (no metadata snapshot after it).
 			// bobsql (2026-11-05) sat gone-stamped and dequeued for a day
 			// after the scan had listed it. A PRIVATE listing (a member
 			// token lists them too) is no sign of life: prelim's probe is

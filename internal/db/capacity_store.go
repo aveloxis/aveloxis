@@ -1060,7 +1060,66 @@ const insertLinksSQL = `
 	  AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos ur WHERE ur.group_id = $1 AND ur.repo_id = r.repo_id)
 	ORDER BY r.repo_id
 	FOR SHARE OF r
-	ON CONFLICT DO NOTHING`
+	ON CONFLICT DO NOTHING
+	RETURNING repo_id`
+
+// existingLinkTargets returns a deciding transaction's target repositories
+// that exist, in the input order (Copilot PR #252, thirteenth review): the
+// decision counts the new-to-account targets toward repo_links_per_day, and
+// deciding over the REQUESTED ids admitted and charged ids with no repository
+// row (a merge deleted it). A plain read, no lock (the L10 pass on that fix:
+// locking every target before the decision put a FOR SHARE on each refused
+// and already-linked one, re-offered every org cycle to an account at its
+// allocation) — insertLinksSQL locks the rows it inserts, and a target a
+// merge deletes between this read and the insert is caught by chargeLinked.
+func existingLinkTargets(ctx context.Context, tx pgx.Tx, repoIDs []int64) ([]int64, error) {
+	if len(repoIDs) == 0 {
+		return repoIDs, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT repo_id FROM aveloxis_data.repos WHERE repo_id = ANY($1::bigint[])`, repoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("link targets: %w", err)
+	}
+	present, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("link targets: %w", err)
+	}
+	exists := make(map[int64]bool, len(present))
+	for _, id := range present {
+		exists[id] = true
+	}
+	out := make([]int64, 0, len(repoIDs))
+	for _, id := range repoIDs {
+		if exists[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// chargeLinked is the decision's count of today's additions less the
+// admitted new-to-account targets the insert did not link (insertLinksSQL
+// RETURNING repo_id): the admitted ones are d.fresh[:d.admit] (keepAdmitted
+// drops the rest), and one a merge deleted after existingLinkTargets read it
+// is skipped by the insert — charged for nothing otherwise. Held URLs'
+// additions (in d.counted beyond d.admit) are not links and stay counted.
+// Zero when the decision counted nothing (the quota off or exempt).
+func chargeLinked(d capDecision, linked []int64) int {
+	if d.counted <= 0 {
+		return 0
+	}
+	got := make(map[int64]bool, len(linked))
+	for _, id := range linked {
+		got[id] = true
+	}
+	missing := 0
+	for _, id := range d.fresh[:d.admit] {
+		if !got[id] {
+			missing++
+		}
+	}
+	return max(d.counted-missing, 0)
+}
 
 // goneIfUnlinked turns a link that inserted nothing into ErrRepoNotFound when
 // the repository no longer exists — a merge or a rename heal deleted it while
@@ -1174,6 +1233,9 @@ func (s *PostgresStore) linkWithinCap(ctx context.Context, groupID int64, repoID
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if repoIDs, err = existingLinkTargets(ctx, tx, repoIDs); err != nil {
+		return 0, err
+	}
 	d, err := s.decideWithinCap(ctx, tx, owner, pol, repoIDs, nil, false, mode.fill())
 	if err != nil {
 		return 0, err
@@ -1185,20 +1247,24 @@ func (s *PostgresStore) linkWithinCap(ctx context.Context, groupID int64, repoID
 		}
 		link = keepAdmitted(repoIDs, d.fresh, d.admit)
 	}
-	tag, err := tx.Exec(ctx, insertLinksSQL, groupID, link)
+	inserted, err := tx.Query(ctx, insertLinksSQL, groupID, link)
 	if err != nil {
 		return 0, fmt.Errorf("link repositories: %w", err)
 	}
-	if err := countAdditions(ctx, tx, owner, d.counted, d.day); err != nil {
+	linked, err := pgx.CollectRows(inserted, pgx.RowTo[int64])
+	if err != nil {
+		return 0, fmt.Errorf("link repositories: %w", err)
+	}
+	if err := countAdditions(ctx, tx, owner, chargeLinked(d, linked), d.day); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	if d.refused != nil {
-		return int(tag.RowsAffected()), d.refused
+		return len(linked), d.refused
 	}
-	return int(tag.RowsAffected()), nil
+	return len(linked), nil
 }
 
 // addPasteWithinCap writes a non-administrator's paste in ONE transaction
@@ -1236,6 +1302,9 @@ func (s *PostgresStore) addPasteWithinCap(ctx context.Context, owner int, groupI
 			"user_id", owner, "group_id", groupID)
 		return 0, 0, fmt.Errorf("paste into group %d: %w", groupID, ErrGroupNotOwned)
 	}
+	if trackedIDs, err = existingLinkTargets(ctx, tx, trackedIDs); err != nil {
+		return 0, 0, err
+	}
 	// An auto-approved paste's new repositories are the account's own
 	// additions (round 2 R2-4): decided against repo_links_per_day with the
 	// tracked ones, all or nothing, and counted on the decision's day.
@@ -1246,15 +1315,17 @@ func (s *PostgresStore) addPasteWithinCap(ctx context.Context, owner int, groupI
 	if d.refused != nil {
 		return 0, 0, d.refused
 	}
-	linked := int64(0)
+	var linked []int64
 	if len(trackedIDs) > 0 {
-		tag, err := tx.Exec(ctx, insertLinksSQL, groupID, trackedIDs)
+		rows, err := tx.Query(ctx, insertLinksSQL, groupID, trackedIDs)
 		if err != nil {
 			return 0, 0, fmt.Errorf("link repositories: %w", err)
 		}
-		linked = tag.RowsAffected()
+		if linked, err = pgx.CollectRows(rows, pgx.RowTo[int64]); err != nil {
+			return 0, 0, fmt.Errorf("link repositories: %w", err)
+		}
 	}
-	if err := countAdditions(ctx, tx, owner, d.counted, d.day); err != nil {
+	if err := countAdditions(ctx, tx, owner, chargeLinked(d, linked), d.day); err != nil {
 		return 0, 0, err
 	}
 	var requestID int64
@@ -1266,7 +1337,7 @@ func (s *PostgresStore) addPasteWithinCap(ctx context.Context, owner int, groupI
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, err
 	}
-	return int(linked), requestID, nil
+	return len(linked), requestID, nil
 }
 
 // keepAdmitted is repoIDs without the new repositories past the first admit.

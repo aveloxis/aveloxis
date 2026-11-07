@@ -79,7 +79,7 @@ func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	// 0.29.140 (Copilot PR #252 twelfth review and its L10 pass): the target
 	// rows are locked FOR SHARE (a link serialises with a merge's delete),
 	// and only a NEW link reaches the lock.
-	for _, needle := range []string{"INSERT INTO aveloxis_ops.user_repos", "ON CONFLICT DO NOTHING", "FOR SHARE OF r",
+	for _, needle := range []string{"INSERT INTO aveloxis_ops.user_repos", "ON CONFLICT DO NOTHING", "FOR SHARE OF r", "RETURNING repo_id",
 		"AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos ur WHERE ur.group_id = $1 AND ur.repo_id = r.repo_id)"} {
 		if !strings.Contains(stmt, needle) {
 			t.Errorf("insertLinksSQL lost %q: the one writer is idempotent, serialises with a merge, and locks only a new link", needle)
@@ -90,11 +90,13 @@ func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	// is held), the fast path and the decided path — and it reports the
 	// links it inserted.
 	link := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) linkWithinCap("))
-	if n := strings.Count(link, "Exec(ctx, insertLinksSQL,"); n != 3 {
-		t.Errorf("linkWithinCap inserts through insertLinksSQL at %d sites; want 3 (linkHeld, the fast path, the decided path)", n)
+	// 0.29.140: the decided path reads the inserted ids (RETURNING) to
+	// charge only what linked (chargeLinked); the two plain paths count rows.
+	if n, m := strings.Count(link, "Exec(ctx, insertLinksSQL,"), strings.Count(link, "Query(ctx, insertLinksSQL,"); n != 2 || m != 1 {
+		t.Errorf("linkWithinCap inserts through insertLinksSQL at %d Exec sites and %d Query site; want 2 (linkHeld, the fast path) and 1 (the decided path)", n, m)
 	}
-	if strings.Count(link, "RowsAffected()") < 3 {
-		t.Error("linkWithinCap must report the links each insert inserted (RowsAffected)")
+	if strings.Count(link, "RowsAffected()") < 2 || !strings.Contains(link, "return len(linked)") {
+		t.Error("linkWithinCap must report the links each insert inserted (RowsAffected, or the returned ids)")
 	}
 	// linkHeld's insert returns before anything else is read: the branch
 	// opens the body, and its return comes before the owner lookup, the
@@ -133,7 +135,7 @@ func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	// the return must come before the insert, not just exist.
 	decide := strings.Index(paste, "s.decideWithinCap(")
 	refused := strings.Index(paste, "if d.refused != nil {\n\t\treturn 0, 0, d.refused")
-	insert := strings.Index(paste, "Exec(ctx, insertLinksSQL,")
+	insert := strings.Index(paste, "Query(ctx, insertLinksSQL,")
 	if decide < 0 || refused < decide || insert < refused {
 		t.Errorf("addPasteWithinCap must decide (decideWithinCap), return the refusal, then insert; positions %d, %d, %d", decide, refused, insert)
 	}

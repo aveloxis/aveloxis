@@ -554,6 +554,58 @@ func TestResurrectIfListedDoesNotRepeatAReversedResurrection(t *testing.T) {
 	if eps := goneEpisodes(ctx, t, store, repoID); len(eps) != 3 || eps[2].restoredSource != GoneSourceOrgScan {
 		t.Fatalf("three closed episodes, the last by the org scan: %+v", eps)
 	}
+	// The refusal is tied to the stretch the org scan's restoration was
+	// reversed in, not to "the last closer was the org scan" (Copilot PR
+	// #252, thirteenth review): here the restoration above was followed by a
+	// successful collection (a metadata snapshot dated after it), so a later,
+	// unrelated outage is the org scan's to end again.
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date)
+		SELECT $1, 'Active', MAX(restored_at) + INTERVAL '1 microsecond' FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, repoID)
+	time.Sleep(10 * time.Millisecond) // the next restoration is stamped strictly after the snapshot
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || !back {
+		t.Fatalf("an outage after a collected stretch is resurrected by a listing, though the last closer was the org scan: %v %v", back, err)
+	}
+	// And the flap guard still holds right after that restoration: prelim
+	// reverses it before any collection, so the next listing is refused.
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || back {
+		t.Fatalf("a restoration prelim reversed before any collection is not repeated: %v %v", back, err)
+	}
+}
+
+// The flap guard's evidence includes the history table (the L10 pass on the
+// thirteenth-review fix): the rotation moves repo_info to repo_info_history
+// in its own transaction before the insert, so a failed insert leaves the
+// stretch's only snapshot there — reading repo_info alone refused a later,
+// unrelated outage until the recheck.
+func TestResurrectIfListedReadsTheRotatedSnapshotToo(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "flap-history")
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_info_history WHERE repo_id = $1`, repoID)
+	})
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || !back {
+		t.Fatalf("the first listing resurrects: %v %v", back, err)
+	}
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info_history (repo_id, status, data_collection_date)
+		SELECT $1, 'Active', MAX(restored_at) + INTERVAL '1 microsecond' FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, repoID)
+	time.Sleep(10 * time.Millisecond)
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := store.ResurrectIfListed(ctx, repoID, "95336057", 100); err != nil || !back {
+		t.Fatalf("a collected stretch whose snapshot was rotated to history is evidence too: %v %v", back, err)
+	}
 }
 
 // Copilot PR #252: the dedup carry reads the winner's gone state (the

@@ -585,6 +585,7 @@
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
@@ -3454,7 +3455,12 @@ real data.</p>
 GitHub” over the data we hold.</p></li>
 <li><p><strong>200 on a previously-stamped repo</strong> → clear the stamp and
 re-enqueue: if the organization re-publicizes, collection resumes
-automatically on the next run of this command.</p></li>
+automatically on the next run of this command. A 2xx on a candidate
+that carries no stamp (archived without one, or data-bearing and
+queueless) is counted as <code class="docutils literal notranslate"><span class="pre">alive</span></code> and left queueless: this command
+maintains the gone state and never re-queues what was never stamped.
+To resume such a repository’s collection, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code> it, or
+run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> for the non-archived stranded rows.</p></li>
 <li><p><strong>Anything else</strong> (transport errors, rate limits, 5xx,
 unresolvable redirects) → the repo is skipped and a re-run
 retries it.</p></li>

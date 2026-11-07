@@ -367,6 +367,25 @@ the merged-PR count), and `meta_label` slightly lower (REST kept
 label strings for DELETED forks on the PR object; GraphQL cannot
 reconstruct them — see docs/architecture/column-mapping.md).
 
+## A FAIL on an event table at the 30,000-event window
+
+GitHub serves a repository's event feed (`/issues/events`) newest first and
+ends it at 30,000 events. On a repository that produces events faster than
+that window — backstage/backstage generates about 30,000 a month — both
+sides stage exactly 30,000 events (the log line `events staged … count=30000`
+on each side) but the window's OLD edge moves between the two runs by the
+number of events the repository produced in between, so the released side
+holds a few events the new side's window no longer reaches. That reads as a
+**FAIL** of a few rows on `pull_request_events` or `issue_events` and is not
+row loss. Verify it in three reads: both sides' `events staged` counts are
+30,000; the oldest `created_at` of the table on the new side is later than
+on the released side by the gap; and the events only the released side holds
+still exist upstream (`gh api repos/OWNER/REPO/issues/events/ID`). The
+2026-11-06 run against v0.29.139 was this shape: 46 `referenced` events
+from the same seven seconds on 2026-10-05 fell off the new side's window,
+35 newer events came in, net 11 rows. A FAIL whose missing rows are NOT
+at the window's old edge is a regression.
+
 ## Expected event-table asymmetry vs pre-0.26.2 tags
 
 `aveloxis collect` before v0.26.2 used a legacy direct-write path that

@@ -6701,10 +6701,10 @@ forge live. The body is at most 6,256 bytes and the note at most
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429">429 Too Many Requests</a></span> – Refused by a rate limit; retry after <code class="docutils literal notranslate"><span class="pre">Retry-After</span></code> seconds. <a class="reference internal" href="#shared-response-toomanyrequests"><span class="std std-ref">Shared response TooManyRequests</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/500">500 Internal Server Error</a></span> – A server-side failure. <a class="reference internal" href="#shared-response-servererror"><span class="std std-ref">Shared response ServerError</span></a>.</p></li>
 <li><p><span><a class="reference external" href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/503">503 Service Unavailable</a></span> – Retry later. Either the database has not been migrated to this
-release (0.29.140: the api process does not migrate; the body names
-the deploy steps and nothing was written), or the shared condition
-of every route: a token could not be checked because the database
-failed, or the request ran past <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>.</p></li>
+release (0.29.140: the api process does not migrate; JSON naming the
+deploy steps, nothing written), or the shared condition of every
+route: a token could not be checked because the database failed
+(JSON), or the request ran past <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code> (plain text).</p></li>
 </ul>
 </dd>
 </dl>

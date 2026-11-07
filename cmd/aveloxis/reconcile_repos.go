@@ -76,10 +76,13 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 	defer store.Close()
 	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
 
-	// No migrate here: refuse on a database without the 0.29.140 schema
-	// before reading anything (Copilot PR #252, fourteenth review).
-	if err := store.RequireGoneHistorySchema(ctx); err != nil {
-		return err
+	// No migrate here: a run that writes refuses on a database behind this
+	// binary before reading anything (Copilot PR #252, fourteenth review); a
+	// dry run previews on any schema.
+	if !dryRun {
+		if err := store.RequireMigrated(ctx); err != nil {
+			return err
+		}
 	}
 	total, err := store.CountStrandedRepos(ctx)
 	if err != nil {

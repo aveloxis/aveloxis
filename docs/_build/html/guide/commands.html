@@ -2450,7 +2450,7 @@ treat owner/repo URLs case-insensitively, so
 are the <strong>same repository</strong> — but fleets that predate v0.25.32 could
 accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).</p>
-<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># show the plan (first 20 pairs)</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary batch</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until &quot;0 pairs&quot;</span>
@@ -3049,7 +3049,7 @@ row-count comparison, see <code class="docutils literal notranslate"><span class
 audit (2026-07-21) root-caused the cohort to GitHub renames + prelim’s
 duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share.</p>
-<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
 <p>Each stranded repo is classified by a LIVE redirect check:</p>
 <ul class="simple">
 <li><p>dead upstream (404/410/451) → gone-stamped and archived, the outcome
@@ -3165,7 +3165,7 @@ its unit with the site). Read-only on the schema; does not run migrations
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code><a class="headerlink" href="#aveloxis-adopt-forge-id" title="Link to this heading"></a></h2>
 <p>Treats a repository that was deleted and re-created on its forge under the
 same URL as a continuation of the one Aveloxis already tracks (v0.29.62).</p>
-<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database not yet migrated to 0.29.140 an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--list</span></code> still works, the visibility shown as not recorded (0.29.140).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--list</span></code> still works, the visibility shown as not recorded (0.29.140).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--list<span class="w">                         </span><span class="c1"># recorded changes: pending, superseded, adopted</span>
 aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--repo-id<span class="w"> </span><span class="m">98226</span>
 aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--note<span class="w"> </span><span class="s2">&quot;upstream re-created by the org&quot;</span>
@@ -3451,7 +3451,7 @@ removes from the queue). All collected data is kept, but before
 v0.28.1 nothing distinguished that state from “never collected”, so
 the GUI showed a false “queued for first collection” banner over
 real data.</p>
-<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
 <p>The probe is bidirectional and only DEFINITIVE answers decide:</p>
 <ul class="simple">
 <li><p><strong>404/410/451</strong> → stamp <code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code>. The repo page then shows

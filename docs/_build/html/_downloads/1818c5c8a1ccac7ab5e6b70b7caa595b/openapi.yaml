@@ -5128,14 +5128,18 @@ paths:
         "503":
           description: |
             Retry later. Either the database has not been migrated to this
-            release (0.29.140: the api process does not migrate; the body names
-            the deploy steps and nothing was written), or the shared condition
-            of every route: a token could not be checked because the database
-            failed, or the request ran past `http_timeout_seconds`.
+            release (0.29.140: the api process does not migrate; JSON naming the
+            deploy steps, nothing written), or the shared condition of every
+            route: a token could not be checked because the database failed
+            (JSON), or the request ran past `http_timeout_seconds` (plain text).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+            text/plain:
+              schema:
+                type: string
+                description: '`request exceeded http_timeout_seconds` and a newline.'
   /api/v1/repo-groups:
     get:
       operationId: augurRepositoryGroups

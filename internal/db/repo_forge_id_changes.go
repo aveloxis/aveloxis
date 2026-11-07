@@ -160,27 +160,37 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 // the missing column mid-request). Nothing was written.
 var ErrSchemaNotMigrated = errors.New("the database schema is behind this binary")
 
-// RequireGoneHistorySchema refuses unless the database holds the 0.29.140
-// objects the gone-lifecycle writers write — repo_gone_history and
-// repo_forge_id_changes.observed_private — read from the catalog
-// (pg_attribute through to_regclass: independent of column privileges, and
-// a dropped column does not count). A probe failure is an error, never "not
-// migrated" (SR-5). Called before the first write by every such writer a
-// non-migrating process reaches: both adoptions (adoptForgeIDUnderLock) and
-// the gone-state commands; serve migrates at start, so its hot paths do not
-// pay for it.
-func (s *PostgresStore) RequireGoneHistorySchema(ctx context.Context) error {
-	var migrated bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT to_regclass('aveloxis_data.repo_gone_history') IS NOT NULL
-		   AND EXISTS (SELECT 1 FROM pg_attribute
-		               WHERE attrelid = to_regclass('aveloxis_data.repo_forge_id_changes')
-		                 AND attname = 'observed_private' AND NOT attisdropped)`).Scan(&migrated); err != nil {
-		return fmt.Errorf("check the database for the 0.29.140 gone-history schema: %w", err)
+// RequireMigrated refuses unless the database's schema stamp is at or past
+// this binary's version — the general rule for a write a non-migrating process
+// reaches (the api, the web, a one-shot command), on the stamp the migrate
+// writes last (schemaVersionProbe, SchemaVersionAtLeast; the code review of the
+// fourteenth-review fix: a probe for one release's objects closed one release,
+// and the next column an api route writes would fail the same way). A stamp
+// ahead of the binary (a rollback) passes: the schema has every object it
+// knows. A probe failure is an error, never "not migrated" (SR-5). A pass is
+// cached for the store's life — a stamp goes back only when the database is
+// restored from an older backup, and a process running across a restore is
+// restarted (its other queries assume the newer schema too); a refusal is not
+// cached, so the first call after the migrate passes without a restart. Called by both
+// adoptions (adoptForgeIDUnderLock) and, before their first write, the
+// gone-state commands; serve migrates at start and never reaches it. A new
+// writer of this kind calls it too (docs/contributing/schema-migrations.md).
+func (s *PostgresStore) RequireMigrated(ctx context.Context) error {
+	if s.migratedVerified.Load() {
+		return nil
 	}
-	if !migrated {
-		return fmt.Errorf("%w: it has no aveloxis_data.repo_gone_history or no repo_forge_id_changes.observed_private (0.29.140) — run %s, then retry; nothing was written", ErrSchemaNotMigrated, DeployStepsAdvice)
+	stamp, err := s.schemaVersionProbe(ctx)
+	if err != nil {
+		return fmt.Errorf("read the database's schema stamp: %w", err)
 	}
+	if stamp == "" || !SchemaVersionAtLeast(stamp, ToolVersion) {
+		shown := stamp
+		if shown == "" {
+			shown = "none"
+		}
+		return fmt.Errorf("%w (schema %s, binary %s) — run %s, then retry; nothing was written", ErrSchemaNotMigrated, shown, ToolVersion, DeployStepsAdvice)
+	}
+	s.migratedVerified.Store(true)
 	return nil
 }
 
@@ -188,7 +198,7 @@ func (s *PostgresStore) RequireGoneHistorySchema(ctx context.Context) error {
 // adoptions (the CLI's, the admin page's) go through it, and it refuses on
 // an unmigrated database before anything is read or written.
 func (s *PostgresStore) adoptForgeIDUnderLock(ctx context.Context, repoID int64, body func(tx pgx.Tx) error) error {
-	if err := s.RequireGoneHistorySchema(ctx); err != nil {
+	if err := s.RequireMigrated(ctx); err != nil {
 		return err
 	}
 	// withRetry and the daily table's per-repository lock FIRST (the fresh

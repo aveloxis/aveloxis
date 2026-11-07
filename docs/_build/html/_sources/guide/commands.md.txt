@@ -504,7 +504,7 @@ are the **same repository** — but fleets that predate v0.25.32 could
 accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).
 
-Like every command but `serve` and `migrate`, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
 
 ```bash
 aveloxis dedup-repos --dry-run      # show the plan (first 20 pairs)
@@ -1074,7 +1074,7 @@ audit (2026-07-21) root-caused the cohort to GitHub renames + prelim's
 duplicate skip+dequeue (which dequeues without archiving), plus a
 smaller lost-enqueue share.
 
-Like every command but `serve` and `migrate`, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
 
 Each stranded repo is classified by a LIVE redirect check:
 
@@ -1200,7 +1200,7 @@ its unit with the site). Read-only on the schema; does not run migrations
 Treats a repository that was deleted and re-created on its forge under the
 same URL as a continuation of the one Aveloxis already tracks (v0.29.62).
 
-Like every command but `serve` and `migrate`, it does not migrate: on a database not yet migrated to 0.29.140 an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; `--list` still works, the visibility shown as not recorded (0.29.140).
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; `--list` still works, the visibility shown as not recorded (0.29.140).
 
 ```bash
 aveloxis adopt-forge-id --list                         # recorded changes: pending, superseded, adopted
@@ -1512,7 +1512,7 @@ v0.28.1 nothing distinguished that state from "never collected", so
 the GUI showed a false "queued for first collection" banner over
 real data.
 
-Like every command but `serve` and `migrate`, it does not migrate: on a database not yet migrated to 0.29.140 it refuses before reading anything, with a message naming the deploy steps (0.29.140).
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
 
 The probe is bidirectional and only DEFINITIVE answers decide:
 

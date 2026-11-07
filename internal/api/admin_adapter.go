@@ -106,7 +106,10 @@ func refusalAnswer(ref admin.Refusal) (int, string) {
 	case admin.NotMigrated:
 		// The api process does not migrate (Copilot PR #252, fourteenth
 		// review): temporary, the operator's migrate fixes it.
-		return http.StatusServiceUnavailable, detail("the database schema is behind this binary")
+		// A fixed body (the code review: the store's text named schema
+		// objects); no Retry-After — the migrate ends it, at no predictable
+		// time, and a number here would be invented.
+		return http.StatusServiceUnavailable, "the database has not been migrated to this release: run " + db.DeployStepsAdvice + ", then retry; nothing was changed"
 	case admin.Partial:
 		// The message holds counts only, no database text.
 		return http.StatusInternalServerError, detail("some repositories could not be added") + "; try adding them again"

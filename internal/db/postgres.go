@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"filippo.io/age"
@@ -28,6 +29,7 @@ import (
 type PostgresStore struct {
 	pool             *pgxpool.Pool
 	logger           *slog.Logger
+	migratedVerified atomic.Bool // RequireMigrated saw a stamp at or past this binary (cached; only a backup restore lowers a stamp)
 	matviewMode      MatviewMode // what RunMigrations does with the views; zero value builds none
 	supplyChainMode  MatviewMode // the same for the Aveloxis-owned supply-chain pair (supply_chain_views.go); independent of matviewMode
 	supplyChainBuilt bool        // the last Migrate BUILT the whole supply-chain pair (WITH DATA) — the scheduler skips its startup refresh

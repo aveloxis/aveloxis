@@ -2163,6 +2163,16 @@ too. The 2026-08-31 provenance audit traced years of drift
 attributed to the wrong subsystem) to this checklist lacking the
 step — a column documented at introduction can never drift
 silently.</p></li>
+<li><p><strong>Gate a write a non-migrating process reaches.</strong> The api, the web and
+every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code> run against whatever schema is
+there; the api and web log an ERROR on a stamp behind the binary and keep
+serving. A write such a process can reach that touches an object your
+release adds calls <code class="docutils literal notranslate"><span class="pre">store.RequireMigrated(ctx)</span></code> before it reads or writes
+anything (a command: before its first statement, writing runs only), so
+it refuses with <code class="docutils literal notranslate"><span class="pre">ErrSchemaNotMigrated</span></code> — the admin adapters answer 503 —
+instead of failing mid-request with 42703 or 42P01 (0.29.140, Copilot PR
+#252’s fourteenth review). A READ degrades instead: catch the undefined
+table or column and serve without the new data.</p></li>
 <li><p>Run <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> AND the integration tier.</p></li>
 <li><p>(Optional but recommended) Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-test</span> <span class="pre">--released-tag</span> <span class="pre">origin/main</span></code> (or the previous release’s tag) to verify the new version doesn’t lose data; it collects the standing repository set unless you pass <code class="docutils literal notranslate"><span class="pre">--repo</span></code>. See <a class="reference internal" href="../guide/data-test.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/guide/data-test.md</span></code></span></a>.</p></li>
 </ol>

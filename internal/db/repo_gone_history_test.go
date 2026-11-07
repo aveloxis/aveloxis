@@ -612,28 +612,30 @@ func TestResurrectIfListedReadsTheRotatedSnapshotToo(t *testing.T) {
 // one-shot commands do not migrate, and the api and web start on a schema
 // behind the binary with an ERROR and keep serving — so during a deploy the
 // admin adoption reached a 0.29.139 database and failed on the missing
-// column mid-request. The 0.29.140 writers a non-migrating process reaches
-// refuse up front with ErrSchemaNotMigrated (naming the migrate) and write
-// nothing; the probe reads the catalog, so a missing table or column is a
-// definite "not migrated" and a probe failure is an error, not a "no".
+// column mid-request. The gate is the schema stamp the migrate writes last
+// (the code review of the first fix: a probe for one release's objects
+// closed one release): behind the binary, or unstamped, refuses with
+// ErrSchemaNotMigrated naming the deploy steps, writing nothing; ahead (a
+// rollback) passes; a pass is cached for the store's life.
 func TestTheGoneLifecycleWritersRefuseAnUnmigratedSchema(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
-	if err := store.RequireGoneHistorySchema(ctx); err != nil {
-		t.Fatalf("a migrated database passes: %v", err)
+	var original string
+	if err := store.pool.QueryRow(ctx, `SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`).Scan(&original); err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `UPDATE aveloxis_ops.schema_meta SET schema_version = $1 WHERE id = TRUE`, original)
+	})
 	repoID := seedGoneHistoryRepo(t, store, ctx, "unmigrated-adopt")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id) VALUES ($1, '95336057', '1438985131')`, repoID)
 
-	// A 0.29.139 database: the column is missing.
-	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes DROP COLUMN observed_private`)
-	t.Cleanup(func() {
-		cleanupExecRetry(context.Background(), store, `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
-	})
-	err := store.RequireGoneHistorySchema(ctx)
-	if !errors.Is(err, ErrSchemaNotMigrated) || !strings.Contains(err.Error(), DeployStepsAdvice) {
-		t.Fatalf("a missing observed_private is not migrated, with the deploy advice: %v", err)
+	// A 0.29.139 database.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_ops.schema_meta SET schema_version = '0.29.139' WHERE id = TRUE`)
+	err := store.RequireMigrated(ctx)
+	if !errors.Is(err, ErrSchemaNotMigrated) || !strings.Contains(err.Error(), DeployStepsAdvice) || !strings.Contains(err.Error(), "0.29.139") {
+		t.Fatalf("a stamp behind the binary is not migrated, with the deploy advice: %v", err)
 	}
 	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "95336057", "1438985131", "admin", ""); !errors.Is(err, ErrSchemaNotMigrated) {
 		t.Fatalf("the admin adoption refuses on the unmigrated schema: %v", err)
@@ -647,19 +649,20 @@ func TestTheGoneLifecycleWritersRefuseAnUnmigratedSchema(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT r.platform_repo_id, c.adopted_at FROM aveloxis_data.repos r JOIN aveloxis_data.repo_forge_id_changes c USING (repo_id) WHERE r.repo_id = $1`, repoID).Scan(&stored, &adopted); err != nil || stored != "95336057" || adopted != nil {
 		t.Fatalf("nothing was written: id %q adopted %v (%v)", stored, adopted, err)
 	}
-	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
-
-	// The other half of 0.29.140: the history table is missing.
-	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_gone_history RENAME TO repo_gone_history_unmigrated`)
-	t.Cleanup(func() {
-		cleanupExecRetry(context.Background(), store, `ALTER TABLE IF EXISTS aveloxis_data.repo_gone_history_unmigrated RENAME TO repo_gone_history`)
-	})
-	if err := store.RequireGoneHistorySchema(ctx); !errors.Is(err, ErrSchemaNotMigrated) {
-		t.Fatalf("a missing repo_gone_history is not migrated: %v", err)
+	// Unstamped.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_ops.schema_meta SET schema_version = '' WHERE id = TRUE`)
+	if err := store.RequireMigrated(ctx); !errors.Is(err, ErrSchemaNotMigrated) {
+		t.Fatalf("an empty stamp is not migrated: %v", err)
 	}
-	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_gone_history_unmigrated RENAME TO repo_gone_history`)
-	if err := store.RequireGoneHistorySchema(ctx); err != nil {
-		t.Fatalf("restored, it passes again: %v", err)
+	// Ahead of the binary (a rollback): passes, on a store that has not cached.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_ops.schema_meta SET schema_version = '99.0.0' WHERE id = TRUE`)
+	if err := store.RequireMigrated(ctx); err != nil {
+		t.Fatalf("a stamp ahead of the binary passes: %v", err)
+	}
+	// The pass is cached: a stamp never goes back, so the gate stops reading it.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_ops.schema_meta SET schema_version = '0.29.139' WHERE id = TRUE`)
+	if err := store.RequireMigrated(ctx); err != nil {
+		t.Fatalf("a verified store does not read the stamp again: %v", err)
 	}
 }
 

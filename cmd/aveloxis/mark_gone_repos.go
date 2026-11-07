@@ -111,11 +111,15 @@ the immediate, whole-cohort form and resets that cadence clock.`,
 }
 
 func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, dryRun bool, limit int) error {
-	// This command does not migrate: on a database without the 0.29.140
-	// schema it refuses before reading anything (Copilot PR #252, fourteenth
-	// review), instead of failing on every candidate.
-	if err := store.RequireGoneHistorySchema(ctx); err != nil {
-		return err
+	// This command does not migrate: a run that writes refuses on a database
+	// behind this binary before reading anything (Copilot PR #252, fourteenth
+	// review), instead of failing on every candidate. A dry run writes nothing
+	// and reads only older objects, so it previews on any schema (the code
+	// review of that fix).
+	if !dryRun {
+		if err := store.RequireMigrated(ctx); err != nil {
+			return err
+		}
 	}
 	cands, err := store.GetGoneProbeCandidates(ctx, limit)
 	if err != nil {

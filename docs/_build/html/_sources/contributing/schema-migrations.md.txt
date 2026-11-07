@@ -349,8 +349,18 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
    attributed to the wrong subsystem) to this checklist lacking the
    step — a column documented at introduction can never drift
    silently.
-9. Run `go test ./...` AND the integration tier.
-10. (Optional but recommended) Run `aveloxis data-test --released-tag origin/main` (or the previous release's tag) to verify the new version doesn't lose data; it collects the standing repository set unless you pass `--repo`. See [`docs/guide/data-test.md`](../guide/data-test.md).
+9. **Gate a write a non-migrating process reaches.** The api, the web and
+   every command but `serve` and `migrate` run against whatever schema is
+   there; the api and web log an ERROR on a stamp behind the binary and keep
+   serving. A write such a process can reach that touches an object your
+   release adds calls `store.RequireMigrated(ctx)` before it reads or writes
+   anything (a command: before its first statement, writing runs only), so
+   it refuses with `ErrSchemaNotMigrated` — the admin adapters answer 503 —
+   instead of failing mid-request with 42703 or 42P01 (0.29.140, Copilot PR
+   #252's fourteenth review). A READ degrades instead: catch the undefined
+   table or column and serve without the new data.
+10. Run `go test ./...` AND the integration tier.
+11. (Optional but recommended) Run `aveloxis data-test --released-tag origin/main` (or the previous release's tag) to verify the new version doesn't lose data; it collects the standing repository set unless you pass `--repo`. See [`docs/guide/data-test.md`](../guide/data-test.md).
 
 ## What v0.21.5 made explicit: who can run migrations
 

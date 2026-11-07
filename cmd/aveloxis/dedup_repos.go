@@ -124,6 +124,12 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 	}
 	defer store.Close()
 
+	// No migrate here: the merge carries gone history and forge-ID
+	// visibility, so it refuses on a database without the 0.29.140 schema
+	// before reading anything (Copilot PR #252, fourteenth review).
+	if err := store.RequireGoneHistorySchema(ctx); err != nil {
+		return err
+	}
 	count, err := db.CountCaseVariantRepoDups(ctx, store)
 	if err != nil {
 		return fmt.Errorf("count duplicate groups: %w", err)

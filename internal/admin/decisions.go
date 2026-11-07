@@ -202,6 +202,14 @@ func (s *Service) AdoptForgeID(ctx context.Context, a Actor, repoID int64, oldID
 	case errors.Is(err, db.ErrNoPendingForgeIDChange):
 		s.refused(op, a, err, "repo_id", repoID, "old", oldID, "new", newID)
 		return err
+	case errors.Is(err, db.ErrSchemaNotMigrated):
+		// A deployment fault, not the administrator's request: ERROR, like
+		// the readers' own schema-behind lines, so a grep of api.log or
+		// web.log finds the click (the startup ERROR may be days old). The
+		// adapters answer 503 with the deploy steps; nothing was written.
+		httpserver.LogFailure(ctx, s.logger, slog.LevelError, err, "admin: adopt forge-ID change refused — the database schema is behind this binary; run the deploy steps",
+			"actor", a.String(), "repo_id", repoID, "old", oldID, "new", newID, "error", err)
+		return err
 	case errors.Is(err, db.ErrForgeIDNotAsExpected):
 		// The stored ID is no longer this change's old ID — usually another
 		// change was adopted (the CLI, a sibling row, or a second admin's

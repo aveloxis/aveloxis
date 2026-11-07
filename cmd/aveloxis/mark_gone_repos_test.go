@@ -4,6 +4,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -128,6 +133,62 @@ func TestOnReachableDecidesByClass(t *testing.T) {
 	}
 	if regexIndex(src, `store\.ResurrectArchivedSideline\(ctx, c\.RepoID, 10, db\.GoneSourceMarkGoneRepos\)\s*if err != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
 		t.Error("the lift's error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`")
+	}
+}
+
+// The gone-state commands do not migrate (Copilot PR #252, fourteenth
+// review): each refuses on a database without the 0.29.140 schema BEFORE its
+// first read or write, instead of failing on every row. The gate is a
+// top-level statement that RETURNS its error (the L10 pass: an order check
+// alone passed `_ = store.RequireGoneHistorySchema(ctx)` or a call under a
+// condition); the adoption's gate runs before the keys are loaded, so no
+// forge request is spent on an unmigrated database.
+func TestGoneStateCommandsRefuseAnUnmigratedSchemaFirst(t *testing.T) {
+	gate := regexp.MustCompile(`\n\tif err := store\.RequireGoneHistorySchema\(ctx\); err != nil \{\s*return err\s*\}`)
+	for fn, first := range map[string]string{
+		"func runMarkGoneRepos(":  "store.GetGoneProbeCandidates(",
+		"func runReconcileRepos(": "store.CountStrandedRepos(",
+		"func runDedupRepos(":     "db.CountCaseVariantRepoDups(",
+	} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", fn))
+		at := gate.FindStringIndex(body)
+		if at == nil || strings.Index(body, first) < at[1] {
+			t.Errorf("%s must open with a top-level `if err := store.RequireGoneHistorySchema(ctx); err != nil { return err }` before %s", fn, first)
+		}
+	}
+	adopt := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func adoptForgeIDCmd("))
+	check := regexp.MustCompile(`if err := store\.RequireGoneHistorySchema\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(adopt)
+	if check == nil || strings.Index(adopt, "loadKeys(") < check[1] || strings.Index(adopt, "if list {") > check[0] {
+		t.Error("adopt-forge-id refuses on an unmigrated database after its --list branch and before loading keys")
+	}
+}
+
+// The gate, run: mark-gone-repos on the package's test database with the
+// 0.29.140 column dropped returns ErrSchemaNotMigrated and reads nothing.
+func TestMarkGoneReposRefusesAnUnmigratedSchema(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("integration: set AVELOXIS_TEST_DB to run")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if _, err := store.Pool().Exec(ctx, `ALTER TABLE aveloxis_data.repo_forge_id_changes DROP COLUMN IF EXISTS observed_private`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool().Exec(context.Background(), `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
+	})
+	var logs bytes.Buffer
+	err = runMarkGoneRepos(ctx, store, slog.New(slog.NewTextHandler(&logs, nil)), true, 0)
+	if !errors.Is(err, db.ErrSchemaNotMigrated) {
+		t.Fatalf("mark-gone-repos on an unmigrated database = %v, want ErrSchemaNotMigrated", err)
+	}
+	if strings.Contains(logs.String(), "mark-gone-repos starting") {
+		t.Error("it refuses before reading the candidates")
 	}
 }
 

@@ -5126,7 +5126,16 @@ paths:
         "500":
           $ref: '#/components/responses/ServerError'
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: |
+            Retry later. Either the database has not been migrated to this
+            release (0.29.140: the api process does not migrate; the body names
+            the deploy steps and nothing was written), or the shared condition
+            of every route: a token could not be checked because the database
+            failed, or the request ran past `http_timeout_seconds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/repo-groups:
     get:
       operationId: augurRepositoryGroups

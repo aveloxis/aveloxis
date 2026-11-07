@@ -608,6 +608,61 @@ func TestResurrectIfListedReadsTheRotatedSnapshotToo(t *testing.T) {
 	}
 }
 
+// Copilot PR #252, fourteenth review: the api and web processes and the
+// one-shot commands do not migrate, and the api and web start on a schema
+// behind the binary with an ERROR and keep serving — so during a deploy the
+// admin adoption reached a 0.29.139 database and failed on the missing
+// column mid-request. The 0.29.140 writers a non-migrating process reaches
+// refuse up front with ErrSchemaNotMigrated (naming the migrate) and write
+// nothing; the probe reads the catalog, so a missing table or column is a
+// definite "not migrated" and a probe failure is an error, not a "no".
+func TestTheGoneLifecycleWritersRefuseAnUnmigratedSchema(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	if err := store.RequireGoneHistorySchema(ctx); err != nil {
+		t.Fatalf("a migrated database passes: %v", err)
+	}
+	repoID := seedGoneHistoryRepo(t, store, ctx, "unmigrated-adopt")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id) VALUES ($1, '95336057', '1438985131')`, repoID)
+
+	// A 0.29.139 database: the column is missing.
+	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes DROP COLUMN observed_private`)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
+	})
+	err := store.RequireGoneHistorySchema(ctx)
+	if !errors.Is(err, ErrSchemaNotMigrated) || !strings.Contains(err.Error(), DeployStepsAdvice) {
+		t.Fatalf("a missing observed_private is not migrated, with the deploy advice: %v", err)
+	}
+	if err := store.AdoptPendingForgeIDChange(ctx, repoID, "95336057", "1438985131", "admin", ""); !errors.Is(err, ErrSchemaNotMigrated) {
+		t.Fatalf("the admin adoption refuses on the unmigrated schema: %v", err)
+	}
+	isPrivate := false
+	if err := store.AdoptForgeID(ctx, repoID, "95336057", "1438985131", nil, "operator", "", &isPrivate); !errors.Is(err, ErrSchemaNotMigrated) {
+		t.Fatalf("the CLI adoption refuses on the unmigrated schema: %v", err)
+	}
+	var stored string
+	var adopted *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT r.platform_repo_id, c.adopted_at FROM aveloxis_data.repos r JOIN aveloxis_data.repo_forge_id_changes c USING (repo_id) WHERE r.repo_id = $1`, repoID).Scan(&stored, &adopted); err != nil || stored != "95336057" || adopted != nil {
+		t.Fatalf("nothing was written: id %q adopted %v (%v)", stored, adopted, err)
+	}
+	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_forge_id_changes ADD COLUMN IF NOT EXISTS observed_private BOOLEAN`)
+
+	// The other half of 0.29.140: the history table is missing.
+	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_gone_history RENAME TO repo_gone_history_unmigrated`)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `ALTER TABLE IF EXISTS aveloxis_data.repo_gone_history_unmigrated RENAME TO repo_gone_history`)
+	})
+	if err := store.RequireGoneHistorySchema(ctx); !errors.Is(err, ErrSchemaNotMigrated) {
+		t.Fatalf("a missing repo_gone_history is not migrated: %v", err)
+	}
+	mustExecRetry(ctx, t, store, `ALTER TABLE aveloxis_data.repo_gone_history_unmigrated RENAME TO repo_gone_history`)
+	if err := store.RequireGoneHistorySchema(ctx); err != nil {
+		t.Fatalf("restored, it passes again: %v", err)
+	}
+}
+
 // Copilot PR #252: the dedup carry reads the winner's gone state (the
 // invariant "open episode ⇔ current gone state"); a clearer running beside
 // the merge could close the winner's episode after that read. The winner's

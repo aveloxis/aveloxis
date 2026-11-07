@@ -23,7 +23,10 @@ observed the change was not public; absent when unknown (recorded before
 readers fall back to the older projection instead of failing the page).
 Adopting a change that is not known public moves the id but does not lift a
 gone stamp; the admin page's adoption keeps the recorded value (unknown stays
-unknown), the CLI records the forge's answer. Nothing else changes.
+unknown), the CLI records the forge's answer. Until the database is migrated
+to 0.29.140 (the api process does not migrate), the adoption route answers
+`503` with a message naming the deploy steps and writes nothing. Nothing else
+changes.
 
 ## Changes for API clients in 0.29.129
 

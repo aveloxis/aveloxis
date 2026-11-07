@@ -105,6 +105,10 @@ func (s *Server) refusePage(w http.ResponseWriter, r *http.Request, err error) b
 		http.Error(w, detail("some repositories could not be added")+"; try adding them again", http.StatusInternalServerError)
 	case admin.Capacity:
 		http.Error(w, ref.Exceeded.Message(), http.StatusTooManyRequests)
+	case admin.NotMigrated:
+		// The web process does not migrate (Copilot PR #252, fourteenth
+		// review): a schema behind the binary is the operator's to fix.
+		http.Error(w, "Not available until the database is migrated: "+ref.Detail, http.StatusServiceUnavailable)
 	default:
 		return false
 	}

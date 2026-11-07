@@ -182,6 +182,13 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 				}
 			}
 
+			// An adoption writes 0.29.140 objects, and this command does not
+			// migrate: refuse on an unmigrated database before the keys are
+			// loaded and a forge request is spent per id (the L10 pass on the
+			// fourteenth review's fix). --list above reads with a fallback.
+			if err := store.RequireGoneHistorySchema(ctx); err != nil {
+				return err
+			}
 			ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
 			if err != nil {
 				return fmt.Errorf("loading API keys: %w", err)

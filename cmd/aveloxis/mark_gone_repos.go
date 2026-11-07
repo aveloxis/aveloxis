@@ -111,6 +111,12 @@ the immediate, whole-cohort form and resets that cadence clock.`,
 }
 
 func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, dryRun bool, limit int) error {
+	// This command does not migrate: on a database without the 0.29.140
+	// schema it refuses before reading anything (Copilot PR #252, fourteenth
+	// review), instead of failing on every candidate.
+	if err := store.RequireGoneHistorySchema(ctx); err != nil {
+		return err
+	}
 	cands, err := store.GetGoneProbeCandidates(ctx, limit)
 	if err != nil {
 		return fmt.Errorf("loading gone-probe candidates: %w", err)

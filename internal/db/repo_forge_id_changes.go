@@ -152,9 +152,45 @@ func (s *PostgresStore) AdoptForgeID(ctx context.Context, repoID int64, oldID, n
 	})
 }
 
+// ErrSchemaNotMigrated means the database lacks an object this binary's
+// operation writes — a non-migrating process (the api, the web, a one-shot command)
+// running before `aveloxis migrate` (Copilot PR #252, fourteenth review: the
+// api and web start on a schema behind the binary with an ERROR and keep
+// serving, so the admin adoption reached a 0.29.139 database and failed on
+// the missing column mid-request). Nothing was written.
+var ErrSchemaNotMigrated = errors.New("the database schema is behind this binary")
+
+// RequireGoneHistorySchema refuses unless the database holds the 0.29.140
+// objects the gone-lifecycle writers write — repo_gone_history and
+// repo_forge_id_changes.observed_private — read from the catalog
+// (pg_attribute through to_regclass: independent of column privileges, and
+// a dropped column does not count). A probe failure is an error, never "not
+// migrated" (SR-5). Called before the first write by every such writer a
+// non-migrating process reaches: both adoptions (adoptForgeIDUnderLock) and
+// the gone-state commands; serve migrates at start, so its hot paths do not
+// pay for it.
+func (s *PostgresStore) RequireGoneHistorySchema(ctx context.Context) error {
+	var migrated bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT to_regclass('aveloxis_data.repo_gone_history') IS NOT NULL
+		   AND EXISTS (SELECT 1 FROM pg_attribute
+		               WHERE attrelid = to_regclass('aveloxis_data.repo_forge_id_changes')
+		                 AND attname = 'observed_private' AND NOT attisdropped)`).Scan(&migrated); err != nil {
+		return fmt.Errorf("check the database for the 0.29.140 gone-history schema: %w", err)
+	}
+	if !migrated {
+		return fmt.Errorf("%w: it has no aveloxis_data.repo_gone_history or no repo_forge_id_changes.observed_private (0.29.140) — run %s, then retry; nothing was written", ErrSchemaNotMigrated, DeployStepsAdvice)
+	}
+	return nil
+}
+
 // adoptForgeIDUnderLock runs an adoption's body in its transaction: both
-// adoptions (the CLI's, the admin page's) go through it.
+// adoptions (the CLI's, the admin page's) go through it, and it refuses on
+// an unmigrated database before anything is read or written.
 func (s *PostgresStore) adoptForgeIDUnderLock(ctx context.Context, repoID int64, body func(tx pgx.Tx) error) error {
+	if err := s.RequireGoneHistorySchema(ctx); err != nil {
+		return err
+	}
 	// withRetry and the daily table's per-repository lock FIRST (the fresh
 	// review of the PR #252 round): the body's restore writes repo_commit_daily,
 	// whose every other writer goes lock → repos row, and an adoption that

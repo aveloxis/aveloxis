@@ -103,6 +103,10 @@ func refusalAnswer(ref admin.Refusal) (int, string) {
 		return http.StatusBadRequest, detail("invalid request")
 	case admin.OrgUnregistrable, admin.LastAdmin, admin.Superseded, admin.Conflict:
 		return http.StatusConflict, detail("refused")
+	case admin.NotMigrated:
+		// The api process does not migrate (Copilot PR #252, fourteenth
+		// review): temporary, the operator's migrate fixes it.
+		return http.StatusServiceUnavailable, detail("the database schema is behind this binary")
 	case admin.Partial:
 		// The message holds counts only, no database text.
 		return http.StatusInternalServerError, detail("some repositories could not be added") + "; try adding them again"

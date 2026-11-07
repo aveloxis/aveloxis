@@ -26,16 +26,16 @@ var userReposInsert = regexp.MustCompile(`(?i)insert\s+into\s+aveloxis_ops\.user
 // addPasteWithinCap (v0.29.90); new repositories are admitted by
 // decideWithinCap (linkWithinCap's fast path links nothing new; linkHeld
 // takes a place holdRepoPlaces already decided; the decide → refuse →
-// insert order is pinned for the paste writer). The two other INSERTs
-// re-point existing links from a
-// duplicate repository to its survivor (the count of distinct
-// repositories an account reaches can only fall). Exact counts: a new
+// insert order is pinned for the paste writer). The one other INSERT
+// re-points existing links from a duplicate repository to its survivor
+// (the count of distinct repositories an account reaches can only fall):
+// repointGroupLinksSQL in repo_dedup.go, one spelling since 0.29.140, which
+// the case-variant merge and the rename heal both run. Exact counts: a new
 // writer anywhere in the module, or a re-pointer that moved, fails.
 func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	want := map[string]int{
-		"internal/db/capacity_store.go":        1, // insertLinksSQL (linkWithinCap ×3, addPasteWithinCap ×1)
-		"internal/db/repo_dedup.go":            1, // repoint user_repos (case-variant merge)
-		"internal/db/rename_duplicate_heal.go": 1, // repoint group links (rename duplicate)
+		"internal/db/capacity_store.go": 1, // insertLinksSQL (linkWithinCap ×3, addPasteWithinCap ×1)
+		"internal/db/repo_dedup.go":     1, // repointGroupLinksSQL (the merge and the heal)
 	}
 	root := srctest.Root(t)
 	got := map[string]int{}
@@ -76,9 +76,13 @@ func TestOneWriterOfNewGroupLinks(t *testing.T) {
 	}
 	src := srctest.Read(t, "internal/db/capacity_store.go")
 	stmt := srctest.ConstBody(t, src, "insertLinksSQL")
-	for _, needle := range []string{"INSERT INTO aveloxis_ops.user_repos", "ON CONFLICT DO NOTHING"} {
+	// 0.29.140 (Copilot PR #252 twelfth review and its L10 pass): the target
+	// rows are locked FOR SHARE (a link serialises with a merge's delete),
+	// and only a NEW link reaches the lock.
+	for _, needle := range []string{"INSERT INTO aveloxis_ops.user_repos", "ON CONFLICT DO NOTHING", "FOR SHARE OF r",
+		"AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos ur WHERE ur.group_id = $1 AND ur.repo_id = r.repo_id)"} {
 		if !strings.Contains(stmt, needle) {
-			t.Errorf("insertLinksSQL lost %q: the one writer is idempotent", needle)
+			t.Errorf("insertLinksSQL lost %q: the one writer is idempotent, serialises with a merge, and locks only a new link", needle)
 		}
 	}
 	// Every insert linkWithinCap makes is that statement — linkHeld's
@@ -103,6 +107,12 @@ func TestOneWriterOfNewGroupLinks(t *testing.T) {
 		if held < 0 || heldInsert < held || heldReturn < heldInsert || at < heldReturn {
 			t.Errorf("linkHeld must insert and return before %s (positions %d, %d, %d, %d)", name, held, heldInsert, heldReturn, at)
 		}
+	}
+	// No retry ladder inside the link (the L10 pass's F3, declined): every
+	// caller owns its retry, and withRetry's ~100 s on a persistent failure
+	// stalled them.
+	if strings.Contains(link, "withRetry") {
+		t.Error("linkWithinCap must not retry inside: the approval pass, the auto-approved add and the org fill own their retries")
 	}
 	// v0.29.90 (L10 review F1): the statement's users are exactly these
 	// sites, package-wide — a third user, with or without a decision,

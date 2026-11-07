@@ -58,7 +58,7 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 	// The binding and its error arm as two anchors (round 6: one hard-coded
 	// newline between them made a comment line a "missing write").
 	for _, write := range []struct{ binding, arm string }{
-		{"store.ArchiveRepo(ctx, sr.RepoID); err != nil {", ""},
+		{"store.SidelineRepo(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {", ""},
 		{"winnerID, ferr := store.FindRepoByURL(ctx, finalURL)", `^\s*if ferr != nil \{`},
 		{"healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)", `^\s*if herr != nil \{`},
 	} {
@@ -79,7 +79,17 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 			t.Errorf("%s: the error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`", write.binding)
 		}
 	}
-	for _, write := range []string{"db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {", "store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {"} {
+	// The two consolidation arms share one spelling. Since 0.29.140 the
+	// lost-queue-row arm clears a stale gone stamp with its enqueue
+	// (ResurrectRepo) — under a 2xx ONLY (Copilot PR #252: the probe
+	// returns 403, 429, 5xx and an unresolved 3xx with a nil error, so the
+	// default arm is INDETERMINATE: it enqueues like the untracked-redirect
+	// arm, prelim's own probe decides, and no gone stamp is cleared, SR-16).
+	for write, sites := range map[string]int{
+		"db.DedupRenamedRepoPair(ctx, store, winnerID, sr.RepoID, winnerGit, sr.GitURL); derr != nil {": 2,
+		"store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {":                                          2,
+		"store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {":                1,
+	} {
 		rest := src
 		seen := 0
 		for {
@@ -93,9 +103,13 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 			}
 			rest = rest[at+len(write):]
 		}
-		if seen != 2 {
-			t.Errorf("%s: %d sites; want 2", write, seen)
+		if seen != sites {
+			t.Errorf("%s: %d sites; want %d", write, seen, sites)
 		}
+	}
+	twoxx, resurrect, dflt := strings.Index(src, "case status >= 200 && status < 300:"), strings.Index(src, "store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile)"), strings.LastIndex(src, "default:")
+	if twoxx < 0 || resurrect < twoxx || dflt < resurrect {
+		t.Errorf("ResurrectRepo (clears a gone stamp) must sit under the 2xx case (%d) and before the indeterminate default arm (%d); at %d", twoxx, dflt, resurrect)
 	}
 	loopEnd, complete := regexIndex(src, `\n\tif ctx\.Err\(\) != nil \{\s*return interrupted\(\)`), strings.Index(src, `fmt.Printf("reconcile-repos%s: dead=`)
 	if loopEnd < 0 || complete < 0 || loopEnd > complete || loopEnd < errArm {
@@ -133,11 +147,11 @@ func TestInterruptedReportsExitNonZero(t *testing.T) {
 		}
 	}
 	var logs strings.Builder
-	err = markGoneInterruptedReport(slog.New(slog.NewTextHandler(&logs, nil)), markGoneCounts{1, 2, 3, 4, 5, 6, 7}, 30, true, context.Canceled)
+	err = markGoneInterruptedReport(slog.New(slog.NewTextHandler(&logs, nil)), markGoneCounts{1, 2, 3, 4, 5, 6, 7, 8}, 30, true, context.Canceled)
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "mark-gone-repos interrupted") {
 		t.Errorf("mark-gone report error = %v; want the cancellation wrapped under \"mark-gone-repos interrupted\"", err)
 	}
-	for _, want := range []string{"level=WARN", "mark-gone-repos interrupted", "probed=21", "of=30", "stamped=1", "cleared=2", "already_gone=3", "alive=4", "skipped=5", "refused=6", "stamp_failed=7", "dry_run=true"} {
+	for _, want := range []string{"level=WARN", "mark-gone-repos interrupted", "probed=29", "of=30", "stamped=1", "cleared=2", "already_gone=3", "alive=4", "skipped=5", "refused=6", "stamp_failed=7", "lifted_archived=8", "dry_run=true"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("mark-gone interruption log %q lacks %q", logs.String(), want)
 		}

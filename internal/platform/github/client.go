@@ -1082,6 +1082,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 	return &model.RepoInfo{
 		FullName:          r.NameWithOwner,
 		PlatformRepoID:    model.ForgeIDString(r.DatabaseID), // v0.27.102
+		Private:           r.IsPrivate,                       // 0.29.140
 		CreatedAt:         r.CreatedAt,                       // v0.27.104
 		Keywords:          strings.Join(topics, ","),         // v0.27.104 — comma-joined topics
 		LastUpdated:       r.UpdatedAt,
@@ -1148,6 +1149,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 	return &model.RepoInfo{
 		FullName:        raw.FullName,
 		PlatformRepoID:  model.ForgeIDString(raw.ID), // v0.27.102
+		Private:         raw.Private,                 // 0.29.140
 		CreatedAt:       raw.CreatedAt,               // v0.27.104
 		Keywords:        strings.Join(raw.Topics, ","),
 		LastUpdated:     raw.UpdatedAt,
@@ -1194,6 +1196,7 @@ func repoInfoGraphQL(owner, repo string) string {
     hasWikiEnabled
     isArchived
     isDisabled
+    isPrivate
     isFork
     parent { nameWithOwner }
     forkCount
@@ -1247,7 +1250,8 @@ type graphQLRepo struct {
 	HasWikiEnabled   bool `json:"hasWikiEnabled"`
 	IsArchived       bool `json:"isArchived"`
 	IsDisabled       bool `json:"isDisabled"`
-	IsFork           bool `json:"isFork"` // v0.27.78 — fork capture
+	IsPrivate        bool `json:"isPrivate"` // 0.29.140
+	IsFork           bool `json:"isFork"`    // v0.27.78 — fork capture
 	Parent           *struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"parent"`

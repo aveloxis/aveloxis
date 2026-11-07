@@ -50,7 +50,9 @@ type ingestOutcome struct {
 // is recorded (UpsertRepo with the forge id, so the rename-heal inside it
 // applies) and queued (EnqueueRepo; a failed enqueue is logged with the
 // operator's repair — the next pass takes the existing-row branch, which
-// never re-queues, so nothing revives a gone or renamed repository — and
+// re-queues ONE case: a gone-stamped row the forge lists publicly under the
+// forge ID it stores (ResurrectIfListed, 0.29.140); a renamed repository
+// is not revived by it — and
 // the repository is still linked) and a waiting mailing-list signal is
 // resolved onto it (ResolveSignaledRepoForURL, §5c) → the repository is
 // linked into every target user group (AddOrgRepoToGroupByID; the
@@ -73,12 +75,42 @@ func (s *Scheduler) ingestDiscovered(ctx context.Context, item platform.OwnerRep
 	if repoID > 0 {
 		out.repoID = repoID
 		if item.ForgeID != "" {
-			idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt)
+			goneUnderListedID, idErr := s.store.SetPlatformRepoIDIfEmptySeen(ctx, repoID, item.ForgeID, item.CreatedAt, item.Private)
 			if errors.Is(idErr, context.Canceled) {
 				return out, idErr
 			}
 			if idErr != nil {
-				s.logger.Warn("org scan: forge-ID backfill failed", "repo_id", repoID, "error", idErr)
+				s.logger.Warn("org scan: forge-ID backfill failed — the gone state is unknown, so a public listing still asks for the resurrection", "repo_id", repoID, "error", idErr)
+			}
+			// 0.29.140: the forge lists this repository PUBLICLY — a
+			// gone-stamped row that stores the listed forge ID is reachable
+			// again (the stamp was a transient 404, or the organization is
+			// public again), so it is cleared and re-enqueued
+			// (ResurrectIfListed; nothing for a row that is not gone, or
+			// whose stored ID differs — that is the pending forge-ID change
+			// above, observation-only; and once per gone stretch — the store
+			// refuses after an org-scan resurrection prelim reversed).
+			// bobsql (2026-11-05) sat gone-stamped and dequeued for a day
+			// after the scan had listed it. A PRIVATE listing (a member
+			// token lists them too) is no sign of life: prelim's probe is
+			// unauthenticated and answers 404 for it (round 1 F1). Asked only
+			// for a row the id backfill saw gone-stamped under the listed id
+			// (Copilot PR #252, ninth review: one more statement per public
+			// repository of every scan, almost all of them not gone); the
+			// store re-checks every condition in the statement itself. A
+			// backfill ERROR is not "not gone" (SR-5): the listing then asks
+			// as before, and the statement decides.
+			if !item.Private && (goneUnderListedID || idErr != nil) {
+				back, rerr := s.store.ResurrectIfListed(ctx, repoID, item.ForgeID, 100)
+				if errors.Is(rerr, context.Canceled) {
+					return out, rerr
+				}
+				if rerr != nil {
+					s.logger.Warn("org scan: could not resurrect a listed repository — it stays gone until the next scan or recheck", "repo_id", repoID, "url", platform.RedactURLUserinfo(item.URL), "error", rerr)
+				} else if back {
+					s.logger.Info("org scan: repository listed by its forge again — gone state cleared and re-enqueued",
+						"repo_id", repoID, "url", platform.RedactURLUserinfo(item.URL), "forge_id", item.ForgeID)
+				}
 			}
 		}
 	} else {

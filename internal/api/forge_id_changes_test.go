@@ -103,7 +103,7 @@ func TestForgeIDAdoptEndToEnd(t *testing.T) {
 		t.Errorf("no pair named: %d, want 400", code)
 	}
 	created := time.Date(2026, 9, 16, 23, 25, 49, 0, time.UTC)
-	if err := store.SetPlatformRepoIDIfEmptySeen(ctx, fx.repoID, "222", created); err != nil {
+	if _, err := store.SetPlatformRepoIDIfEmptySeen(ctx, fx.repoID, "222", created, false); err != nil {
 		t.Fatal(err)
 	}
 

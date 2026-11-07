@@ -35,7 +35,7 @@ import (
 type adoptForgeIDStore interface {
 	GetRepoByID(ctx context.Context, repoID int64) (*model.Repo, error)
 	GetRepoForgeID(ctx context.Context, repoID int64) (string, error)
-	AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string) error
+	AdoptForgeID(ctx context.Context, repoID int64, oldID, newID string, forgeCreatedAt *time.Time, adoptedBy, note string, observedPrivate *bool) error
 }
 
 type repoInfoFetcher interface {
@@ -83,7 +83,10 @@ func adoptForgeIDFor(ctx context.Context, store adoptForgeIDStore, clientFor fun
 		c := info.CreatedAt.UTC()
 		created = &c
 	}
-	if err := store.AdoptForgeID(ctx, repoID, stored, info.PlatformRepoID, created, adoptedBy, note); err != nil {
+	// The forge's own answer on visibility decides whether a gone stamp is
+	// lifted with the adoption (a private re-creation stays gone), and is
+	// recorded on the change.
+	if err := store.AdoptForgeID(ctx, repoID, stored, info.PlatformRepoID, created, adoptedBy, note, &info.Private); err != nil {
 		return err
 	}
 	when := "an unknown date"
@@ -164,6 +167,12 @@ may affect its statistics. The mismatch ERROR stops once adopted.`,
 					}
 					if c.AdoptedAt != nil {
 						state = "adopted " + c.AdoptedAt.UTC().Format("2006-01-02")
+					}
+					switch {
+					case c.ListedPrivate():
+						state += "  listed private (adopting keeps it gone)"
+					case !c.VisibilityKnown() && c.AdoptedAt == nil:
+						state += "  visibility not recorded (adopting from the admin page keeps it gone; this command asks the forge)"
 					}
 					fmt.Printf("repo %d  %s  %s → %s  first seen %s  %s\n", c.RepoID, c.RepoGit, c.OldForgeID, c.NewForgeID,
 						c.FirstObservedAt.UTC().Format("2006-01-02"), state)

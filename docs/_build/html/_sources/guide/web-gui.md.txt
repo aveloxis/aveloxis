@@ -277,6 +277,20 @@ Below them, the forge-ID changes collection observed: a repository deleted
 and re-created under the same URL on its forge. Adopting one, with an
 optional note (at most 1,000 characters), treats the new repository as the
 continuation of the old; a change another adoption superseded is not offered.
+Adopting also brings the repository back when it is gone-stamped and the
+scan listed the re-created repository publicly (0.29.140: the stamp is
+cleared and the repository re-queued with the adoption; a change the scan
+saw as a private listing is marked so and keeps the repository gone, as does
+one whose listing's visibility was never recorded — marked "visibility not
+recorded" — until a scan lists it again) and restores the earlier history's daily
+commit buckets a walk had trimmed (a very large re-created repository is
+adopted with `aveloxis adopt-forge-id` instead: that restore runs inside the
+request, which the proxy's deadline would end). Both repository pages keep
+both histories: this built-in page says two histories share the name (the
+change's dates and ids, the note) and lists every stretch the repository was
+not reachable on its forge, the current one marked; the public page
+(aveloxis-gui, drawn from the API's `/stats`) does the same and its charts
+mark the boundary.
 
 **Users** (`/admin/users`) is every account with its login, e-mail, forge,
 role, join date and last sign-in; promote or demote with one button, and

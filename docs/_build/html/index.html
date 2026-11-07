@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Documentation &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Aveloxis Documentation &mdash; Aveloxis 0.29.140 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=a422fba5"></script>
+      <script src="_static/documentation_options.js?v=c6d77b2e"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -342,6 +342,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -583,6 +584,7 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
@@ -783,7 +785,7 @@
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1562,6 +1564,8 @@
 <li class="toctree-l4"><a class="reference internal" href="schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="schema.html#email-message-ref">email_message_ref</a></li>
@@ -1993,6 +1997,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -2115,6 +2120,7 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>

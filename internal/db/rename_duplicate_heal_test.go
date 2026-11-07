@@ -200,3 +200,88 @@ func TestHealRenamedDuplicateEndToEnd(t *testing.T) {
 		t.Error("dup==winner must error")
 	}
 }
+
+// Copilot PR #252 (second review): a never-collected duplicate can hold gone
+// episodes (probed 404 once, re-added, then redirected onto a collected
+// winner); the heal's repos delete cascaded them away. They are carried to
+// the winner like the dedup merge's — an open one closed by the heal on a
+// reachable winner — under both repos rows' locks.
+func TestHealRenamedDuplicateCarriesTheDuplicatesGoneEpisodes(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	pool := store.pool
+	suffix := time.Now().UnixNano()
+	mkRepo := func(name string) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, repo_group_id)
+			VALUES ($1, '_avhealgone', $2, 1, 1) RETURNING repo_id`,
+			fmt.Sprintf("https://github.com/_avhealgone/%s%d", name, suffix),
+			fmt.Sprintf("%s%d", name, suffix)).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	winner, dup := mkRepo("winner"), mkRepo("dup")
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = ANY($1::bigint[])`,
+			`DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = ANY($1::bigint[])`,
+			`DELETE FROM aveloxis_data.repos WHERE repo_id = ANY($1::bigint[])`,
+		} {
+			pool.Exec(ctx, q, []int64{winner, dup})
+		}
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.collection_queue (repo_id, status, priority, due_at, last_collected) VALUES ($1, 'queued', 100, NOW(), NOW())`, winner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO aveloxis_ops.collection_queue (repo_id, status, priority, due_at) VALUES ($1, 'queued', 100, NOW())`, dup); err != nil {
+		t.Fatal(err)
+	}
+	// The duplicate's history: one closed stretch, and one still open (its
+	// stamp was cleared by a re-add's resurrection... no: the OPEN one means
+	// the row is gone-stamped now — prelim is here because the row was
+	// re-queued while stamped and the probe followed a redirect).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source)
+		VALUES ($1, NOW() - interval '20 days', 404, 'prelim', NOW() - interval '19 days', 'gone-recheck'),
+		       ($1, NOW() - interval '3 days', 404, 'prelim', NULL, '')`, dup); err != nil {
+		t.Fatal(err)
+	}
+	healed, err := store.HealRenamedDuplicate(ctx, dup, winner)
+	if err != nil || !healed {
+		t.Fatalf("heal: healed=%v err=%v", healed, err)
+	}
+	rows, err := pool.Query(ctx, `SELECT gone_status, gone_source, restored_at IS NOT NULL, restored_source FROM aveloxis_data.repo_gone_history WHERE repo_id = $1 ORDER BY gone_at`, winner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type ep struct {
+		status         int
+		source         string
+		closed         bool
+		restoredSource string
+	}
+	var got []ep
+	for rows.Next() {
+		var e ep
+		if err := rows.Scan(&e.status, &e.source, &e.closed, &e.restoredSource); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, e)
+	}
+	if len(got) != 2 || !got[0].closed || got[0].restoredSource != "gone-recheck" || !got[1].closed || got[1].restoredSource != GoneSourceRenameHeal {
+		t.Fatalf("the winner carries the duplicate's closed episode whole and its open one closed by the heal (the winner is reachable): %+v", got)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, dup).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the duplicate's rows go with it: %d %v", left, err)
+	}
+	// The winner's page changed (its gone history): the cache state is
+	// stamped in the carry's statement (Copilot PR #252, third review).
+	var stamped *time.Time
+	if err := pool.QueryRow(ctx, `SELECT data_changed_at FROM aveloxis_data.repos WHERE repo_id = $1`, winner).Scan(&stamped); err != nil || stamped == nil {
+		t.Fatalf("the carry stamps the winner's data_changed_at: %v %v", stamped, err)
+	}
+}

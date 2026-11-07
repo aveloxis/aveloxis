@@ -7394,6 +7394,11 @@ components:
           description: Single-repository answer only. Adopted forge-ID changes (the repository was re-created upstream under the same URL).
           items:
             $ref: '#/components/schemas/ForgeIDChange'
+        gone_history:
+          type: array
+          description: Every stretch during which the repository did not resolve on its forge, oldest first; an entry without `restored_at` is the current one (`gone_at`). Since 0.29.140.
+          items:
+            $ref: '#/components/schemas/GoneEpisode'
         has_metadata_snapshot:
           type: boolean
           description: Present (true) when a metadata snapshot exists, even one without a date.
@@ -8610,6 +8615,28 @@ components:
           type: string
           const: Starred
           description: Present when this star added the repository to the caller's "Starred" group.
+    GoneEpisode:
+      type: object
+      description: One stretch during which a repository did not resolve on its forge (`db.GoneEpisode`, 0.29.140).
+      required: [gone_at, source]
+      properties:
+        gone_at:
+          type: string
+          format: date-time
+          description: When a probe saw the repository gone.
+        status:
+          type: integer
+          description: The probe's HTTP status (404, 410 or 451); absent when unknown (episodes backfilled from a bare stamp).
+        source:
+          type: string
+          description: The writer that saw it gone (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`).
+        restored_at:
+          type: string
+          format: date-time
+          description: When the repository was seen again; absent while the episode is open.
+        restored_source:
+          type: string
+          description: The writer that saw it back (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` or `rename-heal` for a merged duplicate's episode closed by the merge).
     ForgeIDChange:
       type: object
       description: A recorded forge-ID change (`db.ForgeIDChange`).
@@ -8636,6 +8663,9 @@ components:
           type: string
           format: date-time
           description: Adopted changes only.
+        observed_private:
+          type: boolean
+          description: Whether the listing that last observed the change was not public (GitHub private; GitLab internal or private). Absent when unknown (a change recorded before 0.29.140, or read before the migrate added the column). Adopting a change that is not KNOWN public (`false`) moves the id but does not lift a gone stamp; an adoption from the admin page keeps the recorded value (unknown stays unknown), `aveloxis adopt-forge-id` records the forge's own answer.
         adopted_by:
           type: string
         note:

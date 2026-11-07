@@ -180,17 +180,17 @@ func TestGoneClearersClearTheNotice(t *testing.T) {
 	a := seedUnavailableRepo(ctx, t, store, "clear-a", false)
 	b := seedUnavailableRepo(ctx, t, store, "clear-b", false)
 	for _, id := range []int64{a, b} {
-		if err := store.MarkRepoGone(ctx, id); err != nil {
+		if err := store.SidelineRepo(ctx, id, 404, GoneSourcePrelim); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.SetRepoUnavailable(ctx, id, "blocked", "https://github.com/n"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.ClearRepoGone(ctx, a); err != nil {
+	if err := store.ClearRepoGone(ctx, a, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ResurrectRepo(ctx, b, 100); err != nil {
+	if err := store.ResurrectRepo(ctx, b, 100, GoneSourceRecheck); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{a, b} {

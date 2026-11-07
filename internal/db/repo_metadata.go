@@ -52,7 +52,10 @@ import (
 // date is an immutable fact; repos.created_at was 0% populated) and
 // updatedAt (prefer-new, nil-safe — the forge's last-updated timestamp,
 // also 0% populated). Zero time.Time values are nil-safe no-ops.
-func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string, createdAt, updatedAt time.Time) error {
+// private (0.29.140) is the forge's visibility of the repository as Phase 0 saw
+// it; it travels with a forge-ID change this call records (an adoption
+// resurrects a gone-stamped repository only for a public re-creation).
+func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string, createdAt, updatedAt time.Time, private bool) error {
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)
@@ -73,7 +76,7 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			    -- accurate repo_info.status (17,665 forge-archived
 			    -- repos had the flag false). Both directions: an
 			    -- un-archived repo flips back to false. prelim's
-			    -- dead-repo ArchiveRepo path is unaffected — those
+			    -- dead-repo SidelineRepo path is unaffected — those
 			    -- repos are dequeued and never reach Phase 0.
 			    repo_archived    = $5,
 			    -- v0.27.78: fork lineage from the forge (upstream
@@ -124,7 +127,7 @@ func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, de
 			// Recorded like the org scan's detector (PR #212 review: a repo
 			// reached only by Phase 0 never reached the Adopt list). Still
 			// observation-only: the stored ID is untouched.
-			if rerr := s.recordForgeIDObservation(ctx, repoID, storedForgeID, platformRepoID, createdAt); rerr != nil {
+			if rerr := s.recordForgeIDObservation(ctx, repoID, storedForgeID, platformRepoID, createdAt, private); rerr != nil {
 				if errors.Is(rerr, context.Canceled) {
 					return rerr
 				}

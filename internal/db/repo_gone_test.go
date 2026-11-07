@@ -6,9 +6,12 @@ package db
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.28.1 (A6) — the distinct "gone" state. Incident: the
@@ -31,33 +34,67 @@ func TestMigrateAddsRepoGoneAt(t *testing.T) {
 	}
 }
 
-// MarkRepoGone sets BOTH columns in ONE statement — splitting them
+// The gone stamp sets BOTH columns in ONE statement — splitting them
 // would mint a partial state the v0.27.39 sideline ordering
 // (archive-before-dequeue) can't classify.
 func TestMarkRepoGoneIsSingleStatement(t *testing.T) {
 	src := readSourceFile(t, "repo_gone.go")
-	i := strings.Index(src, "func (s *PostgresStore) MarkRepoGone(")
-	if i < 0 {
-		t.Fatal("MarkRepoGone missing")
+	// 0.29.140: the stamp lives in markGoneCTEs, run once by SidelineRepo (one
+	// transaction: the stamp statement, then the dequeue on a fresh snapshot).
+	// The CTEs hold exactly one UPDATE with both column writes.
+	if !strings.Contains(markGoneCTEs, "repo_archived = TRUE") || !strings.Contains(markGoneCTEs, "repo_gone_at = NOW()") {
+		t.Error("markGoneCTEs must set repo_archived AND repo_gone_at in the same UPDATE")
 	}
-	body := src[i:]
-	if end := strings.Index(body, "\nfunc "); end > 0 {
-		body = body[:end]
+	if strings.Count(markGoneCTEs, "UPDATE") != 1 {
+		t.Error("markGoneCTEs must hold exactly ONE UPDATE")
 	}
-	if !strings.Contains(body, "repo_archived = TRUE") || !strings.Contains(body, "repo_gone_at = NOW()") {
-		t.Error("MarkRepoGone must set repo_archived AND repo_gone_at in the same UPDATE")
+	// One gone writer (Copilot PR #252, sixth review): a stamp-only marker
+	// (MarkRepoGone, used by mark-gone-repos and reconcile-repos) left a
+	// repository a concurrent resurrection had just re-queued gone AND queued.
+	// The stamp has no caller but SidelineRepo, which dequeues in the same
+	// transaction.
+	if strings.Contains(srctest.StripGoComments(src), "func (s *PostgresStore) MarkRepoGone(") {
+		t.Error("the gone stamp has ONE writer, SidelineRepo (stamp + dequeue in one transaction); no stamp-only marker")
 	}
-	if strings.Count(body, "UPDATE") != 1 {
-		t.Error("MarkRepoGone must be exactly ONE statement")
+	// The token (L10 F2: `"WITH " + markGoneCTEs` and `q := markGoneCTEs`
+	// escape a spelling count): every mention of markGoneCTEs in the file
+	// but its declaration sits inside SidelineRepo's body.
+	stripped := srctest.StripGoComments(src)
+	mentions := regexp.MustCompile(`\bmarkGoneCTEs\b`).FindAllStringIndex(stripped, -1)
+	sideline := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) SidelineRepo("))
+	inSideline := len(regexp.MustCompile(`\bmarkGoneCTEs\b`).FindAllString(sideline, -1))
+	if len(mentions) != 2 || inSideline != 1 || !strings.Contains(stripped, "const markGoneCTEs = ") {
+		t.Errorf("markGoneCTEs is declared once and used once, inside SidelineRepo: %d mentions in the file, %d in SidelineRepo", len(mentions), inSideline)
+	}
+	if strings.Count(sideline, "UPDATE") != 0 {
+		t.Error("SidelineRepo must spell no UPDATE of its own")
+	}
+	// The operation (SR-18): the stamp itself — `repo_gone_at = NOW()` — is
+	// spelled at exactly one production site in the store and the CLIs, the
+	// CTEs; a stamp-only marker under any name would be a second spelling.
+	for dir, min := range map[string]int{"internal/db": 100, "cmd/aveloxis": 30, "internal/collector": 30, "internal/scheduler": 15} {
+		if n := strings.Count(srctest.StripGoComments(srctest.PackageSource(t, dir, min)), "repo_gone_at = NOW()"); n != map[bool]int{true: 1, false: 0}[dir == "internal/db"] {
+			t.Errorf("%s spells the gone stamp `repo_gone_at = NOW()` at %d sites; the one site is markGoneCTEs", dir, n)
+		}
+	}
+	if strings.Count(sideline, "DELETE FROM aveloxis_ops.collection_queue") != 1 || !strings.Contains(sideline, ".Begin(ctx)") || !strings.Contains(sideline, "tx.Commit(ctx)") {
+		t.Error("SidelineRepo must dequeue once, as a second statement of the same transaction")
 	}
 }
 
 // ClearRepoGone is guarded so it's a 0-row no-op for the normal
 // fleet (prelim calls it on every healthy probe).
 func TestClearRepoGoneIsGuarded(t *testing.T) {
-	src := readSourceFile(t, "repo_gone.go")
-	if !strings.Contains(src, "AND repo_gone_at IS NOT NULL") {
-		t.Error("ClearRepoGone must carry the IS NOT NULL guard")
+	// 0.29.140: the clear takes its sideline predicate (the gone stamp, or
+	// the old dead arm's archived-without-stamp residue); ClearRepoGone and
+	// every gone resurrection pass the gone predicate.
+	if goneSidelineSQL != "repo_gone_at IS NOT NULL" || !strings.Contains(clearGoneCTE, "WHERE repo_id = $1 AND %s") {
+		t.Error("the clear is guarded by its sideline predicate; the gone one is `repo_gone_at IS NOT NULL`")
+	}
+	for _, fn := range []string{"func (s *PostgresStore) ClearRepoGone(", "func (s *PostgresStore) ResurrectRepo(", "func (s *PostgresStore) ResurrectIfListed(", "func resurrectInTx("} {
+		if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", fn)), "goneSidelineSQL") {
+			t.Errorf("%s must clear under goneSidelineSQL", fn)
+		}
 	}
 }
 
@@ -101,11 +138,14 @@ func TestPrelimStampsAndClearsGone(t *testing.T) {
 	if end := strings.Index(body, "\nfunc "); end > 0 {
 		body = body[:end]
 	}
-	if !strings.Contains(body, "store.MarkRepoGone(") {
-		t.Error("prelim's 404/410/451 sideline must stamp via MarkRepoGone")
+	// 0.29.140 (Copilot PR #252, second review): the sideline is SidelineRepo
+	// — stamp, episode and dequeue in one transaction; a separate stamp +
+	// DequeueRepo pair left a window for an org scan's resurrection.
+	if !strings.Contains(body, "store.SidelineRepo(") {
+		t.Error("prelim's 404/410/451 sideline must stamp via SidelineRepo (one transaction with the dequeue)")
 	}
 	if strings.Contains(body, "store.ArchiveRepo(") {
-		t.Error("the bare ArchiveRepo call must be gone from RunPrelim — MarkRepoGone supersedes it in the sideline")
+		t.Error("RunPrelim must not stamp in a statement separate from the dequeue (ArchiveRepo)")
 	}
 	if !strings.Contains(body, "store.ClearRepoGone(") {
 		t.Error("prelim's healthy path must clear a stale gone stamp (symmetric resurrection)")
@@ -213,11 +253,11 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 			st.GatheredIssues, st.GatheredCommits)
 	}
 	if st.GoneAt != nil {
-		t.Error("gone_at must be nil before MarkRepoGone")
+		t.Error("gone_at must be nil before the sideline")
 	}
 
 	// Stamp gone → surfaced; archived flag set too.
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	st, err = store.GetRepoStats(ctx, repoID)
@@ -229,10 +269,10 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 	}
 
 	// Clear → nil again; second clear is a no-op.
-	if err := store.ClearRepoGone(ctx, repoID); err != nil {
+	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ClearRepoGone(ctx, repoID); err != nil {
+	if err := store.ClearRepoGone(ctx, repoID, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
@@ -251,7 +291,7 @@ func TestRepoGoneEndToEnd(t *testing.T) {
 
 	// Candidate selection: this queueless repo (has data) appears;
 	// after stamping it stays (GoneStamped=true).
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	cands, err := store.GetGoneProbeCandidates(ctx, 0)
@@ -285,10 +325,10 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
 	})
 
-	if err := store.MarkRepoGone(ctx, repoID); err != nil {
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+	if err := store.ResurrectRepo(ctx, repoID, 10, GoneSourceMarkGoneRepos); err != nil {
 		t.Fatal(err)
 	}
 	if ga := repoGoneAt(ctx, t, store, repoID); ga != nil {
@@ -305,7 +345,7 @@ func TestResurrectRepoIsAtomicEndToEnd(t *testing.T) {
 		t.Errorf("queue row: status=%q priority=%d, want queued/10", status, priority)
 	}
 	// Idempotent re-run (the rerun-after-partial-failure shape).
-	if err := store.ResurrectRepo(ctx, repoID, 10); err != nil {
+	if err := store.ResurrectRepo(ctx, repoID, 10, GoneSourceMarkGoneRepos); err != nil {
 		t.Fatalf("ResurrectRepo must be idempotent: %v", err)
 	}
 }
@@ -365,7 +405,7 @@ func TestRepoStatsBatchGoneEndToEnd(t *testing.T) {
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, gone)
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, tracked)
 	})
-	if err := store.MarkRepoGone(ctx, gone); err != nil {
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
 		t.Fatal(err)
 	}
 	// The tracked repo has a queue row with cached counts.

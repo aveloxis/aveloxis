@@ -1022,10 +1022,65 @@ const freshSQL = `
 // repository is new to the account, linkHeld when an approved item already
 // holds the place, otherwise behind decideWithinCap — and addPasteWithinCap,
 // behind decideWithinCap.
+//
+// The target repository rows are selected FOR SHARE, in id order (Copilot
+// PR #252, twelfth review): user_repos.repo_id has no FK to repos, so
+// nothing refused a link to a repository a dedup merge or a rename heal was
+// deleting — inserted after the merge's repoint and before its delete
+// committed, it left the group pointing at a deleted id. SHARE conflicts
+// with the merge's FOR NO KEY UPDATE on both rows (lockRepoRowsSQL, held
+// from its first statement to commit): a link either commits first and is
+// moved by the repoint, or waits and then finds the loser gone and inserts
+// nothing for it (the next org refresh links the winner). KEY SHARE would
+// not do: it is compatible with NO KEY UPDATE, so the merge's delete would
+// only wait for the link to commit. An id with no repos row is never linked.
+//
+// Only a NEW link takes the lock (the L10 pass on this fix): the org scan
+// re-links every repository into every group on each pass (9.3 M no-op
+// re-links in one run), and a FOR SHARE on each target row sets xmax,
+// dirties the page and logs a record on the hot repos table — summary/37's
+// class. An existing link is filtered out before the lock (NOT EXISTS); a
+// concurrent insert of the same link is ON CONFLICT's, and an existing link
+// to a merge's loser is the repoint's to move. Not retried inside (the L10
+// pass's F3, declined): a NEW link's FOR SHARE in id order can meet a
+// multi-row repos UPDATE that locks in plan order (the CVSS rescore's stamp,
+// heal-libyear's windows) — a 40P01 returns to the caller, and every caller
+// owns its retry (the approval pass leaves the item for the next pass, an
+// auto-approved add marks it failed, the org fill retries next refresh); the
+// store's withRetry ladder, ~100 s on a persistent failure, stalled them
+// (census33: 411 s in the approval test's injected failures). Decided: a
+// re-link racing an uncommitted REMOVAL of the same link reads it as present
+// and inserts nothing, so the group ends unlinked — the add observed the link
+// and the removal then took it out, a valid order of two opposite intents;
+// before, ON CONFLICT waited and the add won. Neither is wrong.
 const insertLinksSQL = `
 	INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-	SELECT $1, id FROM unnest($2::bigint[]) AS t(id)
+	SELECT $1, r.repo_id FROM aveloxis_data.repos r
+	WHERE r.repo_id = ANY($2::bigint[])
+	  AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.user_repos ur WHERE ur.group_id = $1 AND ur.repo_id = r.repo_id)
+	ORDER BY r.repo_id
+	FOR SHARE OF r
 	ON CONFLICT DO NOTHING`
+
+// goneIfUnlinked turns a link that inserted nothing into ErrRepoNotFound when
+// the repository no longer exists — a merge or a rename heal deleted it while
+// the link waited, and insertLinksSQL skips a deleted row (the L10 pass: the
+// user-facing single-repository paths returned (false, nil), "already
+// linked"). Probed only when nothing was inserted; the org refresh's hot
+// path does not call it (its next pass links the winner).
+func (s *PostgresStore) goneIfUnlinked(ctx context.Context, inserted int, repoID int64) error {
+	if inserted > 0 {
+		return nil
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1)`, repoID).Scan(&exists); err != nil {
+		return fmt.Errorf("verify repository %d after linking: %w", repoID, err)
+	}
+	if !exists {
+		return fmt.Errorf("link repository %d: %w", repoID, ErrRepoNotFound)
+	}
+	return nil
+}
 
 // linksQuota is an account's repo_links_per_day as applied (the account's
 // override replacing the value) and today's count key.

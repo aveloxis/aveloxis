@@ -71,6 +71,13 @@ type RepoStats struct {
 	// operator adopted the new one as a continuation, so this row holds
 	// data from both. The GUI shows a notice; statistics may be affected.
 	ForgeIDChanges []ForgeIDChange `json:"forge_id_changes,omitempty"`
+	// GoneHistory (0.29.140) — every stretch during which the repository
+	// did not resolve on its forge (aveloxis_data.repo_gone_history),
+	// oldest first; an episode without restored_at is the current one
+	// (GoneAt). The GUI lists them under the gone notice, so a repository
+	// that was unavailable for a day (re-created upstream, probed while
+	// still 404) keeps that on its page after it is back.
+	GoneHistory []GoneEpisode `json:"gone_history,omitempty"`
 	// HasMetadataSnapshot (v0.28.11, Copilot round 10) — TRUE when a
 	// repo_info ROW exists, independent of its (nullable)
 	// data_collection_date. MetadataAsOf presence is NOT a snapshot-
@@ -368,6 +375,22 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	}
 	for id, st := range result {
 		st.ForgeIDChanges = changes[id]
+	}
+	// The gone history (0.29.140) degrades the same way, for the same
+	// reason: an api running before the migrate that creates
+	// repo_gone_history must still serve the page.
+	episodes, gerr := s.repoGoneHistoryBatch(ctx, repoIDs)
+	if gerr != nil {
+		if errors.Is(gerr, context.Canceled) || errors.Is(gerr, context.DeadlineExceeded) {
+			return nil, gerr
+		}
+		if !isUndefinedTable(gerr) {
+			return nil, fmt.Errorf("gone history: %w", gerr)
+		}
+		s.logger.Error("repo stats: repo_gone_history does not exist — run aveloxis migrate; the page renders without the gone history", "repo_ids", len(repoIDs), "error", gerr)
+	}
+	for id, st := range result {
+		st.GoneHistory = episodes[id]
 	}
 
 	// v0.27.50: last observed activity — drives the chart last-active

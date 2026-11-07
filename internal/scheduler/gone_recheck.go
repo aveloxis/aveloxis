@@ -189,7 +189,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 		}
 		switch {
 		case status >= 200 && status < 300:
-			if err := s.store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {
+			if err := s.store.ResurrectRepo(ctx, c.RepoID, 10, db.GoneSourceRecheck); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}

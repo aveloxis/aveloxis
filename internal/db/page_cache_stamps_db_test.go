@@ -237,21 +237,21 @@ func TestUpdateRepoMetadataStampsWhenItFillsCreatedAt(t *testing.T) {
 	store, repo, _, _ := commitBoundsFixture(t, "_avmetastamp")
 	ctx := context.Background()
 	id := repo("x")
-	if err := store.UpdateRepoMetadata(ctx, id, "d", "Go", nil, false, "", "", time.Time{}, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, id, "d", "Go", nil, false, "", "", time.Time{}, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := dataChangedAt(ctx, t, store, id); got != nil {
 		t.Fatalf("no created_at to fill: no stamp, got %v", got)
 	}
 	created := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
-	if err := store.UpdateRepoMetadata(ctx, id, "d", "Go", nil, false, "", "", created, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, id, "d", "Go", nil, false, "", "", created, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	first := dataChangedAt(ctx, t, store, id)
 	if first == nil {
 		t.Fatal("filling created_at must stamp data_changed_at")
 	}
-	if err := store.UpdateRepoMetadata(ctx, id, "d2", "Go", nil, false, "", "", created.AddDate(1, 0, 0), time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, id, "d2", "Go", nil, false, "", "", created.AddDate(1, 0, 0), time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	if again := dataChangedAt(ctx, t, store, id); again == nil || !again.Equal(*first) {

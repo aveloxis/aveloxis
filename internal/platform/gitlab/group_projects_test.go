@@ -50,9 +50,10 @@ func TestListGroupProjectsPaginatesWithTheInstanceKey(t *testing.T) {
 		switch page {
 		case 1:
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 11, "web_url": "https://gitlab.example.invalid/my-group/a", "name": "a", "path": "a", "path_with_namespace": "my-group/a", "created_at": created, "namespace": map[string]any{"full_path": "my-group"}},
+				{"id": 11, "web_url": "https://gitlab.example.invalid/my-group/a", "name": "a", "path": "a", "path_with_namespace": "my-group/a", "created_at": created, "visibility": "public", "namespace": map[string]any{"full_path": "my-group"}},
 				// GitLab's name is the DISPLAY name; the path is the slug every API call addresses (0.29.106 whole-branch review P1).
-				{"id": 12, "web_url": "https://gitlab.example.invalid/my-group/sub/b", "name": "B Display Name", "path": "b", "path_with_namespace": "my-group/sub/b", "namespace": map[string]any{"full_path": "my-group/sub"}},
+				// An `internal` project is not public to an unauthenticated probe (0.29.140).
+				{"id": 12, "web_url": "https://gitlab.example.invalid/my-group/sub/b", "name": "B Display Name", "path": "b", "path_with_namespace": "my-group/sub/b", "visibility": "internal", "namespace": map[string]any{"full_path": "my-group/sub"}},
 			})
 		default:
 			_ = json.NewEncoder(w).Encode([]map[string]any{})
@@ -71,8 +72,11 @@ func TestListGroupProjectsPaginatesWithTheInstanceKey(t *testing.T) {
 	if !got[0].CreatedAt.Equal(created) || !got[1].CreatedAt.IsZero() {
 		t.Errorf("created_at = %v, %v; want the forge's time and zero when absent", got[0].CreatedAt, got[1].CreatedAt)
 	}
-	if or := got[0].OwnerRepo(); or.URL != got[0].WebURL || or.Owner != "my-group" || or.ForgeID != "11" || !or.CreatedAt.Equal(created) {
+	if or := got[0].OwnerRepo(); or.URL != got[0].WebURL || or.Owner != "my-group" || or.ForgeID != "11" || !or.CreatedAt.Equal(created) || or.Private {
 		t.Errorf("OwnerRepo() = %+v", or)
+	}
+	if or := got[1].OwnerRepo(); !or.Private {
+		t.Errorf("a project whose visibility is not `public` is Private to the scan: %+v", or)
 	}
 	for _, tok := range tokens {
 		if tok != "instance-token" {

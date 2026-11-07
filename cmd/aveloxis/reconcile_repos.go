@@ -8,7 +8,7 @@
 // skip+dequeue; a smaller share are lost-enqueue leftovers.
 //
 // Per stranded repo, classified by LIVE redirect check:
-//   - dead upstream (404/410/451)      → archive (matches prelim's sidelining)
+//   - dead upstream (404/410/451)      → gone-stamped + archived + dequeued (SidelineRepo, the outcome prelim applies; 0.29.140)
 //   - redirects to a TRACKED repo  → dataless: HealRenamedDuplicate
 //     (repoint links, delete the dup row); data-bearing: consolidate
 //     via the dedup-repos per-pair machinery (repoints + leaves-first
@@ -47,7 +47,7 @@ func reconcileReposCmd(cfgPath *string) *cobra.Command {
 		Short: "Heal non-archived repos that have no collection_queue row (v0.27.39)",
 		Long: `Finds repos rows the scheduler can never see (non-archived, no queue row —
 mostly rename-duplicate leftovers from prelim's skip+dequeue) and heals each
-by live redirect classification: dead repos archive, dataless rename
+by live redirect classification: dead repos are sidelined (gone-stamped, archived, out of the queue), dataless rename
 duplicates heal onto their tracked winner, data-bearing rename duplicates
 consolidate via the dedup-repos machinery, and everything else re-enqueues.
 
@@ -152,20 +152,26 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		}
 		switch {
 		case platform.IsRepoGoneStatus(status): // 404, 410, 451 — one rule (v0.29.58)
-			// Dead upstream — the outcome prelim would have applied.
+			// Dead upstream — the outcome prelim applies: the gone stamp
+			// with the archived flag and, in the same transaction, no queue
+			// row (0.29.140; ArchiveRepo set the flag alone, so the gone
+			// recheck never re-probed these rows and a transient 404 was
+			// final; a stamp alone left a repository a concurrent resurrection
+			// had just re-queued gone AND queued). The episode records this
+			// command.
 			fmt.Printf("  dead:        %s (repo %d)\n", sr.GitURL, sr.RepoID)
 			if !dryRun {
-				if err := store.ArchiveRepo(ctx, sr.RepoID); err != nil {
+				if err := store.SidelineRepo(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {
 					if ctx.Err() != nil {
 						return interrupted()
 					}
-					logger.Warn("reconcile: archive failed", "repo_id", sr.RepoID, "error", err)
+					logger.Warn("reconcile: mark gone failed", "repo_id", sr.RepoID, "error", err)
 					c.skipped++
 					continue
 				}
 			}
 			c.dead++
-		case !strings.EqualFold(normalizeReconcileURL(finalURL), normalizeReconcileURL(sr.GitURL)):
+		case !sameRepoURL(finalURL, sr.GitURL):
 			// Renamed upstream. Tracked winner → heal/consolidate;
 			// untracked target → re-enqueue and let prelim rename it
 			// in place (rename detection is prelim's job).
@@ -257,10 +263,31 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				}
 				c.enqueued++
 			}
-		default:
+		case status >= 200 && status < 300:
 			// Alive at its own URL — a lost queue row. Restore
-			// scheduler visibility.
+			// scheduler visibility; a stale gone stamp (a gone row the
+			// v0.27.50 step un-archived, before 0.29.140) is cleared with
+			// the same statement, so the page does not say "no longer
+			// publicly available" about a repository that just answered 2xx.
 			fmt.Printf("  enqueue (lost queue row): %s (repo %d)\n", sr.GitURL, sr.RepoID)
+			if !dryRun {
+				if err := store.ResurrectRepo(ctx, sr.RepoID, 100, db.GoneSourceReconcile); err != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
+					logger.Warn("reconcile: enqueue failed", "repo_id", sr.RepoID, "error", err)
+					c.skipped++
+					continue
+				}
+			}
+			c.enqueued++
+		default:
+			// Indeterminate (403, 429, 5xx, an unresolved 3xx — the probe
+			// returns them with a nil error; Copilot PR #252): a lost queue
+			// row still, so scheduler visibility is restored, but nothing
+			// is PROVEN about the repository — a gone stamp stays for
+			// prelim's own probe to decide (SR-16: only a 2xx clears it).
+			fmt.Printf("  enqueue (lost queue row; status %d not definitive, prelim decides): %s (repo %d)\n", status, sr.GitURL, sr.RepoID)
 			if !dryRun {
 				if err := store.EnqueueRepo(ctx, sr.RepoID, 100); err != nil {
 					if ctx.Err() != nil {
@@ -298,6 +325,13 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		return fmt.Errorf("%d stranded repos have a repo_git carrying credentials — correct them, then rerun", c.refused)
 	}
 	return nil
+}
+
+// sameRepoURL is the one "is this the row's own URL" rule (SR-17):
+// reconcile-repos tells a rename from a lost queue row by it, and
+// mark-gone-repos lifts an archived sideline only at its own URL.
+func sameRepoURL(a, b string) bool {
+	return strings.EqualFold(normalizeReconcileURL(a), normalizeReconcileURL(b))
 }
 
 // normalizeReconcileURL trims the pieces that don't affect identity

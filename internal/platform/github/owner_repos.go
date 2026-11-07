@@ -49,6 +49,7 @@ func (c *Client) ListOwnerRepos(ctx context.Context, owner string, personalFallb
 				HTMLURL   string    `json:"html_url"`
 				Name      string    `json:"name"`
 				CreatedAt time.Time `json:"created_at"`
+				Private   bool      `json:"private"`
 				Owner     struct {
 					Login string `json:"login"`
 				} `json:"owner"`
@@ -63,7 +64,7 @@ func (c *Client) ListOwnerRepos(ctx context.Context, owner string, personalFallb
 				return
 			}
 			for _, it := range items {
-				if !yield(platform.OwnerRepo{URL: it.HTMLURL, Owner: it.Owner.Login, Name: it.Name, ForgeID: model.ForgeIDString(it.ID), CreatedAt: it.CreatedAt}, nil) {
+				if !yield(platform.OwnerRepo{URL: it.HTMLURL, Owner: it.Owner.Login, Name: it.Name, ForgeID: model.ForgeIDString(it.ID), CreatedAt: it.CreatedAt, Private: it.Private}, nil) {
 					return
 				}
 			}

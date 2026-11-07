@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.140 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a422fba5"></script>
+      <script src="../_static/documentation_options.js?v=c6d77b2e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -584,6 +585,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
@@ -784,7 +786,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1565,8 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2181,6 +2185,25 @@ only real merges — verified: the GraphQL fill count exactly equals
 the merged-PR count), and <code class="docutils literal notranslate"><span class="pre">meta_label</span></code> slightly lower (REST kept
 label strings for DELETED forks on the PR object; GraphQL cannot
 reconstruct them — see docs/architecture/column-mapping.md).</p>
+</section>
+<section id="a-fail-on-an-event-table-at-the-30-000-event-window">
+<h2>A FAIL on an event table at the 30,000-event window<a class="headerlink" href="#a-fail-on-an-event-table-at-the-30-000-event-window" title="Link to this heading"></a></h2>
+<p>GitHub serves a repository’s event feed (<code class="docutils literal notranslate"><span class="pre">/issues/events</span></code>) newest first and
+ends it at 30,000 events. On a repository that produces events faster than
+that window — backstage/backstage generates about 30,000 a month — both
+sides stage exactly 30,000 events (the log line <code class="docutils literal notranslate"><span class="pre">events</span> <span class="pre">staged</span> <span class="pre">…</span> <span class="pre">count=30000</span></code>
+on each side) but the window’s OLD edge moves between the two runs by the
+number of events the repository produced in between, so the released side
+holds a few events the new side’s window no longer reaches. That reads as a
+<strong>FAIL</strong> of a few rows on <code class="docutils literal notranslate"><span class="pre">pull_request_events</span></code> or <code class="docutils literal notranslate"><span class="pre">issue_events</span></code> and is not
+row loss. Verify it in three reads: both sides’ <code class="docutils literal notranslate"><span class="pre">events</span> <span class="pre">staged</span></code> counts are
+30,000; the oldest <code class="docutils literal notranslate"><span class="pre">created_at</span></code> of the table on the new side is later than
+on the released side by the gap; and the events only the released side holds
+still exist upstream (<code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">api</span> <span class="pre">repos/OWNER/REPO/issues/events/ID</span></code>). The
+2026-11-06 run against v0.29.139 was this shape: 46 <code class="docutils literal notranslate"><span class="pre">referenced</span></code> events
+from the same seven seconds on 2026-10-05 fell off the new side’s window,
+35 newer events came in, net 11 rows. A FAIL whose missing rows are NOT
+at the window’s old edge is a regression.</p>
 </section>
 <section id="expected-event-table-asymmetry-vs-pre-0-26-2-tags">
 <h2>Expected event-table asymmetry vs pre-0.26.2 tags<a class="headerlink" href="#expected-event-table-asymmetry-vs-pre-0-26-2-tags" title="Link to this heading"></a></h2>

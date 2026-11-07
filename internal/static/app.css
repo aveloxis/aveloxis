@@ -105,7 +105,7 @@ table.tbl-stack tbody td[colspan]{flex:1 1 100%}
 input.note-input{width:auto;max-width:220px;padding:4px 8px;font-size:12px;margin-right:4px}
 /* Stage 3c: the console's forms and notices. Inputs size by their class,
    never by an inline width (the no-horizontal-scroll rule). */
-.notice{background:#e6ffed;border:1px solid #22863a;color:#22863a;padding:8px 12px;border-radius:6px;margin-bottom:16px}
+.notice{background:#e6ffed;border:1px solid #22863a;color:#22863a;padding:8px 12px;border-radius:6px;margin-bottom:16px;overflow-wrap:anywhere}
 .form-stack{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:12px}
 .form-stack label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#586069;flex:1 1 140px;min-width:0}
 .form-inline{display:flex;flex-wrap:wrap;gap:6px;align-items:center}

@@ -456,7 +456,9 @@ func TestForgeIDMismatchIsDetected(t *testing.T) {
 		t.Error("the plain SetPlatformRepoIDIfEmpty was removed in v0.29.63 — call SetPlatformRepoIDIfEmptySeen")
 	}
 	body := extractFuncBody(t, string(src), "func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(")
-	if !strings.Contains(body, "RowsAffected() == 0") {
+	// 0.29.140: the fill RETURNS the row's gone state, so the zero-row case
+	// is counted from the returned rows (`filled == 0`), not RowsAffected.
+	if !strings.Contains(body, "if filled == 0 {") {
 		t.Error("SetPlatformRepoIDIfEmptySeen must inspect the zero-row case — silence papers over the identity conflict its own doc comment warns about")
 	}
 	if !strings.Contains(body, `stored != "" && stored != forgeID`) {

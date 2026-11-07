@@ -2995,16 +2995,20 @@ archived or has commits but no queue row — one unauthenticated request each,
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>mark-gone-repos
 </pre></div>
 </div>
-<p>A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx on a
-row archived WITHOUT a stamp — what <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> left before 0.29.140,
-when its dead arm set the archived flag alone on a 404 (a repository the
-forge archived keeps its queue row, so nothing else looks like this) — puts
-the archived flag back to the forge’s latest recorded status and re-queues it
-(0.29.140). A definitive 404/410/451 leaves a row gone (and stamps a row that
-was archived without the stamp); anything else changes nothing. A 2xx on a
-queueless row that is neither stamped nor archived (a data-bearing duplicate
-prelim dequeued on purpose) is counted as alive and left as it is: to resume
-its collection, re-add it (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">add-repo</span></code>, above), or run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code>, which handles every such stranded row at once. Do not edit <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> by
+<p>A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx AT ITS
+OWN URL on a row archived WITHOUT a stamp — what <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> left before
+0.29.140, when its dead arm set the archived flag alone on a 404 (a repository
+the forge archived keeps its queue row) — puts the archived flag back to the
+forge’s latest recorded status and re-queues it (0.29.140). The same row
+answering through a redirect to another URL is a renamed repository, usually
+a duplicate of one already tracked, and is left as it is (the command logs
+where it redirects; consolidating it is the operator’s decision). A
+definitive 404/410/451 leaves a row gone (and stamps a row that was archived
+without the stamp); anything else changes nothing. A 2xx on a queueless row
+that is neither stamped nor archived is counted as alive and left as it is:
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> is the command for those rows — one that answers
+at its own URL is re-queued, one that redirects to a tracked repository is
+consolidated into it. Do not edit <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> by
 hand: the stamp, not the flag, is the sidelined state, and the flag is
 rewritten from the forge on the next collection.</p>
 </section>

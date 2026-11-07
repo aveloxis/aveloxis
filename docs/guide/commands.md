@@ -1513,16 +1513,20 @@ The probe is bidirectional and only DEFINITIVE answers decide:
 - **200 on a previously-stamped repo** → clear the stamp and
   re-enqueue: if the organization re-publicizes, collection resumes
   automatically on the next run of this command.
-- **200 on a repo archived without a stamp** (0.29.140) → put the
-  archived flag back to the forge's latest recorded status and
+- **200 at its own URL on a repo archived without a stamp** (0.29.140) →
+  put the archived flag back to the forge's latest recorded status and
   re-enqueue, counted as `lifted_archived`. Before 0.29.140
   `reconcile-repos` set the archived flag alone on a 404, and a
   repository the forge archived keeps its queue row, so an archived,
-  unstamped, queueless row is that sideline and nothing else.
+  unstamped, queueless row answering at its own URL is that sideline.
+  Reached through a redirect to another URL, the same row is a renamed
+  repository (prelim dequeues a data-bearing duplicate of a tracked
+  one): counted `alive`, left as it is, and logged with where it
+  redirects.
 - **200 on any other candidate** (a queueless row that is neither
-  stamped nor archived, such as a data-bearing duplicate prelim dequeued
-  on purpose) → counted as `alive` and left as it is. To resume its
-  collection, `aveloxis add-repo` it, or run `aveloxis reconcile-repos`.
+  stamped nor archived) → counted as `alive` and left as it is;
+  `aveloxis reconcile-repos` re-queues it if it answers at its own URL
+  and consolidates it if it redirects to a tracked repository.
 - **Anything else** (transport errors, rate limits, 5xx,
   unresolvable redirects) → the repo is skipped and a re-run
   retries it.

@@ -171,7 +171,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 				}
 			}
 			c.dead++
-		case !strings.EqualFold(normalizeReconcileURL(finalURL), normalizeReconcileURL(sr.GitURL)):
+		case !sameRepoURL(finalURL, sr.GitURL):
 			// Renamed upstream. Tracked winner → heal/consolidate;
 			// untracked target → re-enqueue and let prelim rename it
 			// in place (rename detection is prelim's job).
@@ -325,6 +325,13 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 		return fmt.Errorf("%d stranded repos have a repo_git carrying credentials — correct them, then rerun", c.refused)
 	}
 	return nil
+}
+
+// sameRepoURL is the one "is this the row's own URL" rule (SR-17):
+// reconcile-repos tells a rename from a lost queue row by it, and
+// mark-gone-repos lifts an archived sideline only at its own URL.
+func sameRepoURL(a, b string) bool {
+	return strings.EqualFold(normalizeReconcileURL(a), normalizeReconcileURL(b))
 }
 
 // normalizeReconcileURL trims the pieces that don't affect identity

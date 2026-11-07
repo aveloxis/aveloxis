@@ -60,26 +60,71 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 // a queueless row that is neither (a data-bearing rename duplicate prelim
 // dequeued on purpose) is alive and left as it is.
 func TestOnReachableDecidesByClass(t *testing.T) {
+	// The lift needs the 2xx AT THE ROW'S OWN URL (the L10 pass on the
+	// first version: a forge-archived repository renamed onto a tracked one
+	// is a data-bearing duplicate prelim dequeued — two such rows on kate,
+	// redirecting to google/bigframes and CDCgov/... — and lifting it made
+	// prelim dequeue it again, every run).
+	// A redirect to an UNTRACKED target is lifted too (the L10 pass on the
+	// own-URL fix): reconcile-repos re-queues such a row so prelim renames it
+	// in place, and an archived row is outside reconcile's candidates, so
+	// leaving it would strand it for good. Only a TRACKED target makes it a
+	// duplicate.
 	for _, c := range []struct {
-		name string
-		cand db.GoneProbeCandidate
-		want reachableAction
+		name          string
+		cand          db.GoneProbeCandidate
+		atOwnURL      bool
+		targetTracked bool
+		want          reachableAction
 	}{
-		{"gone-stamped", db.GoneProbeCandidate{GoneStamped: true, Archived: true}, reachableResurrect},
-		{"gone-stamped, flag cleared by hand", db.GoneProbeCandidate{GoneStamped: true}, reachableResurrect},
-		{"archived without a stamp", db.GoneProbeCandidate{Archived: true, HasData: true}, reachableLiftArchived},
-		{"archived without a stamp, no data", db.GoneProbeCandidate{Archived: true}, reachableLiftArchived},
-		{"a kept duplicate", db.GoneProbeCandidate{HasData: true}, reachableAlive},
+		{"gone-stamped", db.GoneProbeCandidate{GoneStamped: true, Archived: true}, true, false, reachableResurrect},
+		{"gone-stamped, flag cleared by hand", db.GoneProbeCandidate{GoneStamped: true}, true, false, reachableResurrect},
+		{"archived without a stamp, at its own URL", db.GoneProbeCandidate{Archived: true, HasData: true}, true, false, reachableLiftArchived},
+		{"archived without a stamp, no data, at its own URL", db.GoneProbeCandidate{Archived: true}, true, false, reachableLiftArchived},
+		{"archived without a stamp, renamed to an untracked URL", db.GoneProbeCandidate{Archived: true, HasData: true}, false, false, reachableLiftArchived},
+		{"archived without a stamp, renamed onto a tracked repository", db.GoneProbeCandidate{Archived: true, HasData: true}, false, true, reachableRenamed},
+		{"a kept duplicate", db.GoneProbeCandidate{HasData: true}, true, false, reachableAlive},
+		{"a kept duplicate, redirected", db.GoneProbeCandidate{HasData: true}, false, true, reachableAlive},
 	} {
-		if got := onReachable(c.cand); got != c.want {
+		if got := onReachable(c.cand, c.atOwnURL, c.targetTracked); got != c.want {
 			t.Errorf("%s: onReachable = %v, want %v", c.name, got, c.want)
 		}
+	}
+	// One URL rule with reconcile-repos (SR-17): the same normalizer decides
+	// "its own URL" in both commands.
+	for _, p := range [][2]string{
+		{"https://github.com/Owner/Repo.git", "https://github.com/owner/repo"},
+		{"https://github.com/owner/repo/", "https://github.com/owner/repo"},
+	} {
+		if !sameRepoURL(p[0], p[1]) {
+			t.Errorf("%q and %q are one repository's URL", p[0], p[1])
+		}
+	}
+	if sameRepoURL("https://github.com/googleapis/python-bigquery-dataframes", "https://github.com/google/bigframes") {
+		t.Error("a redirect to another repository is not the row's own URL")
+	}
+	recon := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runReconcileRepos("))
+	helper := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func sameRepoURL("))
+	pkg := srctest.StripGoComments(srctest.PackageSource(t, "cmd/aveloxis", 30))
+	if !strings.Contains(recon, "case !sameRepoURL(finalURL, sr.GitURL):") || strings.Count(helper, "normalizeReconcileURL(") != 2 ||
+		strings.Count(pkg, "normalizeReconcileURL(") != 3 { // the declaration and the helper's two calls
+		t.Error("reconcile-repos decides a rename with sameRepoURL, and normalizeReconcileURL is called only inside it")
 	}
 	// The loop dispatches on it, and the lift's error arm classifies a
 	// cancel first, like every other store write here.
 	src := srctest.StripGoComments(markGoneSrc(t))
-	if !strings.Contains(src, "switch onReachable(c) {") {
-		t.Error("the 2xx arm dispatches on onReachable(c)")
+	if !strings.Contains(src, "switch onReachable(c, atOwnURL, targetTracked) {") || !strings.Contains(src, "finalURL, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)") ||
+		!strings.Contains(src, "atOwnURL := sameRepoURL(finalURL, c.GitURL)") {
+		t.Error("the 2xx arm dispatches on onReachable(c, atOwnURL, targetTracked), with the probe's final URL kept and compared by sameRepoURL")
+	}
+	// The target lookup runs only for an archived unstamped redirect, and a
+	// lookup ERROR is not "untracked" (SR-5): it skips, after classifying a
+	// cancel.
+	if regexIndex(src, `if c\.Archived && !c\.GoneStamped && !atOwnURL \{\s*winner, ferr := store\.FindRepoByURL\(ctx, finalURL\)\s*if ferr != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
+		t.Error("the target lookup runs only for an archived unstamped redirect, and its error arm begins with the cancel check")
+	}
+	if i := strings.Index(src, "winner, ferr := store.FindRepoByURL(ctx, finalURL)"); i < 0 || !strings.Contains(src[i:i+600], "tally.skipped++") {
+		t.Error("a target lookup error skips the row (SR-5: an error is not \"untracked\")")
 	}
 	if regexIndex(src, `store\.ResurrectArchivedSideline\(ctx, c\.RepoID, 10, db\.GoneSourceMarkGoneRepos\)\s*if err != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
 		t.Error("the lift's error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`")

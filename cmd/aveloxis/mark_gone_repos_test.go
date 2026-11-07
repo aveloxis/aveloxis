@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -49,6 +50,39 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(code, "\n"), "store.Migrate(") {
 		t.Error("mark-gone-repos must NOT run migrations (v0.21.5 contract)")
+	}
+}
+
+// What a definitive 2xx means for each candidate class (operator decision
+// 2026-11-07): a gone-stamped row is resurrected; a row archived WITHOUT a
+// stamp is the pre-0.29.140 reconcile-repos dead arm's sideline (a
+// forge-archived repository keeps its queue row) and is lifted the same way;
+// a queueless row that is neither (a data-bearing rename duplicate prelim
+// dequeued on purpose) is alive and left as it is.
+func TestOnReachableDecidesByClass(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cand db.GoneProbeCandidate
+		want reachableAction
+	}{
+		{"gone-stamped", db.GoneProbeCandidate{GoneStamped: true, Archived: true}, reachableResurrect},
+		{"gone-stamped, flag cleared by hand", db.GoneProbeCandidate{GoneStamped: true}, reachableResurrect},
+		{"archived without a stamp", db.GoneProbeCandidate{Archived: true, HasData: true}, reachableLiftArchived},
+		{"archived without a stamp, no data", db.GoneProbeCandidate{Archived: true}, reachableLiftArchived},
+		{"a kept duplicate", db.GoneProbeCandidate{HasData: true}, reachableAlive},
+	} {
+		if got := onReachable(c.cand); got != c.want {
+			t.Errorf("%s: onReachable = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// The loop dispatches on it, and the lift's error arm classifies a
+	// cancel first, like every other store write here.
+	src := srctest.StripGoComments(markGoneSrc(t))
+	if !strings.Contains(src, "switch onReachable(c) {") {
+		t.Error("the 2xx arm dispatches on onReachable(c)")
+	}
+	if regexIndex(src, `store\.ResurrectArchivedSideline\(ctx, c\.RepoID, 10, db\.GoneSourceMarkGoneRepos\)\s*if err != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
+		t.Error("the lift's error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`")
 	}
 }
 

@@ -1512,12 +1512,17 @@ The probe is bidirectional and only DEFINITIVE answers decide:
   GitHub" over the data we hold.
 - **200 on a previously-stamped repo** → clear the stamp and
   re-enqueue: if the organization re-publicizes, collection resumes
-  automatically on the next run of this command. A 2xx on a candidate
-  that carries no stamp (archived without one, or data-bearing and
-  queueless) is counted as `alive` and left queueless: this command
-  maintains the gone state and never re-queues what was never stamped.
-  To resume such a repository's collection, `aveloxis add-repo` it, or
-  run `aveloxis reconcile-repos` for the non-archived stranded rows.
+  automatically on the next run of this command.
+- **200 on a repo archived without a stamp** (0.29.140) → put the
+  archived flag back to the forge's latest recorded status and
+  re-enqueue, counted as `lifted_archived`. Before 0.29.140
+  `reconcile-repos` set the archived flag alone on a 404, and a
+  repository the forge archived keeps its queue row, so an archived,
+  unstamped, queueless row is that sideline and nothing else.
+- **200 on any other candidate** (a queueless row that is neither
+  stamped nor archived, such as a data-bearing duplicate prelim dequeued
+  on purpose) → counted as `alive` and left as it is. To resume its
+  collection, `aveloxis add-repo` it, or run `aveloxis reconcile-repos`.
 - **Anything else** (transport errors, rate limits, 5xx,
   unresolvable redirects) → the repo is skipped and a re-run
   retries it.

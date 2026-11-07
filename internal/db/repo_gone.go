@@ -236,11 +236,12 @@ func (s *PostgresStore) GetGoneRecheckCandidates(ctx context.Context, olderThan 
 	return out, rows.Err()
 }
 
-// clearGoneCTE is the clear of the gone state as a data-modifying CTE named
+// clearGoneCTE is the clear of a sideline as a data-modifying CTE named
 // `cleared`, shared by every clearer (one spelling, SR-17): the stamp, the
 // check stamp and the forge's unavailability notice go together, the cache
-// state is stamped, and only a gone-stamped row is touched ($1 = repo_id;
-// %s = an extra guard, or nothing). The archived flag the stamp set
+// state is stamped, and only a sidelined row is touched ($1 = repo_id; %s =
+// the sideline predicate — goneSidelineSQL, with an extra guard appended
+// when the caller has one, or archivedSidelineSQL). The archived flag the stamp set
 // (markGoneCTEs: repo_archived = TRUE, so every archived-filtered surface
 // kept excluding the row) goes back to the forge's LAST WORD — the latest
 // repo_info snapshot's status, FALSE when there is none (Copilot PR #252,
@@ -260,9 +261,24 @@ const clearGoneCTE = `
 			                              ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
 			                              LIMIT 1), FALSE),
 			    data_changed_at = NOW()
-			WHERE repo_id = $1 AND repo_gone_at IS NOT NULL%s
+			WHERE repo_id = $1 AND %s
 			RETURNING repo_id
 		)`
+
+// goneSidelineSQL is the gone sideline: the stamp prelim, mark-gone-repos and
+// reconcile-repos write (SidelineRepo). Every gone clearer lifts it.
+const goneSidelineSQL = "repo_gone_at IS NOT NULL"
+
+// archivedSidelineSQL is the OLD dead-arm sideline (0.29.140, operator
+// decision 2026-11-07): before this release reconcile-repos set repo_archived
+// ALONE on a definitive 404 — no gone stamp, no episode — and the row sat
+// archived and queueless (49 on kate). A repository the forge archived keeps
+// its queue row and cycles, so archived + unstamped + queueless is that
+// residue and nothing else; a queueless row that is not archived (a
+// data-bearing rename duplicate prelim dequeued on purpose) never matches.
+// ResurrectArchivedSideline lifts it on a definitive 2xx.
+const archivedSidelineSQL = `repo_gone_at IS NULL AND COALESCE(repo_archived, FALSE)
+			  AND NOT EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = $1)`
 
 // closeEpisodeCTE closes the repository's open episode for the rows
 // `cleared` named ($2 = the source).
@@ -284,19 +300,20 @@ const closeEpisodeCTE = `
 // IS NOT NULL guard makes it a 0-row no-op for the normal fleet.
 // 0.29.140: closes the open episode with source in the same statement.
 func (s *PostgresStore) ClearRepoGone(ctx context.Context, repoID int64, source string) error {
-	_, err := s.pool.Exec(ctx, `WITH `+fmt.Sprintf(clearGoneCTE, "")+`,`+closeEpisodeCTE+`
+	_, err := s.pool.Exec(ctx, `WITH `+fmt.Sprintf(clearGoneCTE, goneSidelineSQL)+`,`+closeEpisodeCTE+`
 		SELECT COUNT(*) FROM closed`, repoID, source)
 	return err
 }
 
 // resurrectSQL is the clear + close + re-enqueue as ONE statement ($1 repo,
-// $2 source, $3 priority, $4 alwaysEnqueue; guard = an extra predicate on the
-// clear). The queue upsert mirrors EnqueueRepo verbatim (collecting rows are
-// left alone); it runs for a row the clear touched, or always when the
-// caller asks (reconcile-repos' lost-queue-row arm enqueues a repository
-// that was never gone).
-func resurrectSQL(guard string) string {
-	return `WITH ` + fmt.Sprintf(clearGoneCTE, guard) + `,` + closeEpisodeCTE + `
+// $2 source, $3 priority, $4 alwaysEnqueue; sideline = the clear's
+// predicate: goneSidelineSQL, plus a guard, or archivedSidelineSQL). The
+// queue upsert mirrors EnqueueRepo verbatim (collecting rows are left
+// alone); it runs for a row the clear touched, or always when the caller
+// asks (reconcile-repos' lost-queue-row arm enqueues a repository that was
+// never gone).
+func resurrectSQL(sideline string) string {
+	return `WITH ` + fmt.Sprintf(clearGoneCTE, sideline) + `,` + closeEpisodeCTE + `
 		INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at)
 		SELECT $1, $3, 'queued', NOW()
 		WHERE $4::boolean OR EXISTS (SELECT 1 FROM cleared)
@@ -322,9 +339,27 @@ func resurrectSQL(guard string) string {
 // writer in the episode it closes.
 func (s *PostgresStore) ResurrectRepo(ctx context.Context, repoID int64, priority int, source string) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, resurrectSQL(""), repoID, source, priority, true)
+		_, err := s.pool.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, source, priority, true)
 		return err
 	})
+}
+
+// ResurrectArchivedSideline lifts the old dead-arm sideline (archivedSidelineSQL)
+// on a definitive 2xx: the same statement as every resurrection — the flag
+// back to the forge's last word, the cache state stamped, the row re-queued —
+// under the residue's predicate, and true when the row was lifted. Nothing
+// for a gone-stamped row (ResurrectRepo's), a row with a queue row, or a
+// queueless row that is not archived. No episode is opened or closed: that
+// arm recorded no stretch, and none is fabricated (the gone time is
+// unknown). mark-gone-repos is the caller.
+func (s *PostgresStore) ResurrectArchivedSideline(ctx context.Context, repoID int64, priority int, source string) (bool, error) {
+	var lifted bool
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		tag, err := s.pool.Exec(ctx, resurrectSQL(archivedSidelineSQL), repoID, source, priority, false)
+		lifted = err == nil && tag.RowsAffected() > 0
+		return err
+	})
+	return lifted, err
 }
 
 // listedGuardSQL is ResurrectIfListed's extra predicate on the clear: the
@@ -359,7 +394,7 @@ func (s *PostgresStore) ResurrectIfListed(ctx context.Context, repoID int64, for
 	}
 	var resurrected bool
 	err := s.withRetry(ctx, func(ctx context.Context) error {
-		tag, err := s.pool.Exec(ctx, resurrectSQL(listedGuardSQL), repoID, GoneSourceOrgScan, priority, false, forgeID)
+		tag, err := s.pool.Exec(ctx, resurrectSQL(goneSidelineSQL+listedGuardSQL), repoID, GoneSourceOrgScan, priority, false, forgeID)
 		resurrected = err == nil && tag.RowsAffected() > 0
 		return err
 	})
@@ -370,7 +405,7 @@ func (s *PostgresStore) ResurrectIfListed(ctx context.Context, repoID int64, for
 // (AdoptForgeID: the adoption and the resurrection commit together, or
 // neither does). Only a gone-stamped row is enqueued.
 func resurrectInTx(ctx context.Context, tx rotationExecer, repoID int64, priority int, source string) error {
-	_, err := tx.Exec(ctx, resurrectSQL(""), repoID, source, priority, false)
+	_, err := tx.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, source, priority, false)
 	return err
 }
 
@@ -416,6 +451,10 @@ type GoneProbeCandidate struct {
 	GitURL      string
 	GoneStamped bool
 	HasData     bool
+	// Archived (0.29.140): repos.repo_archived. On an unstamped queueless
+	// row it marks the old dead-arm sideline mark-gone-repos lifts on a 2xx
+	// (archivedSidelineSQL).
+	Archived bool
 }
 
 // GetGoneProbeCandidates returns the repos worth probing for the
@@ -437,7 +476,8 @@ func (s *PostgresStore) GetGoneProbeCandidates(ctx context.Context, limit int) (
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.repo_id, r.repo_git,
 		       r.repo_gone_at IS NOT NULL,
-		       EXISTS (SELECT 1 FROM aveloxis_data.commits c WHERE c.repo_id = r.repo_id)
+		       EXISTS (SELECT 1 FROM aveloxis_data.commits c WHERE c.repo_id = r.repo_id),
+		       COALESCE(r.repo_archived, FALSE)
 		FROM aveloxis_data.repos r
 		LEFT JOIN aveloxis_ops.collection_queue q ON q.repo_id = r.repo_id
 		WHERE q.repo_id IS NULL
@@ -453,7 +493,7 @@ func (s *PostgresStore) GetGoneProbeCandidates(ctx context.Context, limit int) (
 	var out []GoneProbeCandidate
 	for rows.Next() {
 		var c GoneProbeCandidate
-		if err := rows.Scan(&c.RepoID, &c.GitURL, &c.GoneStamped, &c.HasData); err != nil {
+		if err := rows.Scan(&c.RepoID, &c.GitURL, &c.GoneStamped, &c.HasData, &c.Archived); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

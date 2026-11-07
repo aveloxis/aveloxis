@@ -19,6 +19,13 @@
 //   - DEFINITIVE 200 on an already-gone-stamped repo → ResurrectRepo
 //     (clear + re-enqueue in one transaction, v0.28.6), so collection
 //     resumes if the org re-publicizes.
+//   - DEFINITIVE 200 on a repo archived WITHOUT a stamp → ResurrectArchivedSideline
+//     (0.29.140, operator decision 2026-11-07): the pre-0.29.140
+//     reconcile-repos dead arm set the archived flag alone on a 404, and a
+//     forge-archived repository keeps its queue row, so this is that
+//     arm's sideline coming back. Any other 2xx (a queueless row that is
+//     neither — a data-bearing duplicate prelim kept) is alive and left
+//     as it is.
 //   - Everything else (transport errors, rate limits, 5xx) SKIPS the
 //     repo (SR-16: only definitive answers decide) — a rerun retries.
 //
@@ -62,6 +69,11 @@ probes each URL against the forge:
               "no longer publicly available" notice over the data we hold)
   200 on a gone-stamped repo -> clear the stamp and re-enqueue
               (collection resumes — the org came back)
+  200 on a repo archived without a stamp -> restore the archived flag
+              from the forge's latest snapshot and re-enqueue (the
+              pre-0.29.140 reconcile-repos sideline coming back)
+  200 on any other candidate -> counted alive, left as it is (re-add
+              it with add-repo to resume collection)
   anything else -> skipped; re-run later (only definitive answers decide)
 
 Idempotent and re-runnable. Dataless stranded rows are not candidates
@@ -209,8 +221,33 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			}
 			tally.stamped++
 		case status >= 200 && status < 300:
-			if !c.GoneStamped {
+			switch onReachable(c) {
+			case reachableAlive:
 				tally.alive++
+				continue
+			case reachableLiftArchived:
+				if dryRun {
+					logger.Info("would restore the archived flag + re-enqueue (the old reconcile sideline)", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
+					tally.liftedArchived++
+					continue
+				}
+				lifted, err := store.ResurrectArchivedSideline(ctx, c.RepoID, 10, db.GoneSourceMarkGoneRepos)
+				if err != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
+					logger.Warn("failed to lift the archived sideline — nothing committed, rerun retries", "repo_id", c.RepoID, "error", err)
+					tally.skipped++
+					continue
+				}
+				if !lifted {
+					// Re-queued or stamped since the candidate read: not the
+					// residue any more, and nothing was written.
+					tally.alive++
+					continue
+				}
+				logger.Info("archived sideline lifted — archived flag restored from the forge's snapshot, re-enqueued", "repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL))
+				tally.liftedArchived++
 				continue
 			}
 			// Resurrection: the forge serves the repo again.
@@ -252,7 +289,7 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 
 	logger.Info("mark-gone-repos complete",
 		"candidates", len(cands), "stamped_gone", tally.stamped, "already_gone", tally.alreadyGone,
-		"resurrected", tally.cleared, "alive_unstamped", tally.alive, "skipped", tally.skipped,
+		"resurrected", tally.cleared, "lifted_archived", tally.liftedArchived, "alive_unstamped", tally.alive, "skipped", tally.skipped,
 		"refused", tally.refused, "check_stamp_failed", tally.stampFailed, "dry_run", dryRun)
 	if tally.skipped > 0 || tally.stampFailed > 0 {
 		logger.Info("some candidates were skipped on indeterminate probes or could not be stamped — re-run to retry them")
@@ -265,7 +302,45 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 
 // markGoneCounts is the walk's tally.
 type markGoneCounts struct {
-	stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed int
+	stamped, cleared, alreadyGone, alive, skipped, refused, stampFailed, liftedArchived int
+}
+
+// reachableAction is what a definitive 2xx means for a candidate.
+type reachableAction int
+
+const (
+	// reachableAlive: a queueless row that is neither gone-stamped nor
+	// archived (a data-bearing rename duplicate prelim dequeued on
+	// purpose) — counted, left as it is.
+	reachableAlive reachableAction = iota
+	// reachableResurrect: a gone-stamped row — ResurrectRepo.
+	reachableResurrect
+	// reachableLiftArchived: archived without a stamp, the pre-0.29.140
+	// reconcile-repos dead arm's sideline — ResurrectArchivedSideline.
+	reachableLiftArchived
+)
+
+func (a reachableAction) String() string {
+	switch a {
+	case reachableResurrect:
+		return "resurrect"
+	case reachableLiftArchived:
+		return "lift-archived"
+	}
+	return "alive"
+}
+
+// onReachable decides a definitive 2xx by the candidate's class (operator
+// decision 2026-11-07): the stamp first, then the old arm's archived flag.
+// The store re-checks the class in the statement; this picks the call.
+func onReachable(c db.GoneProbeCandidate) reachableAction {
+	switch {
+	case c.GoneStamped:
+		return reachableResurrect
+	case c.Archived:
+		return reachableLiftArchived
+	}
+	return reachableAlive
 }
 
 // markGoneInterruptedReport logs the interruption with every counter and
@@ -274,7 +349,7 @@ type markGoneCounts struct {
 // test holds the exit status a source pin let become `return nil`).
 func markGoneInterruptedReport(logger *slog.Logger, c markGoneCounts, total int, dryRun bool, cause error) error {
 	logger.Warn("mark-gone-repos interrupted — a rerun walks the whole cohort again",
-		"probed", c.stamped+c.cleared+c.alreadyGone+c.alive+c.skipped+c.refused, "of", total,
-		"stamped", c.stamped, "cleared", c.cleared, "already_gone", c.alreadyGone, "alive", c.alive, "skipped", c.skipped, "refused", c.refused, "stamp_failed", c.stampFailed, "dry_run", dryRun)
+		"probed", c.stamped+c.cleared+c.alreadyGone+c.alive+c.skipped+c.refused+c.liftedArchived, "of", total,
+		"stamped", c.stamped, "cleared", c.cleared, "already_gone", c.alreadyGone, "alive", c.alive, "skipped", c.skipped, "refused", c.refused, "stamp_failed", c.stampFailed, "lifted_archived", c.liftedArchived, "dry_run", dryRun)
 	return fmt.Errorf("mark-gone-repos interrupted: %w", cause)
 }

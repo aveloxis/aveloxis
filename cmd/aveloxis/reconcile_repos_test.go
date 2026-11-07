@@ -147,11 +147,11 @@ func TestInterruptedReportsExitNonZero(t *testing.T) {
 		}
 	}
 	var logs strings.Builder
-	err = markGoneInterruptedReport(slog.New(slog.NewTextHandler(&logs, nil)), markGoneCounts{1, 2, 3, 4, 5, 6, 7}, 30, true, context.Canceled)
+	err = markGoneInterruptedReport(slog.New(slog.NewTextHandler(&logs, nil)), markGoneCounts{1, 2, 3, 4, 5, 6, 7, 8}, 30, true, context.Canceled)
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "mark-gone-repos interrupted") {
 		t.Errorf("mark-gone report error = %v; want the cancellation wrapped under \"mark-gone-repos interrupted\"", err)
 	}
-	for _, want := range []string{"level=WARN", "mark-gone-repos interrupted", "probed=21", "of=30", "stamped=1", "cleared=2", "already_gone=3", "alive=4", "skipped=5", "refused=6", "stamp_failed=7", "dry_run=true"} {
+	for _, want := range []string{"level=WARN", "mark-gone-repos interrupted", "probed=29", "of=30", "stamped=1", "cleared=2", "already_gone=3", "alive=4", "skipped=5", "refused=6", "stamp_failed=7", "lifted_archived=8", "dry_run=true"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("mark-gone interruption log %q lacks %q", logs.String(), want)
 		}

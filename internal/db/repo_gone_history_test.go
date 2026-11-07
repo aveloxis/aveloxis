@@ -889,6 +889,92 @@ func TestSetPlatformRepoIDIfEmptySeenReportsAGoneRowUnderTheListedID(t *testing.
 	}
 }
 
+// The pre-0.29.140 reconcile-repos dead arm set repo_archived ALONE on a 404 —
+// no gone stamp, no episode — and the row sat archived and queueless (49 on
+// kate, 2026-11-07); mark-gone-repos counted a later 2xx on it "alive" and
+// left it there, so it never came back (operator decision 2026-11-07: lift
+// it as a resurrection). A repository the FORGE archived keeps its queue row
+// and cycles, so archived + unstamped + queueless is that residue alone. The
+// lift is the resurrection statement itself with the residue's predicate:
+// the flag back to the forge's last word, the cache state stamped, the row
+// re-queued — and nothing for a queueless row that is NOT archived (a
+// data-bearing rename duplicate prelim dequeued on purpose), a gone-stamped
+// row (ResurrectRepo's) or a row that has a queue row.
+func TestResurrectArchivedSidelineLiftsTheOldDeadArmsResidueOnly(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	residue := seedGoneHistoryRepo(t, store, ctx, "archived-residue")
+	forgeSaysArchived := seedGoneHistoryRepo(t, store, ctx, "archived-residue-forge")
+	keptDuplicate := seedGoneHistoryRepo(t, store, ctx, "kept-duplicate")
+	gone := seedGoneHistoryRepo(t, store, ctx, "archived-residue-gone")
+	queued := seedGoneHistoryRepo(t, store, ctx, "archived-but-queued")
+	for _, id := range []int64{residue, forgeSaysArchived, queued} {
+		mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_archived = TRUE, data_changed_at = NULL WHERE repo_id = $1`, id)
+	}
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES ($1, 'Active', NOW())`, residue)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date) VALUES ($1, 'Archived', NOW())`, forgeSaysArchived)
+	if err := store.SidelineRepo(ctx, gone, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 50, 'queued', NOW() + INTERVAL '3 days')`, queued)
+
+	// The candidate list carries the flag the command decides on.
+	cands, err := store.GetGoneProbeCandidates(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]GoneProbeCandidate{}
+	for _, c := range cands {
+		seen[c.RepoID] = c
+	}
+	if c, ok := seen[residue]; !ok || !c.Archived || c.GoneStamped {
+		t.Fatalf("the residue is a candidate, archived and unstamped: %+v (found %v)", c, ok)
+	}
+	if c, ok := seen[gone]; !ok || !c.Archived || !c.GoneStamped {
+		t.Fatalf("a gone row is a candidate, archived and stamped: %+v (found %v)", c, ok)
+	}
+
+	lift := func(id int64) bool {
+		t.Helper()
+		back, err := store.ResurrectArchivedSideline(ctx, id, 10, GoneSourceMarkGoneRepos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return back
+	}
+	if !lift(residue) {
+		t.Fatal("the residue is lifted")
+	}
+	if repoArchived(ctx, t, store, residue) || !hasQueueRow(ctx, t, store, residue) || repoDataChangedAt(ctx, t, store, residue) == nil {
+		t.Error("lifted: the flag follows the forge's latest snapshot (Active), the row is queued, the cache state stamped")
+	}
+	if eps := goneEpisodes(ctx, t, store, residue); len(eps) != 0 {
+		t.Errorf("the old arm recorded no stretch, and none is fabricated: %+v", eps)
+	}
+	if !lift(forgeSaysArchived) || !repoArchived(ctx, t, store, forgeSaysArchived) || !hasQueueRow(ctx, t, store, forgeSaysArchived) {
+		t.Error("a residue whose forge says Archived is queued again with the flag kept (a forge-archived repository cycles)")
+	}
+	if lift(keptDuplicate) || hasQueueRow(ctx, t, store, keptDuplicate) {
+		t.Error("a queueless row that is not archived (a duplicate prelim kept) is not lifted")
+	}
+	if lift(gone) || repoGoneAt(ctx, t, store, gone) == nil || hasQueueRow(ctx, t, store, gone) {
+		t.Error("a gone-stamped row is ResurrectRepo's, not this lift's")
+	}
+	if lift(queued) || !repoArchived(ctx, t, store, queued) {
+		t.Error("a row with a queue row is not the residue")
+	}
+	var due time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT due_at FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, queued).Scan(&due); err != nil || due.Before(time.Now().Add(48*time.Hour)) {
+		t.Errorf("the queued row's queue entry is untouched: due %v %v", due, err)
+	}
+	// One statement, the resurrection's (SR-17): no second spelling of the
+	// clear or the queue upsert.
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) ResurrectArchivedSideline("))
+	if !strings.Contains(body, "resurrectSQL(archivedSidelineSQL)") || strings.Contains(body, "UPDATE") || strings.Contains(body, "INSERT") {
+		t.Error("ResurrectArchivedSideline runs resurrectSQL(archivedSidelineSQL) and spells no statement of its own")
+	}
+}
+
 // Every clearer puts repo_archived back to the forge's last word (Copilot PR
 // #252, eighth review): the stamp sets it TRUE, and a recovered repository
 // kept the archived cadence and badge until its next metadata collection.
@@ -1080,7 +1166,7 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback(ctx) //nolint:errcheck // committed below
-	if _, err := holder.Exec(ctx, resurrectSQL(listedGuardSQL), repoID, GoneSourceOrgScan, 100, false, "95336057"); err != nil {
+	if _, err := holder.Exec(ctx, resurrectSQL(goneSidelineSQL+listedGuardSQL), repoID, GoneSourceOrgScan, 100, false, "95336057"); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

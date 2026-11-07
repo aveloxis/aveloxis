@@ -85,9 +85,16 @@ func TestMarkRepoGoneIsSingleStatement(t *testing.T) {
 // ClearRepoGone is guarded so it's a 0-row no-op for the normal
 // fleet (prelim calls it on every healthy probe).
 func TestClearRepoGoneIsGuarded(t *testing.T) {
-	src := readSourceFile(t, "repo_gone.go")
-	if !strings.Contains(src, "AND repo_gone_at IS NOT NULL") {
-		t.Error("ClearRepoGone must carry the IS NOT NULL guard")
+	// 0.29.140: the clear takes its sideline predicate (the gone stamp, or
+	// the old dead arm's archived-without-stamp residue); ClearRepoGone and
+	// every gone resurrection pass the gone predicate.
+	if goneSidelineSQL != "repo_gone_at IS NOT NULL" || !strings.Contains(clearGoneCTE, "WHERE repo_id = $1 AND %s") {
+		t.Error("the clear is guarded by its sideline predicate; the gone one is `repo_gone_at IS NOT NULL`")
+	}
+	for _, fn := range []string{"func (s *PostgresStore) ClearRepoGone(", "func (s *PostgresStore) ResurrectRepo(", "func (s *PostgresStore) ResurrectIfListed(", "func resurrectInTx("} {
+		if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", fn)), "goneSidelineSQL") {
+			t.Errorf("%s must clear under goneSidelineSQL", fn)
+		}
 	}
 }
 

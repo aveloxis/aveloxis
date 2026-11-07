@@ -1357,15 +1357,17 @@ archived or has commits but no queue row — one unauthenticated request each,
 aveloxis mark-gone-repos
 ```
 
-A 2xx on a GONE-STAMPED row clears the stamp and re-queues it; a definitive
-404/410/451 leaves it gone (and stamps a row that was archived without the
-stamp); anything else changes nothing. A 2xx on a row that carries NO stamp
-(archived without one, or data-bearing and queueless) is counted as alive and
-left as it is — the command maintains the gone state, it does not re-queue
-what was never stamped. To resume collection of such a row, re-add it
-(`aveloxis add-repo`, above); for the non-archived ones `aveloxis
-reconcile-repos` does the same for every stranded row at once (an archived
-queueless row is outside its candidate set). Do not edit `repo_archived` by
+A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx on a
+row archived WITHOUT a stamp — what `reconcile-repos` left before 0.29.140,
+when its dead arm set the archived flag alone on a 404 (a repository the
+forge archived keeps its queue row, so nothing else looks like this) — puts
+the archived flag back to the forge's latest recorded status and re-queues it
+(0.29.140). A definitive 404/410/451 leaves a row gone (and stamps a row that
+was archived without the stamp); anything else changes nothing. A 2xx on a
+queueless row that is neither stamped nor archived (a data-bearing duplicate
+prelim dequeued on purpose) is counted as alive and left as it is: to resume
+its collection, re-add it (`aveloxis add-repo`, above), or run `aveloxis
+reconcile-repos`, which handles every such stranded row at once. Do not edit `repo_archived` by
 hand: the stamp, not the flag, is the sidelined state, and the flag is
 rewritten from the forge on the next collection.
 

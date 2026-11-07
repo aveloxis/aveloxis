@@ -2775,30 +2775,53 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// adopted change's forge creation day, else its first observation) come
 	// back from the append-only commits table, where no bucket exists. The
 	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
-	// analyzer. Once; idempotent (DO NOTHING). The charts change for every
+	// analyzer. The boundary DAY is refolded from the commits table for the
+	// authors with a commit before the exact era start (Copilot PR #252,
+	// twelfth review; commit_daily.go refoldEraBoundaryDaySQL). Once;
+	// idempotent (DO NOTHING; the refold only raises a bucket). The charts change for every
 	// repository a bucket came back for, so the same statement stamps their
 	// cache state (data_changed_at, as the adoption's own restore does —
 	// Copilot PR #252, seventh review: a cached chart answer from before
 	// the migrate stayed valid otherwise) and only theirs.
 	runOnceStep(ctx, pg, logger, errs,
 		"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
-		`WITH restored AS (
+		`WITH eras AS (
+		 SELECT c.repo_id, MAX(COALESCE(c.forge_created_at, c.first_observed_at)) AS era_start
+		   FROM aveloxis_data.repo_forge_id_changes c
+		  WHERE c.adopted_at IS NOT NULL
+		  GROUP BY c.repo_id),
+		 restored AS (
 		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
 		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
 		        COUNT(DISTINCT co.cmt_commit_hash),
 		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
 		 FROM aveloxis_data.commits co
-		 JOIN (SELECT c.repo_id, MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date) AS boundary
-		         FROM aveloxis_data.repo_forge_id_changes c
-		        WHERE c.adopted_at IS NOT NULL
-		        GROUP BY c.repo_id) b ON b.repo_id = co.repo_id
+		 JOIN eras b ON b.repo_id = co.repo_id
 		 WHERE co.cmt_author_timestamp IS NOT NULL
-		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < b.boundary
+		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < (b.era_start AT TIME ZONE 'UTC')::date
 		 GROUP BY 1, 2, 3
 		 ON CONFLICT (repo_id, day, author_email) DO NOTHING
+		 RETURNING repo_id),
+		 refolded AS (
+		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
+		        COUNT(DISTINCT co.cmt_commit_hash),
+		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
+		 FROM aveloxis_data.commits co
+		 JOIN eras b ON b.repo_id = co.repo_id
+		 WHERE co.cmt_author_timestamp IS NOT NULL
+		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date = (b.era_start AT TIME ZONE 'UTC')::date
+		   AND EXISTS (SELECT 1 FROM aveloxis_data.commits e
+		               WHERE e.repo_id = co.repo_id AND e.cmt_author_email = co.cmt_author_email
+		                 AND e.cmt_author_timestamp < b.era_start
+		                 AND (e.cmt_author_timestamp AT TIME ZONE 'UTC')::date = (b.era_start AT TIME ZONE 'UTC')::date)
+		 GROUP BY 1, 2, 3
+		 ON CONFLICT (repo_id, day, author_email) DO UPDATE
+		 SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
+		 WHERE EXCLUDED.commits > repo_commit_daily.commits
 		 RETURNING repo_id)
 		 UPDATE aveloxis_data.repos SET data_changed_at = NOW()
-		  WHERE repo_id IN (SELECT DISTINCT repo_id FROM restored)`)
+		  WHERE repo_id IN (SELECT repo_id FROM restored UNION SELECT repo_id FROM refolded)`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

@@ -975,6 +975,143 @@ func TestResurrectArchivedSidelineLiftsTheOldDeadArmsResidueOnly(t *testing.T) {
 	}
 }
 
+// A group link to the merge's loser never outlives the loser (Copilot PR
+// #252, twelfth review): user_repos.repo_id has no FK to repos, so the
+// late-link fail-safe the stars have (the merge's delete refused at commit)
+// did not apply — a link inserted after the merge's repoint and before its
+// delete committed left the group pointing at a deleted repository. The one
+// link statement (insertLinksSQL) locks the target rows FOR SHARE, which
+// conflicts with the merge's FOR NO KEY UPDATE on both rows: a link waits for
+// the merge and then finds the loser gone, or commits first and is moved by
+// the repoint. Driven with a second session holding the merge's lock.
+func TestAGroupLinkToAMergedLoserNeverOutlivesIt(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	loser := seedGoneHistoryRepo(t, store, ctx, "merge-loser-link")
+	tag := fmt.Sprintf("_avlatelink%d", time.Now().UnixNano())
+	var uid int
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.users (login_name) VALUES ($1) RETURNING user_id`, tag).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	var gid int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.user_groups (user_id, name) VALUES ($1, $2) RETURNING group_id`, uid, tag).Scan(&gid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_groups WHERE group_id = $1`, gid)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, uid)
+	})
+	// The merge: its first statement locks the rows, then it deletes the loser.
+	merge, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer merge.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := merge.Exec(ctx, lockRepoRowsSQL, []int64{loser}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.pool.Exec(ctx, insertLinksSQL, gid, []int64{loser})
+		done <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%INSERT INTO aveloxis_ops.user_repos%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the link must wait for the merge's row lock; it finished first (err %v)", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the link never waited on the merge's row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := merge.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, loser); err != nil {
+		t.Fatal(err)
+	}
+	if err := merge.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("a link whose repository a merge deleted inserts nothing, without an error: %v", err)
+	}
+	var dangling int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.user_repos WHERE group_id = $1 AND repo_id = $2`, gid, loser).Scan(&dangling); err != nil || dangling != 0 {
+		t.Fatalf("no group link to the deleted repository: %d %v", dangling, err)
+	}
+}
+
+// A link that already exists takes no lock on the repository row (the L10
+// pass on the twelfth-review fix: the org scan re-links every repository into
+// every group on each pass — 9.3 M no-op re-links in one run — and a FOR SHARE
+// on each target row set xmax, dirtied the page and wrote WAL on the hot repos
+// table for nothing). Only a NEW link reaches the lock. A row lock shows in
+// the row's xmax, so the test reads it around a re-link.
+func TestAnExistingGroupLinkTakesNoRepositoryRowLock(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "relink-no-lock")
+	tag := fmt.Sprintf("_avrelink%d", time.Now().UnixNano())
+	var uid int
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.users (login_name) VALUES ($1) RETURNING user_id`, tag).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	var gid int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_ops.user_groups (user_id, name) VALUES ($1, $2) RETURNING group_id`, uid, tag).Scan(&gid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repos WHERE group_id = $1`, gid)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_groups WHERE group_id = $1`, gid)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE user_id = $1`, uid)
+	})
+	xmax := func() string {
+		t.Helper()
+		var x string
+		if err := store.pool.QueryRow(ctx, `SELECT xmax::text FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	if _, err := store.pool.Exec(ctx, insertLinksSQL, gid, []int64{repoID}); err != nil {
+		t.Fatal(err)
+	}
+	before := xmax()
+	tagRelink, err := store.pool.Exec(ctx, insertLinksSQL, gid, []int64{repoID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tagRelink.RowsAffected() != 0 {
+		t.Fatalf("a re-link inserts nothing: %d", tagRelink.RowsAffected())
+	}
+	if after := xmax(); after != before {
+		t.Errorf("a re-link of an existing link must not lock the repository row (xmax %s -> %s)", before, after)
+	}
+	// A link to a repository a merge deleted reports it, on the user-facing
+	// single-repository paths (the L10 pass: "(false, nil)" read as
+	// "already linked").
+	gone := seedGoneHistoryRepo(t, store, ctx, "relink-gone")
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, gone)
+	if _, err := store.AddRepoToGroupByID(ctx, gid, gone); !errors.Is(err, ErrRepoNotFound) {
+		t.Errorf("linking a deleted repository = %v, want ErrRepoNotFound", err)
+	}
+	if linked, err := store.AddRepoToGroupByID(ctx, gid, repoID); err != nil || linked {
+		t.Errorf("an existing link is still (false, nil): %v %v", linked, err)
+	}
+}
+
 // Every clearer puts repo_archived back to the forge's last word (Copilot PR
 // #252, eighth review): the stamp sets it TRUE, and a recovered repository
 // kept the archived cadence and badge until its next metadata collection.

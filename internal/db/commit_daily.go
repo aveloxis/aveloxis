@@ -117,6 +117,10 @@ func alignedToUTCDay(t time.Time) bool {
 // the page and logs a record, so a DO UPDATE WHERE alone (kept below as a
 // backstop) still wrote every page of a kernel fork's ~10^6 buckets on an
 // identical walk — on a host whose storage stalls on writes (summary/37).
+// One exception (0.29.140): on an adopted repository's era boundary day, a
+// trimming walk lowers a shared author's bucket and deletes an earlier-only
+// author's, and the refold that follows raises and re-inserts them — a few
+// rows per walk, on fifteen repositories on kate.
 // The pre-filter is race-free: both writers hold the per-repository lock.
 // Nothing is written for a walk that did not complete.
 // Emails are scrubbed the way the commits rows' were (review round 1 F3),
@@ -196,6 +200,14 @@ func (s *PostgresStore) ReplaceRepoCommitDaily(ctx context.Context, repoID int64
 				repoID, days, emails); err != nil {
 				return fmt.Errorf("trim repo_commit_daily: %w", err)
 			}
+			// The re-creation day holds both eras: the trim above deleted
+			// the earlier repository's buckets of that day the walk cannot
+			// see, and set a shared author's to the new history's count
+			// (Copilot PR #252, twelfth review). Refolded from the commits
+			// table, which holds both eras' commits.
+			if _, err := tx.Exec(ctx, refoldEraBoundaryDaySQL, repoID); err != nil {
+				return fmt.Errorf("refold the era boundary day: %w", err)
+			}
 			if _, err := tx.Exec(ctx, stampCommitDailyCompleteSQL, repoID); err != nil {
 				return fmt.Errorf("stamp repo_commit_daily complete: %w", err)
 			}
@@ -273,8 +285,72 @@ func restoreEarlierErasInTx(ctx context.Context, tx rotationExecer, repoID int64
 	if err != nil {
 		return 0, fmt.Errorf("restore the earlier era's daily buckets: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	refolded, err := tx.Exec(ctx, refoldEraBoundaryDaySQL, repoID)
+	if err != nil {
+		return 0, fmt.Errorf("refold the era boundary day: %w", err)
+	}
+	return tag.RowsAffected() + refolded.RowsAffected(), nil
 }
+
+// commitDailyEraStartSQL is the exact start of a repository's CURRENT era
+// ($1 = repo_id): the newest adopted forge-ID change's forge creation time,
+// or its first observation when the forge gave no date; NULL with no adopted
+// change. commitDailyEraBoundarySQL is its UTC day.
+const commitDailyEraStartSQL = `
+				    SELECT MAX(COALESCE(c.forge_created_at, c.first_observed_at))
+				    FROM aveloxis_data.repo_forge_id_changes c
+				    WHERE c.repo_id = $1 AND c.adopted_at IS NOT NULL`
+
+// eraDayStartSQL is the UTC midnight that starts the era boundary day ($1 =
+// repo_id), as a timestamptz: a range bound, where a ::date cast of the
+// column would filter row by row. Its end is `+ INTERVAL '24 hours'`, never
+// `'1 day'`: day arithmetic on a timestamptz follows the SESSION's time zone,
+// so on a daylight-saving day it was 23 or 25 hours (the L10 pass; the
+// session zone here and in CI is America/Chicago) — a UTC day is 24 hours.
+const eraDayStartSQL = `(date_trunc('day', (` + commitDailyEraStartSQL + `) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`
+
+// refoldEraBoundaryDaySQL rewrites the era boundary DAY's buckets of every
+// author who has a commit authored on that day BEFORE the era start ($1 =
+// repo_id) as the commits table's fold of the day: both eras' distinct
+// commits (Copilot PR #252, twelfth review — the day-granular boundary
+// classified the whole day as the new history, so the trim dropped the
+// earlier repository's commits of that morning and the restore, `day <
+// boundary`, never brought them back). The commits table is append-only and
+// holds both eras; a commit a force-push removed from the new history that
+// day still counts, the residual the no-date boundary already has. An
+// author with no earlier commit that day keeps the walk's bucket. The fold
+// only RAISES a bucket: the walk writes its commits to the commits table
+// before it replaces the buckets, so the fold holds them, and a fold below
+// the walk's count (commit rows that never landed) leaves the walk's
+// standing. A raised bucket's cntrb_id is the fold's agreed identity or none
+// (SR-6); its author_login / author_gh_user_id stay the walk's, which the
+// readers fall back to — the same email in both eras, so the same author.
+//
+// Cost (the L10 pass on this fix): it runs on EVERY trimming walk. The era
+// start's IS NOT NULL is a pseudoconstant — a One-Time Filter — so a
+// repository with no adopted change scans nothing; a repository with one
+// reads its commit rows through the repo_id index and filters the day by a
+// timestamp range (no index covers (repo_id, timestamp) — a kernel-sized
+// re-created repository reads its whole commit set once per walk).
+// Runs after the walk's
+// trim and in the adoption's restore; the migrate repair holds a literal
+// copy (the step-order analyzer).
+const refoldEraBoundaryDaySQL = `
+			INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+			SELECT ` + commitDailyFoldColumnsSQL + `
+			FROM aveloxis_data.commits co
+			WHERE (` + commitDailyEraStartSQL + `) IS NOT NULL
+			  AND co.repo_id = $1
+			  AND co.cmt_author_timestamp >= ` + eraDayStartSQL + `
+			  AND co.cmt_author_timestamp < ` + eraDayStartSQL + ` + INTERVAL '24 hours'
+			  AND EXISTS (SELECT 1 FROM aveloxis_data.commits e
+			              WHERE e.repo_id = co.repo_id AND e.cmt_author_email = co.cmt_author_email
+			                AND e.cmt_author_timestamp >= ` + eraDayStartSQL + `
+			                AND e.cmt_author_timestamp < (` + commitDailyEraStartSQL + `))
+			GROUP BY 1, 2, 3
+			ON CONFLICT (repo_id, day, author_email) DO UPDATE
+			SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
+			WHERE EXCLUDED.commits > repo_commit_daily.commits`
 
 // The ledgered migrate step "v0.29.140 restore the earlier era's daily
 // buckets of adopted forge-ID changes" runs the fold above once for every

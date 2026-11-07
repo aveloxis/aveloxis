@@ -385,7 +385,10 @@ var loserHygieneDeletes = []string{
 // delete (the fail-safe), never seen by the delete and missed by the insert
 // (the fresh review of the fifth round's fix: two statements had that window
 // once the row lock let the star's FK check through; group links had it
-// before). Shared by the dedup merge and the dataless rename heal.
+// before). Group links have no FK to repos, so their fail-safe is the link
+// insert's FOR SHARE on the repository row (insertLinksSQL, Copilot PR #252
+// twelfth review): a late link waits for the merge and then finds the loser
+// gone. Shared by the dedup merge and the dataless rename heal.
 const repointGroupLinksSQL = `
 			WITH moved AS (DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1 RETURNING group_id)
 			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)

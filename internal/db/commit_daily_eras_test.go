@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
+	"github.com/jackc/pgx/v5"
 )
 
 // Two histories on one row (0.29.140, operator decision 2026-11-05 on
@@ -78,8 +79,27 @@ func TestReplaceRepoCommitDailyKeepsAnEarlierEraOnAnAdoptedChange(t *testing.T) 
 	if got[old.Format("2006-01-02")] != 3 {
 		t.Errorf("the earlier era's row (the day before the boundary) is kept: %v", got)
 	}
-	if _, present := got[boundary.Format("2006-01-02")]; present {
+	// The boundary day, per author (Copilot PR #252, twelfth review): the
+	// walk-unseen current-era row is trimmed as before, while the fixture
+	// author's commit at 10:00 — before the 16:38 re-creation, so the
+	// earlier repository's — is kept (refolded from the commits table).
+	onBoundary := func(email string) (int, bool) {
+		t.Helper()
+		var n int
+		err := store.pool.QueryRow(ctx, `SELECT commits FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = $2 AND author_email = $3`, fx.repoID, boundary, email).Scan(&n)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n, true
+	}
+	if _, present := onBoundary("cur@x"); present {
 		t.Errorf("a current-era row the walk did not see is trimmed as before: %v", got)
+	}
+	if n, present := onBoundary("_avcd_era01@x"); !present || n != 1 {
+		t.Errorf("the earlier repository's commit of the boundary morning is kept: %d %v", n, present)
 	}
 	if got[next.Format("2006-01-02")] != 2 {
 		t.Errorf("the walk's own row is written: %v", got)
@@ -235,6 +255,139 @@ func TestAdoptForgeIDRestoresTheEarlierErasDailyBuckets(t *testing.T) {
 	}
 	if got := rows(); got[old.Format("2006-01-02")+" old@x"] != 1 || got[fx.in.Format("2006-01-02")+" _avcd_era03@x"] != 3 || len(got) != 2 {
 		t.Errorf("the migrate repair restores the earlier era once, current era untouched: %v", got)
+	}
+}
+
+// The re-creation DAY holds both eras (Copilot PR #252, twelfth review): the
+// boundary is a UTC day, so the earlier repository's commits authored that
+// day before the re-creation moment fell between the trim (day >= boundary)
+// and the restore (day < boundary) and were lost. Now, for every author with
+// a commit authored before the exact era start on that day, the bucket is
+// the commits table's fold of the day — both eras' distinct commits —
+// after the walk's trim, in the adoption's restore and in the migrate repair.
+func TestTheEraBoundaryDayKeepsTheEarlierRepositorysCommits(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_era04")
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, fx.repoID)
+	})
+	day := fx.in.AddDate(0, 0, -10)
+	created := day.Add(16 * time.Hour) // the forge re-created the repository at 16:00 UTC
+	commit := func(hash, email string, at time.Time) {
+		t.Helper()
+		mustExecRetry(ctx, t, store, `
+			INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp)
+			VALUES ($1, $2, 'f.go', 'n', $3, $4, $5)`, fx.repoID, hash, email, at.Format("2006-01-02"), at)
+	}
+	commit("e4a0000001", "a@old", day.Add(9*time.Hour))   // the earlier repository only
+	commit("e4c0000001", "c@both", day.Add(10*time.Hour)) // the earlier repository...
+	commit("e4c0000002", "c@both", day.Add(17*time.Hour)) // ...and the new one, the same day
+	commit("e4b0000001", "b@new", day.Add(18*time.Hour))  // the new repository only
+	bucket := func(email string) int {
+		t.Helper()
+		var n int
+		err := store.pool.QueryRow(ctx, `SELECT commits FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = $2 AND author_email = $3`, fx.repoID, day, email).Scan(&n)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return n
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", publicListing()); err != nil {
+		t.Fatal(err)
+	}
+	if bucket("a@old") != 1 || bucket("c@both") != 2 {
+		t.Errorf("the adoption's restore folds the re-creation day for the earlier era's authors: a=%d c=%d, want 1 and 2", bucket("a@old"), bucket("c@both"))
+	}
+	// The new repository's walk sees only its own commits that day.
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
+		{Day: day, AuthorEmail: "c@both", Commits: 1}, {Day: day, AuthorEmail: "b@new", Commits: 1},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if a, c, b := bucket("a@old"), bucket("c@both"), bucket("b@new"); a != 1 || c != 2 || b != 1 {
+		t.Errorf("after the walk: a=%d c=%d b=%d, want 1, 2, 1 (the earlier commits of the day kept, the new author the walk's)", a, c, b)
+	}
+	// The migrate repair for a repository adopted before 0.29.140.
+	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = $2 AND author_email = 'a@old'`, fx.repoID, day)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_commit_daily SET commits = 1 WHERE repo_id = $1 AND day = $2 AND author_email = 'c@both'`, fx.repoID, day)
+	if _, err := store.pool.Exec(ctx, migrateStepSQL(t, restoreEarlierErasLabel)); err != nil {
+		t.Fatal(err)
+	}
+	if a, c, b := bucket("a@old"), bucket("c@both"), bucket("b@new"); a != 1 || c != 2 || b != 1 {
+		t.Errorf("after the migrate repair: a=%d c=%d b=%d, want 1, 2, 1", a, c, b)
+	}
+}
+
+// The refold costs nothing for a repository with no adopted change (the L10
+// pass on the twelfth-review fix: it runs on every trimming walk, and a NULL
+// era start inside a date comparison against a column did not short-circuit
+// — a Parallel Seq Scan of commits for a 479 K-row repository, 0 rows). The
+// era start's IS NOT NULL is a pseudoconstant the planner turns into a
+// One-Time Filter that skips the whole scan.
+func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_era05")
+	rows, err := store.pool.Query(ctx, "EXPLAIN "+refoldEraBoundaryDaySQL, fx.repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(line + "\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "One-Time Filter") {
+		t.Errorf("the refold must gate on a pseudoconstant (a One-Time Filter), not filter the repository's commit rows:\n%s", plan.String())
+	}
+}
+
+// The boundary day is 24 UTC hours whatever the session's time zone (the L10
+// pass on the refold's range): `+ INTERVAL '1 day'` on a timestamptz is
+// calendar arithmetic in the session zone, so on a daylight-saving day it was
+// 23 or 25 hours — on the spring-forward day under America/Chicago (this
+// server's and CI's zone) the range ended at 23:00Z, and an earlier-era
+// commit at 23:30Z was lost. Run on a connection pinned to that zone.
+func TestTheEraBoundaryDayIsTwentyFourUTCHours(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_era06")
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, fx.repoID)
+	})
+	start := time.Date(2026, 3, 8, 23, 50, 0, 0, time.UTC) // US clocks sprang forward that morning
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id, forge_created_at, adopted_at, observed_private)
+		VALUES ($1, '1', '2', $2, NOW(), FALSE)`, fx.repoID, start)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp)
+		VALUES ($1, 'e6a0000001', 'f.go', 'n', 'late@old', '2026-03-08', $2)`, fx.repoID, start.Add(-20*time.Minute))
+	conn, err := store.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET TimeZone = 'America/Chicago'`); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Exec(context.Background(), `RESET TimeZone`) //nolint:errcheck // the connection goes back to the pool
+	if _, err := conn.Exec(ctx, refoldEraBoundaryDaySQL, fx.repoID); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE((SELECT commits FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = DATE '2026-03-08' AND author_email = 'late@old'), 0)`, fx.repoID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("an earlier-era commit at 23:30Z on the spring-forward day is folded into its bucket: got %d, want 1", n)
 	}
 }
 

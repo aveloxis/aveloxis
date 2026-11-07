@@ -1513,16 +1513,16 @@ The probe is bidirectional and only DEFINITIVE answers decide:
 - **200 on a previously-stamped repo** → clear the stamp and
   re-enqueue: if the organization re-publicizes, collection resumes
   automatically on the next run of this command.
-- **200 at its own URL on a repo archived without a stamp** (0.29.140) →
-  put the archived flag back to the forge's latest recorded status and
+- **200 on a repo archived without a stamp** (0.29.140) → put the
+  archived flag back to the forge's latest recorded status and
   re-enqueue, counted as `lifted_archived`. Before 0.29.140
   `reconcile-repos` set the archived flag alone on a 404, and a
   repository the forge archived keeps its queue row, so an archived,
-  unstamped, queueless row answering at its own URL is that sideline.
-  Reached through a redirect to another URL, the same row is a renamed
-  repository (prelim dequeues a data-bearing duplicate of a tracked
-  one): counted `alive`, left as it is, and logged with where it
-  redirects.
+  unstamped, queueless row is that sideline — at its own URL, or renamed
+  to a URL no row tracks (prelim renames it in place once queued).
+  Renamed onto a repository that IS tracked, the row is a duplicate
+  prelim dequeued: counted `alive`, left as it is, and logged with where
+  it redirects (no command consolidates an archived row today).
 - **200 on any other candidate** (a queueless row that is neither
   stamped nor archived) → counted as `alive` and left as it is;
   `aveloxis reconcile-repos` re-queues it if it answers at its own URL

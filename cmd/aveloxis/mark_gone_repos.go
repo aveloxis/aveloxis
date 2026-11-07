@@ -19,14 +19,15 @@
 //   - DEFINITIVE 200 on an already-gone-stamped repo → ResurrectRepo
 //     (clear + re-enqueue in one transaction, v0.28.6), so collection
 //     resumes if the org re-publicizes.
-//   - DEFINITIVE 200 AT ITS OWN URL on a repo archived WITHOUT a stamp →
-//     ResurrectArchivedSideline (0.29.140, operator decision 2026-11-07):
-//     the pre-0.29.140 reconcile-repos dead arm set the archived flag alone
-//     on a 404, and a forge-archived repository keeps its queue row, so this
-//     is that arm's sideline coming back. A 200 reached through a redirect
-//     to another URL is a renamed repository (a data-bearing duplicate
-//     prelim dequeued) and is left as it is, as is any other 2xx (a
-//     queueless row that is neither stamped nor archived).
+//   - DEFINITIVE 200 on a repo archived WITHOUT a stamp → ResurrectArchivedSideline
+//     (0.29.140, operator decision 2026-11-07): the pre-0.29.140
+//     reconcile-repos dead arm set the archived flag alone on a 404, and a
+//     forge-archived repository keeps its queue row, so this is that arm's
+//     sideline coming back — at its own URL, or renamed to a URL no row
+//     tracks (prelim renames it in place). Renamed onto a TRACKED
+//     repository it is a data-bearing duplicate prelim dequeued, and is
+//     left as it is, as is any other 2xx (a queueless row that is neither
+//     stamped nor archived).
 //   - Everything else (transport errors, rate limits, 5xx) SKIPS the
 //     repo (SR-16: only definitive answers decide) — a rerun retries.
 //
@@ -70,11 +71,11 @@ probes each URL against the forge:
               "no longer publicly available" notice over the data we hold)
   200 on a gone-stamped repo -> clear the stamp and re-enqueue
               (collection resumes — the org came back)
-  200 at its own URL on a repo archived without a stamp -> restore the
-              archived flag from the forge's latest snapshot and
-              re-enqueue (the pre-0.29.140 reconcile-repos sideline
-              coming back); through a redirect it is a renamed
-              repository and is left as it is
+  200 on a repo archived without a stamp -> restore the archived flag
+              from the forge's latest snapshot and re-enqueue (the
+              pre-0.29.140 reconcile-repos sideline coming back); one
+              renamed onto a tracked repository is a duplicate and is
+              left as it is
   200 on any other candidate -> counted alive, left as it is (re-add
               it with add-repo to resume collection)
   anything else -> skipped; re-run later (only definitive answers decide)
@@ -224,16 +225,37 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			}
 			tally.stamped++
 		case status >= 200 && status < 300:
-			switch onReachable(c, sameRepoURL(finalURL, c.GitURL)) {
+			// The row's own URL, or a redirect; for an archived unstamped
+			// redirect, whether its target is tracked (reconcile-repos'
+			// rule: an untracked target is re-queued for prelim to rename in
+			// place; a tracked one makes the row a duplicate). A lookup
+			// ERROR is not "untracked" (SR-5): skipped.
+			atOwnURL := sameRepoURL(finalURL, c.GitURL)
+			targetTracked := false
+			if c.Archived && !c.GoneStamped && !atOwnURL {
+				winner, ferr := store.FindRepoByURL(ctx, finalURL)
+				if ferr != nil {
+					if ctx.Err() != nil {
+						return interrupted()
+					}
+					logger.Warn("redirect target lookup failed — skipping (rerun retries)", "repo_id", c.RepoID, "redirects_to", platform.RedactURLUserinfo(finalURL), "error", ferr)
+					tally.skipped++
+					continue
+				}
+				targetTracked = winner > 0 && winner != c.RepoID
+			}
+			switch onReachable(c, atOwnURL, targetTracked) {
 			case reachableAlive:
 				tally.alive++
 				continue
 			case reachableRenamed:
-				// Archived and unstamped but answering under ANOTHER URL: a
-				// renamed repository (prelim dequeues a data-bearing
-				// duplicate of a tracked one), not the old sideline — lifting
-				// it would only have prelim dequeue it again.
-				logger.Info("archived, unstamped and redirected elsewhere — a renamed repository, not lifted; consolidate it with its target if it is tracked",
+				// Archived and unstamped, renamed onto a TRACKED repository:
+				// a data-bearing duplicate prelim dequeued, not the old
+				// sideline — lifting it would only have prelim dequeue it
+				// again. No command consolidates an archived row today
+				// (reconcile-repos takes non-archived rows only): it stays
+				// as it is, its data kept and not collected.
+				logger.Info("archived, unstamped and renamed onto a tracked repository — a duplicate, not lifted; no command consolidates an archived row, so it stays as it is with its data",
 					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "redirects_to", platform.RedactURLUserinfo(finalURL))
 				tally.alive++
 				continue
@@ -331,8 +353,8 @@ const (
 	// URL — the pre-0.29.140 reconcile-repos dead arm's sideline —
 	// ResurrectArchivedSideline.
 	reachableLiftArchived
-	// reachableRenamed: archived without a stamp but answering under
-	// another URL — a renamed repository, counted alive, left as it is.
+	// reachableRenamed: archived without a stamp, renamed onto a TRACKED
+	// repository — a duplicate, counted alive, left as it is.
 	reachableRenamed
 )
 
@@ -350,17 +372,19 @@ func (a reachableAction) String() string {
 
 // onReachable decides a definitive 2xx by the candidate's class (operator
 // decision 2026-11-07): the stamp first, then the old arm's archived flag —
-// lifted only when the 2xx came from the row's own URL (atOwnURL,
-// sameRepoURL). A forge-archived repository renamed onto a tracked one is a
-// data-bearing duplicate prelim dequeued on purpose; it has the same shape,
-// and lifting it would have prelim dequeue it again at every run (the L10
-// pass: two such rows on kate). The store re-checks the class in the
-// statement; this picks the call.
-func onReachable(c db.GoneProbeCandidate, atOwnURL bool) reachableAction {
+// lifted when the 2xx came from the row's own URL (atOwnURL, sameRepoURL)
+// or through a redirect to a target no row tracks (prelim renames it in
+// place once it is queued, as reconcile-repos does for a non-archived row).
+// A forge-archived repository renamed onto a TRACKED one (targetTracked) is
+// a data-bearing duplicate prelim dequeued on purpose; lifting it would
+// have prelim dequeue it again at every run (the L10 passes: two such rows
+// on kate). targetTracked is read only for an archived unstamped redirect.
+// The store re-checks the class in the statement; this picks the call.
+func onReachable(c db.GoneProbeCandidate, atOwnURL, targetTracked bool) reachableAction {
 	switch {
 	case c.GoneStamped:
 		return reachableResurrect
-	case c.Archived && atOwnURL:
+	case c.Archived && (atOwnURL || !targetTracked):
 		return reachableLiftArchived
 	case c.Archived:
 		return reachableRenamed

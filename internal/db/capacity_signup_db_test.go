@@ -78,14 +78,32 @@ func TestSignupsPerAddressAreCappedAtAccountCreation(t *testing.T) {
 	if _, err := signUp("2001:db8:1:2::77"); err == nil {
 		t.Error("a third sign-up from the same IPv6 /64 must be refused")
 	}
-	// The stored key never carries the address.
+	// The stored key never carries the address: it is 64 lowercase hex
+	// characters (hex HMAC-SHA256), which no textual IPv4 or IPv6 address
+	// is. 2026-11-07: the check was LIKE '%2001%' — a hex substring, so a
+	// correct key containing "2001" (about 61 in 65,536 per key) failed it,
+	// twice at once because the IPv6 /64 pair shares one key (census30).
+	const keyIsMalformed = `s.address_key !~ '^[0-9a-f]{64}$'`
 	var leaked int
 	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_ops.account_signups s JOIN aveloxis_ops.users u USING (user_id)
-		WHERE u.login_name LIKE $1 AND (s.address_key LIKE '%198.51%' OR s.address_key LIKE '%2001%' OR length(s.address_key) <> 64)`, tag+"%").Scan(&leaked); err != nil {
+		WHERE u.login_name LIKE $1 AND `+keyIsMalformed, tag+"%").Scan(&leaked); err != nil {
 		t.Fatal(err)
 	}
 	if leaked != 0 {
 		t.Errorf("%d sign-up rows carry the raw address or a malformed key", leaked)
+	}
+	// The predicate itself: a correct key containing "2001" passes, and a
+	// raw address of either family or a short key fails.
+	for key, malformed := range map[string]bool{
+		strings.Repeat("ab", 14) + "2001" + strings.Repeat("cd", 16): false,
+		"198.51.100.7":    true,
+		"2001:db8:1:2::5": true,
+		"abc123":          true,
+	} {
+		var got bool
+		if err := store.pool.QueryRow(ctx, `SELECT `+strings.Replace(keyIsMalformed, "s.address_key", "$1::text", 1), key).Scan(&got); err != nil || got != malformed {
+			t.Errorf("leak predicate on %q = %v (%v), want %v", key, got, err, malformed)
+		}
 	}
 	// An allowlisted network is exempt.
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.signup_allowlist (cidr, note) VALUES ('198.51.100.0/24', $1)`, tag)

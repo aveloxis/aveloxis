@@ -2995,14 +2995,16 @@ archived or has commits but no queue row — one unauthenticated request each,
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>mark-gone-repos
 </pre></div>
 </div>
-<p>A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx AT ITS
-OWN URL on a row archived WITHOUT a stamp — what <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> left before
-0.29.140, when its dead arm set the archived flag alone on a 404 (a repository
-the forge archived keeps its queue row) — puts the archived flag back to the
-forge’s latest recorded status and re-queues it (0.29.140). The same row
-answering through a redirect to another URL is a renamed repository, usually
-a duplicate of one already tracked, and is left as it is (the command logs
-where it redirects; consolidating it is the operator’s decision). A
+<p>A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx on a
+row archived WITHOUT a stamp — what <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> left before 0.29.140,
+when its dead arm set the archived flag alone on a 404 (a repository the
+forge archived keeps its queue row) — puts the archived flag back to the
+forge’s latest recorded status and re-queues it (0.29.140), whether it
+answers at its own URL or through a redirect to a URL no row tracks (prelim
+then renames it in place). Redirected onto a repository that IS tracked, the
+row is a duplicate prelim dequeued and is left as it is: the command logs
+where it redirects, and no command consolidates an archived row today, so it
+keeps its data and is not collected. A
 definitive 404/410/451 leaves a row gone (and stamps a row that was archived
 without the stamp); anything else changes nothing. A 2xx on a queueless row
 that is neither stamped nor archived is counted as alive and left as it is:

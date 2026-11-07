@@ -649,6 +649,18 @@ func TestTheGoneLifecycleWritersRefuseAnUnmigratedSchema(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT r.platform_repo_id, c.adopted_at FROM aveloxis_data.repos r JOIN aveloxis_data.repo_forge_id_changes c USING (repo_id) WHERE r.repo_id = $1`, repoID).Scan(&stored, &adopted); err != nil || stored != "95336057" || adopted != nil {
 		t.Fatalf("nothing was written: id %q adopted %v (%v)", stored, adopted, err)
 	}
+	// The metadata writer (Copilot PR #252, fifteenth review): reached by the
+	// non-migrating backfill-repo-metadata and collect, it committed the
+	// metadata and then failed to record a forge-ID change on the missing
+	// column — a refresh counted as done without the identity record. It
+	// gates before its first write.
+	var described string
+	if err := store.UpdateRepoMetadata(ctx, repoID, "refreshed", "Go", nil, false, "", "1438985131", time.Time{}, time.Time{}, false); !errors.Is(err, ErrSchemaNotMigrated) {
+		t.Fatalf("the metadata writer refuses on the unmigrated schema: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(repo_description, '') FROM aveloxis_data.repos WHERE repo_id = $1`, repoID).Scan(&described); err != nil || described == "refreshed" {
+		t.Fatalf("the metadata writer wrote nothing: %q %v", described, err)
+	}
 	// Unstamped.
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_ops.schema_meta SET schema_version = '' WHERE id = TRUE`)
 	if err := store.RequireMigrated(ctx); !errors.Is(err, ErrSchemaNotMigrated) {

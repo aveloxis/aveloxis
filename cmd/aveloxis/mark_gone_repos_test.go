@@ -161,6 +161,23 @@ func TestGoneStateCommandsRefuseAnUnmigratedSchemaFirst(t *testing.T) {
 			t.Errorf("%s must open with a top-level `if !dryRun { if err := store.RequireMigrated(ctx); err != nil { return err } }` before %s", fn, first)
 		}
 	}
+	// The two other non-migrating commands that write a 0.29.140 object
+	// through the metadata writer (Copilot PR #252, fifteenth review) fail
+	// fast before loading keys: collect, and backfill-repo-metadata's writing
+	// run (after its --dry-run branch).
+	collect := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runCollect("))
+	if c := regexp.MustCompile(`\n\tif err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(collect); c == nil || strings.Index(collect, "loadKeys(") < c[1] {
+		t.Error("collect refuses on an unmigrated database before loading keys")
+	}
+	backfill := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func backfillRepoMetadataCmd("))
+	dry := strings.Index(backfill, "\n\t\t\tif dryRun {")
+	if dry < 0 {
+		t.Fatal("backfill-repo-metadata's --dry-run block not found")
+	}
+	dryEnd := dry + strings.Index(backfill[dry:], "\n\t\t\t}\n")
+	if c := regexp.MustCompile(`\n\t\t\tif err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(backfill); c == nil || c[0] < dryEnd || strings.Index(backfill, "loadKeys(") < c[1] {
+		t.Error("backfill-repo-metadata's writing run refuses on an unmigrated database after its --dry-run block and before loading keys")
+	}
 	adopt := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func adoptForgeIDCmd("))
 	listAt := strings.Index(adopt, "\n\t\t\tif list {")
 	if listAt < 0 {

@@ -55,7 +55,17 @@ import (
 // private (0.29.140) is the forge's visibility of the repository as Phase 0 saw
 // it; it travels with a forge-ID change this call records (an adoption
 // resurrects a gone-stamped repository only for a public re-creation).
+//
+// It gates on the schema stamp before its first write (RequireMigrated;
+// Copilot PR #252, fifteenth review): the non-migrating backfill-repo-metadata
+// and collect reach it, and on a database behind the binary it committed the
+// metadata and then failed to record a forge-ID change on the missing
+// observed_private column — a refresh counted as done without the identity
+// record. serve's verified store pays one atomic load.
 func (s *PostgresStore) UpdateRepoMetadata(ctx context.Context, repoID int64, description, primaryLanguage string, languages map[string]int, archived bool, forkedFrom, platformRepoID string, createdAt, updatedAt time.Time, private bool) error {
+	if err := s.RequireMigrated(ctx); err != nil {
+		return err
+	}
 	langJSON := []byte("{}")
 	if len(languages) > 0 {
 		b, err := json.Marshal(languages)

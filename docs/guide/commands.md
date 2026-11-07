@@ -253,6 +253,8 @@ Run on the offline machine. Decrypts an export file with the private key
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
 
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).
+
 ```text
 aveloxis collect [flags] <url> [<url> ...]
 ```
@@ -1265,6 +1267,8 @@ Operator-driven fleet sweep (v0.27.79) that refreshes
 `FetchRepoInfo` per GitHub/GitLab repo, written through the same
 `UpdateRepoMetadata` path the collector's Phase 0 uses. Generic-git
 repos are skipped (no API).
+
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).
 
 Built as a launch accelerator for fork status: v0.27.78 added fork
 capture to Phase 0, but the per-cycle forward path takes ~6–21 days

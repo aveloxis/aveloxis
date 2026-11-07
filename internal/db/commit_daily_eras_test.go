@@ -320,6 +320,63 @@ func TestTheEraBoundaryDayKeepsTheEarlierRepositorysCommits(t *testing.T) {
 	}
 }
 
+// An earlier-era bucket the new history re-states only in part is not lowered
+// (Copilot PR #252, fifteenth review): a re-created repository that imports
+// commit A of an old (day, author) bucket holding A and B keeps A's old author
+// date, so its trimming walk upserted that bucket to 1 — the trim keeps rows
+// before the boundary, and the restores skipped an existing bucket (DO
+// NOTHING), so B was gone from the charts while still in commits. Every
+// earlier-era bucket is folded from the commits table, raise-only: after the
+// walk, in the adoption's restore and in the migrate repair.
+func TestAPartlyRestatedEarlierEraBucketKeepsItsCommits(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_era07")
+	t.Cleanup(func() {
+		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, fx.repoID)
+	})
+	old := fx.in.AddDate(0, 0, -40)
+	for _, h := range []string{"e7a0000001", "e7b0000001"} {
+		mustExecRetry(ctx, t, store, `
+			INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_name, cmt_author_email, cmt_author_date, cmt_author_timestamp)
+			VALUES ($1, $2, 'f.go', 'n', 'x@old', $3, $4)`, fx.repoID, h, old.Format("2006-01-02"), old.Add(9*time.Hour))
+	}
+	bucket := func() int {
+		t.Helper()
+		var n int
+		if err := store.pool.QueryRow(ctx, `SELECT COALESCE((SELECT commits FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = $2 AND author_email = 'x@old'), 0)`, fx.repoID, old).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// The bucket as the earlier repository's walks left it, then partly
+	// overwritten before the adoption: the adoption's restore raises it.
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits) VALUES ($1, $2, 'x@old', 1)`, fx.repoID, old)
+	created := fx.in.Add(16 * time.Hour)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, fx.repoID)
+	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", publicListing()); err != nil {
+		t.Fatal(err)
+	}
+	if got := bucket(); got != 2 {
+		t.Errorf("the adoption's restore raises a partly overwritten earlier-era bucket: %d, want 2", got)
+	}
+	// The new history re-states only commit A of that day.
+	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{{Day: old, AuthorEmail: "x@old", Commits: 1}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := bucket(); got != 2 {
+		t.Errorf("a walk re-stating one of the bucket's two earlier commits leaves it at 2, got %d", got)
+	}
+	// The migrate repair raises a bucket a walk lowered before 0.29.140.
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_commit_daily SET commits = 1 WHERE repo_id = $1 AND day = $2 AND author_email = 'x@old'`, fx.repoID, old)
+	if _, err := store.pool.Exec(ctx, migrateStepSQL(t, restoreEarlierErasLabel)); err != nil {
+		t.Fatal(err)
+	}
+	if got := bucket(); got != 2 {
+		t.Errorf("the migrate repair raises a partly overwritten earlier-era bucket: %d, want 2", got)
+	}
+}
+
 // The refold costs nothing for a repository with no adopted change (the L10
 // pass on the twelfth-review fix: it runs on every trimming walk, and a NULL
 // era start inside a date comparison against a column did not short-circuit
@@ -330,7 +387,7 @@ func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
 	fx := seedCommitDaily(t, store, ctx, "_avcd_era05")
-	rows, err := store.pool.Query(ctx, "EXPLAIN "+refoldEraBoundaryDaySQL, fx.repoID)
+	rows, err := store.pool.Query(ctx, "EXPLAIN "+refoldEarlierEraSQL, fx.repoID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +405,19 @@ func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
 	}
 	if !strings.Contains(plan.String(), "One-Time Filter") {
 		t.Errorf("the refold must gate on a pseudoconstant (a One-Time Filter), not filter the repository's commit rows:\n%s", plan.String())
+	}
+	// The boundary day's EXISTS is a top-level conjunct, pulled up into a join
+	// through the repository's rows (the L10 pass on the fifteenth review's
+	// fix: inside an OR it could not be, and the planner built a hashed SubPlan
+	// from a scan of the WHOLE commits table — 1.47 billion rows on kate — on
+	// every walk of an adopted repository). The pull-up happens before costing,
+	// so on any table size the plan holds no SubPlan at all (the era start's
+	// subqueries are InitPlans); the JOIN METHOD is costed and may be a semi
+	// join or a unique-ified inner join, so it is not asserted (the next pass:
+	// a "Semi Join" check failed on a plan the email index made a HashAggregate
+	// + Nested Loop).
+	if strings.Contains(plan.String(), "SubPlan") {
+		t.Errorf("the boundary day's EXISTS must be pulled up into a join, never a (hashed) SubPlan:\n%s", plan.String())
 	}
 }
 
@@ -379,7 +449,7 @@ func TestTheEraBoundaryDayIsTwentyFourUTCHours(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Exec(context.Background(), `RESET TimeZone`) //nolint:errcheck // the connection goes back to the pool
-	if _, err := conn.Exec(ctx, refoldEraBoundaryDaySQL, fx.repoID); err != nil {
+	if _, err := conn.Exec(ctx, refoldEarlierEraSQL, fx.repoID); err != nil {
 		t.Fatal(err)
 	}
 	var n int

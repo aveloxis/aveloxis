@@ -81,6 +81,12 @@ Resumable: on interruption, re-run with --after-repo-id <last logged id>.`,
 				fmt.Printf("dry run: %d forge-backed repos would be refreshed (after repo_id %d)\n", n, afterRepoID)
 				return nil
 			}
+			// A writing run refuses on a database behind this binary before
+			// loading keys (Copilot PR #252, fifteenth review): the metadata
+			// writer would refuse every repository.
+			if err := store.RequireMigrated(ctx); err != nil {
+				return err
+			}
 
 			ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
 			if err != nil {

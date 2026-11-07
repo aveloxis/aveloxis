@@ -2175,6 +2175,7 @@ records and the file); keep it with the request record.</p>
 <section id="aveloxis-collect">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code><a class="headerlink" href="#aveloxis-collect" title="Link to this heading"></a></h2>
 <p>One-shot collection of specific repos without the scheduler. Uses the <strong>direct collection pipeline</strong> (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis collect [flags] &lt;url&gt; [&lt;url&gt; ...]
 </pre></div>
 </div>
@@ -3226,6 +3227,7 @@ superseded, it leaves the card, and adopting it is refused.</p>
 <code class="docutils literal notranslate"><span class="pre">FetchRepoInfo</span></code> per GitHub/GitLab repo, written through the same
 <code class="docutils literal notranslate"><span class="pre">UpdateRepoMetadata</span></code> path the collector’s Phase 0 uses. Generic-git
 repos are skipped (no API).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).</p>
 <p>Built as a launch accelerator for fork status: v0.27.78 added fork
 capture to Phase 0, but the per-cycle forward path takes ~6–21 days
 to cover the fleet. This command front-loads it — roughly an hour for

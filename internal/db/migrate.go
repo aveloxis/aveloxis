@@ -2773,12 +2773,13 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// repository adopted before this release had its earlier era trimmed
 	// from the daily table — the buckets before the boundary day (the newest
 	// adopted change's forge creation day, else its first observation) come
-	// back from the append-only commits table, where no bucket exists. The
+	// back from the append-only commits table, raise-only: a missing bucket is
+	// inserted and one a walk lowered is raised (fifteenth review). The
 	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
 	// analyzer. The boundary DAY is refolded from the commits table for the
 	// authors with a commit before the exact era start (Copilot PR #252,
-	// twelfth review; commit_daily.go refoldEraBoundaryDaySQL). Once;
-	// idempotent (DO NOTHING; the refold only raises a bucket). The charts change for every
+	// twelfth review; commit_daily.go refoldEarlierEraSQL). Once;
+	// idempotent (both arms only raise a bucket: a walk that lowered an earlier bucket before 0.29.140 is repaired, fifteenth review). The charts change for every
 	// repository a bucket came back for, so the same statement stamps their
 	// cache state (data_changed_at, as the adoption's own restore does —
 	// Copilot PR #252, seventh review: a cached chart answer from before
@@ -2800,7 +2801,9 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 WHERE co.cmt_author_timestamp IS NOT NULL
 		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < (b.era_start AT TIME ZONE 'UTC')::date
 		 GROUP BY 1, 2, 3
-		 ON CONFLICT (repo_id, day, author_email) DO NOTHING
+		 ON CONFLICT (repo_id, day, author_email) DO UPDATE
+		 SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
+		 WHERE EXCLUDED.commits > repo_commit_daily.commits
 		 RETURNING repo_id),
 		 refolded AS (
 		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)

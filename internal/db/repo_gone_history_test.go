@@ -1508,8 +1508,8 @@ func TestResurrectArchivedSidelineLiftsTheOldDeadArmsResidueOnly(t *testing.T) {
 	// One statement, the resurrection's (SR-17): no second spelling of the
 	// clear or the queue upsert.
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) ResurrectArchivedSideline("))
-	if !strings.Contains(body, "resurrectSQL(archivedSidelineSQL)") || strings.Contains(body, "UPDATE") || strings.Contains(body, "INSERT") {
-		t.Error("ResurrectArchivedSideline runs resurrectSQL(archivedSidelineSQL) and spells no statement of its own")
+	if !strings.Contains(body, "goneClear{sideline: archivedSidelineSQL, build: resurrectSQL}") || strings.Contains(body, "UPDATE") || strings.Contains(body, "INSERT") {
+		t.Error("ResurrectArchivedSideline runs resurrectSQL over archivedSidelineSQL (a goneClear) and spells no statement of its own")
 	}
 }
 
@@ -1874,6 +1874,164 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 	}
 	if eps := goneEpisodes(ctx, t, store, repoID); len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan || eps[1].restoredAt != nil {
 		t.Fatalf("the org scan's closed episode, then the sideline's open one: %+v", eps)
+	}
+}
+
+// A clearer queued behind a sideline (Copilot PR #252, seventeenth review): a
+// resurrection holds the repos row, a sideline waits on it, and a second
+// clearer waits behind the sideline. The resurrection closes the old episode,
+// the sideline stamps and opens a new one; the clearer then clears the stamp.
+// As one statement its snapshot was taken BEFORE the wait, so its episode
+// close could not see the sideline's new episode: the repository ended
+// reachable with an open episode no later clear would close (the stamp is
+// already NULL). Every clearer takes the row lock in a statement of its own
+// first, so the clear's snapshot is taken after the wait.
+func TestAClearerQueuedBehindASidelineClosesItsEpisode(t *testing.T) {
+	for _, clearer := range []string{"ResurrectRepo", "ClearRepoGone"} {
+		t.Run(clearer, func(t *testing.T) {
+			store, ctx := v0251Connect(t)
+			t.Cleanup(store.Close)
+			repoID := seedGoneHistoryRepo(t, store, ctx, "clear-queue-"+strings.ToLower(clearer))
+			if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+				t.Fatal(err)
+			}
+			holder, err := store.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(ctx) //nolint:errcheck // committed below
+			if _, err := holder.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, GoneSourceOrgScan, 100, false); err != nil {
+				t.Fatal(err)
+			}
+			waiters := func() int {
+				var n int
+				if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+					WHERE datname = current_database() AND wait_event_type = 'Lock'
+					  AND (query LIKE '%marked AS%' OR query LIKE '%cleared AS%' OR query LIKE '%FOR NO KEY UPDATE%')`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			waitFor := func(n int, what string) {
+				deadline := time.Now().Add(10 * time.Second)
+				for waiters() < n {
+					if time.Now().After(deadline) {
+						t.Fatalf("%s never blocked on the row lock", what)
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			sidelined := make(chan error, 1)
+			go func() { sidelined <- store.SidelineRepo(ctx, repoID, 410, GoneSourceMarkGoneRepos) }()
+			waitFor(1, "the sideline")
+			cleared := make(chan error, 1)
+			go func() {
+				if clearer == "ResurrectRepo" {
+					cleared <- store.ResurrectRepo(ctx, repoID, 10, GoneSourceRecheck)
+				} else {
+					cleared <- store.ClearRepoGone(ctx, repoID, GoneSourcePrelim)
+				}
+			}()
+			waitFor(2, "the clearer")
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-sidelined; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-cleared; err != nil {
+				t.Fatal(err)
+			}
+			if repoGoneAt(ctx, t, store, repoID) != nil {
+				t.Fatal("the clearer ran last: the repository ends reachable")
+			}
+			eps := goneEpisodes(ctx, t, store, repoID)
+			if len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan {
+				t.Fatalf("the resurrection's closed episode, then the sideline's: %+v", eps)
+			}
+			if eps[1].restoredAt == nil || eps[1].status != 410 {
+				t.Fatalf("the sideline's episode is closed by the clearer that ran after it, not left open on a reachable repository: %+v", eps[1])
+			}
+			if clearer == "ResurrectRepo" && !hasQueueRow(ctx, t, store, repoID) {
+				t.Error("the resurrection that ran last re-queues the repository")
+			}
+		})
+	}
+}
+
+// A clear of a row that is not sidelined takes no lock and waits for nothing
+// (the L10 pass on the seventeenth-review fix): prelim calls ClearRepoGone on
+// every healthy probe, and an unconditional row lock made each one a
+// transaction and a tuple lock that waited behind any holder of the row (an
+// adoption's era restore holds it for minutes on a large repository). The
+// lock carries the sideline predicate; a row that does not match is skipped
+// as the old single statement skipped it.
+func TestAClearOfAHealthyRowWaitsForNothing(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	repoID := seedGoneHistoryRepo(t, store, ctx, "healthy-clear")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_repo_id = '95336057' WHERE repo_id = $1`, repoID)
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // nothing to keep
+	if _, err := holder.Exec(ctx, lockRepoRowsSQL, []int64{repoID}); err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func(context.Context) error{
+		"ClearRepoGone": func(c context.Context) error { return store.ClearRepoGone(c, repoID, GoneSourcePrelim) },
+		"ResurrectIfListed": func(c context.Context) error {
+			_, err := store.ResurrectIfListed(c, repoID, "95336057", 100)
+			return err
+		},
+		"ResurrectArchivedSideline": func(c context.Context) error {
+			_, err := store.ResurrectArchivedSideline(c, repoID, 10, GoneSourceMarkGoneRepos)
+			return err
+		},
+	} {
+		short, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := call(short)
+		cancel()
+		if err != nil {
+			t.Errorf("%s on a row that is not sidelined, held by another transaction: must return at once, got %v", name, err)
+		}
+	}
+}
+
+// Every clear runs under the row lock (SR-18). The clear's SQL exists only
+// inside its two builders (clearGoneCTE is formatted nowhere else, and
+// closeEpisodeCTE is used only beside it), and a builder appears outside its
+// own body only as a goneClear's build field, which only the lock-first
+// helpers execute: a new clearer cannot run the clear as a lone statement
+// (the race above, and the queue-before-repos deadlock).
+func TestEveryClearRunsUnderTheRowLock(t *testing.T) {
+	src := srctest.StripGoComments(srctest.PackageSource(t, "internal/db", 20))
+	for _, fn := range []string{"func resurrectSQL(", "func clearOnlySQL("} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", fn))
+		if !strings.Contains(src, body) {
+			t.Fatalf("%s body was not found in the package source", fn)
+		}
+		src = strings.Replace(src, body, "", 1)
+	}
+	for _, needle := range []string{"clearGoneCTE)", "clearGoneCTE,", "+closeEpisodeCTE", "+ closeEpisodeCTE"} {
+		if strings.Contains(src, needle) {
+			t.Errorf("the clear's SQL is assembled outside its builders (%q)", needle)
+		}
+	}
+	uses := 0
+	for _, name := range []string{"resurrectSQL", "clearOnlySQL"} {
+		all := strings.Count(src, name)
+		asField := strings.Count(src, "build: "+name)
+		uses += asField
+		if all != asField {
+			t.Errorf("%s appears %d times outside its body, %d as a goneClear's build field: every other use runs it off the lock", name, all, asField)
+		}
+	}
+	srctest.MinCount(t, "goneClear build fields examined", uses, 5) // ClearRepoGone, the three Resurrect*, resurrectInTx
+	helpers := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func clearInTxUnderRowLock("))
+	if !strings.Contains(helpers, "c.build(c.sideline + c.guard)") || !strings.Contains(helpers, "AND (`+c.sideline+`) FOR NO KEY UPDATE") {
+		t.Error("the helper builds the clear and the gated lock from the one sideline")
 	}
 }
 

@@ -48,6 +48,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The writers that open or close a gone episode, as recorded in
@@ -427,9 +429,95 @@ const closeEpisodeCTE = `
 // IS NOT NULL guard makes it a 0-row no-op for the normal fleet.
 // 0.29.140: closes the open episode with source in the same statement.
 func (s *PostgresStore) ClearRepoGone(ctx context.Context, repoID int64, source string) error {
-	_, err := s.pool.Exec(ctx, `WITH `+fmt.Sprintf(clearGoneCTE, goneSidelineSQL)+`,`+closeEpisodeCTE+`
-		SELECT COUNT(*) FROM closed`, repoID, source)
+	_, err := s.clearUnderRowLock(ctx, repoID, goneClear{sideline: goneSidelineSQL, build: clearOnlySQL}, repoID, source)
 	return err
+}
+
+// clearOnlySQL is the clear + close without a re-enqueue (prelim's: the
+// probe that cleared it is collecting the repository) — $1 repo, $2 source.
+func clearOnlySQL(predicate string) string {
+	return `WITH ` + fmt.Sprintf(clearGoneCTE, predicate) + `,` + closeEpisodeCTE + `
+		SELECT COUNT(*) FROM closed`
+}
+
+// goneClear is one clear, as the lock-first helpers run it: the sideline
+// (the predicate the row lock gates on and the clear acts on; it may name $1
+// only, the lock's one parameter), an optional guard the clear alone adds
+// (it may name later parameters: listedGuardSQL's $5), the statement builder
+// (resurrectSQL, clearOnlySQL), and lockAlways for ResurrectRepo, which
+// enqueues a repository that was never gone (reconcile-repos' lost-queue-row
+// arm) and so locks whether or not the row is sidelined. Both statements are
+// built from the one sideline, so the gate is never narrower than the clear
+// (the L10 pass on the gate).
+type goneClear struct {
+	sideline   string
+	guard      string
+	build      func(predicate string) string
+	lockAlways bool
+}
+
+// clearUnderRowLock runs a clear (clearGoneCTE with its episode close, and
+// resurrectSQL's queue upsert) after taking the repos row's lock in a
+// statement of its own, in one transaction — the one way every clearer runs
+// (SR-18; Copilot PR #252, seventeenth review). As a single statement the
+// clear's snapshot was taken BEFORE its lock wait: a waiting UPDATE
+// re-checks only the row it locked, so a clearer queued behind a sideline
+// cleared the sideline's new stamp but could not see the episode the
+// sideline committed beside it, and left it open on a reachable repository
+// (no later clear reaches it: the stamp is NULL). The statement after the
+// lock takes its snapshot after the wait, and sees it. The lock first also
+// keeps one order, repos row then queue row (SidelineRepo's, the merge's):
+// resurrectSQL's queue upsert could take the queue row before the repos row
+// and deadlock with a sideline's dequeue (40P01, a deadlock_timeout stall,
+// one side retried). It opens its own transaction; clearInTxUnderRowLock is
+// the same inside a caller's (an adoption).
+//
+// gate is the sideline predicate the clear acts on (it may name $1, the
+// repository): the lock takes only a row that matches it, and the clear is
+// skipped when none does, so a healthy repository costs no lock and waits for
+// nothing (the L10 pass on the fix: prelim clears on every healthy probe, and
+// an unconditional lock waited behind any holder of the row, an adoption's era
+// restore for minutes). A locker that waits re-checks the row's newest
+// version, so the race above stays closed; a row whose stamp is still being
+// written by an uncommitted sideline is skipped, the clear ordered before the
+// sideline. lockAlways locks unconditionally (goneClear).
+//
+// Declined in the same pass, with the reason: a healthy probe still pays
+// BEGIN, the gated SELECT and COMMIT, two round trips more than the old
+// autocommit statement, on a connection the probe holds anyway and beside
+// the forge request it just made; and ResurrectRepo's unconditional lock
+// can wait behind a holder of a never-gone row, which only the command-line
+// runs (reconcile-repos, mark-gone-repos) and the recheck of gone rows reach.
+func (s *PostgresStore) clearUnderRowLock(ctx context.Context, repoID int64, c goneClear, args ...any) (pgconn.CommandTag, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := clearInTxUnderRowLock(ctx, tx, repoID, c, args...)
+	if err != nil {
+		return tag, err
+	}
+	return tag, tx.Commit(ctx)
+}
+
+// clearInTxUnderRowLock is clearUnderRowLock inside a caller's transaction.
+func clearInTxUnderRowLock(ctx context.Context, tx rotationExecer, repoID int64, c goneClear, args ...any) (pgconn.CommandTag, error) {
+	sql := c.build(c.sideline + c.guard)
+	if c.lockAlways {
+		if _, err := tx.Exec(ctx, lockRepoRowsSQL, []int64{repoID}); err != nil {
+			return pgconn.CommandTag{}, fmt.Errorf("lock repository %d: %w", repoID, err)
+		}
+		return tx.Exec(ctx, sql, args...)
+	}
+	locked, err := tx.Exec(ctx, `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 AND (`+c.sideline+`) FOR NO KEY UPDATE`, repoID)
+	if err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("lock repository %d: %w", repoID, err)
+	}
+	if locked.RowsAffected() == 0 {
+		return pgconn.CommandTag{}, nil // not sidelined: nothing to clear
+	}
+	return tx.Exec(ctx, sql, args...)
 }
 
 // resurrectSQL is the clear + close + re-enqueue as ONE statement ($1 repo,
@@ -466,7 +554,7 @@ func resurrectSQL(sideline string) string {
 // writer in the episode it closes.
 func (s *PostgresStore) ResurrectRepo(ctx context.Context, repoID int64, priority int, source string) error {
 	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, source, priority, true)
+		_, err := s.clearUnderRowLock(ctx, repoID, goneClear{sideline: goneSidelineSQL, build: resurrectSQL, lockAlways: true}, repoID, source, priority, true)
 		return err
 	})
 }
@@ -482,7 +570,7 @@ func (s *PostgresStore) ResurrectRepo(ctx context.Context, repoID int64, priorit
 func (s *PostgresStore) ResurrectArchivedSideline(ctx context.Context, repoID int64, priority int, source string) (bool, error) {
 	var lifted bool
 	err := s.withRetry(ctx, func(ctx context.Context) error {
-		tag, err := s.pool.Exec(ctx, resurrectSQL(archivedSidelineSQL), repoID, source, priority, false)
+		tag, err := s.clearUnderRowLock(ctx, repoID, goneClear{sideline: archivedSidelineSQL, build: resurrectSQL}, repoID, source, priority, false)
 		lifted = err == nil && tag.RowsAffected() > 0
 		return err
 	})
@@ -534,7 +622,7 @@ func (s *PostgresStore) ResurrectIfListed(ctx context.Context, repoID int64, for
 	}
 	var resurrected bool
 	err := s.withRetry(ctx, func(ctx context.Context) error {
-		tag, err := s.pool.Exec(ctx, resurrectSQL(goneSidelineSQL+listedGuardSQL), repoID, GoneSourceOrgScan, priority, false, forgeID)
+		tag, err := s.clearUnderRowLock(ctx, repoID, goneClear{sideline: goneSidelineSQL, guard: listedGuardSQL, build: resurrectSQL}, repoID, GoneSourceOrgScan, priority, false, forgeID)
 		resurrected = err == nil && tag.RowsAffected() > 0
 		return err
 	})
@@ -545,7 +633,7 @@ func (s *PostgresStore) ResurrectIfListed(ctx context.Context, repoID int64, for
 // (AdoptForgeID: the adoption and the resurrection commit together, or
 // neither does). Only a gone-stamped row is enqueued.
 func resurrectInTx(ctx context.Context, tx rotationExecer, repoID int64, priority int, source string) error {
-	_, err := tx.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, source, priority, false)
+	_, err := clearInTxUnderRowLock(ctx, tx, repoID, goneClear{sideline: goneSidelineSQL, build: resurrectSQL}, repoID, source, priority, false)
 	return err
 }
 

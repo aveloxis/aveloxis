@@ -22,8 +22,9 @@
 // stretch). aveloxis_data.repo_gone_history holds one row per EPISODE:
 // opened by SidelineRepo in the same statement as the stamp (the probe's
 // status and the writer that saw it), closed by whichever clearer lifts the
-// stamp (its source recorded) — or by the dedup merge, when a loser's open
-// episode arrives on a reachable winner — at most one open episode per repository
+// stamp (its source recorded) — or by the dedup merge or the rename heal,
+// when a merged duplicate's open episode arrives (carryGoneHistorySQL) — at
+// most one open episode per repository
 // (uq_repo_gone_history_open). Every writer here also stamps the
 // repository's cache state (data_changed_at) in that same statement: the
 // page shows the stamp and the history, and the clearers run outside any
@@ -60,15 +61,21 @@ const (
 	GoneSourceAdoption      = "forge-id-adoption"
 	GoneSourceOrgScan       = "org-scan"
 	GoneSourceBackfill      = "backfill-0.29.140"
-	GoneSourceDedup         = "dedup-repos" // closes a merged loser's open episode on a reachable winner
+	GoneSourceDedup         = "dedup-repos" // closes a merged loser's open episode on a reachable winner with no evidence of when it came back (an inference)
 	GoneSourceRenameHeal    = "rename-heal" // the same, for a dataless duplicate the heal removes
+	// GoneSourceCollection names a metadata snapshot (repo_info) as what saw
+	// a repository back: a merge closes a stale episode at the first
+	// snapshot after it (carryGoneHistorySQL).
+	GoneSourceCollection = "collection"
 )
 
 // GoneEpisode is one stretch during which a repository did not resolve on
 // its forge: from the probe that saw it gone to the moment it was seen
 // again (RestoredAt nil = still gone, the row's current repo_gone_at).
 // Status is the probe's HTTP status (404, 410, 451; 0 when unknown — the
-// episodes backfilled from a bare stamp at 0.29.140).
+// episodes backfilled from a bare stamp at 0.29.140, and a current stretch a
+// merge restarted at the repository's latest gone mark, whose Source is
+// empty too: the gone marker keeps only an episode's first observation).
 type GoneEpisode struct {
 	GoneAt         time.Time  `json:"gone_at"`
 	Status         int        `json:"status,omitempty"`
@@ -142,33 +149,153 @@ func (s *PostgresStore) SidelineRepo(ctx context.Context, repoID int64, status i
 }
 
 // carryGoneHistorySQL moves a merged duplicate's gone episodes onto the
-// repository that stays ($1 loser, $2 winner, $3 the merge's source): closed
-// episodes as they are, and the loser's OPEN one closed by the merge when the
-// winner is reachable (its stamp NULL — the invariant "open episode ⇔ current
-// gone state" holds across the merge) or dropped when the winner is gone
-// itself (uq_repo_gone_history_open takes the DO NOTHING). Provenance travels
-// with the row, and the winner's cache state is stamped in the same statement
-// when anything was carried (its page's gone history changed; Copilot PR
-// #252, third review). The caller holds BOTH repos rows FOR NO KEY UPDATE
-// (lockRepoRowsSQL), so the loser can gain no episode after the copy and the
-// winner's state read here is the state the merge commits against. Shared by
-// the dedup merge and the dataless rename heal (one spelling).
+// repository that stays ($1 loser, $2 winner, $3 the merge's source). The two
+// rows are one upstream, so their episodes are observations of one history:
+//   - closed episodes are carried as they are;
+//   - the loser's OPEN episode ends at the earliest evidence that the
+//     upstream was reachable after it began (seen_back: a restoration in
+//     either row's history, or a metadata snapshot in repo_info or
+//     repo_info_history, the evidence listedGuardSQL reads), restored then
+//     by the evidence's own source (seen_src: the restoring writer, or
+//     collection for a snapshot), so a later merge reads it as evidence too
+//     (the fifth L10 pass). A gone row is out of the queue and rechecked
+//     about every 28 days, so it can be weeks stale behind the winner's own
+//     observations (the second L10 pass on Copilot PR #252's sixteenth
+//     review: a fold read "not reachable from -30 to -20" beside "not
+//     reachable since -30 — current");
+//   - with no such evidence, on a reachable winner it arrives closed by the
+//     merge (restored now by $3, the one inferred closure), keeping "open
+//     episode ⇔ current gone state";
+//   - the same evidence, applied to a gone winner's open episode (the
+//     mirror, the third and fourth L10 passes): the merge never clears the
+//     winner's stamp, so that episode cannot simply end; when a definitive
+//     gone observation came after the evidence — the loser's open episode
+//     (without evidence of its own) or the winner's stamp time, which only
+//     the gone marker refreshes — the history SPLITS: the winner's old
+//     stretch inserted closed at the first evidence, by its source (split),
+//     and the open episode restarted at the earlier of those observations
+//     after the LATEST evidence (restart, folded; the fifth L10 pass: the
+//     first let a restart at the mark contain a later restoration). A
+//     restart at the mark records status 0 and no writer: the gone marker
+//     keeps an episode's first observation, so the mark's are unknown. With
+//     neither, the stamp is staler than the evidence and the episode is left
+//     for the recheck; the merge never invents a restart. A merge's own
+//     closures (dedup-repos, rename-heal: inferred from an unstamped winner,
+//     never probed) are not evidence;
+//   - with none, on a gone winner the two open episodes are one outage seen
+//     twice, so they FOLD (folded): the winner's open episode starts at the
+//     earlier observation (its time, status and source), the rule a
+//     repository marked again while gone already follows, and a later loser
+//     episode lies inside it and adds nothing. Closing it instead printed
+//     "back via dedup-repos" for an outage that never ended (the L10 pass on
+//     Copilot PR #252's sixteenth review, which found the loser's outage
+//     dropped there);
+//   - with none, a stamped winner with no open episode (the shape the
+//     0.29.140 backfill removes at migrate) takes the loser's open episode
+//     as its own, open.
+//
+// On a gone winner the loser's open row is inserted open and the partial
+// unique arbiter (uq_repo_gone_history_open) drops it when the winner has
+// its own open episode, the fold having carried its start; with none, the
+// row stays as the winner's open episode. Provenance travels with a carried
+// row (a folded row keeps its own), and the winner's cache state is stamped
+// in the same statement when anything was carried, split or folded (its
+// page's gone history changed; Copilot PR #252, third review). The caller
+// holds BOTH repos rows FOR NO KEY UPDATE (lockRepoRowsSQL), so the loser
+// can gain no episode after the copy and the winner's gone state read here
+// (winner) is the state the merge commits against. A snapshot's
+// data_collection_date is when it was processed (InsertRepoInfo leaves it to
+// the column default), not when the forge answered: one fetched while
+// reachable, left unprocessed in staging across a sideline and drained
+// later, reads as later evidence. Declined here (the third L10 pass):
+// listedGuardSQL trusts the same date, and dating snapshots by their fetch
+// time changes every repo_info row's date, an Augur-parity column, beyond
+// this merge. A winner row missing at the read inserts a closed row whose
+// deferred foreign key fails the commit: the merge rolls back, never
+// deleting the loser's history unseen. Shared by the dedup merge and the
+// dataless rename heal (one spelling).
 const carryGoneHistorySQL = `
-			WITH carried AS (
+			WITH winner AS (
+				SELECT r.repo_gone_at IS NOT NULL AS gone, r.repo_gone_at AS last_marked
+				  FROM aveloxis_data.repos r WHERE r.repo_id = $2
+			),
+			evidence AS (
+				SELECT h.restored_at AS at, h.restored_source AS src FROM aveloxis_data.repo_gone_history h
+				 WHERE h.repo_id IN ($1, $2) AND h.restored_at IS NOT NULL
+				   AND h.restored_source NOT IN ('` + GoneSourceDedup + `', '` + GoneSourceRenameHeal + `')
+				UNION ALL
+				SELECT ri.data_collection_date, '` + GoneSourceCollection + `' FROM aveloxis_data.repo_info ri
+				 WHERE ri.repo_id IN ($1, $2) AND ri.data_collection_date IS NOT NULL
+				UNION ALL
+				SELECT rh.data_collection_date, '` + GoneSourceCollection + `' FROM aveloxis_data.repo_info_history rh
+				 WHERE rh.repo_id IN ($1, $2) AND rh.data_collection_date IS NOT NULL
+			),
+			loser AS (
+				SELECT l.*, sb.at AS seen_back, sb.src AS seen_src
+				  FROM aveloxis_data.repo_gone_history l
+				  LEFT JOIN LATERAL (SELECT e.at, e.src FROM evidence e
+				                      WHERE l.restored_at IS NULL AND e.at > l.gone_at
+				                      ORDER BY e.at, e.src LIMIT 1) sb ON TRUE
+				 WHERE l.repo_id = $1
+			),
+			loser_open AS (
+				SELECT * FROM loser WHERE restored_at IS NULL AND seen_back IS NULL
+			),
+			winner_open AS (
+				SELECT x.*,
+				       CASE WHEN x.seen_back IS NOT NULL THEN LEAST(
+				           (SELECT lo.gone_at FROM loser_open lo),
+				           CASE WHEN x.last_marked > (SELECT MAX(e.at) FROM evidence e) THEN x.last_marked END)
+				       END AS restart
+				  FROM (SELECT o.*, w.last_marked, sb.at AS seen_back, sb.src AS seen_src
+				          FROM aveloxis_data.repo_gone_history o
+				          JOIN winner w ON w.gone
+				          LEFT JOIN LATERAL (SELECT e.at, e.src FROM evidence e WHERE e.at > o.gone_at
+				                              ORDER BY e.at, e.src LIMIT 1) sb ON TRUE
+				         WHERE o.repo_id = $2 AND o.restored_at IS NULL) x
+			),
+			carried AS (
 				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
 				                                             tool_source, tool_version, data_source, data_collection_date)
 				SELECT $2, l.gone_at, l.gone_status, l.gone_source,
-				       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN NOW() ELSE l.restored_at END,
-				       CASE WHEN l.restored_at IS NULL AND w.repo_gone_at IS NULL THEN $3 ELSE l.restored_source END,
+				       CASE WHEN l.restored_at IS NOT NULL THEN l.restored_at
+				            WHEN l.seen_back IS NOT NULL THEN l.seen_back
+				            WHEN COALESCE(w.gone, FALSE) THEN NULL
+				            ELSE NOW() END,
+				       CASE WHEN l.restored_at IS NOT NULL THEN l.restored_source
+				            WHEN l.seen_back IS NOT NULL THEN l.seen_src
+				            WHEN COALESCE(w.gone, FALSE) THEN ''
+				            ELSE $3 END,
 				       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
-				  FROM aveloxis_data.repo_gone_history l
-				  JOIN aveloxis_data.repos w ON w.repo_id = $2
-				 WHERE l.repo_id = $1
+				  FROM loser l
+				  LEFT JOIN winner w ON TRUE
 				ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING
 				RETURNING repo_id
+			),
+			split AS (
+				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source,
+				                                             tool_source, tool_version, data_source, data_collection_date)
+				SELECT $2, o.gone_at, o.gone_status, o.gone_source, o.seen_back, o.seen_src,
+				       o.tool_source, o.tool_version, o.data_source, o.data_collection_date
+				  FROM winner_open o
+				 WHERE o.restart IS NOT NULL
+				ON CONFLICT (repo_id) WHERE restored_at IS NULL DO NOTHING
+				RETURNING repo_id
+			),
+			folded AS (
+				UPDATE aveloxis_data.repo_gone_history o
+				   SET gone_at     = COALESCE(wo.restart, l.gone_at),
+				       gone_status = CASE WHEN wo.restart IS NOT NULL AND wo.restart IS DISTINCT FROM l.gone_at THEN 0 ELSE l.gone_status END,
+				       gone_source = CASE WHEN wo.restart IS NOT NULL AND wo.restart IS DISTINCT FROM l.gone_at THEN '' ELSE l.gone_source END
+				  FROM winner_open wo
+				  LEFT JOIN loser_open l ON TRUE
+				 WHERE o.episode_id = wo.episode_id
+				   AND (wo.restart IS NOT NULL OR (wo.seen_back IS NULL AND l.gone_at < wo.gone_at))
+				RETURNING o.repo_id
 			)
 			UPDATE aveloxis_data.repos SET data_changed_at = NOW()
-			WHERE repo_id = $2 AND EXISTS (SELECT 1 FROM carried)`
+			WHERE repo_id = $2
+			  AND (EXISTS (SELECT 1 FROM carried) OR EXISTS (SELECT 1 FROM split) OR EXISTS (SELECT 1 FROM folded))`
 
 // lockRepoRowsSQL takes a merge's two repos rows FOR NO KEY UPDATE, in id
 // order ($1 = both ids) and BEFORE any queue-row lock — the same order as the

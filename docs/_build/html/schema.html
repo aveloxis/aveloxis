@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.140 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.141 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=c6d77b2e"></script>
+      <script src="_static/documentation_options.js?v=62afff37"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -2048,8 +2048,23 @@ page can say “not reachable from the 4th to the 5th” after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
 back a day later). Opened by <code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> — the one gone marker (prelim, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>), which removes the queue row in the same transaction — in the same statement as the stamp,
 closed by whichever clearer lifts it (<code class="docutils literal notranslate"><span class="pre">ClearRepoGone</span></code>, <code class="docutils literal notranslate"><span class="pre">ResurrectRepo</span></code>,
-<code class="docutils literal notranslate"><span class="pre">ResurrectIfListed</span></code>, a forge-ID adoption), or by the dedup merge when a merged
-duplicate’s open episode arrives on a reachable winner; at most one open episode per repository
+<code class="docutils literal notranslate"><span class="pre">ResurrectIfListed</span></code>, a forge-ID adoption), or by the dedup merge or the rename heal, which carry a merged duplicate’s
+episodes to the repository that stays. Its open episode ends at the first
+evidence that the upstream was reachable after it began (a restoration a probe
+or clearer observed in either row’s history, or a metadata snapshot; a
+merge’s own closures are inferred and do not count), since a gone row is
+rechecked only about every 28 days and can be stale. The same evidence splits
+a gone winner’s stale open episode: when a definitive gone observation came
+after it (the duplicate’s open episode, or the winner’s latest gone mark), the
+winner’s old stretch is closed at the evidence and the current one starts at
+the earlier of those observations; with neither, the episode is left for the
+recheck (the winner stays marked gone either way). With
+no such evidence the duplicate’s open episode arrives
+closed at the merge when the winner is reachable; when the winner is gone too,
+the two open episodes are one outage and fold into the winner’s, which starts
+at the earlier observation (no stretch reads “back” for an outage that has not
+ended);
+at most one open episode per repository
 (<code class="docutils literal notranslate"><span class="pre">uq_repo_gone_history_open</span></code>). Born empty on every fleet; the ledgered 0.29.140
 migrate step opens an episode for each row already stamped (status <code class="docutils literal notranslate"><span class="pre">0</span></code>, source
 <code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>). Shown on the repository page as <code class="docutils literal notranslate"><span class="pre">gone_history</span></code> of <code class="docutils literal notranslate"><span class="pre">/stats</span></code>.</p>
@@ -2080,12 +2095,12 @@ migrate step opens an episode for each row already stamped (status <code class="
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gone_status</span></code></p></td>
 <td><p>SMALLINT NOT NULL DEFAULT 0</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code> from the probe’s HTTP status (404, 410, 451)</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> = unknown (backfilled rows).</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code> = unknown (backfilled rows, and a current stretch a merge restarted at the repository’s latest gone mark, whose status the marker does not keep).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gone_source</span></code></p></td>
 <td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code></p></td>
-<td><p>The writer that saw it gone: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>.</p></td>
+<td><p>The writer that saw it gone: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">backfill-0.29.140</span></code>; <code class="docutils literal notranslate"><span class="pre">''</span></code> for a current stretch a merge restarted at the latest gone mark (the writer is not kept).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restored_at</span></code></p></td>
 <td><p>TIMESTAMPTZ</p></td>
@@ -2095,7 +2110,7 @@ migrate step opens an episode for each row already stamped (status <code class="
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">restored_source</span></code></p></td>
 <td><p>TEXT NOT NULL DEFAULT ‘’</p></td>
 <td><p>the clearer</p></td>
-<td><p>The writer that saw it back: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">forge-id-adoption</span></code>, <code class="docutils literal notranslate"><span class="pre">org-scan</span></code>; <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code> and <code class="docutils literal notranslate"><span class="pre">rename-heal</span></code> close a merged duplicate’s open episode on a reachable winner.</p></td>
+<td><p>The writer that saw it back: <code class="docutils literal notranslate"><span class="pre">prelim</span></code>, <code class="docutils literal notranslate"><span class="pre">gone-recheck</span></code>, <code class="docutils literal notranslate"><span class="pre">mark-gone-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>, <code class="docutils literal notranslate"><span class="pre">forge-id-adoption</span></code>, <code class="docutils literal notranslate"><span class="pre">org-scan</span></code>; <code class="docutils literal notranslate"><span class="pre">collection</span></code> when a merge closed a stale episode at the first metadata snapshot after it (a restoration a merge found keeps its writer’s name); <code class="docutils literal notranslate"><span class="pre">dedup-repos</span></code> and <code class="docutils literal notranslate"><span class="pre">rename-heal</span></code> when a merge closed a duplicate’s open episode with no such evidence because the repository that stays is reachable (an inference, which later merges do not read as evidence).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code>, <code class="docutils literal notranslate"><span class="pre">tool_version</span></code>, <code class="docutils literal notranslate"><span class="pre">data_source</span></code>, <code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
 <td><p>TEXT / TIMESTAMPTZ</p></td>
@@ -9478,33 +9493,49 @@ advisory lock per database since 0.29.124); nothing else reads or writes it.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">(cntrb_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_commit_parents_cmt</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_contributors_email_lower</span></code></p></td>
+<td><p>contributors</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(lower(cntrb_email))</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_contributors_aliases_email_lower</span></code></p></td>
+<td><p>contributors_aliases</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(lower(alias_email))</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_contributor_identities_email_lower</span></code></p></td>
+<td><p>contributor_identities</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(lower(email))</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_commit_parents_cmt</span></code></p></td>
 <td><p>commit_parents</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">(cmt_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_labor_repo_id</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_labor_repo_id</span></code></p></td>
 <td><p>repo_labor</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_deps_libyear_repo_id</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_deps_libyear_repo_id</span></code></p></td>
 <td><p>repo_deps_libyear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_deps_scorecard_repo_id</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_deps_scorecard_repo_id</span></code></p></td>
 <td><p>repo_deps_scorecard</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_dependencies_repo_id</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">idx_repo_dependencies_repo_id</span></code></p></td>
 <td><p>repo_dependencies</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">(repo_id)</span></code></p></td>
 <td><p></p></td>
 </tr>
 </tbody>
 </table>
+<p>The three <code class="docutils literal notranslate"><span class="pre">lower()</span></code> e-mail indexes (0.29.141) are built by the migrate with <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span> <span class="pre">CONCURRENTLY</span></code>, not by schema.sql, so they serve case-insensitive e-mail lookups such as aveloxis-cve’s author resolution.</p>
 </section>
 <section id="aveloxis-ops-indexes">
 <h3>aveloxis_ops indexes<a class="headerlink" href="#aveloxis-ops-indexes" title="Link to this heading"></a></h3>

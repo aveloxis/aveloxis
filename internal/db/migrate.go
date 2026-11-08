@@ -2825,6 +2825,28 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 RETURNING repo_id)
 		 UPDATE aveloxis_data.repos SET data_changed_at = NOW()
 		  WHERE repo_id IN (SELECT repo_id FROM restored UNION SELECT repo_id FROM refolded)`)
+
+	// 0.29.141 (aveloxis-cve's request): its author resolution matches a
+	// commit's e-mail case-insensitively, lower(<column>) = $email, against
+	// these three tables, and nothing indexed the expressions —
+	// idx_contributors_email_lookup (above) is on the plain column, so is
+	// alias_email's UNIQUE, and contributor_identities.email had no index —
+	// so each call (one per 5,000-commit sync batch) read all three in full.
+	// aveloxis-cve may not create objects in Aveloxis's schemas. The
+	// expressions are exactly lower(<column>): the planner matches an
+	// expression index only when the predicate's expression is identical (no
+	// trim(), no COLLATE, no partial WHERE). Non-unique, so no dedup first
+	// (SR-1); fleet-scale tables, so migration-only CONCURRENTLY (SR-2); new
+	// names (SR-4).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributors_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_email_lower
+		 ON aveloxis_data.contributors (lower(cntrb_email))`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributors_aliases_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_aliases_email_lower
+		 ON aveloxis_data.contributors_aliases (lower(alias_email))`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributor_identities_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributor_identities_email_lower
+		 ON aveloxis_data.contributor_identities (lower(email))`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

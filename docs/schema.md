@@ -104,8 +104,23 @@ page can say "not reachable from the 4th to the 5th" after the fact (the
 2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
 back a day later). Opened by `SidelineRepo` — the one gone marker (prelim, `mark-gone-repos`, `reconcile-repos`), which removes the queue row in the same transaction — in the same statement as the stamp,
 closed by whichever clearer lifts it (`ClearRepoGone`, `ResurrectRepo`,
-`ResurrectIfListed`, a forge-ID adoption), or by the dedup merge when a merged
-duplicate's open episode arrives on a reachable winner; at most one open episode per repository
+`ResurrectIfListed`, a forge-ID adoption), or by the dedup merge or the rename heal, which carry a merged duplicate's
+episodes to the repository that stays. Its open episode ends at the first
+evidence that the upstream was reachable after it began (a restoration a probe
+or clearer observed in either row's history, or a metadata snapshot; a
+merge's own closures are inferred and do not count), since a gone row is
+rechecked only about every 28 days and can be stale. The same evidence splits
+a gone winner's stale open episode: when a definitive gone observation came
+after it (the duplicate's open episode, or the winner's latest gone mark), the
+winner's old stretch is closed at the evidence and the current one starts at
+the earlier of those observations; with neither, the episode is left for the
+recheck (the winner stays marked gone either way). With
+no such evidence the duplicate's open episode arrives
+closed at the merge when the winner is reachable; when the winner is gone too,
+the two open episodes are one outage and fold into the winner's, which starts
+at the earlier observation (no stretch reads "back" for an outage that has not
+ended);
+at most one open episode per repository
 (`uq_repo_gone_history_open`). Born empty on every fleet; the ledgered 0.29.140
 migrate step opens an episode for each row already stamped (status `0`, source
 `backfill-0.29.140`). Shown on the repository page as `gone_history` of `/stats`.
@@ -115,10 +130,10 @@ migrate step opens an episode for each row already stamped (status `0`, source
 | `episode_id` | BIGSERIAL PK | — | Row identity. |
 | `repo_id` | BIGINT NOT NULL FK → repos | `SidelineRepo` | The repository. |
 | `gone_at` | TIMESTAMPTZ NOT NULL | `SidelineRepo` (`repos.repo_gone_at` of the same statement; the backfill copies the stored stamp) | When the probe saw the repository gone. |
-| `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `SidelineRepo` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows). |
-| `gone_source` | TEXT NOT NULL DEFAULT '' | `SidelineRepo` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`. |
+| `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `SidelineRepo` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows, and a current stretch a merge restarted at the repository's latest gone mark, whose status the marker does not keep). |
+| `gone_source` | TEXT NOT NULL DEFAULT '' | `SidelineRepo` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`; `''` for a current stretch a merge restarted at the latest gone mark (the writer is not kept). |
 | `restored_at` | TIMESTAMPTZ | the clearer, in its statement | When the repository was seen again; NULL while the episode is open. |
-| `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` and `rename-heal` close a merged duplicate's open episode on a reachable winner. |
+| `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `collection` when a merge closed a stale episode at the first metadata snapshot after it (a restoration a merge found keeps its writer's name); `dedup-repos` and `rename-heal` when a merge closed a duplicate's open episode with no such evidence because the repository that stays is reachable (an inference, which later merges do not read as evidence). |
 | `tool_source`, `tool_version`, `data_source`, `data_collection_date` | TEXT / TIMESTAMPTZ | schema defaults | Provenance. |
 
 
@@ -2481,11 +2496,16 @@ The schema defines the following additional indexes for query performance:
 | `idx_releases_repo_id` | releases | `(repo_id)` | |
 | `idx_repo_info_repo_id` | repo_info | `(repo_id)` | |
 | `idx_contributor_identities_cntrb` | contributor_identities | `(cntrb_id)` | |
+| `idx_contributors_email_lower` | contributors | `(lower(cntrb_email))` | |
+| `idx_contributors_aliases_email_lower` | contributors_aliases | `(lower(alias_email))` | |
+| `idx_contributor_identities_email_lower` | contributor_identities | `(lower(email))` | |
 | `idx_commit_parents_cmt` | commit_parents | `(cmt_id)` | |
 | `idx_repo_labor_repo_id` | repo_labor | `(repo_id)` | |
 | `idx_repo_deps_libyear_repo_id` | repo_deps_libyear | `(repo_id)` | |
 | `idx_repo_deps_scorecard_repo_id` | repo_deps_scorecard | `(repo_id)` | |
 | `idx_repo_dependencies_repo_id` | repo_dependencies | `(repo_id)` | |
+
+The three `lower()` e-mail indexes (0.29.141) are built by the migrate with `CREATE INDEX CONCURRENTLY`, not by schema.sql, so they serve case-insensitive e-mail lookups such as aveloxis-cve's author resolution.
 
 ### aveloxis_ops indexes
 

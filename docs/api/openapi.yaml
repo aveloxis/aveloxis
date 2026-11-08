@@ -8639,17 +8639,17 @@ components:
           description: When a probe saw the repository gone.
         status:
           type: integer
-          description: The probe's HTTP status (404, 410 or 451); absent when unknown (episodes backfilled from a bare stamp).
+          description: The probe's HTTP status (404, 410 or 451); absent when unknown (episodes backfilled from a bare stamp, and a current stretch a merge restarted at the repository's latest gone mark, whose status is not kept).
         source:
           type: string
-          description: The writer that saw it gone (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`).
+          description: The writer that saw it gone (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`); empty for a current stretch a merge restarted at the repository's latest gone mark (the writer is not kept).
         restored_at:
           type: string
           format: date-time
           description: When the repository was seen again; absent while the episode is open.
         restored_source:
           type: string
-          description: The writer that saw it back (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `dedup-repos` or `rename-heal` for a merged duplicate's episode closed by the merge).
+          description: The writer that saw it back (`prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `collection` for an episode a merge closed at the first metadata snapshot after it; `dedup-repos` or `rename-heal` for a merged duplicate's episode closed by the merge with no evidence of when it came back).
     ForgeIDChange:
       type: object
       description: A recorded forge-ID change (`db.ForgeIDChange`).

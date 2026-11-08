@@ -425,12 +425,22 @@ func TestGoneHistoryMigrateWiring(t *testing.T) {
 // the merge (round 2 F1): the loser's OPEN episode is carried closed by the
 // merge onto a REACHABLE winner (the winner's page would otherwise say
 // "not reachable … — current" under no gone banner, and the winner's next
-// mark would find the slot taken), and dropped when the winner is gone
-// itself (its own open episode is its current state). The loser's rows go
-// with its repos row.
+// mark would find the slot taken), and on a gone winner the two open
+// episodes fold into one starting at the earlier observation (Copilot PR
+// #252, sixteenth review, and its L10 pass). The loser's rows go with its
+// repos row.
 func TestDedupOnePairCarriesTheLosersGoneEpisodes(t *testing.T) {
-	for _, winnerOpen := range []bool{false, true} {
-		t.Run(map[bool]string{false: "winner is reachable", true: "winner is gone itself"}[winnerOpen], func(t *testing.T) {
+	// The winner's state when the merge runs. The loser always has a closed
+	// episode (10 days ago, 404 by prelim, back by the recheck) and an OPEN
+	// one (since 2 days ago, 451 by mark-gone-repos).
+	const (
+		reachable   = "winner is reachable"
+		goneLater   = "winner went gone after the loser"
+		goneEarlier = "winner went gone before the loser"
+		stampNoOpen = "winner is stamped with no open episode"
+	)
+	for _, arm := range []string{reachable, goneLater, goneEarlier, stampNoOpen} {
+		t.Run(arm, func(t *testing.T) {
 			ctx, store := caseConnect(t)
 			const slug = "_avdedup_gone"
 			cleanupDedupRepos(ctx, t, store, slug)
@@ -442,10 +452,19 @@ func TestDedupOnePairCarriesTheLosersGoneEpisodes(t *testing.T) {
 				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source, tool_version, data_collection_date)
 				VALUES ($1, NOW() - interval '10 days', 404, 'prelim', NOW() - interval '9 days', 'gone-recheck', '0.29.140', NOW() - interval '10 days'),
 				       ($1, NOW() - interval '2 days', 451, 'mark-gone-repos', NULL, '', '0.29.140', NOW() - interval '2 days')`, loserID)
-			if winnerOpen {
+			switch arm {
+			case goneLater, goneEarlier:
 				if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
 					t.Fatal(err)
 				}
+				if arm == goneEarlier {
+					mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_gone_history SET gone_at = NOW() - interval '5 days' WHERE repo_id = $1`, winnerID)
+				}
+			case stampNoOpen:
+				// The shape the 0.29.140 backfill removes at migrate (a stamp
+				// with no episode); covered so the carry never leaves a gone
+				// winner without the open episode its stamp implies.
+				mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_archived = TRUE, repo_gone_at = NOW() WHERE repo_id = $1`, winnerID)
 			}
 			pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
 			if pair == nil {
@@ -455,43 +474,440 @@ func TestDedupOnePairCarriesTheLosersGoneEpisodes(t *testing.T) {
 				t.Fatalf("dedupOnePair: %v", err)
 			}
 			eps := goneEpisodes(ctx, t, store, winnerID)
+			// Copilot PR #252, sixteenth review, and its L10 pass: the two
+			// repositories are one upstream, so two open episodes are one
+			// outage seen twice. A gone winner's open episode starts at the
+			// earlier observation and nothing reads "back via dedup-repos" for
+			// an outage that has not ended; only a reachable winner gets the
+			// loser's open episode closed by the merge.
 			if len(eps) != 2 {
-				t.Fatalf("the winner carries the loser's closed episode and ONE more, got %+v", eps)
+				t.Fatalf("the winner holds the loser's closed episode and one current stretch: %+v", eps)
 			}
 			if eps[0].restoredAt == nil || eps[0].status != 404 || eps[0].restoredSource != "gone-recheck" {
 				t.Errorf("the closed episode is carried whole: %+v", eps[0])
 			}
-			if winnerOpen {
-				// The winner's own open episode stands; the loser's open one is dropped.
-				if eps[1].restoredAt != nil || eps[1].status != 404 || eps[1].source != GoneSourcePrelim {
-					t.Errorf("a gone winner keeps its own current state: %+v", eps[1])
-				}
-			} else {
-				// A reachable winner: the loser's open episode arrives CLOSED by
-				// the merge, so no open episode contradicts the winner's state.
-				if eps[1].restoredAt == nil || eps[1].status != 451 || eps[1].restoredSource != GoneSourceDedup {
-					t.Errorf("a reachable winner gets the loser's open episode closed by the merge: %+v", eps[1])
+			cur := eps[1]
+			switch arm {
+			case reachable:
+				if cur.restoredAt == nil || cur.status != 451 || cur.source != GoneSourceMarkGoneRepos || cur.restoredSource != GoneSourceDedup {
+					t.Errorf("a reachable winner gets the loser's open episode closed by the merge: %+v", cur)
 				}
 				if repoGoneAt(ctx, t, store, winnerID) != nil {
 					t.Error("the merge never stamps the winner gone")
 				}
+			case goneLater, stampNoOpen:
+				if cur.restoredAt != nil || cur.restoredSource != "" || cur.status != 451 || cur.source != GoneSourceMarkGoneRepos ||
+					time.Since(cur.goneAt) < 47*time.Hour {
+					t.Errorf("the gone winner's open episode starts at the loser's earlier observation, still open: %+v", cur)
+				}
+			case goneEarlier:
+				if cur.restoredAt != nil || cur.status != 404 || cur.source != GoneSourcePrelim || time.Since(cur.goneAt) < 119*time.Hour {
+					t.Errorf("the gone winner's earlier open episode stands; the loser's later one lies inside it: %+v", cur)
+				}
+			}
+			if arm != reachable && repoGoneAt(ctx, t, store, winnerID) == nil {
+				t.Error("the merge never clears the winner's stamp")
 			}
 			if left := goneEpisodes(ctx, t, store, loserID); len(left) != 0 {
 				t.Errorf("the loser's rows are gone with its repos row: %+v", left)
 			}
-			// Provenance travels with the row (round 3 F1, the forge-ID step's
-			// precedent): the merge does not restamp a carried episode as its
-			// own collection.
+			// Provenance travels with a carried row (round 3 F1, the forge-ID
+			// step's precedent): the merge does not restamp a carried episode
+			// as its own collection. Carried rows: the closed one always, and
+			// the open one where it is inserted (closed or open) rather than
+			// folded or dropped.
 			var oldStamps int
 			if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repo_gone_history
-				WHERE repo_id = $1 AND gone_source IN ('prelim', 'mark-gone-repos') AND restored_source IN ('gone-recheck', $2)
-				  AND tool_version = '0.29.140' AND data_collection_date < NOW() - interval '1 day'`, winnerID, GoneSourceDedup).Scan(&oldStamps); err != nil {
+				WHERE repo_id = $1 AND tool_version = '0.29.140' AND data_collection_date < NOW() - interval '1 day'`, winnerID).Scan(&oldStamps); err != nil {
 				t.Fatal(err)
 			}
-			if want := map[bool]int{false: 2, true: 1}[winnerOpen]; oldStamps != want {
-				t.Errorf("carried episodes keep their tool_version and data_collection_date: %d of %d", oldStamps, want)
+			wantStamps := map[string]int{reachable: 2, goneLater: 1, goneEarlier: 1, stampNoOpen: 2}[arm]
+			if oldStamps != wantStamps {
+				t.Errorf("carried episodes keep their tool_version and data_collection_date: %d, want %d", oldStamps, wantStamps)
 			}
 		})
+	}
+}
+
+// A loser's open episode can be weeks stale (a gone row is out of the queue,
+// rechecked about every 28 days), so the winner may hold evidence that the
+// upstream was reachable after it began: a closed episode's restoration or a
+// metadata snapshot (the evidence the flap guard reads). The outage the loser
+// saw ended there — the merge closes it at that time instead of folding it
+// into the winner's later outage or closing it now (the second L10 pass on
+// Copilot PR #252's sixteenth review: a fold read "not reachable from -30 to
+// -20" next to "not reachable since -30 — current").
+func TestDedupOnePairEndsAStaleLoserEpisodeAtTheWinnersEvidence(t *testing.T) {
+	const (
+		restoredAfter  = "gone winner seen back after the loser went"
+		snapshotAfter  = "reachable winner collected after the loser went"
+		rotatedAfter   = "reachable winner whose snapshot was rotated to history"
+		loserSnapshot  = "the loser's own snapshot after it went"
+		snapshotBefore = "a snapshot before the loser went is no evidence"
+	)
+	for _, arm := range []string{restoredAfter, snapshotAfter, rotatedAfter, loserSnapshot, snapshotBefore} {
+		t.Run(arm, func(t *testing.T) {
+			ctx, store := caseConnect(t)
+			const slug = "_avdedup_stale"
+			cleanupDedupRepos(ctx, t, store, slug)
+			t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+			winnerURL := "https://github.com/" + slug + "_Org/Repo"
+			winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+			t.Cleanup(func() {
+				cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_info WHERE repo_id IN ($1, $2)`, winnerID, loserID)
+				cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_info_history WHERE repo_id IN ($1, $2)`, winnerID, loserID)
+			})
+			mustExecRetry(ctx, t, store, `
+				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+				VALUES ($1, NOW() - interval '30 days', 404, 'mark-gone-repos')`, loserID)
+			snapshot := func(table string, repoID int64, daysAgo int) {
+				mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.`+table+` (repo_id, status, data_collection_date)
+					VALUES ($1, 'Active', NOW() - make_interval(days => $2))`, repoID, daysAgo)
+			}
+			switch arm {
+			case restoredAfter:
+				mustExecRetry(ctx, t, store, `
+					INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source)
+					VALUES ($1, NOW() - interval '30 days', 404, 'prelim', NOW() - interval '20 days', 'gone-recheck')`, winnerID)
+				if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+					t.Fatal(err)
+				}
+			case snapshotAfter:
+				snapshot("repo_info", winnerID, 20)
+			case rotatedAfter:
+				snapshot("repo_info_history", winnerID, 20)
+			case loserSnapshot:
+				snapshot("repo_info", loserID, 20)
+			case snapshotBefore:
+				snapshot("repo_info", winnerID, 40)
+			}
+			pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+			if pair == nil {
+				t.Fatal("candidate query did not surface the seeded pair")
+			}
+			if err := dedupOnePair(ctx, store, *pair); err != nil {
+				t.Fatalf("dedupOnePair: %v", err)
+			}
+			var carried []goneEpisodeRow
+			for _, e := range goneEpisodes(ctx, t, store, winnerID) {
+				if e.source == GoneSourceMarkGoneRepos {
+					carried = append(carried, e)
+				}
+			}
+			if len(carried) != 1 {
+				t.Fatalf("the loser's episode is carried once: %+v", goneEpisodes(ctx, t, store, winnerID))
+			}
+			e := carried[0]
+			// The closure names what saw the upstream back (the fifth L10
+			// pass): the restoring writer, or a metadata collection; only a
+			// closure with no evidence is the merge's own inference.
+			wantSource := map[string]string{restoredAfter: GoneSourceRecheck, snapshotAfter: GoneSourceCollection,
+				rotatedAfter: GoneSourceCollection, loserSnapshot: GoneSourceCollection, snapshotBefore: GoneSourceDedup}[arm]
+			if e.restoredAt == nil || e.restoredSource != wantSource {
+				t.Fatalf("the loser's episode is closed, back via %q: %+v", wantSource, e)
+			}
+			age := time.Since(*e.restoredAt)
+			if arm == snapshotBefore {
+				if age > time.Hour {
+					t.Errorf("a snapshot older than the outage ends nothing: closed now, not %v ago", age)
+				}
+			} else if age < 19*24*time.Hour || age > 21*24*time.Hour {
+				t.Errorf("the loser's stale open episode ends at the evidence, 20 days ago: restored %v ago", age)
+			}
+			if arm == restoredAfter {
+				eps := goneEpisodes(ctx, t, store, winnerID)
+				last := eps[len(eps)-1]
+				if last.restoredAt != nil || last.source != GoneSourcePrelim || time.Since(last.goneAt) > time.Hour {
+					t.Errorf("the gone winner's own current stretch stands, unfolded: %+v", eps)
+				}
+			}
+		})
+	}
+}
+
+// The mirror (the third L10 pass on Copilot PR #252's sixteenth review): the
+// WINNER's open episode is the stale one — marked gone, out of the queue,
+// while the loser was collected and only later went gone. The winner stays
+// stamped (the merge never clears a stamp; the recheck does), so its open
+// episode cannot simply end; the history splits instead: the winner's old
+// stretch closed at the evidence, and the current stretch starting at the
+// loser's later observation.
+func TestDedupOnePairSplitsAStaleWinnerEpisodeAtTheLosersEvidence(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_wstale"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_info WHERE repo_id IN ($1, $2)`, winnerID, loserID)
+	})
+	if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_gone_history SET gone_at = NOW() - interval '30 days' WHERE repo_id = $1`, winnerID)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, status, data_collection_date)
+		VALUES ($1, 'Active', NOW() - interval '20 days')`, loserID)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+		VALUES ($1, NOW() - interval '10 days', 451, 'mark-gone-repos')`, loserID)
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair: %v", err)
+	}
+	eps := goneEpisodes(ctx, t, store, winnerID)
+	days := func(at time.Time) float64 { return time.Since(at).Hours() / 24 }
+	if len(eps) != 2 {
+		t.Fatalf("the winner's stale stretch, closed, and one current stretch: %+v", eps)
+	}
+	old, cur := eps[0], eps[1]
+	if old.status != 404 || old.source != GoneSourcePrelim || old.restoredAt == nil || old.restoredSource != GoneSourceCollection ||
+		days(old.goneAt) < 29 || days(*old.restoredAt) < 19 || days(*old.restoredAt) > 21 {
+		t.Errorf("the winner's old stretch ends at the loser's evidence, 20 days ago: %+v", old)
+	}
+	if cur.restoredAt != nil || cur.status != 451 || cur.source != GoneSourceMarkGoneRepos || days(cur.goneAt) < 9 || days(cur.goneAt) > 11 {
+		t.Errorf("the current stretch starts at the loser's later observation, open: %+v", cur)
+	}
+	if repoGoneAt(ctx, t, store, winnerID) == nil {
+		t.Error("the merge never clears the winner's stamp")
+	}
+}
+
+// The split does not need the loser to be gone (the fourth L10 pass on
+// Copilot PR #252's sixteenth review): the winner is chosen by id, not by
+// state, so a gone winner can absorb a reachable loser whose history shows
+// the upstream back after the winner's outage began. The winner's stamp time
+// (repo_gone_at) is refreshed only by the gone marker on a definitive 404, so
+// when it is later than the evidence the current stretch restarts there; when
+// it is earlier, nothing after the evidence saw it gone and the merge leaves
+// the episode for the recheck (it never invents a restart).
+func TestDedupOnePairSplitsAtTheWinnersLastMark(t *testing.T) {
+	for _, markedAfter := range []bool{true, false} {
+		t.Run(map[bool]string{true: "marked again after the evidence", false: "last marked before the evidence"}[markedAfter], func(t *testing.T) {
+			ctx, store := caseConnect(t)
+			const slug = "_avdedup_wmark"
+			cleanupDedupRepos(ctx, t, store, slug)
+			t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+			winnerURL := "https://github.com/" + slug + "_Org/Repo"
+			winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+			if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+				t.Fatal(err)
+			}
+			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_gone_history SET gone_at = NOW() - interval '30 days' WHERE repo_id = $1`, winnerID)
+			lastMark := "5 days"
+			if !markedAfter {
+				lastMark = "20 days"
+			}
+			mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_gone_at = NOW() - $2::interval WHERE repo_id = $1`, winnerID, lastMark)
+			mustExecRetry(ctx, t, store, `
+				INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source)
+				VALUES ($1, NOW() - interval '25 days', 410, 'mark-gone-repos', NOW() - interval '12 days', 'prelim')`, loserID)
+			pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+			if pair == nil {
+				t.Fatal("candidate query did not surface the seeded pair")
+			}
+			if err := dedupOnePair(ctx, store, *pair); err != nil {
+				t.Fatalf("dedupOnePair: %v", err)
+			}
+			eps := goneEpisodes(ctx, t, store, winnerID)
+			days := func(at time.Time) float64 { return time.Since(at).Hours() / 24 }
+			var open []goneEpisodeRow
+			for _, e := range eps {
+				if e.restoredAt == nil {
+					open = append(open, e)
+				}
+			}
+			if len(open) != 1 {
+				t.Fatalf("one open episode: %+v", eps)
+			}
+			// A restart at the last mark: the gone marker keeps an episode's
+			// first observation, so the re-mark's status and writer are
+			// unknown — recorded as unknown, not borrowed from the first
+			// stretch (the fifth L10 pass).
+			if markedAfter && (open[0].status != 0 || open[0].source != "") {
+				t.Errorf("a restart at the last mark records its status and writer as unknown: %+v", open[0])
+			}
+			if !markedAfter && (open[0].status != 404 || open[0].source != GoneSourcePrelim) {
+				t.Errorf("the winner's episode stays as it was: %+v", open[0])
+			}
+			if markedAfter {
+				if len(eps) != 3 || days(open[0].goneAt) < 4 || days(open[0].goneAt) > 6 {
+					t.Fatalf("the winner's stale stretch closed at the evidence, the current one from its last mark 5 days ago: %+v", eps)
+				}
+				var split bool
+				for _, e := range eps {
+					if e.source == GoneSourcePrelim && e.restoredAt != nil && e.restoredSource == GoneSourcePrelim &&
+						days(e.goneAt) > 29 && days(*e.restoredAt) > 11 && days(*e.restoredAt) < 13 {
+						split = true
+					}
+				}
+				if !split {
+					t.Errorf("the winner's old stretch ends at the loser's restoration, 12 days ago: %+v", eps)
+				}
+			} else if len(eps) != 2 || days(open[0].goneAt) < 29 {
+				t.Fatalf("no observation after the evidence: the winner's episode stays as it was: %+v", eps)
+			}
+		})
+	}
+}
+
+// A merge's own closure is not evidence (the fourth L10 pass): dedup-repos and
+// rename-heal close a loser's episode at the merge because the winner was not
+// stamped, an inference, not a probe — a never-collected winner is unstamped
+// too. A later merge must not read it as "reachable then".
+func TestDedupOnePairDoesNotReadAMergeClosureAsEvidence(t *testing.T) {
+	for _, closer := range []string{GoneSourceDedup, GoneSourceRenameHeal} {
+		t.Run(closer, func(t *testing.T) { dedupIgnoresMergeClosure(t, closer) })
+	}
+}
+
+func dedupIgnoresMergeClosure(t *testing.T, closer string) {
+	t.Helper()
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_inferred"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source)
+		VALUES ($1, NOW() - interval '50 days', 404, 'mark-gone-repos', NOW() - interval '5 days', $2)`, winnerID, closer)
+	if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+		VALUES ($1, NOW() - interval '60 days', 451, 'reconcile-repos')`, loserID)
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair: %v", err)
+	}
+	eps := goneEpisodes(ctx, t, store, winnerID)
+	if len(eps) != 2 {
+		t.Fatalf("the earlier merge's closed episode and one current stretch: %+v", eps)
+	}
+	opens := 0
+	for _, e := range eps {
+		if e.restoredAt == nil {
+			opens++
+		}
+	}
+	if opens != 1 {
+		t.Fatalf("exactly one open episode: %+v", eps)
+	}
+	for _, e := range eps {
+		if e.restoredAt == nil {
+			if e.status != 451 || time.Since(e.goneAt) < 59*24*time.Hour {
+				t.Errorf("the loser's open episode folds into the winner's current stretch: %+v", e)
+			}
+			continue
+		}
+		if e.source == GoneSourceReconcile {
+			t.Errorf("the loser's open episode is not closed at an earlier merge's inferred restoration: %+v", e)
+		}
+	}
+}
+
+// The restart follows the LATEST evidence, not the first (the fifth L10
+// pass): the winner went gone at -30, the upstream was seen back at -25, the
+// winner was marked again at -20, seen back again at -15 (the loser's closed
+// episode) and the loser went gone at -10. The current stretch starts at -10;
+// starting it at the -20 mark would contain the -15 restoration.
+func TestDedupOnePairRestartsAfterTheLatestEvidence(t *testing.T) {
+	ctx, store := caseConnect(t)
+	const slug = "_avdedup_latest"
+	cleanupDedupRepos(ctx, t, store, slug)
+	t.Cleanup(func() { cleanupDedupRepos(ctx, t, store, slug) })
+	winnerURL := "https://github.com/" + slug + "_Org/Repo"
+	winnerID, loserID := seedDedupPair(ctx, t, store, slug, winnerURL, strings.ToLower(winnerURL))
+	if err := store.SidelineRepo(ctx, winnerID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_gone_history SET gone_at = NOW() - interval '30 days' WHERE repo_id = $1`, winnerID)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_gone_at = NOW() - interval '20 days' WHERE repo_id = $1`, winnerID)
+	mustExecRetry(ctx, t, store, `
+		INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source, restored_at, restored_source)
+		VALUES ($1, NOW() - interval '28 days', 404, 'mark-gone-repos', NOW() - interval '25 days', 'gone-recheck'),
+		       ($1, NOW() - interval '18 days', 404, 'mark-gone-repos', NOW() - interval '15 days', 'prelim'),
+		       ($1, NOW() - interval '10 days', 451, 'reconcile-repos', NULL, '')`, loserID)
+	pair := findPairByLowerGit(ctx, t, store, strings.ToLower(winnerURL))
+	if pair == nil {
+		t.Fatal("candidate query did not surface the seeded pair")
+	}
+	if err := dedupOnePair(ctx, store, *pair); err != nil {
+		t.Fatalf("dedupOnePair: %v", err)
+	}
+	eps := goneEpisodes(ctx, t, store, winnerID)
+	days := func(at time.Time) float64 { return time.Since(at).Hours() / 24 }
+	var open []goneEpisodeRow
+	for _, e := range eps {
+		if e.restoredAt == nil {
+			open = append(open, e)
+		}
+	}
+	if len(open) != 1 || open[0].status != 451 || open[0].source != GoneSourceReconcile || days(open[0].goneAt) < 9 || days(open[0].goneAt) > 11 {
+		t.Fatalf("the current stretch starts at the loser's -10 observation, after the latest evidence: %+v", eps)
+	}
+	var split bool
+	for _, e := range eps {
+		if e.source == GoneSourcePrelim && e.restoredAt != nil && days(e.goneAt) > 29 &&
+			days(*e.restoredAt) > 24 && days(*e.restoredAt) < 26 && e.restoredSource == GoneSourceRecheck {
+			split = true
+		}
+	}
+	if !split || len(eps) != 4 {
+		t.Errorf("the winner's old stretch ends at the first evidence (-25, via gone-recheck); four episodes in all: %+v", eps)
+	}
+}
+
+// A carry that only FOLDS (the loser has no closed episode, its open one
+// started before the gone winner's) still changes the winner's page: its
+// current stretch now starts earlier. The winner's cache state is stamped in
+// the same statement (the L10 pass on Copilot PR #252's sixteenth review: the
+// merge test always carries a closed episode too, so it could not tell).
+func TestCarryGoneHistoryStampsTheWinnerWhenItOnlyFolds(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	winnerID := seedGoneHistoryRepo(t, store, ctx, "fold_winner")
+	loserID := seedGoneHistoryRepo(t, store, ctx, "fold_loser")
+	for _, id := range []int64{winnerID, loserID} {
+		if err := store.SidelineRepo(ctx, id, 404, GoneSourcePrelim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repo_gone_history SET gone_at = NOW() - interval '3 days', gone_status = 451, gone_source = $2 WHERE repo_id = $1`,
+		loserID, GoneSourceMarkGoneRepos)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET data_changed_at = NOW() - interval '1 day' WHERE repo_id = $1`, winnerID)
+	before := repoDataChangedAt(ctx, t, store, winnerID)
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, lockRepoRowsSQL, []int64{winnerID, loserID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, carryGoneHistorySQL, loserID, winnerID, GoneSourceDedup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, loserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eps := goneEpisodes(ctx, t, store, winnerID)
+	if len(eps) != 1 || eps[0].restoredAt != nil || eps[0].status != 451 || time.Since(eps[0].goneAt) < 71*time.Hour {
+		t.Fatalf("one open episode, starting at the loser's earlier observation: %+v", eps)
+	}
+	if after := repoDataChangedAt(ctx, t, store, winnerID); after == nil || before == nil || !after.After(*before) {
+		t.Fatalf("a fold stamps the winner's cache state: before %v, after %v", before, after)
 	}
 }
 

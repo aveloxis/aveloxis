@@ -581,13 +581,17 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		// same upstream — carried to the winner. The invariant "an open
 		// episode ⇔ the row's current gone state" holds across the merge
 		// (round 2 F1): the loser's OPEN episode arrives CLOSED by this
-		// merge when the winner is reachable (no stamp), and is dropped when
-		// the winner is gone itself (its own open episode is its current
-		// state; uq_repo_gone_history_open takes the DO NOTHING).
+		// merge when the winner is reachable (no stamp), and folds into the
+		// winner's open episode when the winner is gone itself — one outage
+		// seen twice, starting at the earlier observation — unless either
+		// row holds evidence the upstream was reachable after it began,
+		// which ends it there (Copilot PR #252, sixteenth review, and its two
+		// L10 passes; carryGoneHistorySQL).
 		// Copilot PR #252: the carry below reads the winner's gone state; a
 		// clearer beside this transaction (prelim, the recheck, an adoption)
-		// updates that same repos row, so locking it here serialises them —
-		// the winner's state the carry reads is the state it commits against.
+		// updates that same repos row, so the row lock taken first
+		// serialises them — the winner's state the carry reads is the state
+		// it commits against.
 		{"repoint repo_gone_history", carryGoneHistorySQL, []any{pair.LoserID, pair.WinnerID, GoneSourceDedup}},
 		{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, []any{pair.LoserID}},
 

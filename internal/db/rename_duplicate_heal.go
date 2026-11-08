@@ -103,8 +103,10 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 			// still have gone episodes (probed 404 once, re-added, then redirected
 			// here); the repos delete would cascade them away silently. Carried
 			// to the winner like the dedup merge's (carryGoneHistorySQL: an open
-			// one closed by this heal on a reachable winner; the winner's cache
-			// state stamped when anything was carried), under the row locks above.
+			// one ends at the first sign the upstream was reachable after it
+			// began, else closed by this heal on a reachable winner or folded
+			// into a gone winner's open episode; the winner's cache state
+			// stamped when anything changed), under the row locks above.
 			{"repoint repo_gone_history", carryGoneHistorySQL, true},
 			{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
 		}

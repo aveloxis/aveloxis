@@ -284,6 +284,13 @@ func TestTheEraBoundaryDayKeepsTheEarlierRepositorysCommits(t *testing.T) {
 	commit("e4c0000001", "c@both", day.Add(10*time.Hour)) // the earlier repository...
 	commit("e4c0000002", "c@both", day.Add(17*time.Hour)) // ...and the new one, the same day
 	commit("e4b0000001", "b@new", day.Add(18*time.Hour))  // the new repository only
+	// A new-history author with a commit a force-push since removed: the
+	// commits table holds two of the day's rows, the walk's history one. The
+	// boundary day refolds only the authors with a commit before the era start,
+	// so this bucket stays the walk's (the evaluation of 2026-11-08: dropping
+	// that condition passed every test).
+	commit("e4d0000001", "d@new", day.Add(19*time.Hour))
+	commit("e4d0000002", "d@new", day.Add(20*time.Hour))
 	bucket := func(email string) int {
 		t.Helper()
 		var n int
@@ -297,17 +304,18 @@ func TestTheEraBoundaryDayKeepsTheEarlierRepositorysCommits(t *testing.T) {
 	if err := store.AdoptForgeID(ctx, fx.repoID, "95336057", "1438985131", &created, "operator", "", publicListing()); err != nil {
 		t.Fatal(err)
 	}
-	if bucket("a@old") != 1 || bucket("c@both") != 2 {
-		t.Errorf("the adoption's restore folds the re-creation day for the earlier era's authors: a=%d c=%d, want 1 and 2", bucket("a@old"), bucket("c@both"))
+	if bucket("a@old") != 1 || bucket("c@both") != 2 || bucket("d@new") != 0 {
+		t.Errorf("the adoption's restore folds the re-creation day for the earlier era's authors only: a=%d c=%d d=%d, want 1, 2 and none", bucket("a@old"), bucket("c@both"), bucket("d@new"))
 	}
 	// The new repository's walk sees only its own commits that day.
 	if err := store.ReplaceRepoCommitDaily(ctx, fx.repoID, []CommitDailyRow{
 		{Day: day, AuthorEmail: "c@both", Commits: 1}, {Day: day, AuthorEmail: "b@new", Commits: 1},
+		{Day: day, AuthorEmail: "d@new", Commits: 1},
 	}, true); err != nil {
 		t.Fatal(err)
 	}
-	if a, c, b := bucket("a@old"), bucket("c@both"), bucket("b@new"); a != 1 || c != 2 || b != 1 {
-		t.Errorf("after the walk: a=%d c=%d b=%d, want 1, 2, 1 (the earlier commits of the day kept, the new author the walk's)", a, c, b)
+	if a, c, b, d := bucket("a@old"), bucket("c@both"), bucket("b@new"), bucket("d@new"); a != 1 || c != 2 || b != 1 || d != 1 {
+		t.Errorf("after the walk: a=%d c=%d b=%d d=%d, want 1, 2, 1, 1 (the earlier commits of the day kept, the new authors the walk's)", a, c, b, d)
 	}
 	// The migrate repair for a repository adopted before 0.29.140.
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1 AND day = $2 AND author_email = 'a@old'`, fx.repoID, day)
@@ -315,8 +323,8 @@ func TestTheEraBoundaryDayKeepsTheEarlierRepositorysCommits(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, migrateStepSQL(t, restoreEarlierErasLabel)); err != nil {
 		t.Fatal(err)
 	}
-	if a, c, b := bucket("a@old"), bucket("c@both"), bucket("b@new"); a != 1 || c != 2 || b != 1 {
-		t.Errorf("after the migrate repair: a=%d c=%d b=%d, want 1, 2, 1", a, c, b)
+	if a, c, b, d := bucket("a@old"), bucket("c@both"), bucket("b@new"), bucket("d@new"); a != 1 || c != 2 || b != 1 || d != 1 {
+		t.Errorf("after the migrate repair: a=%d c=%d b=%d d=%d, want 1, 2, 1, 1", a, c, b, d)
 	}
 }
 
@@ -406,18 +414,60 @@ func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
 	if !strings.Contains(plan.String(), "One-Time Filter") {
 		t.Errorf("the refold must gate on a pseudoconstant (a One-Time Filter), not filter the repository's commit rows:\n%s", plan.String())
 	}
-	// The boundary day's EXISTS is a top-level conjunct, pulled up into a join
-	// through the repository's rows (the L10 pass on the fifteenth review's
-	// fix: inside an OR it could not be, and the planner built a hashed SubPlan
-	// from a scan of the WHOLE commits table — 1.47 billion rows on kate — on
-	// every walk of an adopted repository). The pull-up happens before costing,
-	// so on any table size the plan holds no SubPlan at all (the era start's
-	// subqueries are InitPlans); the JOIN METHOD is costed and may be a semi
-	// join or a unique-ified inner join, so it is not asserted (the next pass:
-	// a "Semi Join" check failed on a plan the email index made a HashAggregate
-	// + Nested Loop).
+	// No SubPlan: the era start inside the boundary day's HAVING bool_or is an
+	// uncorrelated scalar subquery, an InitPlan computed once. A correlated
+	// subquery over commits here was a hashed SubPlan from a scan of the WHOLE
+	// table (the fifteenth review's fix, inside an OR) and then a per-row
+	// probe of every repository's rows (the evaluation of 2026-11-08); the
+	// scan count is pinned by TestTheEraFoldsReadCommitsOncePerArm.
 	if strings.Contains(plan.String(), "SubPlan") {
-		t.Errorf("the boundary day's EXISTS must be pulled up into a join, never a (hashed) SubPlan:\n%s", plan.String())
+		t.Errorf("the refold's subqueries must be InitPlans, never a (hashed or correlated) SubPlan:\n%s", plan.String())
+	}
+}
+
+// Each era fold reads the commits table once per arm and never again per row
+// (the evaluation of 2026-11-08, Track 0a): the boundary day's "this author has
+// a commit that day before the era start" was a correlated EXISTS that the
+// planner served from idx_commits_author_email, filtering repo_id afterwards,
+// so every boundary-day row walked that author's commits in EVERY repository —
+// 58,497 probes and 82 million buffer hits, 88 s, on a 2-million-row copy;
+// kate's table has 1.47 billion. All of a boundary-day author's rows are one
+// group, so the condition is a HAVING bool_or over the group, read from the
+// rows the arm already has (0.3 s, the same rows). The count of commits scan
+// nodes is cost-independent: a correlated read adds a node whatever the plan.
+func TestTheEraFoldsReadCommitsOncePerArm(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	fx := seedCommitDaily(t, store, ctx, "_avcd_era_scans")
+	commitsScan := regexp.MustCompile(`(?m)Scan(?: Backward)?(?: using \S+)? on commits\b`)
+	explain := func(sql string, args ...any) string {
+		t.Helper()
+		rows, err := store.pool.Query(ctx, "EXPLAIN "+sql, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(line)
+			plan.WriteString("\n")
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return plan.String()
+	}
+	for name, plan := range map[string]string{
+		"the per-walk refold":    explain(refoldEarlierEraSQL, fx.repoID),
+		"the migrate era repair": explain(migrateStepSQL(t, restoreEarlierErasLabel)),
+	} {
+		if n := len(commitsScan.FindAllString(plan, -1)); n != 2 {
+			t.Errorf("%s reads commits %d times, want 2 (one per arm): a correlated per-row read of commits is back\n%s", name, n, plan)
+		}
 	}
 }
 

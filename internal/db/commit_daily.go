@@ -329,11 +329,17 @@ const eraDayStartSQL = `(date_trunc('day', (` + commitDailyEraStartSQL + `) AT T
 // literal copy (the step-order analyzer).
 //
 // Two arms, one per kind of day, joined by UNION ALL (disjoint days, so each
-// groups apart): the boundary day's EXISTS must be a top-level conjunct, which
-// the planner pulls up into a semi-join through the repository's rows —
-// inside an OR it could not, and it built a hashed SubPlan from a scan of the
-// WHOLE commits table, filtered only by the day (the L10 pass on the
-// fifteenth review's fix; pinned by the plan test).
+// groups apart). The boundary day's condition — the author has a commit that
+// day before the era start — is a HAVING bool_or over the author's group: all
+// of a boundary-day author's rows are that one group, so it reads only the
+// rows the arm already has. As a correlated EXISTS (the fifteenth review's
+// fix) the planner served it from idx_commits_author_email and filtered the
+// repository afterwards, so each boundary-day row walked that author's commits
+// in every repository: 58,497 probes, 82 million buffer hits, 88 s on a
+// 2-million-row copy, against 0.3 s for the same rows here (the evaluation of
+// 2026-11-08); kate's commits holds 1.47 billion rows. Inside an OR, before
+// that, it was a hashed SubPlan over the whole table. Each arm reads commits
+// once (TestTheEraFoldsReadCommitsOncePerArm).
 //
 // Churn (the same pass): the walk's upsert lowers a pre-boundary bucket its
 // history re-states in part, and this raises it back — two writes of each
@@ -357,11 +363,8 @@ const refoldEarlierEraSQL = `
 			  AND co.repo_id = $1
 			  AND co.cmt_author_timestamp >= ` + eraDayStartSQL + `
 			  AND co.cmt_author_timestamp < ` + eraDayStartSQL + ` + INTERVAL '24 hours'
-			  AND EXISTS (SELECT 1 FROM aveloxis_data.commits e
-			              WHERE e.repo_id = co.repo_id AND e.cmt_author_email = co.cmt_author_email
-			                AND e.cmt_author_timestamp >= ` + eraDayStartSQL + `
-			                AND e.cmt_author_timestamp < (` + commitDailyEraStartSQL + `))
 			GROUP BY 1, 2, 3
+			HAVING bool_or(co.cmt_author_timestamp < (` + commitDailyEraStartSQL + `))
 			ON CONFLICT (repo_id, day, author_email) DO UPDATE
 			SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
 			WHERE EXCLUDED.commits > repo_commit_daily.commits`

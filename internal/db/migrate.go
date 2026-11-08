@@ -2778,7 +2778,10 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
 	// analyzer. The boundary DAY is refolded from the commits table for the
 	// authors with a commit before the exact era start (Copilot PR #252,
-	// twelfth review; commit_daily.go refoldEarlierEraSQL). Once;
+	// twelfth review; commit_daily.go refoldEarlierEraSQL), a HAVING bool_or
+	// over the author's boundary-day group, never a correlated read of
+	// commits (the evaluation of 2026-11-08: 88 s on a 2-million-row copy as
+	// an EXISTS, 0.3 s here; TestTheEraFoldsReadCommitsOncePerArm). Once;
 	// idempotent (both arms only raise a bucket: a walk that lowered an earlier bucket before 0.29.140 is repaired, fifteenth review). The charts change for every
 	// repository a bucket came back for, so the same statement stamps their
 	// cache state (data_changed_at, as the adoption's own restore does —
@@ -2814,11 +2817,8 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 JOIN eras b ON b.repo_id = co.repo_id
 		 WHERE co.cmt_author_timestamp IS NOT NULL
 		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date = (b.era_start AT TIME ZONE 'UTC')::date
-		   AND EXISTS (SELECT 1 FROM aveloxis_data.commits e
-		               WHERE e.repo_id = co.repo_id AND e.cmt_author_email = co.cmt_author_email
-		                 AND e.cmt_author_timestamp < b.era_start
-		                 AND (e.cmt_author_timestamp AT TIME ZONE 'UTC')::date = (b.era_start AT TIME ZONE 'UTC')::date)
 		 GROUP BY 1, 2, 3
+		 HAVING bool_or(co.cmt_author_timestamp < b.era_start)
 		 ON CONFLICT (repo_id, day, author_email) DO UPDATE
 		 SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
 		 WHERE EXCLUDED.commits > repo_commit_daily.commits

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.141 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.142 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=62afff37"></script>
+      <script src="../_static/documentation_options.js?v=5557755d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -589,6 +589,8 @@
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#snapshot-mode-comparing-two-migrations-0-29-142">Snapshot mode: comparing two migrations (0.29.142)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#concurrency-stress-on-a-migrated-clone">Concurrency stress on a migrated clone</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a><ul>
@@ -2975,6 +2977,12 @@ aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<
 <span class="c1"># Custom work directory (useful for CI artifact retention)</span>
 aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--work-dir<span class="w"> </span>/var/cache/aveloxis-data-test
+
+<span class="c1"># Snapshot mode (0.29.142): compare only the two migrations, timed and row</span>
+<span class="c1"># by row, on clones of one database shaped like the production fleet</span>
+aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main<span class="w"> </span>--from-db<span class="w"> </span>aveloxis<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--seed-shape<span class="w"> </span>cmd/aveloxis/testdata/shape-provisional.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--expect<span class="w"> </span>cmd/aveloxis/testdata/expect-0.29.141.json<span class="w"> </span>--reps<span class="w"> </span><span class="m">3</span><span class="w"> </span>--keep-dbs
 </pre></div>
 </div>
 <p>The full report is written to <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/report.md</span></code>. See
@@ -3288,7 +3296,11 @@ invariant probe battery against the configured database and exits 1 on
 any FAIL — suitable for gating releases and cron runs. Probes:
 structural invariants (case-duplicate repos, Default-group singleton,
 stranded repos, stale &gt;24h locks, cross-kind message corruption with
-migration-state awareness), sampled count-integrity (cached queue
+migration-state awareness; since 0.29.142 also one open gone episode per
+gone-stamped repository and none on a reachable one, gone-stamped
+repositories that are queued (a WARN: pending re-probes), INVALID indexes,
+earlier-era daily buckets below their fold from the commits table, and the
+three lower(email) indexes), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector’s 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).</p>
@@ -3299,6 +3311,9 @@ aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--ground-trut
 <span class="w">                                              </span><span class="c1"># metadata for 10 sampled repos</span>
 <span class="w">                                              </span><span class="c1"># and compare (needs API keys)</span>
 aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--min-identity-fill<span class="w"> </span><span class="m">95</span><span class="w">   </span><span class="c1"># optional floors → WARN below</span>
+aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--deterministic-sample<span class="w">   </span><span class="c1"># sample by a hash of the id, so</span>
+<span class="w">                                              </span><span class="c1"># two copies of one database read</span>
+<span class="w">                                              </span><span class="c1"># alike (data-test&#39;s snapshot mode)</span>
 </pre></div>
 </div>
 <p>Severities: FAIL = a code-enforced invariant is broken (exit 1);

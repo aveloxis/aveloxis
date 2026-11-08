@@ -1,0 +1,140 @@
+{
+  "ignore": {},
+  "rules": [
+    {
+      "name": "the schema stamp",
+      "table": "aveloxis_ops.schema_meta",
+      "mode": "may-differ",
+      "reason": "every migrate writes its own version and time"
+    },
+    {
+      "name": "the two 0.29.140 ledger steps",
+      "table": "aveloxis_ops.migration_ledger",
+      "mode": "must-differ",
+      "kinds": [
+        "added"
+      ],
+      "where": "t.step_label LIKE 'v0.29.140 %'",
+      "reason": "the gone-episode backfill and the earlier-era repair run once and are recorded"
+    },
+    {
+      "name": "the gone history",
+      "table": "aveloxis_data.repo_gone_history",
+      "mode": "must-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.140 creates the table and opens an episode for every gone-stamped repository (data-verify checks one per stamp)"
+    },
+    {
+      "name": "the forge-ID change's visibility",
+      "table": "aveloxis_data.repo_forge_id_changes",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "observed_private"
+      ],
+      "null_only": true,
+      "reason": "0.29.140 adds the column NULL (unknown) for every existing change"
+    },
+    {
+      "name": "the earlier era's daily buckets come back",
+      "table": "aveloxis_data.repo_commit_daily",
+      "mode": "must-differ",
+      "kinds": [
+        "added",
+        "changed"
+      ],
+      "columns": [
+        "commits",
+        "cntrb_id",
+        "computed_at"
+      ],
+      "where": "t.repo_id IN (SELECT c.repo_id FROM aveloxis_data.repo_forge_id_changes c WHERE c.adopted_at IS NOT NULL)",
+      "raise_only": [
+        "commits"
+      ],
+      "reason": "the 0.29.140 repair raises (never lowers) the buckets of adopted repositories from the commits table"
+    },
+    {
+      "name": "the repaired repositories' cache stamp",
+      "table": "aveloxis_data.repos",
+      "mode": "must-differ",
+      "kinds": [
+        "changed"
+      ],
+      "columns": [
+        "data_changed_at"
+      ],
+      "where": "t.repo_id IN (SELECT c.repo_id FROM aveloxis_data.repo_forge_id_changes c WHERE c.adopted_at IS NOT NULL)",
+      "reason": "the repair stamps the cache state of every repository a bucket came back for, and only those"
+    },
+    {
+      "name": "the gone history's indexes",
+      "table": "aveloxis_data.repo_gone_history",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "repo_gone_history_pkey",
+        "idx_repo_gone_history_repo_id",
+        "uq_repo_gone_history_open"
+      ],
+      "reason": "schema.sql creates the table's primary key, its repo_id index and the one-open-episode partial unique"
+    },
+    {
+      "name": "the gone history's constraints",
+      "table": "aveloxis_data.repo_gone_history",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key and its foreign key to repos (deferrable)"
+    },
+    {
+      "name": "contributors lower(email)",
+      "table": "aveloxis_data.contributors",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_contributors_email_lower"
+      ],
+      "reason": "0.29.141 builds it CONCURRENTLY for aveloxis-cve"
+    },
+    {
+      "name": "aliases lower(email)",
+      "table": "aveloxis_data.contributors_aliases",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_contributors_aliases_email_lower"
+      ],
+      "reason": "0.29.141 builds it CONCURRENTLY for aveloxis-cve"
+    },
+    {
+      "name": "identities lower(email)",
+      "table": "aveloxis_data.contributor_identities",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_contributor_identities_email_lower"
+      ],
+      "reason": "0.29.141 builds it CONCURRENTLY for aveloxis-cve"
+    }
+  ],
+  "verify_ok": [
+    "gone episodes match the stamps",
+    "earlier-era daily buckets",
+    "invalid indexes",
+    "lower(email) indexes"
+  ]
+}

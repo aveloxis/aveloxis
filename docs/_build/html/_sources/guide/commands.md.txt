@@ -1016,6 +1016,12 @@ aveloxis data-test --released-tag v0.22.6 \
 # Custom work directory (useful for CI artifact retention)
 aveloxis data-test --released-tag origin/main \
   --work-dir /var/cache/aveloxis-data-test
+
+# Snapshot mode (0.29.142): compare only the two migrations, timed and row
+# by row, on clones of one database shaped like the production fleet
+aveloxis data-test --released-tag origin/main --from-db aveloxis \
+  --seed-shape cmd/aveloxis/testdata/shape-provisional.json \
+  --expect cmd/aveloxis/testdata/expect-0.29.141.json --reps 3 --keep-dbs
 ```
 
 The full report is written to `<work-dir>/report.md`. See
@@ -1332,7 +1338,11 @@ invariant probe battery against the configured database and exits 1 on
 any FAIL — suitable for gating releases and cron runs. Probes:
 structural invariants (case-duplicate repos, Default-group singleton,
 stranded repos, stale >24h locks, cross-kind message corruption with
-migration-state awareness), sampled count-integrity (cached queue
+migration-state awareness; since 0.29.142 also one open gone episode per
+gone-stamped repository and none on a reachable one, gone-stamped
+repositories that are queued (a WARN: pending re-probes), INVALID indexes,
+earlier-era daily buckets below their fold from the commits table, and the
+three lower(email) indexes), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).
@@ -1345,6 +1355,9 @@ aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
                                               # metadata for 10 sampled repos
                                               # and compare (needs API keys)
 aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
+aveloxis data-verify --deterministic-sample   # sample by a hash of the id, so
+                                              # two copies of one database read
+                                              # alike (data-test's snapshot mode)
 ```
 
 Severities: FAIL = a code-enforced invariant is broken (exit 1);

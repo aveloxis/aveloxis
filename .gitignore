@@ -20,6 +20,13 @@ syslog
 !internal/collector/testdata/*.json
 !internal/collector/testdata/registries/*.json
 !internal/collector/testdata/manifest_corpus/*.json
+# data-test snapshot inputs (0.29.142): the release's content rules, the
+# statement probes and the fleet shapes — named patterns only, so a scratch
+# config dropped in testdata stays ignored.
+!cmd/aveloxis/testdata/expect-*.json
+!cmd/aveloxis/testdata/probes-*.json
+!cmd/aveloxis/testdata/shape-*.json
+!cmd/aveloxis/testdata/settings-*.json
 *code-workspace
 db.config.json
 aveloxis.chaoss.tv.json

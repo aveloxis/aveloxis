@@ -93,6 +93,7 @@ func dataTestCmd(cfgPath *string) *cobra.Command {
 		keepDBs     bool
 		workDir     string
 		diffOnly    bool
+		snapshot    snapshotOptions
 	)
 
 	cmd := &cobra.Command{
@@ -169,6 +170,10 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 				return nil
 			}
 
+			if err := checkSnapshotFlags(snapshot.fromDB != "", diffOnly, cmd.Flags().Changed); err != nil {
+				return err
+			}
+
 			// Phase 1: binaries
 			releasedBin, err := resolveReleasedBinary(ctx, logger, workDir, releasedTag)
 			if err != nil {
@@ -177,6 +182,26 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 			localBin, err := resolveLocalBinary(ctx, logger, workDir)
 			if err != nil {
 				return fmt.Errorf("resolveLocalBinary: %w", err)
+			}
+
+			cfgPaths, err := writeScratchConfigs(primaryCfg, workDir)
+			if err != nil {
+				return err
+			}
+			binaries := [len(dataTestSides)]string{dataTestReleased: releasedBin, dataTestNew: localBin}
+
+			// --from-db: the snapshot A/B mode (data_test_snapshot.go) —
+			// both sides clone one prepared database and only migrate.
+			if snapshot.fromDB != "" {
+				reportPath, failed, err := runSnapshot(ctx, logger, primaryCfg, workDir, binaries, cfgPaths, snapshot, keepDBs)
+				if err != nil {
+					return fmt.Errorf("snapshot: %w", err)
+				}
+				if failed {
+					return fmt.Errorf("data-test snapshot FAILED (see %s)", reportPath)
+				}
+				logger.Info("data-test snapshot PASSED", "report", reportPath)
+				return nil
 			}
 
 			// Phase 2: provision both scratch DBs (sequential — the
@@ -190,11 +215,6 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 			// Phase 3: per-side setup + collection (sequential — both
 			// sides share the same API key pool, parallel runs would
 			// double API budget and produce flaky timings).
-			cfgPaths, err := writeScratchConfigs(primaryCfg, workDir)
-			if err != nil {
-				return err
-			}
-			binaries := [len(dataTestSides)]string{dataTestReleased: releasedBin, dataTestNew: localBin}
 
 			for i, side := range dataTestSides {
 				binary, cfg := binaries[i], cfgPaths[i]
@@ -261,6 +281,16 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 	cmd.Flags().BoolVar(&keepDBs, "keep-dbs", false, fmt.Sprintf("retain %s and %s after the run (default: drop them)", dataTestSides[dataTestReleased].dbname, dataTestSides[dataTestNew].dbname))
 	cmd.Flags().StringVar(&workDir, "work-dir", "", "path for binaries, logs, report, and each side's bare clones (default: a fresh aveloxis-data-test-<ts> under the system temp dir)")
 	cmd.Flags().BoolVar(&diffOnly, "diff-only", false, "skip build/provision/collect and re-run only the diff + report against scratch DBs kept by a prior --keep-dbs run")
+	cmd.Flags().StringVar(&snapshot.fromDB, "from-db", "", "snapshot mode: clone this prepared database for both sides and compare only what each binary's migrate does (timed, row by row; no collection)")
+	cmd.Flags().StringVar(&snapshot.seedShape, "seed-shape", "", "snapshot mode: shape a clone of --from-db like the fleet this JSON file of counts describes (synthetic repositories on forge.invalid, gone stamps, adopted changes, contributors) before the runs")
+	cmd.Flags().StringVar(&snapshot.rewindSQL, "rewind-sql", "", "snapshot mode: SQL run on the template clone (never --from-db) before the seed, rolling a database a newer release migrated back to the released schema (cmd/aveloxis/testdata/rewind-<version>.sql)")
+	cmd.Flags().StringVar(&snapshot.settingsPath, "settings", "", "snapshot mode: JSON object of PostgreSQL settings applied to every clone (per-database settings do not travel with a template)")
+	cmd.Flags().StringVar(&snapshot.expectPath, "expect", "", "snapshot mode: the release's content rules (cmd/aveloxis/testdata/expect-<version>.json); without it every difference is a violation")
+	cmd.Flags().IntVar(&snapshot.reps, "reps", 3, "snapshot mode: A/B pairs, run A B B A …; two or more give the no-change noise band")
+	cmd.Flags().DurationVar(&snapshot.deployWindow, "deploy-window", 0, "snapshot mode: an upgrade migrate longer than this FAILs (0 = report only)")
+	cmd.Flags().BoolVar(&snapshot.perfAPI, "perf-api", false, "snapshot mode: replay the repository page's API requests for every real repository on each side's own api, A B B A (cold and warm passes, p95 against the measured noise band)")
+	cmd.Flags().StringVar(&snapshot.probesPath, "probes", "", "snapshot mode: JSON list of {name, sql} statements explained (ANALYZE, BUFFERS, rolled back) on both sides (cmd/aveloxis/testdata/probes-<version>.json)")
+	cmd.Flags().IntVar(&snapshot.maxDiffRows, "max-diff-rows", 100000, "snapshot mode: differing rows read in detail per table; a table with more is reported unverified (a FAIL)")
 	return cmd
 }
 

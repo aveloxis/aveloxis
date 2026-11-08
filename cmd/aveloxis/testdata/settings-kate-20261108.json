@@ -1,0 +1,14 @@
+{
+  "work_mem": "128MB",
+  "maintenance_work_mem": "4GB",
+  "jit": "off",
+  "random_page_cost": "4",
+  "effective_io_concurrency": "200",
+  "effective_cache_size": "700GB",
+  "max_parallel_workers_per_gather": "4",
+  "default_statistics_target": "100",
+  "deadlock_timeout": "2s",
+  "TimeZone": "America/Chicago",
+  "track_io_timing": "on",
+  "log_lock_waits": "on"
+}

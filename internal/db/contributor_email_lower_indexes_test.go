@@ -78,7 +78,11 @@ func TestContributorEmailLowerIndexesAreMigrationBuilt(t *testing.T) {
 // off, so the test proves the expression MATCHES, which an index on a
 // different expression (trim(), a COLLATE, a partial WHERE) cannot do:
 // without a matching index the planner picks a scan with a Filter, which does
-// not name the index.
+// not name the index. Index-only scans are off too: PostgreSQL cannot answer
+// from an expression index alone, so on a small all-visible contributors
+// table a full index-only scan of idx_contributors_email_lookup with a
+// Filter could cost less than the matching probe (the closing suite saw it
+// under one shuffle order) — table state, not the claim under test.
 func TestContributorEmailLowerIndexesServeTheLowerPredicate(t *testing.T) {
 	store, ctx := v0251Connect(t)
 	t.Cleanup(store.Close)
@@ -87,13 +91,13 @@ func TestContributorEmailLowerIndexesServeTheLowerPredicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(conn.Release)
-	for _, s := range []string{`SET enable_seqscan = off`, `SET plan_cache_mode = force_generic_plan`} {
+	for _, s := range []string{`SET enable_seqscan = off`, `SET enable_indexonlyscan = off`, `SET plan_cache_mode = force_generic_plan`} {
 		if _, err := conn.Exec(ctx, s); err != nil {
 			t.Fatalf("%s: %v", s, err)
 		}
 	}
 	t.Cleanup(func() {
-		for _, s := range []string{`RESET enable_seqscan`, `RESET plan_cache_mode`} {
+		for _, s := range []string{`RESET enable_seqscan`, `RESET enable_indexonlyscan`, `RESET plan_cache_mode`} {
 			_, _ = conn.Exec(context.Background(), s)
 		}
 	})

@@ -294,7 +294,7 @@ func (s *Server) windowOfURI(uri string) (string, bool) {
 		return "", false
 	}
 	_, pattern := s.mux.Handler(req)
-	if _, cached := pageParams[pattern]; !cached {
+	if !IsPageCachedRoute(pattern) {
 		return "", false
 	}
 	win, windowed := pageWindows[pattern]

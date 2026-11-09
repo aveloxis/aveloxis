@@ -1172,6 +1172,18 @@ func (s *Server) frontEndAuthorized(r *http.Request) bool {
 		return false
 	}
 	_, pattern := s.mux.Handler(r)
+	return IsPageCachedRoute(pattern)
+}
+
+// IsPageCachedRoute reports whether the route pattern ("GET /api/v1/repos/
+// {repoID}/timeseries") is served through the repository page cache: its
+// membership in pageParams, the set the cache itself consults, which holds
+// exactly the routes registered through cachedRepoGET
+// (TestEveryPageParamsRouteIsRegisteredCached, and the other direction in
+// the handler-parameter test). `aveloxis
+// data-test`'s API replay reads it to know which endpoints' warm answers can
+// be cache hits, since a miss carries no X-Cache header to tell it (0.29.142).
+func IsPageCachedRoute(pattern string) bool {
 	_, cached := pageParams[pattern]
 	return cached
 }

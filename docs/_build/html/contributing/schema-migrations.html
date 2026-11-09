@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema migrations &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Schema migrations &mdash; Aveloxis 0.29.142 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a422fba5"></script>
+      <script src="../_static/documentation_options.js?v=5557755d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -584,9 +585,12 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#snapshot-mode-comparing-two-migrations-0-29-142">Snapshot mode: comparing two migrations (0.29.142)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/data-test.html#concurrency-stress-on-a-migrated-clone">Concurrency stress on a migrated clone</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/scaling.html">Scaling</a><ul>
@@ -784,7 +788,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1567,8 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -1927,6 +1933,7 @@ SPDX-License-Identifier: MIT
 </pre></div>
 </div>
 <p>The helper handles <code class="docutils literal notranslate"><span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span></code> semantics AND the failure-recovery edge case where a prior interrupted CONCURRENTLY build left an INVALID index (cleaned up via <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">INDEX</span></code> before retry). See v0.20.1.</p>
+<p>An index on an <strong>expression</strong> (<code class="docutils literal notranslate"><span class="pre">lower(email)</span></code>, <code class="docutils literal notranslate"><span class="pre">(a</span> <span class="pre">||</span> <span class="pre">b)</span></code>) is invisible to the planner until its table is analyzed: PostgreSQL gathers an expression’s statistics only in <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code>, never at the build, and autovacuum analyzes a table only after about a tenth of its rows change. Without them each lookup is priced at 0.5% of the table, so a join keeps its full scan. The helper therefore analyzes the table whenever a valid expression index of its has no statistics, decided on the missing statistics rather than on “just built”, so a failed <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code> (or an index built before 0.29.142) gets them at the next migrate. <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code> reads a fixed-size sample and blocks neither reads nor writes. See the 0.29.142 release notes.</p>
 <p>For indexes in <code class="docutils literal notranslate"><span class="pre">schema.sql</span></code> (fresh installs), use <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">INDEX</span> <span class="pre">IF</span> <span class="pre">NOT</span> <span class="pre">EXISTS</span> <span class="pre">...</span></code> — fresh installs run inside the base-schema transaction, so blocking-during-build isn’t a concern.</p>
 </section>
 <section id="adding-a-backfill">
@@ -2159,6 +2166,16 @@ too. The 2026-08-31 provenance audit traced years of drift
 attributed to the wrong subsystem) to this checklist lacking the
 step — a column documented at introduction can never drift
 silently.</p></li>
+<li><p><strong>Gate a write a non-migrating process reaches.</strong> The api, the web and
+every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code> run against whatever schema is
+there; the api and web log an ERROR on a stamp behind the binary and keep
+serving. A write such a process can reach that touches an object your
+release adds calls <code class="docutils literal notranslate"><span class="pre">store.RequireMigrated(ctx)</span></code> before it reads or writes
+anything (a command: before its first statement, writing runs only), so
+it refuses with <code class="docutils literal notranslate"><span class="pre">ErrSchemaNotMigrated</span></code> — the admin adapters answer 503 —
+instead of failing mid-request with 42703 or 42P01 (0.29.140, Copilot PR
+#252’s fourteenth review). A READ degrades instead: catch the undefined
+table or column and serve without the new data.</p></li>
 <li><p>Run <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./...</span></code> AND the integration tier.</p></li>
 <li><p>(Optional but recommended) Run <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">data-test</span> <span class="pre">--released-tag</span> <span class="pre">origin/main</span></code> (or the previous release’s tag) to verify the new version doesn’t lose data; it collects the standing repository set unless you pass <code class="docutils literal notranslate"><span class="pre">--repo</span></code>. See <a class="reference internal" href="../guide/data-test.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/guide/data-test.md</span></code></span></a>.</p></li>
 </ol>

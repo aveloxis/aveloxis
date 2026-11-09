@@ -308,8 +308,10 @@ merging any PR labeled `schema-change`.
 
 ## Limitations
 
-- **Single test repo per invocation.** Multi-repo tests are
-  operator-scripted shell loops for now.
+- **Live repositories drift between the two sides' collections.** The
+  sides collect one after the other, so activity in between shows as FLAG
+  (and the event window as one FAIL; see below). The snapshot mode compares
+  migrations on one cloned database instead.
 - **No auto-fetch of missing tags.** If the operator specifies a tag
   not yet in the local clone, the worktree step fails. Fix:
   `git fetch --tags` then re-run.
@@ -367,6 +369,25 @@ the merged-PR count), and `meta_label` slightly lower (REST kept
 label strings for DELETED forks on the PR object; GraphQL cannot
 reconstruct them — see docs/architecture/column-mapping.md).
 
+## A FAIL on an event table at the 30,000-event window
+
+GitHub serves a repository's event feed (`/issues/events`) newest first and
+ends it at 30,000 events. On a repository that produces events faster than
+that window — backstage/backstage generates about 30,000 a month — both
+sides stage exactly 30,000 events (the log line `events staged … count=30000`
+on each side) but the window's OLD edge moves between the two runs by the
+number of events the repository produced in between, so the released side
+holds a few events the new side's window no longer reaches. That reads as a
+**FAIL** of a few rows on `pull_request_events` or `issue_events` and is not
+row loss. Verify it in three reads: both sides' `events staged` counts are
+30,000; the oldest `created_at` of the table on the new side is later than
+on the released side by the gap; and the events only the released side holds
+still exist upstream (`gh api repos/OWNER/REPO/issues/events/ID`). The
+2026-11-06 run against v0.29.139 was this shape: 46 `referenced` events
+from the same seven seconds on 2026-10-05 fell off the new side's window,
+35 newer events came in, net 11 rows. A FAIL whose missing rows are NOT
+at the window's old edge is a regression.
+
 ## Expected event-table asymmetry vs pre-0.26.2 tags
 
 `aveloxis collect` before v0.26.2 used a legacy direct-write path that
@@ -423,3 +444,183 @@ crashing on it:
   carried data in the released side. This is a data-loss shape and
   fails the run; a dropped column that was already dark is listed as a
   shape note only.
+
+## Snapshot mode: comparing two migrations (0.29.142)
+
+The collection mode answers "does the new schema accept what the old one
+accepted". A release whose risk is in its **migration** (a backfill, a repair
+of history, new indexes on large tables) needs a different question: on the
+same data, does the new binary's migrate change exactly what the release
+claims, nothing else, and how long does it take? `--from-db` answers that. Both
+sides clone one prepared database, so they start from identical rows, and
+nothing is collected.
+
+```bash
+aveloxis data-test --released-tag origin/main \
+  --from-db aveloxis \
+  --seed-shape cmd/aveloxis/testdata/shape-provisional.json \
+  --settings eval-settings.json \
+  --expect cmd/aveloxis/testdata/expect-0.29.141.json \
+  --reps 3 --deploy-window 30m --keep-dbs
+```
+
+What it does:
+
+1. **Seed (optional, `--seed-shape`).** The source database is cloned into
+   `aveloxis_dt_template` (the source is never written) and shaped like the
+   fleet a JSON file of counts describes: synthetic repositories on the host
+   `forge.invalid`, which never resolves, gone stamps, adopted forge-ID changes on
+   the deepest repositories with their daily buckets as the previous
+   release's walks left them, and contributors, aliases and identities. The
+   file holds aggregates only, so it can be produced on production without a
+   row leaving it. The schema comes from the migrates only; the seed adds no
+   index.
+2. **Base.** The released binary migrates a clone of the template into
+   `aveloxis_dt_base`: the state a fleet is in before the deploy.
+3. **Runs.** Pairs alternate A B, B A, …: A is the released binary migrating
+   a clone of the base again (the no-change deploy), B the local binary
+   migrating a clone of the base (the upgrade), then once more on the same
+   clone (the idempotent rerun). Every migrate is timed and its log kept;
+   with `pg_stat_statements` preloaded, each run's heaviest statements are
+   listed. `--settings` (a flat JSON object of PostgreSQL settings) is applied
+   to every clone, because per-database settings and statistics do not travel
+   with a template.
+4. **Compare.** The last A and B clones are compared schema object by schema
+   object (indexes with their validity, constraints, and each column's definition: type, collation, NOT NULL, identity, and default or generation, since on PostgreSQL 17 and earlier NOT NULL is not a constraint in the catalog) and row by row: each row as
+   JSON without the columns one side lacks, hashed inside each database, then
+   drilled down by primary-key bucket where a table differs. `--expect` holds
+   the release's rules: what may differ, what must differ (a rule nothing
+   matched fails: the release did not do what it claims), where (a SQL
+   predicate on the row), and which columns may only rise; schema-object
+   rules name the indexes or constraints a release adds. A table a release
+   creates meets a must-differ rule only with rows in it. The B clone before
+   and after its rerun must be identical, rows and schema objects, apart from
+   the schema stamp.
+   The local binary's `data-verify` runs on the B clone.
+
+5. **Performance (optional).** `--probes <file>` explains named SQL
+   statements (`EXPLAIN (ANALYZE, BUFFERS)`, inside a transaction rolled back)
+   on both clones and reports each side's execution time, the plans kept
+   beside the report; `cmd/aveloxis/testdata/probes-0.29.141.json` holds
+   aveloxis-cve's three e-mail lookups. `--perf-api` starts each side's own
+   `aveloxis api` on its clone, one side at a time in the A B B A order, and
+   replays the repository page's requests for every real repository: a
+   throwaway pass, a restart (an empty page cache, as after a deploy), a cold
+   pass and a warm pass. Times are taken over answers only (200 within
+   `http_timeout_seconds`), and in the warm pass, for an endpoint the page
+   cache covers (its route is in the API's page-cache route set), only over
+   answers it served (`X-Cache: hit`; a miss carries no header). With no
+   `api.response_cache_mb` budget the cache keeps 1,000 answers per pool, so
+   when the replay's requests for one pool outnumber that (the series pool:
+   four metrics over more than 250 repositories; the page pool, `/timeseries`
+   and `/contributors/top`: more than 500) its own sweep evicts each answer
+   before the warm pass returns, and those endpoints are timed in the cold
+   pass alone. An endpoint the cache does not cover (`/stats`) is timed over its
+   answers in both passes. Each endpoint's p95
+   per round is compared against the noise band of the A rounds (FLAG
+   beyond it), with p50 and p99 beside it; a request path the local side
+   failed (a non-200 answer, or slower than `http_timeout_seconds`) more
+   often than the released side, or never answered an endpoint the released
+   side answered, FAILs; an endpoint neither side answered is NOT MEASURED,
+   and one only the released side never answered NOT MEASURED (released)
+   (the request list names metrics the series route serves, checked before
+   any api starts, so a wrong list stops the run instead); in the warm pass, a covered
+   endpoint whose released answers came from the cache and whose local ones
+   never did is NOT CACHED (local), or NOT CACHED (local, more kept) when the
+   local side answered more of the cached requests per round (the released
+   side failed some, so it stayed under the 1,000-answer bound the local side
+   passed: eviction, reported), the reverse NOT CACHED (released), and
+   neither side hitting NOT CACHED; answers that differ between the sides are
+   counted (a release that changes a series changes its answer on purpose). The side configs copy yours, so the api must answer loopback:
+   `api.exempt_cidrs` including 127.0.0.0/8 (or `api.require_auth` false and
+   no rate limit reaching loopback); a 401, 403 or 429 in any pass stops the
+   replay with that reason. The saved re-warm list is emptied on both sides
+   first; raw samples go to `api-samples.csv`.
+
+The report (`report.md`) holds the timings with the measured noise band (the
+spread of the no-change runs), the idempotent rerun's verdict against it (one-sided:
+a rerun no slower than the band above the no-change runs passes), the
+deploy window's verdict, the heaviest statements, every differing table, every
+rule violation and data-verify's FAIL and WARN findings; `timings.csv` holds
+the raw times. Exit 1 on any violation, a rerun that changed data, a window
+overrun, a data-verify FAIL, an API-replay FAIL (a path the local side
+failed more often than the released side; the released side's failures are
+counted in their own column and do not fail the run) or a NOT CACHED (local)
+endpoint. A FLAG (an endpoint slower beyond the noise band), the NOT MEASURED
+verdicts and the other NOT CACHED verdicts are reported and do not fail the
+run.
+`--reps 1` measures no band (one A round), so every replay verdict reads n/a;
+use two or more. A probe that errors on one side is reported, not failed.
+
+Notes:
+
+- A snapshot run replaces the scratch databases of an earlier run, a
+  collection run's included: inspect those first.
+- `--settings` needs a role allowed to set each listed setting on a
+  database; a refused setting ends the run before any migrate. One value per
+  setting: a list-valued setting (`search_path`) is refused. The statement
+  timings need the `pg_stat_statements` module preloaded server-side and a
+  role that may create the extension in the clones; without them the run
+  reports no statement timings and says so.
+- `CREATE DATABASE … TEMPLATE` refuses a source with open sessions: stop the
+  processes using `--from-db` first (`aveloxis stop all` when it is the
+  deployment's own database). Every clone is a full file copy, so the run
+  needs free disk for about five copies of the source (the template, the base,
+  the two sides and the rerun's copy).
+- The template must come from a database no release newer than
+  `--released-tag` has migrated: the run refuses a base whose ledger already
+  holds a newer release's one-shot step (the local migrate would skip it).
+  A local database a newer binary has migrated can be rolled back on its
+  clone with `--rewind-sql` (for 0.29.141 against 0.29.139:
+  `cmd/aveloxis/testdata/rewind-0.29.141.sql`, which drops what 0.29.140 and
+  0.29.141 add and removes their ledger rows); the source itself is never
+  written. It rolls back the schema, not the data: repairs the newer migrate
+  already made stay, so pair it with `--seed-shape`, whose trimmed adopted
+  repositories give the repair its work. The seed refuses a database it
+  already shaped.
+- Besides rows, the comparison covers indexes (and their validity),
+  constraints and the definition of every column both sides have: type,
+  collation, NOT NULL, identity, and default or generation. A rule allowing a
+  column change uses the kind `column-changed`; NOT NULL is reported on the
+  column on every PostgreSQL version (18's catalog constraint for it is left
+  out), so one rule fits both. Every migrate sets each `tool_version` default
+  to its own release, so a `tool_version` default equal to that side's own
+  schema version is not a change; any other value is. A column's storage,
+  compression and statistics target are not compared.
+  `--max-diff-rows` (default 100,000) caps the rows read in detail per table;
+  a table with more differences is reported unverified, a FAIL.
+- data-verify runs with the local binary on both sides, with
+  `--deterministic-sample` so its sampled probes draw the same repositories on
+  both; a FAIL the released side does not have, or has with another detail,
+  fails the run. The rule
+  file's `verify_ok` lists checks that must be OK on the local side whatever
+  the released side says (a release that repairs a state the released side
+  fails by design). A must-differ rule that names indexes or constraints needs
+  every one of them, and an index added INVALID is never allowed.
+- Timings on one machine do not transfer to another. The report states a
+  noise band so a difference can be judged; plan shapes on production (a
+  plain `EXPLAIN`) are the stronger evidence for a statement's cost there.
+
+## Concurrency stress on a migrated clone
+
+The snapshot mode compares what each migrate does; it runs nothing
+concurrently. `internal/db/lifecycle_stress_test.go` (build tag `stress`)
+drives the gone lifecycle, the daily-table walks, the forge-ID adoption and
+the rename heal together on a few hot repositories of a migrated, seeded
+clone, with a row held to make operations queue and a tenth of them cut
+short, and checks the gone-history invariant every second on a consistent
+snapshot:
+
+```bash
+# a clone of a snapshot run's local side (kept with --keep-dbs); the test writes
+psql -c "CREATE DATABASE aveloxis_dt_stress TEMPLATE aveloxis_new STRATEGY FILE_COPY"
+AVELOXIS_TEST_STRESS_DB="postgres://user:pass@localhost:5432/aveloxis_dt_stress" \
+AVELOXIS_TEST_STRESS_DURATION_SECONDS=300 AVELOXIS_TEST_STRESS_WORKERS=16 \
+  go test -tags stress ./internal/db/ -run TestLifecycleStress -v -timeout 30m
+```
+
+It fails on an invariant violation, on a bucket of an adopted repository below
+its fold after the run, on any server deadlock (retried or not: these paths
+take one lock order), and on an error nothing injected; it prints each
+operation's latency percentiles. A run finds only the interleavings it
+provokes: a clean run is evidence, not proof.

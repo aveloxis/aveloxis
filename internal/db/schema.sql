@@ -94,7 +94,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repos (
     -- prelim's probe got a DEFINITIVE 404/410 (privatized or deleted
     -- upstream; the department-of-veterans-affairs class). Distinct
     -- from repo_archived, which also covers "GitHub says archived"
-    -- (still public). Set by MarkRepoGone, cleared by ClearRepoGone
+    -- (still public). Set by SidelineRepo (with the dequeue, one
+    -- transaction; repo_archived goes TRUE with it and back to the latest
+    -- repo_info status when the stamp is cleared), cleared by ClearRepoGone
     -- (prelim) or ResurrectRepo (mark-gone-repos, the recheck ticker)
     -- when the same probe later sees the repo alive again.
     repo_gone_at            TIMESTAMPTZ,
@@ -2156,6 +2158,13 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_forge_id_changes (
     adopted_at        TIMESTAMPTZ,
     adopted_by        TEXT NOT NULL DEFAULT '',
     note              TEXT NOT NULL DEFAULT '',
+    -- 0.29.140: whether the listing that last observed the change was not
+    -- public (GitHub private; a GitLab visibility other than public); NULL =
+    -- unknown (a change recorded before the column, by a scan that did not
+    -- carry visibility). An adoption resurrects a gone-stamped repository
+    -- only when the re-created one is KNOWN public (FALSE) — prelim's probe
+    -- is unauthenticated, and unknown is not proof.
+    observed_private  BOOLEAN,
     tool_source       TEXT DEFAULT 'aveloxis',
     tool_version      TEXT,
     data_source       TEXT DEFAULT 'forge',
@@ -2163,6 +2172,33 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_forge_id_changes (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_repo_forge_id_changes
     ON aveloxis_data.repo_forge_id_changes (repo_id, old_forge_id, new_forge_id);
+
+-- 0.29.140: the gone HISTORY (operator decision 2026-11-05, microsoft/bobsql).
+-- repos.repo_gone_at is the current state only and is cleared when the
+-- repository comes back; one row here per EPISODE keeps every stretch the
+-- repository did not resolve on its forge: opened by SidelineRepo in the same
+-- statement as the stamp (the probe's HTTP status, the writer), closed by the
+-- clearer that lifted the stamp (its source), at most one open episode per
+-- repository. Shown on the repository page. Born empty on every fleet (the
+-- ledgered 0.29.140 step opens an episode for each row already stamped), so
+-- its indexes live here (the SR-2 exception).
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_gone_history (
+    episode_id        BIGSERIAL PRIMARY KEY,
+    repo_id           BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id) ON UPDATE CASCADE ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    gone_at           TIMESTAMPTZ NOT NULL,
+    gone_status       SMALLINT NOT NULL DEFAULT 0,
+    gone_source       TEXT NOT NULL DEFAULT '',
+    restored_at       TIMESTAMPTZ,
+    restored_source   TEXT NOT NULL DEFAULT '',
+    tool_source       TEXT DEFAULT 'aveloxis',
+    tool_version      TEXT,
+    data_source       TEXT DEFAULT 'forge',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_repo_gone_history_repo_id
+    ON aveloxis_data.repo_gone_history (repo_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_repo_gone_history_open
+    ON aveloxis_data.repo_gone_history (repo_id) WHERE restored_at IS NULL;
 
 -- ============================================================
 -- Repo labor history (all previous scc snapshots, rotated on each

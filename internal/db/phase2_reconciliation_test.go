@@ -50,7 +50,7 @@ func TestPrelimKeepsQueueRowWhenArchiveFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	// v0.28.1 (A6): the sideline marker is MarkRepoGone (archive +
+	// v0.28.1 (A6): the sideline marker is SidelineRepo (archive +
 	// gone stamp in one statement); the v0.27.39 ordering contract is
 	// unchanged — mark must succeed before dequeue.
 	idx := strings.Index(s, "failed to mark dead repo gone")

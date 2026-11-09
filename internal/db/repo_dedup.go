@@ -377,6 +377,30 @@ var loserHygieneDeletes = []string{
 // Augur-legacy no-write-path tables (repos_fetch_log, working_commits,
 // repo_test_coverage, network_beyond_augur*).
 
+// repointGroupLinksSQL and repointStarsSQL move a merged duplicate's
+// user-facing links ($1 loser, $2 winner) onto the repository that stays, as
+// ONE statement each: the delete and the insert read one snapshot, so a link
+// a user adds to the loser while the merge runs is either moved (it existed
+// when the statement ran) or refused at the merge's commit by the loser's
+// delete (the fail-safe), never seen by the delete and missed by the insert
+// (the fresh review of the fifth round's fix: two statements had that window
+// once the row lock let the star's FK check through; group links had it
+// before). Group links have no FK to repos, so their fail-safe is the link
+// insert's FOR SHARE on the repository row (insertLinksSQL, Copilot PR #252
+// twelfth review): a late link waits for the merge and then finds the loser
+// gone. Shared by the dedup merge and the dataless rename heal.
+const repointGroupLinksSQL = `
+			WITH moved AS (DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1 RETURNING group_id)
+			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
+			SELECT group_id, $2 FROM moved
+			ON CONFLICT DO NOTHING`
+
+const repointStarsSQL = `
+			WITH moved AS (DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1 RETURNING user_id)
+			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
+			SELECT user_id, $2 FROM moved
+			ON CONFLICT DO NOTHING`
+
 // dedupOnePair merges one loser into its winner inside a single
 // transaction. Statement order matters — most child FKs are ON DELETE
 // RESTRICT, which checks immediately even though the constraints are
@@ -394,6 +418,13 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 	// Deleting a 'collecting' repo's rows would corrupt the in-flight
 	// job (its CompleteJob would also resurrect a queue row for a repo
 	// we just deleted).
+	// Both repos rows first, in id order, before the queue row (Copilot PR
+	// #252, third review): the gone writers go repos row → queue row, so the
+	// merge agrees with them, and neither row can gain a gone episode
+	// between the history carry below and the loser's delete.
+	if _, err := tx.Exec(ctx, lockRepoRowsSQL, []int64{pair.LoserID, pair.WinnerID}); err != nil {
+		return fmt.Errorf("lock repository rows: %w", err)
+	}
 	var loserStatus string
 	err = tx.QueryRow(ctx,
 		`SELECT COALESCE(status, '') FROM aveloxis_ops.collection_queue
@@ -466,18 +497,11 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		sql   string
 		args  []any
 	}{
-		{"repoint user_repos", `
-			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-			SELECT group_id, $2 FROM aveloxis_ops.user_repos WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete loser user_repos", `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, []any{pair.LoserID}},
+		// One statement each (delete + insert on one snapshot; repo_gone.go).
+		{"repoint user_repos", repointGroupLinksSQL, []any{pair.LoserID, pair.WinnerID}},
 		// v0.27.4: per-user stars are links like user_repos — repoint so
 		// a user who starred either case variant keeps their star.
-		{"repoint user_repo_stars", `
-			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
-			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete loser user_repo_stars", `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1`, []any{pair.LoserID}},
+		{"repoint user_repo_stars", repointStarsSQL, []any{pair.LoserID, pair.WinnerID}},
 		{"delete loser collection_queue", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
 		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},
@@ -524,11 +548,15 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 		{"repoint repo_forge_id_changes", `
 			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
 				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
-				 tool_source, tool_version, data_source, data_collection_date)
+				 observed_private, tool_source, tool_version, data_source, data_collection_date)
 			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
 			       CASE WHEN carries THEN l.adopted_at END,
 			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
 			       CASE WHEN carries THEN l.note ELSE '' END,
+			       -- 0.29.140 (Copilot PR #252, third review): the listing's
+			       -- visibility moves with the observation; on a conflict the
+			       -- LATER observation's answer wins (below).
+			       l.observed_private,
 			       -- The moved row keeps its provenance (PR #212 review: an
 			       -- INSERT without these restamped it with this binary and NOW()).
 			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
@@ -542,10 +570,30 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
 				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
 				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
+				observed_private  = CASE WHEN EXCLUDED.last_observed_at > c.last_observed_at THEN EXCLUDED.observed_private
+				                         WHEN EXCLUDED.last_observed_at < c.last_observed_at THEN c.observed_private
+				                         ELSE COALESCE(c.observed_private, EXCLUDED.observed_private) END,
 				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
 				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
 				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID, loserForgeID}},
 		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
+		// 0.29.140: the loser's gone episodes are observations about the
+		// same upstream — carried to the winner. The invariant "an open
+		// episode ⇔ the row's current gone state" holds across the merge
+		// (round 2 F1): the loser's OPEN episode arrives CLOSED by this
+		// merge when the winner is reachable (no stamp), and folds into the
+		// winner's open episode when the winner is gone itself — one outage
+		// seen twice, starting at the earlier observation — unless either
+		// row holds evidence the upstream was reachable after it began,
+		// which ends it there (Copilot PR #252, sixteenth review, and its two
+		// L10 passes; carryGoneHistorySQL).
+		// Copilot PR #252: the carry below reads the winner's gone state; a
+		// clearer beside this transaction (prelim, the recheck, an adoption)
+		// updates that same repos row, so the row lock taken first
+		// serialises them — the winner's state the carry reads is the state
+		// it commits against.
+		{"repoint repo_gone_history", carryGoneHistorySQL, []any{pair.LoserID, pair.WinnerID, GoneSourceDedup}},
+		{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, []any{pair.LoserID}},
 
 		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
 		// tables are globally unique — the pair shares ONE row, owned by

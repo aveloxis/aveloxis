@@ -1429,6 +1429,7 @@ func (c *Client) FetchRepoInfo(ctx context.Context, owner, repo string) (*model.
 		CodeOfConductFile:  community.CodeOfConduct,
 		SecurityIssueFile:  community.Security,
 		Status:             status,
+		Private:            raw.Visibility != "public", // 0.29.140: internal is not public to an unauthenticated probe
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
 			DataSource: "GitLab API",

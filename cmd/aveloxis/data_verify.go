@@ -39,6 +39,7 @@ func dataVerifyCmd(cfgPath *string) *cobra.Command {
 	var jsonOut bool
 	var minIdentityFill, minSeverityKnown float64
 	var useAugurKeys bool
+	var deterministic bool
 	cmd := &cobra.Command{
 		Use:   "data-verify",
 		Short: "Run the read-only data-integrity probe battery (v0.27.43)",
@@ -51,7 +52,7 @@ and fill rates. FAIL findings exit 1 — suitable for CI/cron gating.
 --ground-truth N additionally re-fetches live GitHub metadata for N sampled
 repos and compares stored values against the forge's answer (needs API keys).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDataVerify(*cfgPath, sample, groundTruth, jsonOut, minIdentityFill, minSeverityKnown, useAugurKeys)
+			return runDataVerify(*cfgPath, sample, groundTruth, jsonOut, minIdentityFill, minSeverityKnown, useAugurKeys, deterministic)
 		},
 	}
 	cmd.Flags().IntVar(&sample, "sample", 200, "repos sampled by the drift/equality probes")
@@ -60,10 +61,11 @@ repos and compares stored values against the forge's answer (needs API keys).`,
 	cmd.Flags().Float64Var(&minIdentityFill, "min-identity-fill", 0, "WARN when identity fill %% falls below this floor (0 = report-only)")
 	cmd.Flags().Float64Var(&minSeverityKnown, "min-severity-known", 0, "WARN when severity-known %% falls below this floor (0 = report-only)")
 	cmd.Flags().BoolVar(&useAugurKeys, "augur-keys", false, "also load API keys from augur_operations.worker_oauth (ground-truth only)")
+	cmd.Flags().BoolVar(&deterministic, "deterministic-sample", false, "draw the sampled probes' repositories by a hash of the id, not at random (two copies of one database then compare exactly; data-test's snapshot mode)")
 	return cmd
 }
 
-func runDataVerify(cfgPath string, sample, groundTruth int, jsonOut bool, minIdentityFill, minSeverityKnown float64, useAugurKeys bool) error {
+func runDataVerify(cfgPath string, sample, groundTruth int, jsonOut bool, minIdentityFill, minSeverityKnown float64, useAugurKeys, deterministic bool) error {
 	bootLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := loadConfig(cfgPath, bootLog)
 	logger := newLogger(cfg)
@@ -81,9 +83,10 @@ func runDataVerify(cfgPath string, sample, groundTruth int, jsonOut bool, minIde
 	// surfaces as WARN findings, never as DDL.
 
 	results := store.RunDataVerification(ctx, db.VerifyOptions{
-		Sample:           sample,
-		MinIdentityFill:  minIdentityFill,
-		MinSeverityKnown: minSeverityKnown,
+		Sample:              sample,
+		MinIdentityFill:     minIdentityFill,
+		MinSeverityKnown:    minSeverityKnown,
+		DeterministicSample: deterministic,
 	})
 
 	if groundTruth > 0 {

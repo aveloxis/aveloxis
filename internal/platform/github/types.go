@@ -224,6 +224,7 @@ type ghRepoInfo struct {
 	HasWiki         bool      `json:"has_wiki"`
 	HasPages        bool      `json:"has_pages"`
 	Archived        bool      `json:"archived"`
+	Private         bool      `json:"private"`  // 0.29.140 — an adoption resurrects a gone stamp only for a public re-creation
 	Disabled        bool      `json:"disabled"` // v0.27.103 — statusStr input on the REST fallback
 	Fork            bool      `json:"fork"`
 	Description     string    `json:"description"` // v0.23.0

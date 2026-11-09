@@ -885,6 +885,9 @@ func (s *PostgresStore) AddRepoToGroupByID(ctx context.Context, groupID, repoID 
 	if err != nil {
 		return false, err
 	}
+	if err := s.goneIfUnlinked(ctx, n, repoID); err != nil {
+		return false, err
+	}
 	return n > 0, nil
 }
 
@@ -918,6 +921,9 @@ func (s *PostgresStore) AddOrgRepoToGroupByID(ctx context.Context, groupID, repo
 func (s *PostgresStore) AddOperatorRepoToGroupByID(ctx context.Context, groupID, repoID int64) (bool, error) {
 	n, err := s.linkWithinCap(ctx, groupID, []int64{repoID}, linkOperator)
 	if err != nil {
+		return false, err
+	}
+	if err := s.goneIfUnlinked(ctx, n, repoID); err != nil {
 		return false, err
 	}
 	return n > 0, nil

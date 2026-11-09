@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.142 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a422fba5"></script>
+      <script src="../_static/documentation_options.js?v=5557755d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -584,9 +585,12 @@
 <li class="toctree-l2"><a class="reference internal" href="#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#snapshot-mode-comparing-two-migrations-0-29-142">Snapshot mode: comparing two migrations (0.29.142)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#concurrency-stress-on-a-migrated-clone">Concurrency stress on a migrated clone</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a><ul>
@@ -784,7 +788,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1567,8 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2121,8 +2127,10 @@ merging any PR labeled <code class="docutils literal notranslate"><span class="p
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p><strong>Single test repo per invocation.</strong> Multi-repo tests are
-operator-scripted shell loops for now.</p></li>
+<li><p><strong>Live repositories drift between the two sides’ collections.</strong> The
+sides collect one after the other, so activity in between shows as FLAG
+(and the event window as one FAIL; see below). The snapshot mode compares
+migrations on one cloned database instead.</p></li>
 <li><p><strong>No auto-fetch of missing tags.</strong> If the operator specifies a tag
 not yet in the local clone, the worktree step fails. Fix:
 <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--tags</span></code> then re-run.</p></li>
@@ -2182,6 +2190,25 @@ the merged-PR count), and <code class="docutils literal notranslate"><span class
 label strings for DELETED forks on the PR object; GraphQL cannot
 reconstruct them — see docs/architecture/column-mapping.md).</p>
 </section>
+<section id="a-fail-on-an-event-table-at-the-30-000-event-window">
+<h2>A FAIL on an event table at the 30,000-event window<a class="headerlink" href="#a-fail-on-an-event-table-at-the-30-000-event-window" title="Link to this heading"></a></h2>
+<p>GitHub serves a repository’s event feed (<code class="docutils literal notranslate"><span class="pre">/issues/events</span></code>) newest first and
+ends it at 30,000 events. On a repository that produces events faster than
+that window — backstage/backstage generates about 30,000 a month — both
+sides stage exactly 30,000 events (the log line <code class="docutils literal notranslate"><span class="pre">events</span> <span class="pre">staged</span> <span class="pre">…</span> <span class="pre">count=30000</span></code>
+on each side) but the window’s OLD edge moves between the two runs by the
+number of events the repository produced in between, so the released side
+holds a few events the new side’s window no longer reaches. That reads as a
+<strong>FAIL</strong> of a few rows on <code class="docutils literal notranslate"><span class="pre">pull_request_events</span></code> or <code class="docutils literal notranslate"><span class="pre">issue_events</span></code> and is not
+row loss. Verify it in three reads: both sides’ <code class="docutils literal notranslate"><span class="pre">events</span> <span class="pre">staged</span></code> counts are
+30,000; the oldest <code class="docutils literal notranslate"><span class="pre">created_at</span></code> of the table on the new side is later than
+on the released side by the gap; and the events only the released side holds
+still exist upstream (<code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">api</span> <span class="pre">repos/OWNER/REPO/issues/events/ID</span></code>). The
+2026-11-06 run against v0.29.139 was this shape: 46 <code class="docutils literal notranslate"><span class="pre">referenced</span></code> events
+from the same seven seconds on 2026-10-05 fell off the new side’s window,
+35 newer events came in, net 11 rows. A FAIL whose missing rows are NOT
+at the window’s old edge is a regression.</p>
+</section>
 <section id="expected-event-table-asymmetry-vs-pre-0-26-2-tags">
 <h2>Expected event-table asymmetry vs pre-0.26.2 tags<a class="headerlink" href="#expected-event-table-asymmetry-vs-pre-0-26-2-tags" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code> before v0.26.2 used a legacy direct-write path that
@@ -2236,6 +2263,181 @@ carried data in the released side. This is a data-loss shape and
 fails the run; a dropped column that was already dark is listed as a
 shape note only.</p></li>
 </ul>
+</section>
+<section id="snapshot-mode-comparing-two-migrations-0-29-142">
+<h2>Snapshot mode: comparing two migrations (0.29.142)<a class="headerlink" href="#snapshot-mode-comparing-two-migrations-0-29-142" title="Link to this heading"></a></h2>
+<p>The collection mode answers “does the new schema accept what the old one
+accepted”. A release whose risk is in its <strong>migration</strong> (a backfill, a repair
+of history, new indexes on large tables) needs a different question: on the
+same data, does the new binary’s migrate change exactly what the release
+claims, nothing else, and how long does it take? <code class="docutils literal notranslate"><span class="pre">--from-db</span></code> answers that. Both
+sides clone one prepared database, so they start from identical rows, and
+nothing is collected.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--from-db<span class="w"> </span>aveloxis<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--seed-shape<span class="w"> </span>cmd/aveloxis/testdata/shape-provisional.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--settings<span class="w"> </span>eval-settings.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--expect<span class="w"> </span>cmd/aveloxis/testdata/expect-0.29.141.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--reps<span class="w"> </span><span class="m">3</span><span class="w"> </span>--deploy-window<span class="w"> </span>30m<span class="w"> </span>--keep-dbs
+</pre></div>
+</div>
+<p>What it does:</p>
+<ol class="arabic simple">
+<li><p><strong>Seed (optional, <code class="docutils literal notranslate"><span class="pre">--seed-shape</span></code>).</strong> The source database is cloned into
+<code class="docutils literal notranslate"><span class="pre">aveloxis_dt_template</span></code> (the source is never written) and shaped like the
+fleet a JSON file of counts describes: synthetic repositories on the host
+<code class="docutils literal notranslate"><span class="pre">forge.invalid</span></code>, which never resolves, gone stamps, adopted forge-ID changes on
+the deepest repositories with their daily buckets as the previous
+release’s walks left them, and contributors, aliases and identities. The
+file holds aggregates only, so it can be produced on production without a
+row leaving it. The schema comes from the migrates only; the seed adds no
+index.</p></li>
+<li><p><strong>Base.</strong> The released binary migrates a clone of the template into
+<code class="docutils literal notranslate"><span class="pre">aveloxis_dt_base</span></code>: the state a fleet is in before the deploy.</p></li>
+<li><p><strong>Runs.</strong> Pairs alternate A B, B A, …: A is the released binary migrating
+a clone of the base again (the no-change deploy), B the local binary
+migrating a clone of the base (the upgrade), then once more on the same
+clone (the idempotent rerun). Every migrate is timed and its log kept;
+with <code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code> preloaded, each run’s heaviest statements are
+listed. <code class="docutils literal notranslate"><span class="pre">--settings</span></code> (a flat JSON object of PostgreSQL settings) is applied
+to every clone, because per-database settings and statistics do not travel
+with a template.</p></li>
+<li><p><strong>Compare.</strong> The last A and B clones are compared schema object by schema
+object (indexes with their validity, constraints, and each column’s definition: type, NOT NULL, default, identity and generation, since on PostgreSQL 17 and earlier NOT NULL is not a constraint in the catalog) and row by row: each row as
+JSON without the columns one side lacks, hashed inside each database, then
+drilled down by primary-key bucket where a table differs. <code class="docutils literal notranslate"><span class="pre">--expect</span></code> holds
+the release’s rules: what may differ, what must differ (a rule nothing
+matched fails: the release did not do what it claims), where (a SQL
+predicate on the row), and which columns may only rise; schema-object
+rules name the indexes or constraints a release adds. A table a release
+creates meets a must-differ rule only with rows in it. The B clone before
+and after its rerun must be identical, rows and schema objects, apart from
+the schema stamp.
+The local binary’s <code class="docutils literal notranslate"><span class="pre">data-verify</span></code> runs on the B clone.</p></li>
+<li><p><strong>Performance (optional).</strong> <code class="docutils literal notranslate"><span class="pre">--probes</span> <span class="pre">&lt;file&gt;</span></code> explains named SQL
+statements (<code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">(ANALYZE,</span> <span class="pre">BUFFERS)</span></code>, inside a transaction rolled back)
+on both clones and reports each side’s execution time, the plans kept
+beside the report; <code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/testdata/probes-0.29.141.json</span></code> holds
+aveloxis-cve’s three e-mail lookups. <code class="docutils literal notranslate"><span class="pre">--perf-api</span></code> starts each side’s own
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> on its clone, one side at a time in the A B B A order, and
+replays the repository page’s requests for every real repository: a
+throwaway pass, a restart (an empty page cache, as after a deploy), a cold
+pass and a warm pass. Times are taken over answers only (200 within
+<code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>), and in the warm pass, for an endpoint the page
+cache covers (its route is in the API’s page-cache route set), only over
+answers it served (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>; a miss carries no header). With no
+<code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> budget the cache keeps 1,000 answers per pool, so
+when the replay’s requests for one pool outnumber that (the series pool:
+four metrics over more than 250 repositories; the page pool, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>
+and <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>: more than 500) its own sweep evicts each answer
+before the warm pass returns, and those endpoints are timed in the cold
+pass alone. An endpoint the cache does not cover (<code class="docutils literal notranslate"><span class="pre">/stats</span></code>) is timed over its
+answers in both passes. Each endpoint’s p95
+per round is compared against the noise band of the A rounds (FLAG
+beyond it), with p50 and p99 beside it; a request path the local side
+failed (a non-200 answer, or slower than <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>) more
+often than the released side, or never answered an endpoint the released
+side answered, FAILs; an endpoint neither side answered is NOT MEASURED,
+and one only the released side never answered NOT MEASURED (released)
+(the request list names metrics the series route serves, checked before
+any api starts, so a wrong list stops the run instead); in the warm pass, a covered
+endpoint whose released answers came from the cache and whose local ones
+never did is NOT CACHED (local), or NOT CACHED (local, more kept) when the
+local side answered more of the cached requests per round (the released
+side failed some, so it stayed under the 1,000-answer bound the local side
+passed: eviction, reported), the reverse NOT CACHED (released), and
+neither side hitting NOT CACHED; answers that differ between the sides are
+counted (a release that changes a series changes its answer on purpose). The side configs copy yours, so the api must answer loopback:
+<code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code> including 127.0.0.0/8 (or <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> false and
+no rate limit reaching loopback); a 401, 403 or 429 in any pass stops the
+replay with that reason. The saved re-warm list is emptied on both sides
+first; raw samples go to <code class="docutils literal notranslate"><span class="pre">api-samples.csv</span></code>.</p></li>
+</ol>
+<p>The report (<code class="docutils literal notranslate"><span class="pre">report.md</span></code>) holds the timings with the measured noise band (the
+spread of the no-change runs), the idempotent rerun’s verdict against it (one-sided:
+a rerun no slower than the band above the no-change runs passes), the
+deploy window’s verdict, the heaviest statements, every differing table, every
+rule violation and data-verify’s FAIL and WARN findings; <code class="docutils literal notranslate"><span class="pre">timings.csv</span></code> holds
+the raw times. Exit 1 on any violation, a rerun that changed data, a window
+overrun, a data-verify FAIL, an API-replay FAIL (a path the local side
+failed more often than the released side; the released side’s failures are
+counted in their own column and do not fail the run) or a NOT CACHED (local)
+endpoint. A FLAG (an endpoint slower beyond the noise band), the NOT MEASURED
+verdicts and the other NOT CACHED verdicts are reported and do not fail the
+run.
+<code class="docutils literal notranslate"><span class="pre">--reps</span> <span class="pre">1</span></code> measures no band (one A round), so every replay verdict reads n/a;
+use two or more. A probe that errors on one side is reported, not failed.</p>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>A snapshot run replaces the scratch databases of an earlier run, a
+collection run’s included: inspect those first.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--settings</span></code> needs a role allowed to set each listed setting on a
+database; a refused setting ends the run before any migrate. One value per
+setting: a list-valued setting (<code class="docutils literal notranslate"><span class="pre">search_path</span></code>) is refused. The statement
+timings need the <code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code> module preloaded server-side and a
+role that may create the extension in the clones; without them the run
+reports no statement timings and says so.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">DATABASE</span> <span class="pre">…</span> <span class="pre">TEMPLATE</span></code> refuses a source with open sessions: stop the
+processes using <code class="docutils literal notranslate"><span class="pre">--from-db</span></code> first (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">stop</span> <span class="pre">all</span></code> when it is the
+deployment’s own database). Every clone is a full file copy, so the run
+needs free disk for about five copies of the source (the template, the base,
+the two sides and the rerun’s copy).</p></li>
+<li><p>The template must come from a database no release newer than
+<code class="docutils literal notranslate"><span class="pre">--released-tag</span></code> has migrated: the run refuses a base whose ledger already
+holds a newer release’s one-shot step (the local migrate would skip it).
+A local database a newer binary has migrated can be rolled back on its
+clone with <code class="docutils literal notranslate"><span class="pre">--rewind-sql</span></code> (for 0.29.141 against 0.29.139:
+<code class="docutils literal notranslate"><span class="pre">cmd/aveloxis/testdata/rewind-0.29.141.sql</span></code>, which drops what 0.29.140 and
+0.29.141 add and removes their ledger rows); the source itself is never
+written. It rolls back the schema, not the data: repairs the newer migrate
+already made stay, so pair it with <code class="docutils literal notranslate"><span class="pre">--seed-shape</span></code>, whose trimmed adopted
+repositories give the repair its work. The seed refuses a database it
+already shaped.</p></li>
+<li><p>Besides rows, the comparison covers indexes (and their validity),
+constraints and the definition of every column both sides have: type,
+collation, NOT NULL, identity, and default or generation. A rule allowing a
+column change uses the kind <code class="docutils literal notranslate"><span class="pre">column-changed</span></code>; NOT NULL is reported on the
+column on every PostgreSQL version (18’s catalog constraint for it is left
+out), so one rule fits both. Every migrate sets each <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> default
+to its own release, so a <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> default equal to that side’s own
+schema version is not a change; any other value is. A column’s storage,
+compression and statistics target are not compared.
+<code class="docutils literal notranslate"><span class="pre">--max-diff-rows</span></code> (default 100,000) caps the rows read in detail per table;
+a table with more differences is reported unverified, a FAIL.</p></li>
+<li><p>data-verify runs with the local binary on both sides, with
+<code class="docutils literal notranslate"><span class="pre">--deterministic-sample</span></code> so its sampled probes draw the same repositories on
+both; a FAIL the released side does not have, or has with another detail,
+fails the run. The rule
+file’s <code class="docutils literal notranslate"><span class="pre">verify_ok</span></code> lists checks that must be OK on the local side whatever
+the released side says (a release that repairs a state the released side
+fails by design). A must-differ rule that names indexes or constraints needs
+every one of them, and an index added INVALID is never allowed.</p></li>
+<li><p>Timings on one machine do not transfer to another. The report states a
+noise band so a difference can be judged; plan shapes on production (a
+plain <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code>) are the stronger evidence for a statement’s cost there.</p></li>
+</ul>
+</section>
+<section id="concurrency-stress-on-a-migrated-clone">
+<h2>Concurrency stress on a migrated clone<a class="headerlink" href="#concurrency-stress-on-a-migrated-clone" title="Link to this heading"></a></h2>
+<p>The snapshot mode compares what each migrate does; it runs nothing
+concurrently. <code class="docutils literal notranslate"><span class="pre">internal/db/lifecycle_stress_test.go</span></code> (build tag <code class="docutils literal notranslate"><span class="pre">stress</span></code>)
+drives the gone lifecycle, the daily-table walks, the forge-ID adoption and
+the rename heal together on a few hot repositories of a migrated, seeded
+clone, with a row held to make operations queue and a tenth of them cut
+short, and checks the gone-history invariant every second on a consistent
+snapshot:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># a clone of a snapshot run&#39;s local side (kept with --keep-dbs); the test writes</span>
+psql<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;CREATE DATABASE aveloxis_dt_stress TEMPLATE aveloxis_new STRATEGY FILE_COPY&quot;</span>
+<span class="nv">AVELOXIS_TEST_STRESS_DB</span><span class="o">=</span><span class="s2">&quot;postgres://user:pass@localhost:5432/aveloxis_dt_stress&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">AVELOXIS_TEST_STRESS_DURATION_SECONDS</span><span class="o">=</span><span class="m">300</span><span class="w"> </span><span class="nv">AVELOXIS_TEST_STRESS_WORKERS</span><span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-tags<span class="w"> </span>stress<span class="w"> </span>./internal/db/<span class="w"> </span>-run<span class="w"> </span>TestLifecycleStress<span class="w"> </span>-v<span class="w"> </span>-timeout<span class="w"> </span>30m
+</pre></div>
+</div>
+<p>It fails on an invariant violation, on a bucket of an adopted repository below
+its fold after the run, on any server deadlock (retried or not: these paths
+take one lock order), and on an error nothing injected; it prints each
+operation’s latency percentiles. A run finds only the interleavings it
+provokes: a clean run is evidence, not proof.</p>
 </section>
 </section>
 

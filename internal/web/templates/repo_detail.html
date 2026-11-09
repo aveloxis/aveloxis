@@ -19,6 +19,9 @@
 <div class="stat"><div class="value" {{if .Stats}}{{if .Stats.CriticalVulns}}style="color:#dc2626"{{end}}{{end}}>{{if .Stats}}{{.Stats.Vulnerabilities}}{{else}}0{{end}}</div><div class="label">Vulns{{if .Stats}}{{if .Stats.CriticalVulns}} ({{.Stats.CriticalVulns}} crit){{end}}{{if .Stats.VulnsVersionUnknown}} · {{.Stats.VulnsVersionUnknown}} version unknown{{end}}{{end}}</div></div>
 </div>
 
+{{if .Stats}}{{range .Stats.ForgeIDChanges}}<div class="notice notice-warn" style="font-size:13px">Two histories share this name: the forge re-created this repository{{if .ForgeCreatedAt}} on {{.ForgeCreatedAt.UTC.Format "2006-01-02"}}{{end}} (id {{.OldForgeID}} → {{.NewForgeID}}){{if .AdoptedAt}}, adopted as its continuation on {{.AdoptedAt.UTC.Format "2006-01-02"}}{{end}}{{if .Note}}: {{.Note}}{{end}}. The counts and charts cover both; the charts mark the boundary on the public page.</div>
+{{end}}{{if .Stats.GoneHistory}}<div class="notice notice-warn" style="font-size:13px"><strong>Availability on its forge</strong><ul style="margin:4px 0 0 18px;padding:0">{{range .Stats.GoneHistory}}<li>Not reachable {{if .RestoredAt}}from {{.GoneAt.UTC.Format "2006-01-02"}} to {{.RestoredAt.UTC.Format "2006-01-02"}}{{else}}since {{.GoneAt.UTC.Format "2006-01-02"}}{{end}} ({{if .Status}}HTTP {{.Status}}; {{end}}seen by {{.Source}}{{if .RestoredSource}}, back via {{.RestoredSource}}{{end}}){{if not .RestoredAt}} — current{{end}}</li>{{end}}</ul></div>
+{{end}}{{end}}
 <div class="chart-grid">
 <div><canvas id="chart-commits" height="200"></canvas></div>
 <div><canvas id="chart-prs-opened" height="200"></canvas></div>

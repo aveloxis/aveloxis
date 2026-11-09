@@ -62,6 +62,7 @@ func TestClassifyNamesEveryRefusalTheServiceReturns(t *testing.T) {
 		{db.ErrCollectionNotFound, NotFound, "no collection with that id"},
 		{db.ErrCollectionNameTaken, Conflict, db.ErrCollectionNameTaken.Error()},
 		{db.ErrGroupNotAdminOwned, InvalidInput, db.ErrGroupNotAdminOwned.Error()},
+		{db.ErrSchemaNotMigrated, NotMigrated, db.ErrSchemaNotMigrated.Error()},
 		{ex, Capacity, ""},
 	}
 	for _, c := range cases {
@@ -112,6 +113,7 @@ func TestClassifyNamesEveryRefusalTheServiceReturns(t *testing.T) {
 		{"db.ErrAPITokenNotFound", db.ErrAPITokenNotFound}, {"db.ErrInvalidCIDR", db.ErrInvalidCIDR},
 		{"db.ErrInvalidCapacitySettings", db.ErrInvalidCapacitySettings}, {"db.ErrCollectionNotFound", db.ErrCollectionNotFound},
 		{"db.ErrCollectionNameTaken", db.ErrCollectionNameTaken}, {"db.ErrGroupNotAdminOwned", db.ErrGroupNotAdminOwned},
+		{"db.ErrSchemaNotMigrated", db.ErrSchemaNotMigrated},
 		// Named in the package but never returned to an adapter: the
 		// background pass logs the first; ConfirmAccountEmail turns the
 		// second into a ConfirmOutcome.

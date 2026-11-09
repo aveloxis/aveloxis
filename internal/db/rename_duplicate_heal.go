@@ -66,58 +66,81 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		return false, err
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
+	// withRetry (Copilot PR #252, fifth review): a 40P01 victim — the one
+	// reverse lock edge left, a heal-commit-daily fill of the duplicate —
+	// retries instead of handing prelim a failure it answers with a dequeue
+	// (the duplicate's links unrepaired, no retry of its own).
+	healed := false
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
 
-	// Repoint the user-facing links (insert-then-delete: both tables'
-	// PKs include repo_id, so a user already linked/starred on the
-	// winner just no-ops the insert).
-	steps := []struct {
-		label       string
-		sql         string
-		needsWinner bool
-	}{
-		{"repoint stars", `
-			INSERT INTO aveloxis_ops.user_repo_stars (user_id, repo_id)
-			SELECT user_id, $2 FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, true},
-		{"delete dup stars", `DELETE FROM aveloxis_ops.user_repo_stars WHERE repo_id = $1`, false},
-		{"repoint group links", `
-			INSERT INTO aveloxis_ops.user_repos (group_id, repo_id)
-			SELECT group_id, $2 FROM aveloxis_ops.user_repos WHERE repo_id = $1
-			ON CONFLICT DO NOTHING`, true},
-		{"delete dup group links", `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, false},
-		{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
-		{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
-		{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},
-		{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
-	}
-	for _, st := range steps {
-		args := []any{dupRepoID}
-		if st.needsWinner {
-			args = append(args, winnerRepoID)
+		// Repoint the user-facing links (insert-then-delete: both tables'
+		// PKs include repo_id, so a user already linked/starred on the
+		// winner just no-ops the insert).
+		steps := []struct {
+			label       string
+			sql         string
+			needsWinner bool
+		}{
+			// Both repos rows first, in id order (Copilot PR #252, third review):
+			// the gone writers go repos row → queue row, and the duplicate can
+			// gain no episode between the carry below and its delete.
+			{"lock repository rows", lockRepoRowsSQL, true},
+			// One statement each — delete + insert on one snapshot (repo_gone.go):
+			// a link a user adds to the duplicate while the heal runs is moved, or
+			// refused at the commit by the duplicate's delete (the fail-safe), never
+			// deleted unseen by the insert.
+			{"repoint user_repo_stars", repointStarsSQL, true},
+			{"repoint user_repos", repointGroupLinksSQL, true},
+			{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
+			{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
+			{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},
+			// Copilot PR #252 (second review): a never-collected duplicate can
+			// still have gone episodes (probed 404 once, re-added, then redirected
+			// here); the repos delete would cascade them away silently. Carried
+			// to the winner like the dedup merge's (carryGoneHistorySQL: an open
+			// one ends at the first sign the upstream was reachable after it
+			// began, else closed by this heal on a reachable winner or folded
+			// into a gone winner's open episode; the winner's cache state
+			// stamped when anything changed), under the row locks above.
+			{"repoint repo_gone_history", carryGoneHistorySQL, true},
+			{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
 		}
-		if _, err := tx.Exec(ctx, st.sql, args...); err != nil {
-			if isFKViolation(err) {
-				// Some child table holds rows for the "never-collected"
-				// duplicate — fail safe: keep it, legacy skip applies.
-				return false, nil
+		for _, st := range steps {
+			args := []any{dupRepoID}
+			switch {
+			case st.label == "lock repository rows":
+				args = []any{[]int64{dupRepoID, winnerRepoID}}
+			case st.label == "repoint repo_gone_history":
+				args = []any{dupRepoID, winnerRepoID, GoneSourceRenameHeal}
+			case st.needsWinner:
+				args = append(args, winnerRepoID)
 			}
-			return false, fmt.Errorf("%s: %w", st.label, err)
+			if _, err := tx.Exec(ctx, st.sql, args...); err != nil {
+				if isFKViolation(err) {
+					// Some child table holds rows for the "never-collected"
+					// duplicate — fail safe: keep it, legacy skip applies.
+					return nil
+				}
+				return fmt.Errorf("%s: %w", st.label, err)
+			}
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		// The repos FKs are DEFERRABLE INITIALLY DEFERRED (v0.22.7),
-		// so a child-row violation surfaces HERE, not at Exec time.
-		if isFKViolation(err) {
-			return false, nil
+		if err := tx.Commit(ctx); err != nil {
+			// The repos FKs are DEFERRABLE INITIALLY DEFERRED (v0.22.7),
+			// so a child-row violation surfaces HERE, not at Exec time.
+			if isFKViolation(err) {
+				return nil
+			}
+			return err
 		}
-		return false, err
-	}
-	return true, nil
+		healed = true
+		return nil
+	})
+	return healed, err
 }
 
 // isFKViolation reports SQLSTATE 23503 (foreign_key_violation).

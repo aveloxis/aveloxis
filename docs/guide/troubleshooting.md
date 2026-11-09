@@ -1323,35 +1323,69 @@ The scheduler also sets this flag automatically when a collection ends with an e
 
 ### How sidelining works
 
-When the prelim phase detects a 404/410/451 response:
+When the prelim phase detects a 404/410/451 response, the repository is
+sidelined in one transaction (`SidelineRepo`, 0.29.140):
 
-- The repo is marked `repo_archived = TRUE`
-- It is removed from the collection queue
-- All previously collected data is preserved
+- `repos.repo_gone_at` is stamped (the "not reachable on its forge" state)
+  and `repo_archived` set, so every archived-filtered surface excludes it
+- a gone episode opens in `repo_gone_history` (shown on the repository page)
+- it is removed from the collection queue
+- all previously collected data is preserved
 
 ### Un-sidelining a repo
 
-If a repo comes back (e.g., was temporarily private), you can un-sideline it:
-
-```sql
--- Un-sideline the repo
-UPDATE aveloxis_data.repos
-SET repo_archived = FALSE
-WHERE repo_git = 'https://github.com/owner/repo';
-```
-
-Then re-add it to the queue:
+A repository that comes back is un-sidelined by Aveloxis itself on a
+definitive sign of life: the gone recheck (every
+`collection.gone_repo_recheck_days`, default 28), an org scan that lists it
+publicly under the forge ID the row stores, or an administrator adopting its
+recorded forge-ID change whose listing was seen public (a change observed
+before 0.29.140 carries no visibility, so adopting it keeps the repository
+gone until a scan lists it). Each clears the stamp, closes the episode, puts
+`repo_archived` back to the forge's latest recorded status and re-queues the
+repository. To bring ONE repository back sooner, re-add it: the next cycle's
+prelim probe clears the stamp on a 2xx.
 
 ```bash
 aveloxis add-repo https://github.com/owner/repo
 ```
 
+To probe the whole queueless cohort now (every row that is gone-stamped,
+archived or has commits but no queue row — one unauthenticated request each,
+`serve` may keep running):
+
+```bash
+aveloxis mark-gone-repos
+```
+
+A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx on a
+row archived WITHOUT a stamp — what `reconcile-repos` left before 0.29.140,
+when its dead arm set the archived flag alone on a 404 (a repository the
+forge archived keeps its queue row) — puts the archived flag back to the
+forge's latest recorded status and re-queues it (0.29.140), whether it
+answers at its own URL or through a redirect to a URL no row tracks (prelim
+then renames it in place). Redirected onto a repository that IS tracked, the
+row is a duplicate prelim dequeued and is left as it is: the command logs
+where it redirects, and no command consolidates an archived row today, so it
+keeps its data and is not collected. A
+definitive 404/410/451 leaves a row gone (and stamps a row that was archived
+without the stamp); anything else changes nothing. A 2xx on a queueless row
+that is neither stamped nor archived is counted as alive and left as it is:
+`aveloxis reconcile-repos` is the command for those rows — one that answers
+at its own URL is re-queued, one that redirects to a tracked repository is
+consolidated into it. Do not edit `repo_archived` by
+hand: the stamp, not the flag, is the sidelined state, and the flag is
+rewritten from the forge on the next collection.
+
 ### List all sidelined repos
 
+The sidelined state is the gone stamp. `repo_archived` alone also covers
+repositories the forge archived and still serves (tens of thousands on a
+large fleet), so it is not the filter.
+
 ```sql
-SELECT repo_id, repo_owner, repo_name, repo_git
+SELECT repo_id, repo_owner, repo_name, repo_git, repo_gone_at
 FROM aveloxis_data.repos
-WHERE repo_archived = TRUE
+WHERE repo_gone_at IS NOT NULL
 ORDER BY repo_owner, repo_name;
 ```
 

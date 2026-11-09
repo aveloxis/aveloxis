@@ -264,7 +264,7 @@ func (sc *StagedCollector) CollectRepo(ctx context.Context, repoID int64, owner,
 		// slow-changing reference data so they live on repos.
 		// Non-fatal — if the UPDATE fails we log and continue;
 		// the next cycle will retry.
-		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated); updateErr != nil {
+		if updateErr := sc.store.UpdateRepoMetadata(ctx, repoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated, info.Private); updateErr != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
 			// unchanged and the work is retried on the next cycle.

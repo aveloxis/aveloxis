@@ -1,0 +1,10 @@
+{
+  "fleet_repos": 184000,
+  "gone_stamped": 1388,
+  "adopted": 15,
+  "adopted_depth_factor": 1,
+  "contributors": 2500000,
+  "contributors_aliases": 1600000,
+  "contributor_identities": 2500000,
+  "source": "provisional: fleet, gone and adopted counts from the 0.29.140 rehearsal of aveloxis_large (summary/68 §4a); contributor counts estimated from the 2.5M-row figure in contributor_email_lookup_indexes_test.go and the local alias/identity ratios. Replace with the Track 0a output."
+}

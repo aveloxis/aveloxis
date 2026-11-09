@@ -41,6 +41,10 @@ func TestListOwnerReposPaginatesAnOrganization(t *testing.T) {
 		case 1:
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"id": 7, "html_url": "https://github.com/my org/a", "name": "a", "created_at": "2024-05-06T07:08:09Z", "owner": map[string]any{"login": "my org"}},
+				// A member token lists the organization's PRIVATE repositories
+				// too (type=all); the scan must know (0.29.140: an unauthenticated
+				// probe 404s them, so a private listing is no sign of life).
+				{"id": 8, "html_url": "https://github.com/my org/p", "name": "p", "private": true, "owner": map[string]any{"login": "my org"}},
 			})
 		default:
 			_ = json.NewEncoder(w).Encode([]map[string]any{})
@@ -53,8 +57,11 @@ func TestListOwnerReposPaginatesAnOrganization(t *testing.T) {
 		}
 		got = append(got, it)
 	}
-	if len(got) != 1 || got[0].ForgeID != "7" || got[0].Owner != "my org" || got[0].Name != "a" || got[0].CreatedAt.Year() != 2024 {
+	if len(got) != 2 || got[0].ForgeID != "7" || got[0].Owner != "my org" || got[0].Name != "a" || got[0].CreatedAt.Year() != 2024 {
 		t.Errorf("ListOwnerRepos = %+v", got)
+	}
+	if got[0].Private || !got[1].Private {
+		t.Errorf("Private must follow the listing's `private` field: %+v", got)
 	}
 	if len(paths) != 2 || paths[0] != "/orgs/my%20org/repos?page=1" || paths[1] != "/orgs/my%20org/repos?page=2" {
 		t.Errorf("paths = %v; want the escaped organization listing, two pages", paths)

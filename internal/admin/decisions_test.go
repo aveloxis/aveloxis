@@ -6,6 +6,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -409,6 +410,10 @@ func TestAdoptForgeID(t *testing.T) {
 		}{
 			{db.ErrNoPendingForgeIDChange, NotFound, "no pending forge-ID change"},
 			{db.ErrForgeIDNotAsExpected, Superseded, "no longer stores 1"},
+			// Copilot PR #252, fourteenth review: the api and web processes do
+			// not migrate; on a schema behind the binary the adoption is a
+			// refusal naming the migrate, not a server error.
+			{fmt.Errorf("%w: run %s", db.ErrSchemaNotMigrated, db.DeployStepsAdvice), NotMigrated, "deploy-checklist"},
 		} {
 			st := &fakeStore{isUserAdmin: adminIs(true), userLabel: func(context.Context, int) (string, error) { return "a", nil },
 				adoptPendingForgeIDChange: func(context.Context, int64, string, string, string, string) error { return tc.err }}
@@ -420,6 +425,9 @@ func TestAdoptForgeID(t *testing.T) {
 			}
 			if !strings.Contains(logs.String(), "refused") {
 				t.Errorf("%v not logged:\n%s", tc.err, logs.String())
+			}
+			if tc.kind == NotMigrated && !strings.Contains(logs.String(), "level=ERROR") {
+				t.Errorf("a schema behind the binary is a deployment fault, logged at ERROR:\n%s", logs.String())
 			}
 		}
 	})

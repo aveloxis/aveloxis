@@ -95,6 +95,74 @@ Central repository table. Every collected repository has exactly one row here. A
 
 **Operational lifecycle columns on `repos`** (added over the v0.21–v0.29 series, not itemized above): the scancode worker family (`scancode_last_run`, `scancode_version`, `scancode_locked_at/pid/boot_id/host`, `scancode_output_path`, `scancode_failed_attempts`, `scancode_timeout_attempts`, `scancode_skip_reason`), the distribution worker family (`distribution_last_run`, `distribution_scan_complete`, `distribution_failed_attempts`, `distribution_last_failed_at`), `whitespace_head_hash` (incremental whitespace-walk marker), `added_at` (stable fleet-entry stamp), `data_changed_at` (v0.29.73 — stamped in the same transaction as each write of data the repository's pages show that can happen outside a collection job: every scorecard write (the job's phase and `aveloxis run-scorecard`), every scancode snapshot, every vulnerability insert or resolution, the CVSS rescore of `heal-vulnerabilities --rescore-only` and `heal-libyear --apply` on the repositories whose rows they change, and `aveloxis collect` at the end of each repository's run — so the API replaces its cached answers for that repository; NULL = never stamped), `vuln_scan_last_run` (v0.28.1 — completed-OSV-scan stamp; NULL = never provably scanned), `repo_gone_at` (v0.28.1 — the distinct "no longer reachable on its forge" state, cleared on resurrection), `repo_gone_checked_at` (v0.29.7 — when that state was last re-verified; the scheduler's recheck ticker claims on it), and `metadata_backfill_attempted_at` (v0.29.69 — when the startup metadata backfill last got an answer from the forge for this repository: metadata written, or a definitive not-found; NULL = never answered; the repository is not asked again until one recollect interval has passed), and `repo_unavailable_reason` / `repo_unavailable_url` (v0.29.70 — the forge's own message for a blocked or disabled repository and its https notice link; shown on the repository page; cleared when a clone succeeds or the gone state is lifted), and `first_commit_at` / `last_commit_at` (v0.29.70 — the MIN and MAX of the repository's plausibly dated commit author timestamps (from 1970-01-02 to two UTC days from now; a bogus date never becomes a bound, and a stored one is repaired on the next walk — 2026-10-07), maintained by the facade so the repository page and chart floors never scan a large repository's commit rows; NULL until the repository's next collection, or for a gone repository its next gone recheck, fills them), and `commit_daily_complete_at` (v0.29.75 — when `repo_commit_daily` last became the repository's complete daily picture: a facade walk whose every commit was proven written, or `heal-commit-daily`'s fill; NULL = the daily rows, if any, are not authoritative, the readers take the commits table and the heal command lists the repository; the migrate that adds the column stamps, on that run only, every repository that already has rows). See `schema.sql` for the authoritative column list.
 
+#### repo_gone_history
+
+The gone HISTORY (0.29.140): one row per stretch during which a repository did not
+resolve on its forge. `repos.repo_gone_at` is the current state only and is cleared
+when the repository comes back; this table keeps every episode so the repository
+page can say "not reachable from the 4th to the 5th" after the fact (the
+2026-11-05 microsoft/bobsql case: re-created upstream, probed while still 404,
+back a day later). Opened by `SidelineRepo` — the one gone marker (prelim, `mark-gone-repos`, `reconcile-repos`), which removes the queue row in the same transaction — in the same statement as the stamp,
+closed by whichever clearer lifts it (`ClearRepoGone`, `ResurrectRepo`,
+`ResurrectIfListed`, a forge-ID adoption), or by the dedup merge or the rename heal, which carry a merged duplicate's
+episodes to the repository that stays. Its open episode ends at the first
+evidence that the upstream was reachable after it began (a restoration a probe
+or clearer observed in either row's history, or a metadata snapshot; a
+merge's own closures are inferred and do not count), since a gone row is
+rechecked only about every 28 days and can be stale. The same evidence splits
+a gone winner's stale open episode: when a definitive gone observation came
+after it (the duplicate's open episode, or the winner's latest gone mark), the
+winner's old stretch is closed at the evidence and the current one starts at
+the earlier of those observations; with neither, the episode is left for the
+recheck (the winner stays marked gone either way). With
+no such evidence the duplicate's open episode arrives
+closed at the merge when the winner is reachable; when the winner is gone too,
+the two open episodes are one outage and fold into the winner's, which starts
+at the earlier observation (no stretch reads "back" for an outage that has not
+ended);
+at most one open episode per repository
+(`uq_repo_gone_history_open`). Born empty on every fleet; the ledgered 0.29.140
+migrate step opens an episode for each row already stamped (status `0`, source
+`backfill-0.29.140`). Shown on the repository page as `gone_history` of `/stats`.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `episode_id` | BIGSERIAL PK | — | Row identity. |
+| `repo_id` | BIGINT NOT NULL FK → repos | `SidelineRepo` | The repository. |
+| `gone_at` | TIMESTAMPTZ NOT NULL | `SidelineRepo` (`repos.repo_gone_at` of the same statement; the backfill copies the stored stamp) | When the probe saw the repository gone. |
+| `gone_status` | SMALLINT NOT NULL DEFAULT 0 | `SidelineRepo` from the probe's HTTP status (404, 410, 451) | `0` = unknown (backfilled rows, and a current stretch a merge restarted at the repository's latest gone mark, whose status the marker does not keep). |
+| `gone_source` | TEXT NOT NULL DEFAULT '' | `SidelineRepo` | The writer that saw it gone: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `backfill-0.29.140`; `''` for a current stretch a merge restarted at the latest gone mark (the writer is not kept). |
+| `restored_at` | TIMESTAMPTZ | the clearer, in its statement | When the repository was seen again; NULL while the episode is open. |
+| `restored_source` | TEXT NOT NULL DEFAULT '' | the clearer | The writer that saw it back: `prelim`, `gone-recheck`, `mark-gone-repos`, `reconcile-repos`, `forge-id-adoption`, `org-scan`; `collection` when a merge closed a stale episode at the first metadata snapshot after it (a restoration a merge found keeps its writer's name); `dedup-repos` and `rename-heal` when a merge closed a duplicate's open episode with no such evidence because the repository that stays is reachable (an inference, which later merges do not read as evidence). |
+| `tool_source`, `tool_version`, `data_source`, `data_collection_date` | TEXT / TIMESTAMPTZ | schema defaults | Provenance. |
+
+
+#### repo_forge_id_changes
+
+A repository deleted and re-created upstream under the same URL (v0.29.62; intel/Enterprise-RAG,
+GNOME/gimp-macos-build on 2026-09-16; microsoft/bobsql on 2026-10-29): the org scan sees a forge ID
+other than the stored one and RECORDS it here — observation only (SR-7), `repos` untouched — until an
+administrator adopts the change (the admin Approvals page or `aveloxis adopt-forge-id`), which moves
+`repos.platform_repo_id` and stamps the row. The repository page shows adopted changes
+(`forge_id_changes` of `/stats`) because the statistics cover two histories; the charts mark the
+boundary. Read with a fallback when `observed_private` does not exist yet (an api started before
+the 0.29.140 migrate): the visibility is then unknown.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `change_id` | BIGSERIAL PK | sequence | |
+| `repo_id` | BIGINT NOT NULL FK → repos | the org scan (`recordForgeIDObservation`), or the adoption when the scan never saw the change | The repository. |
+| `old_forge_id` | TEXT NOT NULL | the org scan: `repos.platform_repo_id` at observation; the adoption: the stored id it replaces | One row per (repo, old, new) pair. |
+| `new_forge_id` | TEXT NOT NULL | the org scan: the listing's id; the CLI: the forge's answer | The re-created repository's id. |
+| `first_observed_at` | TIMESTAMPTZ NOT NULL | default `NOW()` at the first observation | |
+| `last_observed_at` | TIMESTAMPTZ NOT NULL | the org scan, every repeat observation | |
+| `forge_created_at` | TIMESTAMPTZ | the org scan (the listing's `created_at`); the CLI (the forge's); kept when a later observation lacks it | When the forge created the new repository: the era boundary the charts mark (its first observation when absent). |
+| `adopted_at` | TIMESTAMPTZ | `adoptForgeIDInTx` (the admin page's `AdoptPendingForgeIDChange`, the CLI's `AdoptForgeID`) | NULL = pending. |
+| `adopted_by` | TEXT NOT NULL DEFAULT '' | the adoption: the administrator's login (`user <id>` when the lookup fails, `operator` for an operator actor); the CLI: the invoking OS user's login, else `operator` | |
+| `note` | TEXT NOT NULL DEFAULT '' | the adoption: the administrator's note (≤ 1,000 characters) | |
+| `observed_private` | BOOLEAN | the org scan (0.29.140: GitHub `private`, GitLab `visibility <> 'public'`), every observation — the last listing wins; the CLI's adoption records the forge's answer; the admin page's adoption keeps the recorded value | NULL = unknown (recorded before 0.29.140, or by a scan that carried no visibility). An adoption resurrects a gone-stamped repository only when this is FALSE (KNOWN public): prelim's probe is unauthenticated, unknown is not proof. |
+| `tool_source` / `tool_version` / `data_source` / `data_collection_date` | TEXT / TEXT / TEXT / TIMESTAMPTZ | defaults; `tool_version` via `setToolVersionDefaults()` | Augur provenance columns. |
+
 #### repo_groups_list_serve
 
 Mailing list registry + per-list collection state. Each row is a list the MailingListWorker collects; the `mlls_*` columns (v0.25.7) carry the claim/checkpoint/lock state. See [Mailing-list ingestion](architecture/mailing-list.md).
@@ -2428,11 +2496,16 @@ The schema defines the following additional indexes for query performance:
 | `idx_releases_repo_id` | releases | `(repo_id)` | |
 | `idx_repo_info_repo_id` | repo_info | `(repo_id)` | |
 | `idx_contributor_identities_cntrb` | contributor_identities | `(cntrb_id)` | |
+| `idx_contributors_email_lower` | contributors | `(lower(cntrb_email))` | |
+| `idx_contributors_aliases_email_lower` | contributors_aliases | `(lower(alias_email))` | |
+| `idx_contributor_identities_email_lower` | contributor_identities | `(lower(email))` | |
 | `idx_commit_parents_cmt` | commit_parents | `(cmt_id)` | |
 | `idx_repo_labor_repo_id` | repo_labor | `(repo_id)` | |
 | `idx_repo_deps_libyear_repo_id` | repo_deps_libyear | `(repo_id)` | |
 | `idx_repo_deps_scorecard_repo_id` | repo_deps_scorecard | `(repo_id)` | |
 | `idx_repo_dependencies_repo_id` | repo_dependencies | `(repo_id)` | |
+
+The three `lower()` e-mail indexes (0.29.141) are built by the migrate with `CREATE INDEX CONCURRENTLY`, not by schema.sql, so they serve case-insensitive e-mail lookups such as aveloxis-cve's author resolution.
 
 ### aveloxis_ops indexes
 

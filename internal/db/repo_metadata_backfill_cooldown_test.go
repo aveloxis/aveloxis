@@ -91,7 +91,7 @@ func TestMetadataBackfillSkipsReposAskedWithinCooldown(t *testing.T) {
 
 	// The empty answer: UpdateRepoMetadata writes the forge's empty values
 	// back, exactly as the backfill does on success.
-	if err := store.UpdateRepoMetadata(ctx, ids["empty"], "", "", nil, false, "", "", time.Time{}, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, ids["empty"], "", "", nil, false, "", "", time.Time{}, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"empty", "gone"} {

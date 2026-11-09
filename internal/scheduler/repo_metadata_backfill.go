@@ -156,7 +156,7 @@ func (s *Scheduler) runRepoMetadataBackfill(ctx context.Context) {
 					"owner", t.Owner, "repo", t.Name, "error", err)
 				totalFailed++
 			} else {
-				updErr := s.store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated)
+				updErr := s.store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage, info.Languages, info.Status == "Archived", info.ForkedFrom(), info.PlatformRepoID, info.CreatedAt, info.LastUpdated, info.Private)
 				if errors.Is(updErr, context.Canceled) {
 					return // shutdown, not a failure
 				}

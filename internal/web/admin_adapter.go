@@ -60,6 +60,11 @@ func (s *Server) newAdminService(m *mailer.Mailer) *admin.Service {
 	return admin.New(s.store, opts, nil, logger)
 }
 
+// notMigratedMessage is the NotMigrated page: what ends it, with no schema
+// object named (the code review of the fourteenth-review fix: the store's
+// text, meant for the operator's console, named tables and columns).
+var notMigratedMessage = "Not available until the database is migrated to this release: run " + db.DeployStepsAdvice + ", then retry. Nothing was changed."
+
 // refusePage answers a service refusal on an admin page or form: true
 // when err was one and the response is written; false when err is a
 // failure the caller answers with serverError. A group that is not the
@@ -105,6 +110,10 @@ func (s *Server) refusePage(w http.ResponseWriter, r *http.Request, err error) b
 		http.Error(w, detail("some repositories could not be added")+"; try adding them again", http.StatusInternalServerError)
 	case admin.Capacity:
 		http.Error(w, ref.Exceeded.Message(), http.StatusTooManyRequests)
+	case admin.NotMigrated:
+		// The web process does not migrate (Copilot PR #252, fourteenth
+		// review): a schema behind the binary is the operator's to fix.
+		http.Error(w, notMigratedMessage, http.StatusServiceUnavailable)
 	default:
 		return false
 	}

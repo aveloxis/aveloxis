@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.139 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.142 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a422fba5"></script>
+      <script src="../_static/documentation_options.js?v=5557755d"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -584,9 +585,12 @@
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#snapshot-mode-comparing-two-migrations-0-29-142">Snapshot mode: comparing two migrations (0.29.142)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#concurrency-stress-on-a-migrated-clone">Concurrency stress on a migrated clone</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a><ul>
@@ -784,7 +788,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1567,8 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2171,6 +2177,7 @@ records and the file); keep it with the request record.</p>
 <section id="aveloxis-collect">
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">collect</span></code><a class="headerlink" href="#aveloxis-collect" title="Link to this heading"></a></h2>
 <p>One-shot collection of specific repos without the scheduler. Uses the <strong>direct collection pipeline</strong> (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>aveloxis collect [flags] &lt;url&gt; [&lt;url&gt; ...]
 </pre></div>
 </div>
@@ -2375,9 +2382,9 @@ are left as they are.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>migrate
 </pre></div>
 </div>
-<p>Creates 164 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
+<p>Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code> is enabled (the default) and, always, the two supply-chain views:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (108 tables + 22 materialized views) – all collected data</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code></strong> (109 tables + 22 materialized views) – all collected data</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code></strong> (52 tables) – operational state</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code></strong> (4 tables) – scancode per-file license/copyright results</p></li>
 </ul>
@@ -2446,6 +2453,7 @@ treat owner/repo URLs case-insensitively, so
 are the <strong>same repository</strong> — but fleets that predate v0.25.32 could
 accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># show the plan (first 20 pairs)</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">     </span><span class="c1"># canary batch</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w">                </span><span class="c1"># full run — re-run until &quot;0 pairs&quot;</span>
@@ -2969,6 +2977,12 @@ aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<
 <span class="c1"># Custom work directory (useful for CI artifact retention)</span>
 aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--work-dir<span class="w"> </span>/var/cache/aveloxis-data-test
+
+<span class="c1"># Snapshot mode (0.29.142): compare only the two migrations, timed and row</span>
+<span class="c1"># by row, on clones of one database shaped like the production fleet</span>
+aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main<span class="w"> </span>--from-db<span class="w"> </span>aveloxis<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--seed-shape<span class="w"> </span>cmd/aveloxis/testdata/shape-provisional.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--expect<span class="w"> </span>cmd/aveloxis/testdata/expect-0.29.141.json<span class="w"> </span>--reps<span class="w"> </span><span class="m">3</span><span class="w"> </span>--keep-dbs
 </pre></div>
 </div>
 <p>The full report is written to <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/report.md</span></code>. See
@@ -3043,24 +3057,41 @@ row-count comparison, see <code class="docutils literal notranslate"><span class
 <code class="docutils literal notranslate"><span class="pre">collection_queue</span></code> row — invisible to the scheduler forever. Production
 audit (2026-07-21) root-caused the cohort to GitHub renames + prelim’s
 duplicate skip+dequeue (which dequeues without archiving), plus a
-smaller lost-enqueue share. Each stranded repo is classified by a LIVE
-redirect check:</p>
+smaller lost-enqueue share.</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
+<p>Each stranded repo is classified by a LIVE redirect check:</p>
 <ul class="simple">
-<li><p>dead upstream (404/410/451) → archived (the outcome prelim applies)</p></li>
+<li><p>dead upstream (404/410/451) → gone-stamped and archived, the outcome
+prelim applies (0.29.140; before, the archived flag alone, so these rows
+never joined the gone recheck and a transient 404 was final); the gone
+episode names <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code>. Prelim’s own sideline is one statement
+since 0.29.140 (stamp, episode and dequeue together), so an org scan’s
+resurrection can no longer land between the stamp and the dequeue and
+leave a repository unstamped and queueless.</p></li>
 <li><p>redirects to a <strong>tracked</strong> repo → dataless duplicates heal onto the
 winner (<code class="docutils literal notranslate"><span class="pre">HealRenamedDuplicate</span></code>); data-bearing duplicates consolidate
 through the dedup-repos per-pair machinery (repoints + leaves-first
 deletes)</p></li>
 <li><p>redirects to an <strong>untracked</strong> URL → re-enqueued (prelim renames it
 in place on the next cycle — rename detection is prelim’s job)</p></li>
-<li><p>alive at its own URL → re-enqueued (a lost queue row)</p></li>
+<li><p>alive at its own URL (a 2xx) → re-enqueued (a lost queue row); a stale
+gone stamp on the row is cleared with the same statement (0.29.140)</p></li>
+<li><p>any other answer (403, 429, 5xx, an unresolved redirect) → re-enqueued
+only: nothing is proven about the repository, so a gone stamp stays for
+prelim’s own probe to decide</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>reconcile-repos<span class="w"> </span>--dry-run<span class="w">   </span><span class="c1"># per-repo classification, no writes</span>
 aveloxis<span class="w"> </span>reconcile-repos<span class="w"> </span>--limit<span class="w"> </span><span class="m">50</span><span class="w">  </span><span class="c1"># canary</span>
 aveloxis<span class="w"> </span>reconcile-repos<span class="w">             </span><span class="c1"># everything</span>
 </pre></div>
 </div>
-<p>The scheduler also logs a startup gauge (<code class="docutils literal notranslate"><span class="pre">non-archived</span> <span class="pre">repos</span> <span class="pre">with</span> <span class="pre">no</span> <span class="pre">collection_queue</span> <span class="pre">row</span></code>) pointing here whenever the count is non-zero.
+<p>The scheduler also logs a startup gauge (<code class="docutils literal notranslate"><span class="pre">non-archived</span> <span class="pre">repos</span> <span class="pre">with</span> <span class="pre">no</span> <span class="pre">collection_queue</span> <span class="pre">row</span></code>) pointing here whenever the count is non-zero. Before
+0.29.140 that gauge rose at every deploy: the migrate step that mirrors the
+forge’s archived flag onto <code class="docutils literal notranslate"><span class="pre">repos.repo_archived</span></code> un-archived every
+gone-stamped repository whose last metadata snapshot was not archived (the
+snapshot predates the disappearance), so the gone cohort re-entered the
+stranded set each time; the step leaves gone-stamped rows alone now, and a
+non-zero gauge is a real finding again.
 Re-run until stranded = 0; healed repos drop out of the set. Since
 v0.29.68 <code class="docutils literal notranslate"><span class="pre">Ctrl-C</span></code> or a SIGTERM (<code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">&lt;pid&gt;</span></code>) cancels the in-flight probe
 or statement, ends the walk and prints an interruption summary (what was
@@ -3143,6 +3174,7 @@ its unit with the site). Read-only on the schema; does not run migrations
 <h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">adopt-forge-id</span></code><a class="headerlink" href="#aveloxis-adopt-forge-id" title="Link to this heading"></a></h2>
 <p>Treats a repository that was deleted and re-created on its forge under the
 same URL as a continuation of the one Aveloxis already tracks (v0.29.62).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--list</span></code> still works, the visibility shown as not recorded (0.29.140).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--list<span class="w">                         </span><span class="c1"># recorded changes: pending, superseded, adopted</span>
 aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--repo-id<span class="w"> </span><span class="m">98226</span>
 aveloxis<span class="w"> </span>adopt-forge-id<span class="w"> </span>--repo-id<span class="w"> </span><span class="m">126257</span><span class="w"> </span>--note<span class="w"> </span><span class="s2">&quot;upstream re-created by the org&quot;</span>
@@ -3158,12 +3190,34 @@ still reports the stored ID, or when the stored ID changed in the meantime.
 A GitLab repository is only looked up on the configured GitLab instance
 (project IDs are per instance, and the keys stay on that host); a generic
 git repository has no API to ask.</p>
-<p>The repository page then shows: “Note: this repository changed forge
-identifiers on <date>, from <old id> to <new id>. This is unusual, and may
-affect statistics.” The row holds data from both upstream repositories:
-commit history usually lines up (a re-push keeps the hashes), but issue and
-pull request numbers restart in the new repository. The mismatch ERROR
-stops once the change is adopted.</p>
+<p>The repository page then says that two histories share the name: when the
+forge created the new repository (the era boundary), the two forge IDs, when
+collection first saw the change and who adopted it, and that commits and
+activity before the boundary belong to the earlier repository; every chart
+marks the boundary with a dashed “new upstream” line (0.29.140). The row
+holds data from both upstream repositories: the daily commit table keeps the
+earlier era (the facade’s trim stops at the boundary day, and the adoption
+restores from the commits table the buckets a walk had already trimmed; a
+set of repositories on the compare page keeps the per-file path, which
+counts a commit shared by a fork and its upstream once), issue and pull
+request numbers restart in the new repository. That restore is a fold of
+the repository’s commit rows inside the adoption, so a very large
+re-created repository (minutes of commit rows) is adopted with this command
+rather than from the web GUI or the API, whose request deadline would roll
+the adoption back. The mismatch ERROR stops once
+the change is adopted. An adoption also brings a gone-stamped repository
+back (0.29.140) when the re-created repository is PUBLIC — the forge’s own
+answer here, the scan’s recorded listing on the admin page: the stamp is
+cleared, its gone episode closed and the repository re-queued in the
+adoption’s own transaction. A private or GitLab-internal re-creation is
+adopted as the continuation but stays gone (an unauthenticated probe cannot
+see it; <code class="docutils literal notranslate"><span class="pre">--list</span></code> and the admin page mark such a change “listed private”), and
+so is a change whose listing’s visibility was never recorded (one recorded
+before 0.29.140, marked “visibility not recorded”) when adopted from the admin
+page — this command asks the forge and decides on its answer.
+Before, an adopted repository that prelim had probed while it was still 404
+stayed “no longer publicly available” and out of the queue until the 28-day
+recheck.</p>
 <p>An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under “Re-created repositories”, each with an Adopt
 button, one per recorded change. The button adopts exactly that change, with
@@ -3181,6 +3235,7 @@ superseded, it leaves the card, and adopting it is refused.</p>
 <code class="docutils literal notranslate"><span class="pre">FetchRepoInfo</span></code> per GitHub/GitLab repo, written through the same
 <code class="docutils literal notranslate"><span class="pre">UpdateRepoMetadata</span></code> path the collector’s Phase 0 uses. Generic-git
 repos are skipped (no API).</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).</p>
 <p>Built as a launch accelerator for fork status: v0.27.78 added fork
 capture to Phase 0, but the per-cycle forward path takes ~6–21 days
 to cover the fleet. This command front-loads it — roughly an hour for
@@ -3241,7 +3296,11 @@ invariant probe battery against the configured database and exits 1 on
 any FAIL — suitable for gating releases and cron runs. Probes:
 structural invariants (case-duplicate repos, Default-group singleton,
 stranded repos, stale &gt;24h locks, cross-kind message corruption with
-migration-state awareness), sampled count-integrity (cached queue
+migration-state awareness; since 0.29.142 also one open gone episode per
+gone-stamped repository and none on a reachable one, gone-stamped
+repositories that are queued (a WARN: pending re-probes), INVALID indexes,
+earlier-era daily buckets below their fold from the commits table, and the
+three lower(email) indexes), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector’s 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).</p>
@@ -3252,6 +3311,9 @@ aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--ground-trut
 <span class="w">                                              </span><span class="c1"># metadata for 10 sampled repos</span>
 <span class="w">                                              </span><span class="c1"># and compare (needs API keys)</span>
 aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--min-identity-fill<span class="w"> </span><span class="m">95</span><span class="w">   </span><span class="c1"># optional floors → WARN below</span>
+aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--deterministic-sample<span class="w">   </span><span class="c1"># sample by a hash of the id, so</span>
+<span class="w">                                              </span><span class="c1"># two copies of one database read</span>
+<span class="w">                                              </span><span class="c1"># alike (data-test&#39;s snapshot mode)</span>
 </pre></div>
 </div>
 <p>Severities: FAIL = a code-enforced invariant is broken (exit 1);
@@ -3406,6 +3468,7 @@ removes from the queue). All collected data is kept, but before
 v0.28.1 nothing distinguished that state from “never collected”, so
 the GUI showed a false “queued for first collection” banner over
 real data.</p>
+<p>Like every command but <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> still previews (0.29.140).</p>
 <p>The probe is bidirectional and only DEFINITIVE answers decide:</p>
 <ul class="simple">
 <li><p><strong>404/410/451</strong> → stamp <code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code>. The repo page then shows
@@ -3414,6 +3477,20 @@ GitHub” over the data we hold.</p></li>
 <li><p><strong>200 on a previously-stamped repo</strong> → clear the stamp and
 re-enqueue: if the organization re-publicizes, collection resumes
 automatically on the next run of this command.</p></li>
+<li><p><strong>200 on a repo archived without a stamp</strong> (0.29.140) → put the
+archived flag back to the forge’s latest recorded status and
+re-enqueue, counted as <code class="docutils literal notranslate"><span class="pre">lifted_archived</span></code>. Before 0.29.140
+<code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> set the archived flag alone on a 404, and a
+repository the forge archived keeps its queue row, so an archived,
+unstamped, queueless row is that sideline — at its own URL, or renamed
+to a URL no row tracks (prelim renames it in place once queued).
+Renamed onto a repository that IS tracked, the row is a duplicate
+prelim dequeued: counted <code class="docutils literal notranslate"><span class="pre">alive</span></code>, left as it is, and logged with where
+it redirects (no command consolidates an archived row today).</p></li>
+<li><p><strong>200 on any other candidate</strong> (a queueless row that is neither
+stamped nor archived) → counted as <code class="docutils literal notranslate"><span class="pre">alive</span></code> and left as it is;
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> re-queues it if it answers at its own URL
+and consolidates it if it redirects to a tracked repository.</p></li>
 <li><p><strong>Anything else</strong> (transport errors, rate limits, 5xx,
 unresolvable redirects) → the repo is skipped and a re-run
 retries it.</p></li>

@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -471,5 +472,39 @@ func TestDataTestSidesAreTheOneSpelling(t *testing.T) {
 		if strings.Contains(src, derivation) {
 			t.Errorf("a scratch database name is derived with %s; read dataTestSides[i].dbname instead", derivation)
 		}
+	}
+}
+
+// The snapshot flag rules decide before anything runs (Copilot's review of
+// cce17a6f): the --diff-only branch returned before checkSnapshotFlags, so
+// `--from-db … --diff-only --expect …` ran the collection run's row-count
+// comparison and could report PASSED without the release's rules or the
+// catalog checks. Both combinations below are refused, with the rule's own
+// message, and leave the work dir without a report.
+func TestDataTestRefusesSnapshotFlagCombinationsBeforeAnyRun(t *testing.T) {
+	for name, args := range map[string][]string{
+		"from-db with diff-only":         {"--from-db", "aveloxis", "--diff-only"},
+		"diff-only with a snapshot flag": {"--diff-only", "--expect", "testdata/expect-0.29.141.json"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			work := t.TempDir()
+			// A kept collection run's record, so the diff-only path's own
+			// rules let it through: the refusal must not lean on them.
+			if err := os.WriteFile(filepath.Join(work, "repos.txt"), []byte("https://github.com/sunpy/sunpy\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := filepath.Join(t.TempDir(), "absent.json")
+			cmd := dataTestCmd(&cfg)
+			cmd.SetArgs(append([]string{"--released-tag", "origin/main", "--work-dir", work}, args...))
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if err == nil || !(strings.Contains(err.Error(), "--diff-only re-diffs") || strings.Contains(err.Error(), "applies to the snapshot mode only")) {
+				t.Fatalf("want the snapshot flag rule's refusal, got %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(work, "report.md")); statErr == nil {
+				t.Error("a refused run wrote a report")
+			}
+		})
 	}
 }

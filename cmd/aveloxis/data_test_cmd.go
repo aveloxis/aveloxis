@@ -125,6 +125,14 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 			if releasedTag == "" {
 				return fmt.Errorf("--released-tag is required")
 			}
+			// The mode's flag rules decide before anything runs: the
+			// --diff-only branch below returns early, so checked after it
+			// a snapshot combination ran the collection run's comparison
+			// and could PASS without the release's rules (Copilot's review
+			// of cce17a6f).
+			if err := checkSnapshotFlags(snapshot.fromDB != "", diffOnly, cmd.Flags().Changed); err != nil {
+				return err
+			}
 
 			primaryCfg := loadConfig(*cfgPath, logger)
 			var err error
@@ -168,10 +176,6 @@ FAIL (row loss / regression detected).`, dataTestSides[dataTestReleased].dbname,
 				}
 				logger.Info("data-test PASSED", "report", reportPath)
 				return nil
-			}
-
-			if err := checkSnapshotFlags(snapshot.fromDB != "", diffOnly, cmd.Flags().Changed); err != nil {
-				return err
 			}
 
 			// Phase 1: binaries

@@ -48,7 +48,7 @@ type ContentRule struct {
 	// that differs; only its count and hash sum are known), and the schema
 	// objects CatalogDiff reports: "index-added", "index-removed",
 	// "index-changed", "constraint-added", "constraint-removed",
-	// "constraint-changed", "column-type-changed". Empty = added, removed and
+	// "constraint-changed", "column-changed". Empty = added, removed and
 	// changed.
 	Kinds []string `json:"kinds,omitempty"`
 	// Objects limits a schema-object rule to these index, constraint or
@@ -83,7 +83,7 @@ func LoadContentExpectations(raw []byte) (*ContentExpectations, error) {
 	}
 	known := []string{"added", "removed", "changed", "column-added", "column-removed", "unkeyed",
 		"index-added", "index-removed", "index-changed", "constraint-added", "constraint-removed", "constraint-changed",
-		"column-type-changed"}
+		"column-changed"}
 	for i, r := range e.Rules {
 		if r.Table == "" || !strings.Contains(r.Table, ".") {
 			return nil, fmt.Errorf("expectations rule %d (%s): table must be schema.table", i, r.Name)

@@ -2303,7 +2303,7 @@ listed. <code class="docutils literal notranslate"><span class="pre">--settings<
 to every clone, because per-database settings and statistics do not travel
 with a template.</p></li>
 <li><p><strong>Compare.</strong> The last A and B clones are compared schema object by schema
-object (indexes with their validity, constraints, column types) and row by row: each row as
+object (indexes with their validity, constraints, and each column’s definition: type, NOT NULL, default, identity and generation, since on PostgreSQL 17 and earlier NOT NULL is not a constraint in the catalog) and row by row: each row as
 JSON without the columns one side lacks, hashed inside each database, then
 drilled down by primary-key bucket where a table differs. <code class="docutils literal notranslate"><span class="pre">--expect</span></code> holds
 the release’s rules: what may differ, what must differ (a rule nothing
@@ -2322,26 +2322,49 @@ aveloxis-cve’s three e-mail lookups. <code class="docutils literal notranslate
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">api</span></code> on its clone, one side at a time in the A B B A order, and
 replays the repository page’s requests for every real repository: a
 throwaway pass, a restart (an empty page cache, as after a deploy), a cold
-pass and a warm pass. Each endpoint’s p95 per round is compared against
-the noise band of the A rounds (FLAG beyond it); a request path the local
-side failed (a non-200 answer, or slower than <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>)
-more often than the released side FAILs; answers that differ between the
-sides are counted (a release that changes a series changes its answer on
-purpose). The side configs copy yours, so the api must answer loopback:
+pass and a warm pass. Times are taken over answers only (200 within
+<code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>), and in the warm pass, for an endpoint the page
+cache covers (its route is in the API’s page-cache route set), only over
+answers it served (<code class="docutils literal notranslate"><span class="pre">X-Cache:</span> <span class="pre">hit</span></code>; a miss carries no header). With no
+<code class="docutils literal notranslate"><span class="pre">api.response_cache_mb</span></code> budget the cache keeps 1,000 answers per pool, so
+when the replay’s requests for one pool outnumber that (the series pool:
+four metrics over more than 250 repositories; the page pool, <code class="docutils literal notranslate"><span class="pre">/timeseries</span></code>
+and <code class="docutils literal notranslate"><span class="pre">/contributors/top</span></code>: more than 500) its own sweep evicts each answer
+before the warm pass returns, and those endpoints are timed in the cold
+pass alone. An endpoint the cache does not cover (<code class="docutils literal notranslate"><span class="pre">/stats</span></code>) is timed over its
+answers in both passes. Each endpoint’s p95
+per round is compared against the noise band of the A rounds (FLAG
+beyond it), with p50 and p99 beside it; a request path the local side
+failed (a non-200 answer, or slower than <code class="docutils literal notranslate"><span class="pre">http_timeout_seconds</span></code>) more
+often than the released side, or never answered an endpoint the released
+side answered, FAILs; an endpoint neither side answered is NOT MEASURED,
+and one only the released side never answered NOT MEASURED (released)
+(the request list names metrics the series route serves, checked before
+any api starts, so a wrong list stops the run instead); in the warm pass, a covered
+endpoint whose released answers came from the cache and whose local ones
+never did is NOT CACHED (local), or NOT CACHED (local, more kept) when the
+local side answered more of the cached requests per round (the released
+side failed some, so it stayed under the 1,000-answer bound the local side
+passed: eviction, reported), the reverse NOT CACHED (released), and
+neither side hitting NOT CACHED; answers that differ between the sides are
+counted (a release that changes a series changes its answer on purpose). The side configs copy yours, so the api must answer loopback:
 <code class="docutils literal notranslate"><span class="pre">api.exempt_cidrs</span></code> including 127.0.0.0/8 (or <code class="docutils literal notranslate"><span class="pre">api.require_auth</span></code> false and
 no rate limit reaching loopback); a 401, 403 or 429 in any pass stops the
 replay with that reason. The saved re-warm list is emptied on both sides
 first; raw samples go to <code class="docutils literal notranslate"><span class="pre">api-samples.csv</span></code>.</p></li>
 </ol>
 <p>The report (<code class="docutils literal notranslate"><span class="pre">report.md</span></code>) holds the timings with the measured noise band (the
-spread of the no-change runs), the idempotent rerun’s verdict against it, the
+spread of the no-change runs), the idempotent rerun’s verdict against it (one-sided:
+a rerun no slower than the band above the no-change runs passes), the
 deploy window’s verdict, the heaviest statements, every differing table, every
 rule violation and data-verify’s FAIL and WARN findings; <code class="docutils literal notranslate"><span class="pre">timings.csv</span></code> holds
 the raw times. Exit 1 on any violation, a rerun that changed data, a window
-overrun, a data-verify FAIL, or an API-replay FAIL (a path the local side
+overrun, a data-verify FAIL, an API-replay FAIL (a path the local side
 failed more often than the released side; the released side’s failures are
-counted in their own column and do not fail the run). A FLAG (an
-endpoint slower beyond the noise band) is reported and does not fail the run.
+counted in their own column and do not fail the run) or a NOT CACHED (local)
+endpoint. A FLAG (an endpoint slower beyond the noise band), the NOT MEASURED
+verdicts and the other NOT CACHED verdicts are reported and do not fail the
+run.
 <code class="docutils literal notranslate"><span class="pre">--reps</span> <span class="pre">1</span></code> measures no band (one A round), so every replay verdict reads n/a;
 use two or more. A probe that errors on one side is reported, not failed.</p>
 <p>Notes:</p>
@@ -2371,8 +2394,14 @@ already made stay, so pair it with <code class="docutils literal notranslate"><s
 repositories give the repair its work. The seed refuses a database it
 already shaped.</p></li>
 <li><p>Besides rows, the comparison covers indexes (and their validity),
-constraints and the types of the columns both sides have; column defaults
-are not compared (every migrate restamps the tool_version defaults).
+constraints and the definition of every column both sides have: type,
+collation, NOT NULL, identity, and default or generation. A rule allowing a
+column change uses the kind <code class="docutils literal notranslate"><span class="pre">column-changed</span></code>; NOT NULL is reported on the
+column on every PostgreSQL version (18’s catalog constraint for it is left
+out), so one rule fits both. Every migrate sets each <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> default
+to its own release, so a <code class="docutils literal notranslate"><span class="pre">tool_version</span></code> default equal to that side’s own
+schema version is not a change; any other value is. A column’s storage,
+compression and statistics target are not compared.
 <code class="docutils literal notranslate"><span class="pre">--max-diff-rows</span></code> (default 100,000) caps the rows read in detail per table;
 a table with more differences is reported unverified, a FAIL.</p></li>
 <li><p>data-verify runs with the local binary on both sides, with

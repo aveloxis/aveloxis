@@ -3840,8 +3840,16 @@ func startupMigrateRefusal(stamp string, stampErr error, sight OtherServe) error
 // ErrNoRows and an absent schema_meta (42P01, pre-v0.14.5) are the
 // only definitive absences; everything else is a failed read.
 func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) {
+	return schemaVersionOf(ctx, s.pool)
+}
+
+// schemaVersionOf is the one reader of a database's schema stamp
+// (schemaVersionProbe, and CatalogDiff for each side): "" when the database
+// is definitively unstamped (no row, or no schema_meta at all), the error for
+// any other failure (SR-5).
+func schemaVersionOf(ctx context.Context, q lockQuerier) (string, error) {
 	var version string
-	err := s.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
 	).Scan(&version)
 	if err == nil {
@@ -3921,13 +3929,20 @@ func logSchemaVersionCheck(logger *slog.Logger, dbVersion string, readErr error)
 	}
 }
 
+// toolVersionDefaultExpr is how PostgreSQL renders the default the sweep below
+// sets on a (text) tool_version column for version v — the form the sweep
+// compares against and CatalogDiff normalizes.
+func toolVersionDefaultExpr(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'::text"
+}
+
 // setToolVersionDefaults updates the DEFAULT for every tool_version column to
 // the current ToolVersion. This way new INSERTs that omit tool_version
 // automatically get the correct value without needing it in every INSERT list.
 // Only alters tables whose default doesn't already match, so on most startups
 // this is a no-op.
 func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	expectedDefault := fmt.Sprintf("'%s'::text", ToolVersion)
+	expectedDefault := toolVersionDefaultExpr(ToolVersion)
 	rows, err := pg.pool.Query(ctx, `
 		SELECT table_schema || '.' || table_name
 		FROM information_schema.columns

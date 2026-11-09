@@ -579,8 +579,14 @@ Notes:
   repositories give the repair its work. The seed refuses a database it
   already shaped.
 - Besides rows, the comparison covers indexes (and their validity),
-  constraints and the types of the columns both sides have; column defaults
-  are not compared (every migrate restamps the tool_version defaults).
+  constraints and the definition of every column both sides have: type,
+  collation, NOT NULL, identity, and default or generation. A rule allowing a
+  column change uses the kind `column-changed`; NOT NULL is reported on the
+  column on every PostgreSQL version (18's catalog constraint for it is left
+  out), so one rule fits both. Every migrate sets each `tool_version` default
+  to its own release, so a `tool_version` default equal to that side's own
+  schema version is not a change; any other value is. A column's storage,
+  compression and statistics target are not compared.
   `--max-diff-rows` (default 100,000) caps the rows read in detail per table;
   a table with more differences is reported unverified, a FAIL.
 - data-verify runs with the local binary on both sides, with

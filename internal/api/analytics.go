@@ -553,6 +553,22 @@ func (s *Server) handleMetricsCatalog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// seriesMetric is the catalog entry of a metric the series routes serve (a
+// temporal one), or nil: the one acceptance rule of /compare, of the
+// repository metric-series route (parseMetricSeriesArgs) and of
+// IsSeriesMetric.
+func seriesMetric(id string) *MetricDef {
+	if d := catalogEntry(id); d != nil && d.Kind == "temporal" {
+		return d
+	}
+	return nil
+}
+
+// IsSeriesMetric reports whether the metric-series route serves the metric
+// id: `aveloxis data-test`'s API replay checks its request list against it
+// before it starts any api (0.29.142).
+func IsSeriesMetric(id string) bool { return seriesMetric(id) != nil }
+
 func catalogEntry(id string) *MetricDef {
 	for i := range metricCatalog {
 		if metricCatalog[i].ID == id {
@@ -564,8 +580,8 @@ func catalogEntry(id string) *MetricDef {
 
 func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	metric := r.URL.Query().Get("metric")
-	def := catalogEntry(metric)
-	if def == nil || def.Kind != "temporal" {
+	def := seriesMetric(metric)
+	if def == nil {
 		http.Error(w, errNotTemporalMetric.Error(), http.StatusBadRequest)
 		return
 	}

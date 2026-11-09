@@ -174,9 +174,10 @@ type snapshotTiming struct {
 type snapshotSummary struct {
 	Phases    map[string][]float64 // phase → seconds, in run order
 	NoiseBand float64              // ln(max/min) over the no-change runs; NaN with fewer than two
-	// RerunVerdict: "PASS" when the idempotent rerun's median is within the
-	// noise band of the no-change median, "FLAG" outside it, "n/a" without
-	// a band.
+	// RerunVerdict: "PASS" when the idempotent rerun's median is no more
+	// than the noise band above the no-change median (one-sided: a faster
+	// rerun passes), "FLAG" when it is slower than that, "n/a" without a
+	// band.
 	RerunVerdict string
 	// WindowVerdict: "FAIL" when an upgrade ran longer than the deploy
 	// window, "PASS" within it, "n/a" without a window.
@@ -209,8 +210,12 @@ func summarizeSnapshotTimings(timings []snapshotTiming, deployWindow time.Durati
 			s.NoiseBand = math.Log(hi / lo)
 		}
 	}
+	// One-sided: the check is that a second migrate costs no more than a
+	// no-change deploy. A rerun faster than that baseline (0.29.142's first
+	// snapshot: 0.47 s against main's 0.90 s, the branch's binary skipping
+	// what main's re-checks) cannot threaten a deploy window.
 	if !math.IsNaN(s.NoiseBand) && len(s.Phases["rerun"]) > 0 {
-		if math.Abs(math.Log(median(s.Phases["rerun"])/median(s.Phases["no-change"]))) <= s.NoiseBand {
+		if math.Log(median(s.Phases["rerun"])/median(s.Phases["no-change"])) <= s.NoiseBand {
 			s.RerunVerdict = "PASS"
 		} else {
 			s.RerunVerdict = "FLAG"
@@ -544,11 +549,9 @@ func runSnapshot(ctx context.Context, logger *slog.Logger, primary *config.Confi
 		}
 		for _, phase := range []string{"cold", "warm"} {
 			perfVerdicts[phase] = summarizePerf(samples, phase, primary.HTTPTimeout())
-			for _, v := range perfVerdicts[phase] {
-				if v.Verdict == "FAIL" {
-					failed = true
-				}
-			}
+		}
+		if perfRunFails(perfVerdicts) {
+			failed = true
 		}
 	}
 	summary := summarizeSnapshotTimings(timings, opts.deployWindow)

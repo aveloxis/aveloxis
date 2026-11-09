@@ -138,6 +138,8 @@ execCreateIndexConcurrently(ctx, pg, logger, &errs,
 
 The helper handles `IF NOT EXISTS` semantics AND the failure-recovery edge case where a prior interrupted CONCURRENTLY build left an INVALID index (cleaned up via `DROP INDEX` before retry). See v0.20.1.
 
+An index on an **expression** (`lower(email)`, `(a || b)`) is invisible to the planner until its table is analyzed: PostgreSQL gathers an expression's statistics only in `ANALYZE`, never at the build, and autovacuum analyzes a table only after about a tenth of its rows change. Without them each lookup is priced at 0.5% of the table, so a join keeps its full scan. The helper therefore analyzes the table whenever a valid expression index of its has no statistics, decided on the missing statistics rather than on "just built", so a failed `ANALYZE` (or an index built before 0.29.142) gets them at the next migrate. `ANALYZE` reads a fixed-size sample and blocks neither reads nor writes. See the 0.29.142 release notes.
+
 For indexes in `schema.sql` (fresh installs), use `CREATE INDEX IF NOT EXISTS ...` — fresh installs run inside the base-schema transaction, so blocking-during-build isn't a concern.
 
 ## Adding a backfill

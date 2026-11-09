@@ -83,6 +83,36 @@ func TestEveryRepoScopedGETIsCachedOrReviewed(t *testing.T) {
 	srctest.MinCount(t, "cached repository-page routes", cached, 13)
 }
 
+// The reverse direction: every route pageParams lists is registered through
+// cachedRepoGET. A listed route left unwrapped would be reported cached by
+// IsPageCachedRoute (and by frontEndAuthorized's pattern check) while it never
+// serves from the cache (the 0.29.142 review, round 3).
+func TestEveryPageParamsRouteIsRegisteredCached(t *testing.T) {
+	cached := map[string]bool{}
+	for _, reg := range repoGETRegistrations(t) {
+		if reg.cached {
+			cached["GET "+reg.path] = true
+		}
+	}
+	examined := 0
+	for pattern := range pageParams {
+		if pattern == testPagePattern {
+			continue
+		}
+		examined++
+		if !cached[pattern] {
+			t.Errorf("pageParams lists %s, which is not registered with s.cachedRepoGET", pattern)
+		}
+		if !IsPageCachedRoute(pattern) {
+			t.Errorf("IsPageCachedRoute(%q) is false for a listed route", pattern)
+		}
+	}
+	srctest.MinCount(t, "pageParams routes", examined, 13)
+	if IsPageCachedRoute("GET /api/v1/repos/{repoID}/stats") {
+		t.Error("/stats is served uncached; IsPageCachedRoute must say so")
+	}
+}
+
 // The wrapper decides scope before any cache lookup: a cached body must
 // never reach a caller authorizeRepo would refuse (runtime twin:
 // TestPageCacheRefusalsAndAutoAddsAreNeverShared). The one read before the

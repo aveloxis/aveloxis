@@ -43,6 +43,9 @@ func TestSummarizeSnapshotTimings(t *testing.T) {
 	if outside.RerunVerdict != "FLAG" {
 		t.Errorf("a rerun twice the no-change time is outside a 10%% band: %+v", outside)
 	}
+	if faster := summarizeSnapshotTimings(append(base, timing("rerun", 5)), 0); faster.RerunVerdict != "PASS" {
+		t.Errorf("a rerun at half the no-change time costs the deploy nothing: one-sided, PASS: %+v", faster)
+	}
 	single := summarizeSnapshotTimings([]snapshotTiming{timing("no-change", 10), timing("rerun", 10)}, 0)
 	if !math.IsNaN(single.NoiseBand) || single.RerunVerdict != "n/a" {
 		t.Errorf("one no-change run measures no band: %+v", single)

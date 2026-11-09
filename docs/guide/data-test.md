@@ -506,26 +506,49 @@ What it does:
    `aveloxis api` on its clone, one side at a time in the A B B A order, and
    replays the repository page's requests for every real repository: a
    throwaway pass, a restart (an empty page cache, as after a deploy), a cold
-   pass and a warm pass. Each endpoint's p95 per round is compared against
-   the noise band of the A rounds (FLAG beyond it); a request path the local
-   side failed (a non-200 answer, or slower than `http_timeout_seconds`)
-   more often than the released side FAILs; answers that differ between the
-   sides are counted (a release that changes a series changes its answer on
-   purpose). The side configs copy yours, so the api must answer loopback:
+   pass and a warm pass. Times are taken over answers only (200 within
+   `http_timeout_seconds`), and in the warm pass, for an endpoint the page
+   cache covers (its route is in the API's page-cache route set), only over
+   answers it served (`X-Cache: hit`; a miss carries no header). With no
+   `api.response_cache_mb` budget the cache keeps 1,000 answers per pool, so
+   when the replay's requests for one pool outnumber that (the series pool:
+   four metrics over more than 250 repositories; the page pool, `/timeseries`
+   and `/contributors/top`: more than 500) its own sweep evicts each answer
+   before the warm pass returns, and those endpoints are timed in the cold
+   pass alone. An endpoint the cache does not cover (`/stats`) is timed over its
+   answers in both passes. Each endpoint's p95
+   per round is compared against the noise band of the A rounds (FLAG
+   beyond it), with p50 and p99 beside it; a request path the local side
+   failed (a non-200 answer, or slower than `http_timeout_seconds`) more
+   often than the released side, or never answered an endpoint the released
+   side answered, FAILs; an endpoint neither side answered is NOT MEASURED,
+   and one only the released side never answered NOT MEASURED (released)
+   (the request list names metrics the series route serves, checked before
+   any api starts, so a wrong list stops the run instead); in the warm pass, a covered
+   endpoint whose released answers came from the cache and whose local ones
+   never did is NOT CACHED (local), or NOT CACHED (local, more kept) when the
+   local side answered more of the cached requests per round (the released
+   side failed some, so it stayed under the 1,000-answer bound the local side
+   passed: eviction, reported), the reverse NOT CACHED (released), and
+   neither side hitting NOT CACHED; answers that differ between the sides are
+   counted (a release that changes a series changes its answer on purpose). The side configs copy yours, so the api must answer loopback:
    `api.exempt_cidrs` including 127.0.0.0/8 (or `api.require_auth` false and
    no rate limit reaching loopback); a 401, 403 or 429 in any pass stops the
    replay with that reason. The saved re-warm list is emptied on both sides
    first; raw samples go to `api-samples.csv`.
 
 The report (`report.md`) holds the timings with the measured noise band (the
-spread of the no-change runs), the idempotent rerun's verdict against it, the
+spread of the no-change runs), the idempotent rerun's verdict against it (one-sided:
+a rerun no slower than the band above the no-change runs passes), the
 deploy window's verdict, the heaviest statements, every differing table, every
 rule violation and data-verify's FAIL and WARN findings; `timings.csv` holds
 the raw times. Exit 1 on any violation, a rerun that changed data, a window
-overrun, a data-verify FAIL, or an API-replay FAIL (a path the local side
+overrun, a data-verify FAIL, an API-replay FAIL (a path the local side
 failed more often than the released side; the released side's failures are
-counted in their own column and do not fail the run). A FLAG (an
-endpoint slower beyond the noise band) is reported and does not fail the run.
+counted in their own column and do not fail the run) or a NOT CACHED (local)
+endpoint. A FLAG (an endpoint slower beyond the noise band), the NOT MEASURED
+verdicts and the other NOT CACHED verdicts are reported and do not fail the
+run.
 `--reps 1` measures no band (one A round), so every replay verdict reads n/a;
 use two or more. A probe that errors on one side is reported, not failed.
 

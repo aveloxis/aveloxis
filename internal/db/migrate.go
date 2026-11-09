@@ -2938,7 +2938,70 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 	if err != nil {
 		logger.Error("schema migration error", "step", label, "error", err)
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+		return
 	}
+	// An index on an expression is useless to the planner until its table is
+	// analyzed (expressionIndexTableWithoutStatistics). Decided on the
+	// missing statistics, not on "just built", so a failed ANALYZE, or a host
+	// that built the index before this rule, converges at the next migrate.
+	// ANALYZE samples a fixed number of rows whatever the table's size and
+	// takes a lock that blocks neither reads nor writes.
+	// A failed ANALYZE (or probe) is the step's error, as a failed build is:
+	// the migrate leaves no schema stamp, so the next serve or migrate walks
+	// the step again (declined as a policy change in the 0.29.142 review:
+	// statistics are what make the index usable at all).
+	analyzeLabel := "analyze for index " + indexName
+	err = retryOnDeadlock(ctx, logger, analyzeLabel, func() error {
+		table, err := expressionIndexTableWithoutStatistics(ctx, pg, schema, indexName)
+		if err != nil || table == "" {
+			return err
+		}
+		start := time.Now()
+		if _, err := pg.pool.Exec(ctx, `ANALYZE `+table); err != nil {
+			return fmt.Errorf("analyze %s: %w", table, err)
+		}
+		logger.Info("analyzed a table for its expression index", "index", schema+"."+indexName, "table", table, "duration", time.Since(start).Round(time.Millisecond))
+		return nil
+	})
+	if err != nil {
+		logger.Error("schema migration error", "step", analyzeLabel, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", analyzeLabel, err))
+	}
+}
+
+// expressionIndexTableWithoutStatistics names, quoted, the table of a VALID
+// index on an expression that has no statistics yet, or "" when there is
+// nothing to do (a plain column index, an expression index with statistics,
+// no such index — SR-5: no rows means nothing to do, any other failure is the
+// caller's error). PostgreSQL gathers an expression's statistics only when
+// the table is analyzed, never when the index is built, and until then the
+// planner prices every lookup at 0.5% of the table (0.29.142: aveloxis-cve's
+// lower(email) joins scanned a kate-shaped contributors table, 7.1 s, with
+// the 0.29.141 indexes valid; 0.5 s one ANALYZE later). pg_stats shows an
+// index's rows to its table's owner, which the migrate is; a role that cannot
+// see them reads "none" and analyzes, the safe direction. An empty table
+// never gets statistics, so its expression index is analyzed at every
+// migrate, which costs nothing.
+func expressionIndexTableWithoutStatistics(ctx context.Context, pg *PostgresStore, schema, indexName string) (string, error) {
+	var table string
+	err := pg.pool.QueryRow(ctx, `
+		SELECT quote_ident(tn.nspname) || '.' || quote_ident(t.relname)
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_class t ON t.oid = i.indrelid
+		JOIN pg_namespace tn ON tn.oid = t.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2
+		  AND i.indisvalid AND i.indexprs IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM pg_stats s WHERE s.schemaname = $1 AND s.tablename = $2)`,
+		schema, indexName).Scan(&table)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("probe %s.%s for missing expression statistics: %w", schema, indexName, err)
+	}
+	return table, nil
 }
 
 // watchBlockers periodically polls pg_stat_activity for aveloxis

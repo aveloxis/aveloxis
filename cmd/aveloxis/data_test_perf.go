@@ -30,6 +30,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/api"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,11 +51,42 @@ var perfEndpoints = []string{
 	"/api/v1/repos/%d/stats",
 	"/api/v1/repos/%d/timeseries",
 	"/api/v1/repos/%d/contributors/top",
-	"/api/v1/repos/%d/metric-series?metric=commits",
 	"/api/v1/repos/%d/metric-series?metric=contributors",
 	"/api/v1/repos/%d/metric-series?metric=committers",
 	"/api/v1/repos/%d/metric-series?metric=code_change_commits",
 	"/api/v1/repos/%d/metric-series?metric=contributor_retention",
+}
+
+// checkPerfEndpoints refuses a request list that names a metric the API's
+// catalog does not have, before any api starts: every request for it would
+// answer 400 (0.29.142's first snapshot replayed metric=commits; the commit
+// series is code_change_commits).
+func checkPerfEndpoints(endpoints []string) error {
+	for _, ep := range endpoints {
+		_, rawQuery, ok := strings.Cut(ep, "?")
+		if !ok {
+			continue
+		}
+		q, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return fmt.Errorf("replay request %s: %w", ep, err)
+		}
+		if q.Has("metric") && !api.IsSeriesMetric(q.Get("metric")) {
+			return fmt.Errorf("replay request %s names metric %q, which the metric-series route does not serve", ep, q.Get("metric"))
+		}
+	}
+	return nil
+}
+
+// perfEndpointCovered reports whether the page cache serves an endpoint (an
+// endpointName, "/api/v1/repos/{id}/timeseries"): its route pattern, the
+// query dropped, in the API's page-cache route set. Derived from the route
+// set, not from answers: the cache sends X-Cache on a hit only, so a covered
+// route whose answers all missed looks uncovered on the wire (the L10 second
+// round of the 0.29.142 fixes, F1).
+func perfEndpointCovered(endpoint string) bool {
+	path, _, _ := strings.Cut(endpoint, "?")
+	return api.IsPageCachedRoute("GET " + strings.Replace(path, "/repos/{id}/", "/repos/{repoID}/", 1))
 }
 
 // repoIDInPath matches the repository id in a request path.
@@ -71,16 +104,35 @@ type perfSample struct {
 	Status   int
 	Seconds  float64
 	BodyHash string
+	Cache    string // the answer's X-Cache header ("hit" when the page cache served it)
 }
 
-// perfEndpointVerdict is one endpoint's comparison.
+// perfEndpointVerdict is one endpoint's comparison. Latencies are over the
+// MEASURED samples only: an answer (200 within the API's bound) and, in the
+// warm pass, one the page cache served (X-Cache: hit).
 type perfEndpointVerdict struct {
-	Endpoint     string
-	P95A, P95B   float64 // median over the rounds of each round's p95, seconds
-	NoiseBand    float64 // ln(max/min) of the A rounds' p95; NaN with one A round
-	Verdict      string  // "PASS", "FLAG" (slower beyond the band), "FAIL" (the local side failed a request the released side answered), "n/a"
-	BodiesDiffer int     // requests whose warm answers differ between the sides
-	Requests     int
+	Endpoint   string
+	P50A, P50B float64 // median over the rounds of each round's p50, seconds
+	P95A, P95B float64 // the same for p95 (the verdict's percentile)
+	P99A, P99B float64 // the same for p99
+	NoiseBand  float64 // ln(max/min) of the A rounds' p95; NaN with one A round
+	// Verdict: "PASS"; "FLAG" (slower beyond the band); "FAIL" (the local
+	// side failed a request more often than the released side, or never
+	// answered an endpoint the released side answered); "NOT MEASURED"
+	// (neither side answered: the source's state, reported) or "NOT MEASURED
+	// (released)" (the released side never did: reported); in the warm pass,
+	// for an endpoint the page cache covers (perfEndpointCovered), "NOT CACHED (local)" (the
+	// released side's answers came from the cache and the local side's
+	// never did: fails; "NOT CACHED (local, more kept)" when the local side
+	// answered more covered requests per round, so the cache's count bound
+	// evicted its answers: reported), "NOT CACHED (released)" (the reverse:
+	// reported) or
+	// "NOT CACHED" (neither side hit, e.g. the replay's own sweep evicted
+	// them: reported); "n/a".
+	Verdict              string
+	MeasuredA, MeasuredB int // measured samples per side, every round
+	BodiesDiffer         int // requests whose warm answers differ between the sides
+	Requests             int
 	// ReleasedFailures counts the requests the released side failed (non-200
 	// or over the timeout) in this pass, every round: reported, never the
 	// release's FAIL.
@@ -98,6 +150,33 @@ func percentile(xs []float64, p float64) float64 {
 		i = 0
 	}
 	return s[i]
+}
+
+// perRoundMore reports whether side a answered more covered requests per
+// round than side b.
+func perRoundMore(answers map[string]int, rounds map[string]map[int]bool, a, b string) bool {
+	if len(rounds[a]) == 0 || len(rounds[b]) == 0 {
+		return false
+	}
+	return float64(answers[a])/float64(len(rounds[a])) > float64(answers[b])/float64(len(rounds[b]))
+}
+
+// perfRunFails reports whether any verdict of any pass fails the run.
+func perfRunFails(verdicts map[string][]perfEndpointVerdict) bool {
+	for _, vs := range verdicts {
+		for _, v := range vs {
+			if perfVerdictFails(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// perfVerdictFails reports whether a verdict fails the snapshot run: the
+// release's FAIL, and the release losing the page cache on an endpoint.
+func perfVerdictFails(v perfEndpointVerdict) bool {
+	return v.Verdict == "FAIL" || v.Verdict == "NOT CACHED (local)"
 }
 
 // summarizePerf derives the per-endpoint verdicts from the samples. phase is
@@ -131,6 +210,23 @@ func summarizePerf(samples []perfSample, phase string, timeout time.Duration) []
 	for path, n := range failedCount["A"] {
 		releasedFailures[endpointName(path)] += n
 	}
+	answered := map[key]int{} // samples that answered, per endpoint and side
+	measured := map[key]int{}
+	// Only endpoints the page cache covers are filtered on hits in the warm
+	// pass, so an uncovered endpoint (/stats) keeps its warm comparison.
+	covered := map[string]bool{}
+	for _, s := range samples {
+		ep := endpointName(s.Path)
+		if _, seen := covered[ep]; !seen {
+			covered[ep] = perfEndpointCovered(ep)
+		}
+	}
+	hits := map[key]int{}
+	// Covered answers per side over the pass, and the side's rounds: the
+	// cache's count bound is a cliff for a sequential replay, so a side that
+	// kept more answers per round can miss everything where the other hits.
+	coveredAnswers := map[string]int{}
+	rounds := map[string]map[int]bool{"A": {}, "B": {}}
 	for _, s := range samples {
 		ep := endpointName(s.Path)
 		if s.Phase == "warm" {
@@ -146,6 +242,23 @@ func summarizePerf(samples []perfSample, phase string, timeout time.Duration) []
 		if perRound[k] == nil {
 			perRound[k] = map[int][]float64{}
 		}
+		// An error page's time is not the endpoint's latency, and a warm
+		// sample the cache did not serve is a cold one.
+		if failed(s) {
+			continue
+		}
+		answered[k]++
+		rounds[s.Side][s.Round] = true
+		if covered[ep] {
+			coveredAnswers[s.Side]++
+		}
+		if phase == "warm" && covered[ep] {
+			if s.Cache != "hit" {
+				continue
+			}
+			hits[k]++
+		}
+		measured[k]++
 		perRound[k][s.Round] = append(perRound[k][s.Round], s.Seconds)
 	}
 	endpoints := map[string]bool{}
@@ -165,15 +278,20 @@ func summarizePerf(samples []perfSample, phase string, timeout time.Duration) []
 	sort.Strings(names)
 	var out []perfEndpointVerdict
 	for _, ep := range names {
-		p95s := func(side string) []float64 {
+		perRoundPct := func(side string, p float64) []float64 {
 			var xs []float64
+			// A round's slice exists only once a sample was measured, so
+			// none is empty.
 			for _, lat := range perRound[key{ep, side}] {
-				xs = append(xs, percentile(lat, 0.95))
+				xs = append(xs, percentile(lat, p))
 			}
 			return xs
 		}
-		a, b := p95s("A"), p95s("B")
-		v := perfEndpointVerdict{Endpoint: ep, P95A: median(a), P95B: median(b), NoiseBand: math.NaN(), Verdict: "n/a"}
+		a, b := perRoundPct("A", 0.95), perRoundPct("B", 0.95)
+		v := perfEndpointVerdict{Endpoint: ep, P95A: median(a), P95B: median(b), NoiseBand: math.NaN(), Verdict: "n/a",
+			P50A: median(perRoundPct("A", 0.50)), P50B: median(perRoundPct("B", 0.50)),
+			P99A: median(perRoundPct("A", 0.99)), P99B: median(perRoundPct("B", 0.99)),
+			MeasuredA: measured[key{ep, "A"}], MeasuredB: measured[key{ep, "B"}]}
 		if len(a) >= 2 && slices.Min(a) > 0 {
 			v.NoiseBand = math.Log(slices.Max(a) / slices.Min(a))
 		}
@@ -183,8 +301,29 @@ func summarizePerf(samples []perfSample, phase string, timeout time.Duration) []
 				v.Verdict = "FLAG"
 			}
 		}
-		if localFailures[ep] {
+		// The local side's absences fail the run; the released side's are
+		// reported (its failures never fail the run, the rule above).
+		hitA, hitB := hits[key{ep, "A"}], hits[key{ep, "B"}]
+		answeredA, answeredB := answered[key{ep, "A"}], answered[key{ep, "B"}]
+		switch {
+		case localFailures[ep], answeredB == 0 && answeredA > 0:
 			v.Verdict = "FAIL"
+		case answeredB == 0:
+			// Neither side answered: the source's state (a wrong request
+			// list is refused before the run, checkPerfEndpoints).
+			v.Verdict = "NOT MEASURED"
+		case answeredA == 0:
+			v.Verdict = "NOT MEASURED (released)"
+		case phase == "warm" && covered[ep] && hitA > 0 && hitB == 0 && perRoundMore(coveredAnswers, rounds, "B", "A"):
+			// The local side kept more answers per round (the released
+			// side failed some): its misses are the count bound's eviction.
+			v.Verdict = "NOT CACHED (local, more kept)"
+		case phase == "warm" && covered[ep] && hitA > 0 && hitB == 0:
+			v.Verdict = "NOT CACHED (local)"
+		case phase == "warm" && covered[ep] && hitA == 0 && hitB > 0:
+			v.Verdict = "NOT CACHED (released)"
+		case phase == "warm" && covered[ep] && hitA == 0 && hitB == 0:
+			v.Verdict = "NOT CACHED"
 		}
 		v.ReleasedFailures = releasedFailures[ep]
 		for path, sides := range bodies {
@@ -295,7 +434,7 @@ func (p *apiProcess) pass(client *http.Client, paths []string, round int, side, 
 		if readErr != nil {
 			status = 0
 		}
-		out = append(out, perfSample{Round: round, Side: side, Phase: phase, Path: path, Status: status, Seconds: elapsed, BodyHash: fmt.Sprintf("%x", h.Sum(nil)[:8])})
+		out = append(out, perfSample{Round: round, Side: side, Phase: phase, Path: path, Status: status, Seconds: elapsed, BodyHash: fmt.Sprintf("%x", h.Sum(nil)[:8]), Cache: resp.Header.Get("X-Cache")})
 	}
 	return out, nil
 }
@@ -324,6 +463,9 @@ func perfPaths(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 
 // apiReplay runs the replay and returns its samples.
 func (r *snapshotRun) apiReplay(reps int, timeout time.Duration) ([]perfSample, error) {
+	if err := checkPerfEndpoints(perfEndpoints); err != nil {
+		return nil, err
+	}
 	released, local := dataTestSides[dataTestReleased].dbname, dataTestSides[dataTestNew].dbname
 	pool, err := pgxpool.New(r.ctx, r.databaseDSN(released))
 	if err != nil {
@@ -621,13 +763,23 @@ func writePerfReport(b *strings.Builder, verdicts map[string][]perfEndpointVerdi
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(b, "\n## API replay, %s pass (p95 per round, median over rounds)\n\n| Endpoint | A p95 s | B p95 s | Noise band | Verdict | Answers differing | Released-side failures |\n|---|---|---|---|---|---|---|\n", phase)
+		fmt.Fprintf(b, "\n## API replay, %s pass (each percentile per round, median over rounds)\n\n", phase)
+		b.WriteString("Times are over the measured samples: answers (200 within the API's bound) and, in the warm pass, for an endpoint the page cache covers, only those it served (`X-Cache: hit`); an endpoint it does not cover is timed over its answers. The verdict compares p95; p50 and p99 show the shape. Measured: samples timed per side, every round.\n\n")
+		b.WriteString("| Endpoint | A p50 s | B p50 s | A p95 s | B p95 s | A p99 s | B p99 s | Noise band | Verdict | Measured A / B | Answers differing | Released-side failures |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		secs := func(x float64) string {
+			if math.IsNaN(x) {
+				return "—"
+			}
+			return fmt.Sprintf("%.4f", x)
+		}
 		for _, v := range vs {
 			band := "n/a"
 			if !math.IsNaN(v.NoiseBand) {
 				band = fmt.Sprintf("%.3f", v.NoiseBand)
 			}
-			fmt.Fprintf(b, "| `%s` | %.4f | %.4f | %s | **%s** | %d of %d | %d |\n", v.Endpoint, v.P95A, v.P95B, band, v.Verdict, v.BodiesDiffer, v.Requests, v.ReleasedFailures)
+			fmt.Fprintf(b, "| `%s` | %s | %s | %s | %s | %s | %s | %s | **%s** | %d / %d | %d of %d | %d |\n", v.Endpoint,
+				secs(v.P50A), secs(v.P50B), secs(v.P95A), secs(v.P95B), secs(v.P99A), secs(v.P99B),
+				band, v.Verdict, v.MeasuredA, v.MeasuredB, v.BodiesDiffer, v.Requests, v.ReleasedFailures)
 		}
 	}
 	if len(probes) > 0 {
@@ -650,9 +802,9 @@ func writePerfSamplesCSV(path string, samples []perfSample) error {
 		return err
 	}
 	var b strings.Builder
-	b.WriteString("round,side,phase,path,status,seconds\n")
+	b.WriteString("round,side,phase,path,status,seconds,cache\n")
 	for _, s := range samples {
-		fmt.Fprintf(&b, "%d,%s,%s,%s,%d,%.6f\n", s.Round, s.Side, s.Phase, s.Path, s.Status, s.Seconds)
+		fmt.Fprintf(&b, "%d,%s,%s,%s,%d,%.6f,%s\n", s.Round, s.Side, s.Phase, s.Path, s.Status, s.Seconds, s.Cache)
 	}
 	if _, err := f.WriteString(b.String()); err != nil {
 		_ = f.Close()

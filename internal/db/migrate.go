@@ -3929,9 +3929,9 @@ func logSchemaVersionCheck(logger *slog.Logger, dbVersion string, readErr error)
 	}
 }
 
-// toolVersionDefaultExpr is how PostgreSQL renders the default the sweep below
-// sets on a (text) tool_version column for version v — the form the sweep
-// compares against and CatalogDiff normalizes.
+// toolVersionDefaultExpr is a (text) tool_version column's default for
+// version v, as the sweep below sets it and as PostgreSQL renders it back: the
+// one form the sweep writes and compares against, and CatalogDiff normalizes.
 func toolVersionDefaultExpr(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'::text"
 }
@@ -3964,8 +3964,8 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 			continue
 		}
 		if _, err := pg.pool.Exec(ctx, fmt.Sprintf(
-			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT '%s'`,
-			table, ToolVersion)); err != nil {
+			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT %s`,
+			table, toolVersionDefaultExpr(ToolVersion))); err != nil {
 			logger.Warn("tool_version default sweep: alter failed", "table", table, "error", err)
 		}
 	}

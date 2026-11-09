@@ -474,3 +474,65 @@ func TestCatalogRulesNeedEveryNamedObjectAndAValidIndex(t *testing.T) {
 		t.Errorf("an INVALID index is a violation and does not meet the rule: %s", got)
 	}
 }
+
+// PostgreSQL 18's column forms (the L10 round on 6dc1df46): a VIRTUAL
+// generated column, and a NOT NULL constraint left NOT VALID, which sets
+// attnotnull like a validated one while rows may still hold NULLs. 18 keeps
+// NOT NULL as a contype 'n' constraint, left out of the constraint entries,
+// so its validation is read onto the column. 16 and 17 (CI runs 16) have
+// neither form and no contype 'n' row at all: there the test asserts that,
+// so it proves something on every server instead of skipping.
+func TestCatalogDiffPostgreSQL18ColumnForms(t *testing.T) {
+	base := `CREATE SCHEMA dtc; CREATE TABLE dtc.p18 (id int PRIMARY KEY, nv int, v int); INSERT INTO dtc.p18 VALUES (1, 1, 3);`
+	probe, _ := contentDiffDatabases(t, base, base)
+	ctx := context.Background()
+	var num int
+	if err := probe.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&num); err != nil {
+		t.Fatal(err)
+	}
+	if num < 180000 {
+		var n int
+		if err := probe.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE contype = 'n'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("server %d has %d contype 'n' constraints: the NOT NULL handling assumes 18 is the first to catalog them", num, n)
+		}
+		return
+	}
+	rel, nw := contentDiffDatabases(t, base, base+`
+		ALTER TABLE dtc.p18 ADD CONSTRAINT p18_nv_nn NOT NULL nv NOT VALID;
+		ALTER TABLE dtc.p18 DROP COLUMN v;
+		ALTER TABLE dtc.p18 ADD COLUMN v int GENERATED ALWAYS AS (id * 3) VIRTUAL;`)
+	catalog, err := CatalogDiff(ctx, rel, nw, []string{"dtc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDef := map[string]string{}
+	for _, c := range catalog {
+		newDef[c.Object] = c.New
+	}
+	for obj, want := range map[string]string{
+		"nv": "integer NOT NULL NOT VALID",
+		"v":  "integer GENERATED ALWAYS AS ((id * 3)) VIRTUAL",
+	} {
+		if newDef[obj] != want {
+			t.Errorf("%s renders %q, want %q (all: %v)", obj, newDef[obj], want, newDef)
+		}
+	}
+}
+
+// The schema stamp's absences are "none", never errors (SR-5): a database
+// without aveloxis_ops (a test schema, CatalogDiff's fixtures) and one whose
+// schema_meta has no row (the L10 round on 6dc1df46: both arms' mutants
+// survived the named tests).
+func TestSchemaVersionOfAbsences(t *testing.T) {
+	none, noRow := contentDiffDatabases(t, `SELECT 1`,
+		`CREATE SCHEMA aveloxis_ops; CREATE TABLE aveloxis_ops.schema_meta (id boolean PRIMARY KEY, schema_version text NOT NULL)`)
+	for name, pool := range map[string]*pgxpool.Pool{"no aveloxis_ops": none, "no row": noRow} {
+		v, err := schemaVersionOf(context.Background(), pool)
+		if err != nil || v != "" {
+			t.Errorf("%s: got (%q, %v), want no stamp and no error", name, v, err)
+		}
+	}
+}

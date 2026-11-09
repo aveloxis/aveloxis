@@ -812,7 +812,7 @@ func writeSnapshotReport(path string, opts snapshotOptions, shape seedShape, see
 	}
 	fmt.Fprintf(&b, "\n## Schema objects: released vs local\n\n")
 	if len(catalog) == 0 {
-		b.WriteString("Indexes, constraints and column types are identical.\n")
+		b.WriteString("Indexes, constraints and column definitions are identical.\n")
 	}
 	for _, c := range catalog {
 		fmt.Fprintf(&b, "- `%s` %s %s %s\n", c.Table, c.Kind, c.Object, c.Change)

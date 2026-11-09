@@ -533,7 +533,13 @@ func runCollect(cfgPath string, repoURLs []string, full, useAugurKeys bool) erro
 	// v0.21.5: store.Migrate(ctx) intentionally NOT called here.
 	// Schema migrations only run from `aveloxis serve` startup and
 	// the dedicated `aveloxis migrate` subcommand. Operators run
-	// migrate explicitly before kicking off one-off collections.
+	// migrate explicitly before kicking off one-off collections — and a
+	// collection on a database behind this binary refuses before loading
+	// keys (Copilot PR #252, fifteenth review: its metadata write reaches a
+	// 0.29.140 column).
+	if err := store.RequireMigrated(ctx); err != nil {
+		return err
+	}
 
 	ghKeys, glKeys, err := loadKeys(ctx, cfg, store, useAugurKeys, logger)
 	if err != nil {

@@ -1,0 +1,10 @@
+{
+  "fleet_repos": 184492,
+  "gone_stamped": 1392,
+  "adopted": 15,
+  "adopted_depth_factor": 3,
+  "contributors": 4450639,
+  "contributors_aliases": 825127,
+  "contributor_identities": 3287735,
+  "source": "kate aveloxis_large, Track 0a 2026-11-08 (schema 0.29.139): fleet, gone, adopted, contributor/alias/identity counts as measured. Depth factor 3 brings the local deepest adopted repositories (about 480K commit rows) to kate's deepest adopted one (89098, 1,469,180 rows); it multiplies every seeded adopted repository, so the small ones are deeper than kate's."
+}

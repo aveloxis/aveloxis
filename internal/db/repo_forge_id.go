@@ -100,17 +100,43 @@ func (s *PostgresStore) FindRepoByPlatformRepoID(ctx context.Context, platform m
 // without a forge call (the api process holds no API keys). The plain
 // SetPlatformRepoIDIfEmpty was removed in v0.29.63 once every scan passed
 // the date (dead code, not deprecated).
-func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time) error {
+//
+// private (0.29.140) says whether the listing that carried the id was not
+// public; a recorded change keeps the LAST observation's answer, and the
+// adoption resurrects a gone-stamped repository only for a public one.
+//
+// goneUnderListedID (Copilot PR #252, ninth review) reports whether the row
+// is gone-stamped AND stores the listed id — read from the rows this
+// function touches anyway (the fill's RETURNING, the zero-row probe), so the
+// org scan asks for a resurrection (ResurrectIfListed, its own statement)
+// only for that cohort instead of once per listed repository: a fleet-sized
+// scan was spending a round trip per public repository on rows that were
+// not gone. ResurrectIfListed re-checks every condition atomically; this is
+// a filter, never the decision.
+func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID int64, forgeID string, forgeCreatedAt time.Time, private bool) (goneUnderListedID bool, err error) {
 	if forgeID == "" {
-		return nil
+		return false, nil
 	}
-	tag, err := s.pool.Exec(ctx, `
+	rows, err := s.pool.Query(ctx, `
 		UPDATE aveloxis_data.repos
 		SET platform_repo_id = $2
-		WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = ''`,
+		WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = ''
+		RETURNING repo_gone_at IS NOT NULL`,
 		repoID, forgeID)
 	if err != nil {
-		return err
+		return false, err
+	}
+	filled := 0
+	for rows.Next() {
+		if err := rows.Scan(&goneUnderListedID); err != nil {
+			rows.Close()
+			return false, err
+		}
+		filled++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
 	}
 	// v0.27.116 (Copilot round 10, active): a zero-row update is EITHER
 	// "already set to the same value" (the common case) OR "set to a
@@ -122,22 +148,23 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID
 	// Detection is OBSERVATION-ONLY (the house never-auto-mutate rule) —
 	// the ERROR names the conflict and the remediation surface; the scan
 	// pass itself proceeds unchanged.
-	if tag.RowsAffected() == 0 {
+	if filled == 0 {
 		var stored string
+		var gone bool
 		perr := s.pool.QueryRow(ctx,
-			`SELECT COALESCE(platform_repo_id, '') FROM aveloxis_data.repos WHERE repo_id = $1`,
-			repoID).Scan(&stored)
+			`SELECT COALESCE(platform_repo_id, ''), repo_gone_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1`,
+			repoID).Scan(&stored, &gone)
 		if errors.Is(perr, pgx.ErrNoRows) {
 			// Row deleted between the UPDATE and the probe — nothing to
 			// verify; the only benign probe miss.
-			return nil
+			return false, nil
 		}
 		if perr != nil {
 			// v0.27.123 (Copilot round 15, suppressed): a probe FAILURE
 			// is not success — swallowing it lost both the DB error and
 			// the promised conflict signal (the "a lookup ERROR is not
 			// 'no'" rule, inside this function's own detector).
-			return fmt.Errorf("verify stored forge ID for repo %d: %w", repoID, perr)
+			return false, fmt.Errorf("verify stored forge ID for repo %d: %w", repoID, perr)
 		}
 		if stored != "" && stored != forgeID {
 			s.logger.Error(forgeIDMismatchMsg,
@@ -145,12 +172,14 @@ func (s *PostgresStore) SetPlatformRepoIDIfEmptySeen(ctx context.Context, repoID
 				"remediation", forgeIDMismatchRemediation)
 			// v0.29.62: the observation is RECORDED, not only logged, so the
 			// operator has a list to act on. repos is still untouched.
-			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt); rerr != nil {
-				return fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
+			if rerr := s.recordForgeIDObservation(ctx, repoID, stored, forgeID, forgeCreatedAt, private); rerr != nil {
+				return false, fmt.Errorf("record forge-ID change for repo %d: %w", repoID, rerr)
 			}
+			return false, nil
 		}
+		goneUnderListedID = gone
 	}
-	return nil
+	return goneUnderListedID, nil
 }
 
 // ensureForgeIDIndex builds the partial lookup index serving

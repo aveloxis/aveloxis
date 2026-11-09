@@ -210,7 +210,7 @@ type metricSeriesArgs struct {
 // what they mean there); the error is a 400.
 func parseMetricSeriesArgs(r *http.Request) (metricSeriesArgs, error) {
 	var a metricSeriesArgs
-	if a.def = catalogEntry(r.URL.Query().Get("metric")); a.def == nil || a.def.Kind != "temporal" {
+	if a.def = seriesMetric(r.URL.Query().Get("metric")); a.def == nil {
 		return metricSeriesArgs{}, errNotTemporalMetric
 	}
 	var err error

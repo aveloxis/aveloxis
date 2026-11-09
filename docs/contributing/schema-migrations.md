@@ -138,6 +138,8 @@ execCreateIndexConcurrently(ctx, pg, logger, &errs,
 
 The helper handles `IF NOT EXISTS` semantics AND the failure-recovery edge case where a prior interrupted CONCURRENTLY build left an INVALID index (cleaned up via `DROP INDEX` before retry). See v0.20.1.
 
+An index on an **expression** (`lower(email)`, `(a || b)`) is invisible to the planner until its table is analyzed: PostgreSQL gathers an expression's statistics only in `ANALYZE`, never at the build, and autovacuum analyzes a table only after about a tenth of its rows change. Without them each lookup is priced at 0.5% of the table, so a join keeps its full scan. The helper therefore analyzes the table whenever a valid expression index of its has no statistics, decided on the missing statistics rather than on "just built", so a failed `ANALYZE` (or an index built before 0.29.142) gets them at the next migrate. `ANALYZE` reads a fixed-size sample and blocks neither reads nor writes. See the 0.29.142 release notes.
+
 For indexes in `schema.sql` (fresh installs), use `CREATE INDEX IF NOT EXISTS ...` — fresh installs run inside the base-schema transaction, so blocking-during-build isn't a concern.
 
 ## Adding a backfill
@@ -349,8 +351,18 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
    attributed to the wrong subsystem) to this checklist lacking the
    step — a column documented at introduction can never drift
    silently.
-9. Run `go test ./...` AND the integration tier.
-10. (Optional but recommended) Run `aveloxis data-test --released-tag origin/main` (or the previous release's tag) to verify the new version doesn't lose data; it collects the standing repository set unless you pass `--repo`. See [`docs/guide/data-test.md`](../guide/data-test.md).
+9. **Gate a write a non-migrating process reaches.** The api, the web and
+   every command but `serve` and `migrate` run against whatever schema is
+   there; the api and web log an ERROR on a stamp behind the binary and keep
+   serving. A write such a process can reach that touches an object your
+   release adds calls `store.RequireMigrated(ctx)` before it reads or writes
+   anything (a command: before its first statement, writing runs only), so
+   it refuses with `ErrSchemaNotMigrated` — the admin adapters answer 503 —
+   instead of failing mid-request with 42703 or 42P01 (0.29.140, Copilot PR
+   #252's fourteenth review). A READ degrades instead: catch the undefined
+   table or column and serve without the new data.
+10. Run `go test ./...` AND the integration tier.
+11. (Optional but recommended) Run `aveloxis data-test --released-tag origin/main` (or the previous release's tag) to verify the new version doesn't lose data; it collects the standing repository set unless you pass `--repo`. See [`docs/guide/data-test.md`](../guide/data-test.md).
 
 ## What v0.21.5 made explicit: who can run migrations
 

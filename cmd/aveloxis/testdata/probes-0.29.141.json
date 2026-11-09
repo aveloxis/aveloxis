@@ -1,0 +1,14 @@
+[
+  {
+    "name": "cve-by-email",
+    "sql": "SELECT k.email, min(ct.cntrb_id::text), count(DISTINCT ct.cntrb_id) FROM unnest((SELECT array_agg(e) FROM (SELECT lower(cntrb_email) AS e FROM aveloxis_data.contributors WHERE cntrb_email <> '' ORDER BY cntrb_id LIMIT 5000) s)) AS k(email) JOIN aveloxis_data.contributors ct ON lower(ct.cntrb_email) = k.email WHERE k.email <> '' AND COALESCE(ct.cntrb_deleted, 0) = 0 GROUP BY k.email"
+  },
+  {
+    "name": "cve-by-alias",
+    "sql": "SELECT k.email, min(a.cntrb_id::text), count(DISTINCT a.cntrb_id) FROM unnest((SELECT array_agg(e) FROM (SELECT lower(cntrb_email) AS e FROM aveloxis_data.contributors WHERE cntrb_email <> '' ORDER BY cntrb_id LIMIT 5000) s)) AS k(email) JOIN aveloxis_data.contributors_aliases a ON lower(a.alias_email) = k.email JOIN aveloxis_data.contributors l ON l.cntrb_id = a.cntrb_id AND COALESCE(l.cntrb_deleted, 0) = 0 WHERE k.email <> '' AND COALESCE(a.cntrb_active, 1) = 1 GROUP BY k.email"
+  },
+  {
+    "name": "cve-by-identity",
+    "sql": "SELECT k.email, min(i.cntrb_id::text), count(DISTINCT i.cntrb_id) FROM unnest((SELECT array_agg(e) FROM (SELECT lower(cntrb_email) AS e FROM aveloxis_data.contributors WHERE cntrb_email <> '' ORDER BY cntrb_id LIMIT 5000) s)) AS k(email) JOIN aveloxis_data.contributor_identities i ON lower(i.email) = k.email JOIN aveloxis_data.contributors l ON l.cntrb_id = i.cntrb_id AND COALESCE(l.cntrb_deleted, 0) = 0 WHERE k.email <> '' GROUP BY k.email"
+  }
+]

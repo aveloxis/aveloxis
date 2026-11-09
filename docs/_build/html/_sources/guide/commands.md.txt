@@ -253,6 +253,8 @@ Run on the offline machine. Decrypts an export file with the private key
 
 One-shot collection of specific repos without the scheduler. Uses the **direct collection pipeline** (bypasses staging, writes directly to relational tables). Best for testing or collecting a small number of repos.
 
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).
+
 ```text
 aveloxis collect [flags] <url> [<url> ...]
 ```
@@ -423,9 +425,9 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 164 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (108 tables + 22 materialized views) -- all collected data
+- **`aveloxis_data`** (109 tables + 22 materialized views) -- all collected data
 - **`aveloxis_ops`** (52 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
@@ -503,6 +505,8 @@ treat owner/repo URLs case-insensitively, so
 are the **same repository** — but fleets that predate v0.25.32 could
 accumulate both as separate rows, each collected in full (doubled API
 budget, storage, and double-counted analytics).
+
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
 
 ```bash
 aveloxis dedup-repos --dry-run      # show the plan (first 20 pairs)
@@ -1012,6 +1016,12 @@ aveloxis data-test --released-tag v0.22.6 \
 # Custom work directory (useful for CI artifact retention)
 aveloxis data-test --released-tag origin/main \
   --work-dir /var/cache/aveloxis-data-test
+
+# Snapshot mode (0.29.142): compare only the two migrations, timed and row
+# by row, on clones of one database shaped like the production fleet
+aveloxis data-test --released-tag origin/main --from-db aveloxis \
+  --seed-shape cmd/aveloxis/testdata/shape-provisional.json \
+  --expect cmd/aveloxis/testdata/expect-0.29.141.json --reps 3 --keep-dbs
 ```
 
 The full report is written to `<work-dir>/report.md`. See
@@ -1070,17 +1080,30 @@ Heals the stranded-repo class: non-archived `repos` rows with no
 `collection_queue` row — invisible to the scheduler forever. Production
 audit (2026-07-21) root-caused the cohort to GitHub renames + prelim's
 duplicate skip+dequeue (which dequeues without archiving), plus a
-smaller lost-enqueue share. Each stranded repo is classified by a LIVE
-redirect check:
+smaller lost-enqueue share.
 
-- dead upstream (404/410/451) → archived (the outcome prelim applies)
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
+
+Each stranded repo is classified by a LIVE redirect check:
+
+- dead upstream (404/410/451) → gone-stamped and archived, the outcome
+  prelim applies (0.29.140; before, the archived flag alone, so these rows
+  never joined the gone recheck and a transient 404 was final); the gone
+  episode names `reconcile-repos`. Prelim's own sideline is one statement
+  since 0.29.140 (stamp, episode and dequeue together), so an org scan's
+  resurrection can no longer land between the stamp and the dequeue and
+  leave a repository unstamped and queueless.
 - redirects to a **tracked** repo → dataless duplicates heal onto the
   winner (`HealRenamedDuplicate`); data-bearing duplicates consolidate
   through the dedup-repos per-pair machinery (repoints + leaves-first
   deletes)
 - redirects to an **untracked** URL → re-enqueued (prelim renames it
   in place on the next cycle — rename detection is prelim's job)
-- alive at its own URL → re-enqueued (a lost queue row)
+- alive at its own URL (a 2xx) → re-enqueued (a lost queue row); a stale
+  gone stamp on the row is cleared with the same statement (0.29.140)
+- any other answer (403, 429, 5xx, an unresolved redirect) → re-enqueued
+  only: nothing is proven about the repository, so a gone stamp stays for
+  prelim's own probe to decide
 
 ```bash
 aveloxis reconcile-repos --dry-run   # per-repo classification, no writes
@@ -1089,7 +1112,13 @@ aveloxis reconcile-repos             # everything
 ```
 
 The scheduler also logs a startup gauge (`non-archived repos with no
-collection_queue row`) pointing here whenever the count is non-zero.
+collection_queue row`) pointing here whenever the count is non-zero. Before
+0.29.140 that gauge rose at every deploy: the migrate step that mirrors the
+forge's archived flag onto `repos.repo_archived` un-archived every
+gone-stamped repository whose last metadata snapshot was not archived (the
+snapshot predates the disappearance), so the gone cohort re-entered the
+stranded set each time; the step leaves gone-stamped rows alone now, and a
+non-zero gauge is a real finding again.
 Re-run until stranded = 0; healed repos drop out of the set. Since
 v0.29.68 `Ctrl-C` or a SIGTERM (`kill <pid>`) cancels the in-flight probe
 or statement, ends the walk and prints an interruption summary (what was
@@ -1179,6 +1208,8 @@ its unit with the site). Read-only on the schema; does not run migrations
 Treats a repository that was deleted and re-created on its forge under the
 same URL as a continuation of the one Aveloxis already tracks (v0.29.62).
 
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary an adoption refuses before loading keys or asking the forge, with a message naming the deploy steps; `--list` still works, the visibility shown as not recorded (0.29.140).
+
 ```bash
 aveloxis adopt-forge-id --list                         # recorded changes: pending, superseded, adopted
 aveloxis adopt-forge-id --repo-id 126257 --repo-id 98226
@@ -1196,12 +1227,34 @@ A GitLab repository is only looked up on the configured GitLab instance
 (project IDs are per instance, and the keys stay on that host); a generic
 git repository has no API to ask.
 
-The repository page then shows: "Note: this repository changed forge
-identifiers on <date>, from <old id> to <new id>. This is unusual, and may
-affect statistics." The row holds data from both upstream repositories:
-commit history usually lines up (a re-push keeps the hashes), but issue and
-pull request numbers restart in the new repository. The mismatch ERROR
-stops once the change is adopted.
+The repository page then says that two histories share the name: when the
+forge created the new repository (the era boundary), the two forge IDs, when
+collection first saw the change and who adopted it, and that commits and
+activity before the boundary belong to the earlier repository; every chart
+marks the boundary with a dashed "new upstream" line (0.29.140). The row
+holds data from both upstream repositories: the daily commit table keeps the
+earlier era (the facade's trim stops at the boundary day, and the adoption
+restores from the commits table the buckets a walk had already trimmed; a
+set of repositories on the compare page keeps the per-file path, which
+counts a commit shared by a fork and its upstream once), issue and pull
+request numbers restart in the new repository. That restore is a fold of
+the repository's commit rows inside the adoption, so a very large
+re-created repository (minutes of commit rows) is adopted with this command
+rather than from the web GUI or the API, whose request deadline would roll
+the adoption back. The mismatch ERROR stops once
+the change is adopted. An adoption also brings a gone-stamped repository
+back (0.29.140) when the re-created repository is PUBLIC — the forge's own
+answer here, the scan's recorded listing on the admin page: the stamp is
+cleared, its gone episode closed and the repository re-queued in the
+adoption's own transaction. A private or GitLab-internal re-creation is
+adopted as the continuation but stays gone (an unauthenticated probe cannot
+see it; `--list` and the admin page mark such a change "listed private"), and
+so is a change whose listing's visibility was never recorded (one recorded
+before 0.29.140, marked "visibility not recorded") when adopted from the admin
+page — this command asks the forge and decides on its answer.
+Before, an adopted repository that prelim had probed while it was still 404
+stayed "no longer publicly available" and out of the queue until the 28-day
+recheck.
 
 An admin can do the same from the web GUI (v0.29.63): the approvals page
 lists pending changes under "Re-created repositories", each with an Adopt
@@ -1220,6 +1273,8 @@ Operator-driven fleet sweep (v0.27.79) that refreshes
 `FetchRepoInfo` per GitHub/GitLab repo, written through the same
 `UpdateRepoMetadata` path the collector's Phase 0 uses. Generic-git
 repos are skipped (no API).
+
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before loading keys, with a message naming the deploy steps (0.29.140).
 
 Built as a launch accelerator for fork status: v0.27.78 added fork
 capture to Phase 0, but the per-cycle forward path takes ~6–21 days
@@ -1283,7 +1338,11 @@ invariant probe battery against the configured database and exits 1 on
 any FAIL — suitable for gating releases and cron runs. Probes:
 structural invariants (case-duplicate repos, Default-group singleton,
 stranded repos, stale >24h locks, cross-kind message corruption with
-migration-state awareness), sampled count-integrity (cached queue
+migration-state awareness; since 0.29.142 also one open gone episode per
+gone-stamped repository and none on a reachable one, gone-stamped
+repositories that are queued (a WARN: pending re-probes), INVALID indexes,
+earlier-era daily buckets below their fold from the commits table, and the
+three lower(email) indexes), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).
@@ -1296,6 +1355,9 @@ aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
                                               # metadata for 10 sampled repos
                                               # and compare (needs API keys)
 aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
+aveloxis data-verify --deterministic-sample   # sample by a hash of the id, so
+                                              # two copies of one database read
+                                              # alike (data-test's snapshot mode)
 ```
 
 Severities: FAIL = a code-enforced invariant is broken (exit 1);
@@ -1467,6 +1529,8 @@ v0.28.1 nothing distinguished that state from "never collected", so
 the GUI showed a false "queued for first collection" banner over
 real data.
 
+Like every command but `serve` and `migrate`, it does not migrate: on a database whose schema stamp is behind the binary, a run that writes refuses before reading anything, with a message naming the deploy steps; `--dry-run` still previews (0.29.140).
+
 The probe is bidirectional and only DEFINITIVE answers decide:
 
 - **404/410/451** → stamp `repos.repo_gone_at`. The repo page then shows
@@ -1475,6 +1539,20 @@ The probe is bidirectional and only DEFINITIVE answers decide:
 - **200 on a previously-stamped repo** → clear the stamp and
   re-enqueue: if the organization re-publicizes, collection resumes
   automatically on the next run of this command.
+- **200 on a repo archived without a stamp** (0.29.140) → put the
+  archived flag back to the forge's latest recorded status and
+  re-enqueue, counted as `lifted_archived`. Before 0.29.140
+  `reconcile-repos` set the archived flag alone on a 404, and a
+  repository the forge archived keeps its queue row, so an archived,
+  unstamped, queueless row is that sideline — at its own URL, or renamed
+  to a URL no row tracks (prelim renames it in place once queued).
+  Renamed onto a repository that IS tracked, the row is a duplicate
+  prelim dequeued: counted `alive`, left as it is, and logged with where
+  it redirects (no command consolidates an archived row today).
+- **200 on any other candidate** (a queueless row that is neither
+  stamped nor archived) → counted as `alive` and left as it is;
+  `aveloxis reconcile-repos` re-queues it if it answers at its own URL
+  and consolidates it if it redirects to a tracked repository.
 - **Anything else** (transport errors, rate limits, 5xx,
   unresolvable redirects) → the repo is skipped and a re-run
   retries it.

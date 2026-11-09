@@ -124,6 +124,15 @@ func runDedupRepos(cfgPath string, dryRun bool, batchSize, limit int) error {
 	}
 	defer store.Close()
 
+	// No migrate here: the merge carries gone history and forge-ID
+	// visibility, so a run that writes refuses on a database behind this
+	// binary before reading anything (Copilot PR #252, fourteenth review); a
+	// dry run previews on any schema.
+	if !dryRun {
+		if err := store.RequireMigrated(ctx); err != nil {
+			return err
+		}
+	}
 	count, err := db.CountCaseVariantRepoDups(ctx, store)
 	if err != nil {
 		return fmt.Errorf("count duplicate groups: %w", err)

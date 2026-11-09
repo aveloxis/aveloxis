@@ -217,13 +217,14 @@ type ghRepoInfo struct {
 	FullName         string    `json:"full_name"` // v0.25.32 — canonical owner/name for the case self-heal
 	ForksCount       int       `json:"forks_count"`
 	StargazersCount  int       `json:"stargazers_count"`
-	SubscribersCount int       `json:"subscribers_count"` // v0.29.140 — watchers; REST watchers_count aliases stargazers_count (#245)
+	SubscribersCount int       `json:"subscribers_count"` // 0.29.143 — watchers; REST watchers_count aliases stargazers_count (#245)
 	OpenIssuesCount  int       `json:"open_issues_count"`
 	DefaultBranch    string    `json:"default_branch"`
 	HasIssues        bool      `json:"has_issues"`
 	HasWiki          bool      `json:"has_wiki"`
 	HasPages         bool      `json:"has_pages"`
 	Archived         bool      `json:"archived"`
+	Private          bool      `json:"private"`  // 0.29.140 — an adoption resurrects a gone stamp only for a public re-creation
 	Disabled         bool      `json:"disabled"` // v0.27.103 — statusStr input on the REST fallback
 	Fork             bool      `json:"fork"`
 	Description      string    `json:"description"` // v0.23.0

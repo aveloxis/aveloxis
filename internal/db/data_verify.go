@@ -41,6 +41,10 @@ type VerifyResult struct {
 	Check    string `json:"check"`
 	Severity string `json:"severity"` // "FAIL" | "WARN" | "OK"
 	Detail   string `json:"detail"`
+	// Sampled: the probe reads a random sample, so its detail differs run to
+	// run on the same data (data-test's snapshot baseline compares such a
+	// finding by check and severity only).
+	Sampled bool `json:"sampled,omitempty"`
 }
 
 // VerifyOptions bounds and configures the battery.
@@ -54,6 +58,30 @@ type VerifyOptions struct {
 	// 99.1–99.6% identity fill and 77% severity-known on the fleet).
 	MinIdentityFill  float64
 	MinSeverityKnown float64
+	// DeterministicSample draws the sampled probes' repositories by a hash of
+	// the repo_id instead of at random, so two copies of one database draw the
+	// same rows and their findings compare exactly (data-test's snapshot
+	// mode). A production run keeps the random sample: over many runs it
+	// covers the fleet, a fixed one never would.
+	DeterministicSample bool
+}
+
+// sampleOrder is the sampled probes' ORDER BY over a column holding the
+// repo_id.
+func (o VerifyOptions) sampleOrder(repoID string) string {
+	if o.DeterministicSample {
+		return "hashtext(" + repoID + "::text), " + repoID
+	}
+	return "random()"
+}
+
+// markSampled flags the named check's findings as read from a random sample.
+func markSampled(results []VerifyResult, check string) {
+	for i := range results {
+		if results[i].Check == check {
+			results[i].Sampled = true
+		}
+	}
 }
 
 // driftThresholdPct mirrors the gap detector's 5% semantic
@@ -131,6 +159,108 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 		add("stranded repos", "OK", "every non-archived repo has a queue row")
 	}
 
+	// ── The gone history and the earlier era (0.29.140) ──────────
+	// Each probe names up to five example repo_ids, the newest first (the
+	// rows an incident just wrote), so an operator (and a test) can find
+	// them. These run on a fleet after the deploy too.
+	for _, inv := range []struct {
+		check, severity, query, bad, ok string
+	}{
+		{
+			check: "gone episodes match the stamps", severity: "FAIL",
+			// Exactly one open episode per gone-stamped repository, none on
+			// a reachable one (the gone marker opens it with the stamp, every
+			// clearer closes it with the clear, in one transaction).
+			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				LEFT JOIN LATERAL (SELECT COUNT(*) AS open_n FROM aveloxis_data.repo_gone_history h
+				                    WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL) o ON TRUE
+				WHERE (r.repo_gone_at IS NOT NULL AND o.open_n <> 1) OR (r.repo_gone_at IS NULL AND o.open_n > 0)`,
+			bad: "%d repositories whose open gone episodes disagree with the stamp (a stamped one needs exactly one, a reachable one none) — e.g. repo_id %s",
+			ok:  "every gone-stamped repository has one open episode, no reachable one has any",
+		},
+		{
+			check: "gone and queued", severity: "WARN",
+			// A pending re-probe: a user's re-add of a gone repository, which
+			// prelim's next probe clears or sidelines. Many of them, or old
+			// ones, mean the probe is not reaching them.
+			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE r.repo_gone_at IS NOT NULL
+				  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)`,
+			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each — e.g. repo_id %s",
+			ok:  "no gone-stamped repository is queued",
+		},
+		{
+			check: "invalid indexes", severity: "FAIL",
+			// An interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index
+			// that serves no query and slows every write; the next migrate
+			// drops and rebuilds it.
+			query: `SELECT COUNT(*), COALESCE((array_agg(n.nspname || '.' || i.relname ORDER BY i.relname))[1:5]::text, '{}')
+				FROM pg_index x
+				JOIN pg_class i ON i.oid = x.indexrelid
+				JOIN pg_namespace n ON n.oid = i.relnamespace
+				WHERE NOT x.indisvalid AND n.nspname IN ('aveloxis_data', 'aveloxis_ops', 'aveloxis_scan')`,
+			bad: "%d INVALID indexes (an interrupted concurrent build) — run `aveloxis migrate` to rebuild — e.g. %s",
+			ok:  "no INVALID index",
+		},
+		{
+			check: "earlier-era daily buckets", severity: "FAIL",
+			// An adopted forge-ID change keeps the earlier repository's
+			// commits in the daily table: no bucket before the era boundary
+			// may sit below its fold from the append-only commits table (a
+			// lowered bucket is the shape the 0.29.140 repair raises). Only
+			// repositories whose daily table is complete; each one read
+			// through a LATERAL scan of its own rows (a subquery with GROUP
+			// BY is never flattened into a whole-table join).
+			query: `WITH eras AS (
+				SELECT c.repo_id, MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date) AS boundary
+				FROM aveloxis_data.repo_forge_id_changes c
+				JOIN aveloxis_data.repos r ON r.repo_id = c.repo_id AND r.commit_daily_complete_at IS NOT NULL
+				WHERE c.adopted_at IS NOT NULL
+				GROUP BY c.repo_id)
+				SELECT COUNT(*), COALESCE((array_agg(DISTINCT f.repo_id ORDER BY f.repo_id DESC))[1:5]::text, '{}')
+				FROM eras e
+				CROSS JOIN LATERAL (
+					SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date AS day, co.cmt_author_email AS email,
+					       COUNT(DISTINCT co.cmt_commit_hash) AS n
+					FROM aveloxis_data.commits co
+					WHERE co.repo_id = e.repo_id AND co.cmt_author_timestamp IS NOT NULL
+					  AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < e.boundary
+					GROUP BY 1, 2, 3) f
+				LEFT JOIN aveloxis_data.repo_commit_daily d
+				       ON d.repo_id = f.repo_id AND d.day = f.day AND d.author_email = f.email
+				WHERE COALESCE(d.commits, 0) < f.n`,
+			bad: "%d earlier-era daily buckets sit below their fold from commits (the charts undercount the earlier repository) — e.g. repo_id %s",
+			ok:  "every earlier-era bucket of an adopted change holds its commits",
+		},
+	} {
+		var examples string
+		if err := s.pool.QueryRow(ctx, inv.query).Scan(&n, &examples); err != nil {
+			probeErr(inv.check, err)
+		} else if n > 0 {
+			add(inv.check, inv.severity, inv.bad, n, examples)
+		} else {
+			add(inv.check, "OK", "%s", inv.ok)
+		}
+	}
+
+	// The case-insensitive e-mail indexes (0.29.141): built by the migrate,
+	// CONCURRENTLY; missing means the migrate has not run (or a build failed
+	// and was logged).
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM unnest(ARRAY['idx_contributors_email_lower', 'idx_contributors_aliases_email_lower',
+		                                  'idx_contributor_identities_email_lower']) AS want(name)
+		WHERE NOT EXISTS (SELECT 1 FROM pg_class i JOIN pg_namespace n ON n.oid = i.relnamespace
+		                  JOIN pg_index x ON x.indexrelid = i.oid
+		                  WHERE n.nspname = 'aveloxis_data' AND i.relname = want.name AND x.indisvalid)`).Scan(&n); err != nil {
+		probeErr("lower(email) indexes", err)
+	} else if n > 0 {
+		add("lower(email) indexes", "WARN", "%d of the three lower(email) indexes are missing or invalid — run `aveloxis migrate`", n)
+	} else {
+		add("lower(email) indexes", "OK", "the three lower(email) indexes are valid")
+	}
+
 	// Cross-kind message corruption (v0.27.38 class). THREE states:
 	//   1. msg_kind column absent → the kinded arbiter is not in force;
 	//      collisions are the KNOWN pre-migration state (WARN with the
@@ -205,7 +335,7 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 		WITH sample AS (
 			SELECT repo_id, last_issues, last_prs FROM aveloxis_ops.collection_queue
 			WHERE last_collected IS NOT NULL AND status = 'queued'
-			ORDER BY random() LIMIT LEAST($1, 30)
+			ORDER BY `+opts.sampleOrder("repo_id")+` LIMIT LEAST($1, 30)
 		)
 		SELECT COUNT(*) FILTER (WHERE
 			s.last_issues <> (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = s.repo_id)
@@ -218,6 +348,9 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 	} else {
 		add("cached counts vs actual", "OK", "%d sampled repos match exactly", sampled)
 	}
+	if !opts.DeterministicSample {
+		markSampled(out, "cached counts vs actual")
+	}
 
 	// Gathered vs forge-reported metadata drift (the gap detector's
 	// 5%% semantic). Drift is expected on high-velocity repos between
@@ -228,7 +361,7 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 			SELECT q.repo_id, q.last_issues, q.last_prs
 			FROM aveloxis_ops.collection_queue q
 			WHERE q.last_collected > NOW() - INTERVAL '7 days'
-			ORDER BY random() LIMIT $1
+			ORDER BY `+opts.sampleOrder("q.repo_id")+` LIMIT $1
 		), meta AS (
 			SELECT DISTINCT ON (ri.repo_id) ri.repo_id, ri.issues_count, ri.pr_count
 			FROM aveloxis_data.repo_info ri
@@ -246,6 +379,9 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 		add("gathered vs metadata drift", "WARN", "%d of %d recently-collected repos drift >%.0f%% from forge metadata — gap fill heals these on cycle", drifted, sampled, driftThresholdPct)
 	} else {
 		add("gathered vs metadata drift", "OK", "0 of %d sampled repos beyond the %.0f%% gap threshold", sampled, driftThresholdPct)
+	}
+	if !opts.DeterministicSample {
+		markSampled(out, "gathered vs metadata drift")
 	}
 
 	// Batch vs single stats equality (the v0.27.36/1e contract): the

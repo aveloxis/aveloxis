@@ -81,6 +81,12 @@ Resumable: on interruption, re-run with --after-repo-id <last logged id>.`,
 				fmt.Printf("dry run: %d forge-backed repos would be refreshed (after repo_id %d)\n", n, afterRepoID)
 				return nil
 			}
+			// A writing run refuses on a database behind this binary before
+			// loading keys (Copilot PR #252, fifteenth review): the metadata
+			// writer would refuse every repository.
+			if err := store.RequireMigrated(ctx); err != nil {
+				return err
+			}
 
 			ghKeys, glKeys, err := loadKeys(ctx, cfg, store, false, logger)
 			if err != nil {
@@ -146,7 +152,7 @@ func runBackfillRepoMetadata(ctx context.Context, store *db.PostgresStore, ghCli
 				}
 				forkedFrom := info.ForkedFrom()
 				if err := store.UpdateRepoMetadata(ctx, t.RepoID, info.Description, info.PrimaryLanguage,
-					info.Languages, info.Status == "Archived", forkedFrom, info.PlatformRepoID, info.CreatedAt, info.LastUpdated); err != nil {
+					info.Languages, info.Status == "Archived", forkedFrom, info.PlatformRepoID, info.CreatedAt, info.LastUpdated, info.Private); err != nil {
 					failed.Add(1)
 					logger.Warn("metadata refresh write failed", "repo_id", t.RepoID, "error", err)
 					continue

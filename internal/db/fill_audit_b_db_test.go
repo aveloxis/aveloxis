@@ -375,7 +375,7 @@ func TestFillAuditBEndToEnd(t *testing.T) {
 
 	// --- repos.created_at fill-empty-only via UpdateRepoMetadata ---
 	created := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", created, created); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", created, created, false); err != nil {
 		t.Fatal(err)
 	}
 	var gotCreated time.Time
@@ -386,7 +386,7 @@ func TestFillAuditBEndToEnd(t *testing.T) {
 		t.Fatalf("created_at not written: got %v", gotCreated)
 	}
 	// A later call with a different created_at must NOT overwrite.
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", created.AddDate(1, 0, 0), created); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", created.AddDate(1, 0, 0), created, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT created_at FROM aveloxis_data.repos WHERE repo_id=$1`, repoID).Scan(&gotCreated); err != nil {

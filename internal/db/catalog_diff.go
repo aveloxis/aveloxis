@@ -1,0 +1,166 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package db
+
+// catalog_diff.go — the schema half of `aveloxis data-test`'s snapshot
+// comparison (0.29.142): indexes (with their validity), constraints and the
+// definition of every column both sides have, in the compared schemas.
+// ContentDiff sees rows only; a migrate that skipped a gated unique index,
+// dropped a foreign key, set NOT NULL or a default, or widened a column to a
+// type that renders the same JSON passes a row comparison. Every migrate
+// restamps each tool_version default with its own version
+// (setToolVersionDefaults), so a tool_version default equal to the side's own
+// schema stamp is normalized; any other default is compared as written.
+
+import (
+	"context"
+	"sort"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// CatalogDiffEntry is one schema object that differs between the sides.
+type CatalogDiffEntry struct {
+	Kind   string `json:"kind"`   // "index", "constraint", "column" (a column's definition)
+	Table  string `json:"table"`  // schema.table the object belongs to
+	Object string `json:"object"` // index or constraint name, or column name
+	Change string `json:"change"` // "added" (new side only), "removed", "changed"
+	// Released and New are the object's definitions on each side.
+	Released string `json:"released,omitempty"`
+	New      string `json:"new,omitempty"`
+}
+
+// RuleKind is the expectation kind that covers the entry: "index-added",
+// "constraint-changed", "column-changed", ….
+func (e CatalogDiffEntry) RuleKind() string { return e.Kind + "-" + e.Change }
+
+type catalogObject struct{ kind, table, object, def string }
+
+// ownToolVersionDefault is how a tool_version column's default reads when it
+// is the side's own schema version: every migrate sets every tool_version
+// default to its release (setToolVersionDefaults), so two releases' sides
+// always differ there and it says nothing about the release. A default that
+// is NOT the side's own version (a stale or foreign one) keeps its literal
+// and still differs.
+const ownToolVersionDefault = "DEFAULT <the side's own schema version>"
+
+func catalogObjects(ctx context.Context, pool *pgxpool.Pool, schemas []string) (map[string]catalogObject, error) {
+	out := map[string]catalogObject{}
+	version, err := schemaVersionOf(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	collect := func(kind, sql string) error {
+		rows, err := pool.Query(ctx, sql, schemas)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var o catalogObject
+			if err := rows.Scan(&o.table, &o.object, &o.def); err != nil {
+				return err
+			}
+			o.kind = kind
+			if kind == "column" && o.object == "tool_version" && version != "" {
+				o.def = strings.Replace(o.def, "DEFAULT "+toolVersionDefaultExpr(version), ownToolVersionDefault, 1)
+			}
+			out[kind+"|"+o.table+"|"+o.object] = o
+		}
+		return rows.Err()
+	}
+	if err := collect("index", `
+		SELECT n.nspname || '.' || t.relname, i.relname,
+		       pg_get_indexdef(i.oid) || CASE WHEN x.indisvalid THEN '' ELSE ' [INVALID]' END
+		FROM pg_index x
+		JOIN pg_class i ON i.oid = x.indexrelid
+		JOIN pg_class t ON t.oid = x.indrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		WHERE n.nspname = ANY($1)`); err != nil {
+		return nil, err
+	}
+	if err := collect("constraint", `
+		SELECT n.nspname || '.' || t.relname, c.conname, pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class t ON t.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		WHERE n.nspname = ANY($1) AND c.contype <> 'n'`); err != nil {
+		return nil, err
+	}
+	// A column's definition: its type, collation, NOT NULL, identity, and
+	// default or generation (expression and STORED/VIRTUAL). NOT NULL is the
+	// column's on every PostgreSQL: 17 and earlier keep it in pg_attribute
+	// only (Copilot's review of cce17a6f), and 18's catalog constraint for it
+	// (contype 'n') is left out of the constraints above, so one rule fits
+	// both; its one property the column flag does not carry, a NOT VALID
+	// constraint (attnotnull is set while rows may still hold NULLs), is
+	// read onto the column. Not compared: a column's physical settings (storage, compression,
+	// statistics target), which change no answer.
+	if err := collect("column", `
+		SELECT n.nspname || '.' || t.relname, a.attname,
+		       format_type(a.atttypid, a.atttypmod)
+		       || CASE WHEN a.attcollation <> 0 AND a.attcollation <> ty.typcollation
+		               THEN ' COLLATE ' || quote_ident(co.collname) ELSE '' END
+		       || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
+		       || CASE WHEN EXISTS (SELECT 1 FROM pg_constraint nn
+		                             WHERE nn.conrelid = a.attrelid AND nn.contype = 'n'
+		                               AND nn.conkey = ARRAY[a.attnum] AND NOT nn.convalidated)
+		               THEN ' NOT VALID' ELSE '' END
+		       || CASE a.attidentity WHEN 'a' THEN ' GENERATED ALWAYS AS IDENTITY'
+		                             WHEN 'd' THEN ' GENERATED BY DEFAULT AS IDENTITY' ELSE '' END
+		       || CASE WHEN a.attgenerated <> '' THEN ' GENERATED ALWAYS AS (' || pg_get_expr(d.adbin, d.adrelid) || ')'
+		                    || CASE a.attgenerated WHEN 's' THEN ' STORED' WHEN 'v' THEN ' VIRTUAL' ELSE '' END
+		               WHEN d.adbin IS NOT NULL THEN ' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid) ELSE '' END
+		FROM pg_attribute a
+		JOIN pg_class t ON t.oid = a.attrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_type ty ON ty.oid = a.atttypid
+		LEFT JOIN pg_collation co ON co.oid = a.attcollation
+		LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+		WHERE n.nspname = ANY($1) AND t.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped`); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CatalogDiff compares the two sides' indexes, constraints and column
+// definitions. A column one side lacks is ContentDiff's (OnlyNewColumns /
+// OnlyReleasedColumns), so only columns on both sides are compared.
+func CatalogDiff(ctx context.Context, released, newPool *pgxpool.Pool, schemas []string) ([]CatalogDiffEntry, error) {
+	rel, err := catalogObjects(ctx, released, schemas)
+	if err != nil {
+		return nil, err
+	}
+	nw, err := catalogObjects(ctx, newPool, schemas)
+	if err != nil {
+		return nil, err
+	}
+	var out []CatalogDiffEntry
+	for k, r := range rel {
+		n, ok := nw[k]
+		switch {
+		case !ok && r.kind != "column":
+			out = append(out, CatalogDiffEntry{Kind: r.kind, Table: r.table, Object: r.object, Change: "removed", Released: r.def})
+		case ok && n.def != r.def:
+			out = append(out, CatalogDiffEntry{Kind: r.kind, Table: r.table, Object: r.object, Change: "changed", Released: r.def, New: n.def})
+		}
+	}
+	for k, n := range nw {
+		if _, ok := rel[k]; !ok && n.kind != "column" {
+			out = append(out, CatalogDiffEntry{Kind: n.kind, Table: n.table, Object: n.object, Change: "added", New: n.def})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Table != b.Table {
+			return a.Table < b.Table
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Object < b.Object
+	})
+	return out, nil
+}

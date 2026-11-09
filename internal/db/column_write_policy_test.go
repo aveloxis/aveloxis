@@ -42,8 +42,8 @@ var columnWritePolicies = []sqlscan.Registered{
 	// writer. UpsertRepo's conflict arm wrote them from its callers' zero
 	// values (no caller carries them from the forge), blanking a collected
 	// repository on every re-add; Phase 0's UpdateRepoMetadata is the
-	// collection writer and the lifecycle writers (ArchiveRepo, MarkRepoGone,
-	// the v0.27.50 migrate backfill) set repo_archived — each an Exception.
+	// collection writer and the lifecycle writers (SidelineRepo, the
+	// v0.27.50 migrate step) set repo_archived — each an Exception.
 	{Table: "aveloxis_data.repos", Column: "repo_description", Policy: sqlscan.InsertOnly,
 		Reason: "collected by Phase 0 (UpdateRepoMetadata) every cycle; the identity upsert never carries it, so its conflict arm must not touch it (v0.29.68, follow-up 8)"},
 	{Table: "aveloxis_data.repos", Column: "primary_language", Policy: sqlscan.InsertOnly,
@@ -132,12 +132,12 @@ var columnWriteExceptions = []sqlscan.Exception{
 	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_metadata.go",
 		Match:  "repo_archived    = $5",
 		Reason: "Phase 0's UpdateRepoMetadata propagates the forge's archived status both directions (v0.27.50)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/postgres.go",
-		Match:  "SET repo_archived = TRUE, data_collection_date = NOW()",
-		Reason: "ArchiveRepo — prelim's dead-repo sideline sets the flag on its own path (v0.29.68, follow-up 8: a lifecycle writer, not the identity upsert)"},
 	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_gone.go",
 		Match:  "SET repo_archived = TRUE, repo_gone_at = NOW()",
-		Reason: "MarkRepoGone — the gone lifecycle sets the flag with the gone stamp (v0.29.68, follow-up 8: a lifecycle writer)"},
+		Reason: "SidelineRepo — the gone lifecycle sets the flag with the gone stamp (v0.29.68, follow-up 8: a lifecycle writer)"},
+	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_gone.go",
+		Match:  "repo_archived = COALESCE((SELECT ri.status = 'Archived'",
+		Reason: "clearGoneCTE — every clearer of the gone stamp puts the flag back to the forge's latest snapshot (0.29.140, Copilot PR #252 eighth review: it stayed TRUE after a recovery)"},
 	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/migrate.go",
 		Match:  "SET repo_archived = (latest.status = 'Archived')",
 		Reason: "the v0.27.50 one-shot backfill from repo_info.status for rows collected before Phase 0 propagated the flag"},

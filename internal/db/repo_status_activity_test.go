@@ -122,7 +122,7 @@ func TestArchivedStatusAndLastActivityEndToEnd(t *testing.T) {
 
 	// (b) reconciliation write path: UpdateRepoMetadata propagates
 	// archived BOTH directions onto repos.repo_archived.
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, true, "", "", time.Time{}, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, true, "", "", time.Time{}, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	var flag bool
@@ -133,7 +133,7 @@ func TestArchivedStatusAndLastActivityEndToEnd(t *testing.T) {
 	if !flag {
 		t.Error("UpdateRepoMetadata(archived=true) must set repos.repo_archived")
 	}
-	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", time.Time{}, time.Time{}); err != nil {
+	if err := store.UpdateRepoMetadata(ctx, repoID, "d", "Go", nil, false, "", "", time.Time{}, time.Time{}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx,

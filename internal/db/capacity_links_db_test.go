@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // setLinksQuota sets repo_links_per_day for the test (restored at cleanup).
@@ -30,6 +31,103 @@ func setLinksQuota(t *testing.T, f *allocFixture, allowed int, mode capacity.Mod
 	})
 	if err := f.store.SetCapacityQuota(f.ctx, capacity.QuotaRepoLinksPerDay, allowed, mode, 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The day's additions count only the targets that are linked (Copilot PR
+// #252, thirteenth review): the decision counted new-to-account targets from
+// the REQUESTED ids, while the insert skips an id with no repository row (a
+// merge deleted it) — a failed addition still spent the allowance. The
+// targets are locked and filtered inside the deciding transaction, before
+// the decision, so the count and the insert see one set.
+func TestRepoLinksPerDayCountsOnlyLinkedTargets(t *testing.T) {
+	f := newAllocFixture(t, false, 100, 6, capacity.Enforce)
+	setLinksQuota(t, f, 5, capacity.Enforce)
+	deleted := f.repos[1]
+	mustExecRetry(f.ctx, t, f.store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, deleted)
+	mustExecRetry(f.ctx, t, f.store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, deleted)
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := f.store.pool.QueryRow(f.ctx, `SELECT COALESCE((SELECT requests FROM aveloxis_ops.request_counts WHERE subject = $1 AND day = $2::date), 0)`,
+			linksTodayKey(f.user), capacity.UTCDate(capacity.UTCDay.Start(f.store.capacityNow()))).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	n, err := f.store.AddRepoIDsToGroup(f.ctx, f.group, []int64{f.repos[0], deleted, f.repos[2]})
+	if err != nil || n != 2 {
+		t.Fatalf("a batch with one deleted target links the other two: %d %v", n, err)
+	}
+	if got := count(); got != 2 {
+		t.Errorf("the day's additions after linking 2 of 3 requested = %d, want 2", got)
+	}
+	if _, err := f.store.AddRepoToGroupByID(f.ctx, f.group, deleted); !errors.Is(err, ErrRepoNotFound) {
+		t.Errorf("linking the deleted repository = %v, want ErrRepoNotFound", err)
+	}
+	if got := count(); got != 2 {
+		t.Errorf("a failed addition spends nothing: the day's additions = %d, want 2", got)
+	}
+	// Both deciding transactions filter their targets to existing ones before
+	// the decision and charge what the insert returned.
+	for _, fn := range []string{"func (s *PostgresStore) linkWithinCap(", "func (s *PostgresStore) addPasteWithinCap("} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", fn))
+		filter, decide := strings.Index(body, "existingLinkTargets(ctx, tx,"), strings.Index(body, "s.decideWithinCap(ctx, tx,")
+		if filter < 0 || decide < filter || !strings.Contains(body, "chargeLinked(d, linked)") {
+			t.Errorf("%s must filter its targets (existingLinkTargets) before decideWithinCap and count chargeLinked(d, linked) (positions %d, %d)", fn, filter, decide)
+		}
+	}
+}
+
+// chargeLinked charges the admitted new-to-account targets the insert
+// returned, plus the held URLs' additions; an admitted target a merge deleted
+// between the read and the insert is not charged (the race the plain filter
+// cannot close).
+func TestChargeLinkedChargesOnlyWhatLinked(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		d      capDecision
+		linked []int64
+		want   int
+	}{
+		{"all admitted linked", capDecision{fresh: []int64{1, 2, 3}, admit: 2, counted: 2}, []int64{1, 2}, 2},
+		{"one admitted deleted before the insert", capDecision{fresh: []int64{1, 2, 3}, admit: 2, counted: 2}, []int64{1}, 1},
+		{"an already-reached target linked too", capDecision{fresh: []int64{1}, admit: 1, counted: 1}, []int64{1, 9}, 1},
+		{"held URLs stay counted", capDecision{fresh: []int64{1, 2}, admit: 2, counted: 5}, []int64{2}, 4},
+		{"nothing counted", capDecision{fresh: []int64{1}, admit: 1}, nil, 0},
+		{"none admitted", capDecision{fresh: []int64{1, 2}, admit: 0, counted: 3}, nil, 3},
+	} {
+		if got := chargeLinked(c.d, c.linked); got != c.want {
+			t.Errorf("%s: chargeLinked = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// A target the decision refuses is not locked (the L10 pass on the
+// thirteenth-review fix: locking every requested target before the decision
+// put a FOR SHARE — xmax, a dirtied page, a WAL record — on each refused one,
+// and an account at its allocation is re-offered the same refused org
+// repositories every cycle). Only the insert locks, and only a new link.
+func TestARefusedLinkTargetIsNotLocked(t *testing.T) {
+	f := newAllocFixture(t, false, 100, 6, capacity.Enforce)
+	setLinksQuota(t, f, 1, capacity.Enforce)
+	if ok, err := f.store.AddRepoToGroupByID(f.ctx, f.group, f.repos[0]); err != nil || !ok {
+		t.Fatalf("the one addition today = %v, %v", ok, err)
+	}
+	xmax := func(id int64) string {
+		t.Helper()
+		var x string
+		if err := f.store.pool.QueryRow(f.ctx, `SELECT xmax::text FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&x); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	before := xmax(f.repos[3])
+	if _, err := f.store.AddRepoToGroupByID(f.ctx, f.group, f.repos[3]); err == nil {
+		t.Fatal("the second addition today must be refused")
+	}
+	if after := xmax(f.repos[3]); after != before {
+		t.Errorf("a refused target must not be locked (xmax %s -> %s)", before, after)
 	}
 }
 

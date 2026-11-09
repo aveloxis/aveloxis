@@ -31,6 +31,11 @@ type RepoInfo struct {
 	// via UpdateRepoMetadata; UpsertRepo dedups on it at add time.
 	// Empty when the transport didn't provide it.
 	PlatformRepoID string
+	// Private (0.29.140): the forge says the repository is not public
+	// (GitHub `private` / `isPrivate`; a GitLab visibility other than
+	// public). An unauthenticated probe cannot see such a repository, so an
+	// adoption of its forge-ID change does not resurrect a gone stamp.
+	Private bool
 	// CreatedAt is the forge's repository creation timestamp
 	// (v0.27.104 — repos.created_at was 0% populated; Phase 0 writes
 	// it fill-empty-only since a creation date is immutable).

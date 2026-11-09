@@ -26,16 +26,21 @@ import (
 // P1). GitHub's `name` IS the slug, so the two listers agree on what Name
 // holds.
 type GroupProject struct {
-	WebURL    string
-	Owner     string    // namespace full path, e.g. "group/subgroup"
-	Name      string    // the project's path (slug)
-	ForgeID   string    // numeric project id (model.ForgeIDString), rename-proof
-	CreatedAt time.Time // when the forge created the project (v0.29.63's forge-ID recorder dates a change with it)
+	WebURL     string
+	Owner      string    // namespace full path, e.g. "group/subgroup"
+	Name       string    // the project's path (slug)
+	ForgeID    string    // numeric project id (model.ForgeIDString), rename-proof
+	CreatedAt  time.Time // when the forge created the project (v0.29.63's forge-ID recorder dates a change with it)
+	Visibility string    // GitLab's `visibility`: public, internal or private ("" when the listing omitted it)
 }
 
 // OwnerRepo is the project as the one ingest item (platform.OwnerRepo).
+// Private is every visibility but `public` — `internal` is visible to
+// signed-in users only, which an unauthenticated probe is not — and an
+// omitted visibility counts as not public (the safe side: no resurrection
+// on a listing whose visibility the forge did not state).
 func (p GroupProject) OwnerRepo() platform.OwnerRepo {
-	return platform.OwnerRepo{URL: p.WebURL, Owner: p.Owner, Name: p.Name, ForgeID: p.ForgeID, CreatedAt: p.CreatedAt}
+	return platform.OwnerRepo{URL: p.WebURL, Owner: p.Owner, Name: p.Name, ForgeID: p.ForgeID, CreatedAt: p.CreatedAt, Private: p.Visibility != "public"}
 }
 
 // ListGroupProjects lists every project in a group, subgroups included, on
@@ -58,11 +63,12 @@ func (c *Client) ListGroupProjects(ctx context.Context, group string) iter.Seq2[
 				return
 			}
 			var items []struct {
-				ID        int64     `json:"id"`
-				WebURL    string    `json:"web_url"`
-				Path      string    `json:"path"` // the slug; `name` is the display name
-				CreatedAt time.Time `json:"created_at"`
-				Namespace struct {
+				ID         int64     `json:"id"`
+				WebURL     string    `json:"web_url"`
+				Path       string    `json:"path"` // the slug; `name` is the display name
+				CreatedAt  time.Time `json:"created_at"`
+				Visibility string    `json:"visibility"`
+				Namespace  struct {
 					FullPath string `json:"full_path"`
 				} `json:"namespace"`
 			}
@@ -76,7 +82,7 @@ func (c *Client) ListGroupProjects(ctx context.Context, group string) iter.Seq2[
 				return
 			}
 			for _, it := range items {
-				if !yield(GroupProject{WebURL: it.WebURL, Owner: it.Namespace.FullPath, Name: it.Path, ForgeID: model.ForgeIDString(it.ID), CreatedAt: it.CreatedAt}, nil) {
+				if !yield(GroupProject{WebURL: it.WebURL, Owner: it.Namespace.FullPath, Name: it.Path, ForgeID: model.ForgeIDString(it.ID), CreatedAt: it.CreatedAt, Visibility: it.Visibility}, nil) {
 					return
 				}
 			}

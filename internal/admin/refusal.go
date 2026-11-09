@@ -75,6 +75,11 @@ const (
 	// Detail says what needs the sign-in and the bound; adapters answer
 	// 403 reauthentication_required.
 	ReauthenticationRequired
+	// NotMigrated: the database schema is behind this binary (the api and
+	// web processes do not migrate); nothing was written. Detail names the
+	// deploy steps. Adapters answer 503: a temporary condition of the
+	// service, fixed by the migrate (Copilot PR #252, fourteenth review).
+	NotMigrated
 )
 
 func (k Kind) String() string {
@@ -113,6 +118,8 @@ func (k Kind) String() string {
 		return "conflict"
 	case ReauthenticationRequired:
 		return "reauthentication required"
+	case NotMigrated:
+		return "not migrated"
 	}
 	return fmt.Sprintf("kind %d", int(k))
 }
@@ -268,6 +275,8 @@ func Classify(err error) (Refusal, bool) {
 	switch {
 	case errors.Is(err, ErrNotAdmin):
 		return Refusal{Kind: Forbidden}, true
+	case errors.Is(err, db.ErrSchemaNotMigrated):
+		return Refusal{Kind: NotMigrated, Detail: err.Error()}, true
 	case errors.Is(err, ErrRecentSignInRequired):
 		return Refusal{Kind: ReauthenticationRequired, Detail: err.Error()}, true
 	case errors.Is(err, ErrSelfDemotion):

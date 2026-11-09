@@ -2398,6 +2398,11 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// analytics are unaffected (DequeueNext and the matviews do not
 	// filter repo_archived). Going forward, staged Phase 0's
 	// UpdateRepoMetadata keeps the flag current in both directions.
+	// 0.29.140: a gone-stamped row is left alone — SidelineRepo set its
+	// flag, and its snapshot predates its disappearance, so this step
+	// un-archived 426 gone repositories on kate (2026-11-05) into the
+	// stranded class (non-archived, no queue row) at every deploy; the 469
+	// "stranded" repositories reconcile-repos then walked.
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.50 reconcile repo_archived from forge status",
 		`UPDATE aveloxis_data.repos r
@@ -2405,9 +2410,10 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		 FROM (
 		     SELECT DISTINCT ON (repo_id) repo_id, status
 		     FROM aveloxis_data.repo_info
-		     ORDER BY repo_id, data_collection_date DESC
+		     ORDER BY repo_id, data_collection_date DESC NULLS LAST, repo_info_id DESC
 		 ) latest
 		 WHERE r.repo_id = latest.repo_id
+		   AND r.repo_gone_at IS NULL
 		   AND COALESCE(r.repo_archived, FALSE) IS DISTINCT FROM (latest.status = 'Archived')`)
 
 	// v0.27.51: dependency_scope stores the WORD 'runtime' instead of
@@ -2741,6 +2747,106 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		    starred_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		    PRIMARY KEY (user_id, collection_id)
 		)`)
+
+	// 0.29.140: the gone history (repo_gone.go). The table itself is
+	// schema.sql's (born empty on every fleet); this opens an episode for
+	// every repository stamped gone before the history existed, starting at
+	// the row's own stamp, status unknown (0), source 'backfill-0.29.140'
+	// (GoneSourceBackfill) — once, idempotent by the NOT EXISTS.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.140 open a gone episode for every gone-stamped repository",
+		`INSERT INTO aveloxis_data.repo_gone_history (repo_id, gone_at, gone_status, gone_source)
+		 SELECT r.repo_id, r.repo_gone_at, 0, 'backfill-0.29.140'
+		 FROM aveloxis_data.repos r
+		 WHERE r.repo_gone_at IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM aveloxis_data.repo_gone_history h
+		                   WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL)`)
+
+	// 0.29.140 (Copilot PR #252, second and third reviews): the listing's
+	// visibility travels with a recorded forge-ID change, so an adoption
+	// resurrects a gone-stamped repository only for a re-creation KNOWN to be
+	// public; rows recorded before the column stay NULL (unknown) until a
+	// scan observes them again — unknown is not proof (repo_forge_id_changes.go).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_forge_id_changes", "observed_private", "BOOLEAN")
+
+	// 0.29.140 (Copilot PR #252; commit_daily.go restoreEarlierErasInTx): a
+	// repository adopted before this release had its earlier era trimmed
+	// from the daily table — the buckets before the boundary day (the newest
+	// adopted change's forge creation day, else its first observation) come
+	// back from the append-only commits table, raise-only: a missing bucket is
+	// inserted and one a walk lowered is raised (fifteenth review). The
+	// fold is commitDailyFoldColumnsSQL's, literal here for the step-order
+	// analyzer. The boundary DAY is refolded from the commits table for the
+	// authors with a commit before the exact era start (Copilot PR #252,
+	// twelfth review; commit_daily.go refoldEarlierEraSQL), a HAVING bool_or
+	// over the author's boundary-day group, never a correlated read of
+	// commits (the evaluation of 2026-11-08: 88 s on a 2-million-row copy as
+	// an EXISTS, 0.3 s here; TestTheEraFoldsReadCommitsOncePerArm). Once;
+	// idempotent (both arms only raise a bucket: a walk that lowered an earlier bucket before 0.29.140 is repaired, fifteenth review). The charts change for every
+	// repository a bucket came back for, so the same statement stamps their
+	// cache state (data_changed_at, as the adoption's own restore does —
+	// Copilot PR #252, seventh review: a cached chart answer from before
+	// the migrate stayed valid otherwise) and only theirs.
+	runOnceStep(ctx, pg, logger, errs,
+		"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
+		`WITH eras AS (
+		 SELECT c.repo_id, MAX(COALESCE(c.forge_created_at, c.first_observed_at)) AS era_start
+		   FROM aveloxis_data.repo_forge_id_changes c
+		  WHERE c.adopted_at IS NOT NULL
+		  GROUP BY c.repo_id),
+		 restored AS (
+		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
+		        COUNT(DISTINCT co.cmt_commit_hash),
+		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
+		 FROM aveloxis_data.commits co
+		 JOIN eras b ON b.repo_id = co.repo_id
+		 WHERE co.cmt_author_timestamp IS NOT NULL
+		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < (b.era_start AT TIME ZONE 'UTC')::date
+		 GROUP BY 1, 2, 3
+		 ON CONFLICT (repo_id, day, author_email) DO UPDATE
+		 SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
+		 WHERE EXCLUDED.commits > repo_commit_daily.commits
+		 RETURNING repo_id),
+		 refolded AS (
+		 INSERT INTO aveloxis_data.repo_commit_daily (repo_id, day, author_email, commits, cntrb_id)
+		 SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date, co.cmt_author_email,
+		        COUNT(DISTINCT co.cmt_commit_hash),
+		        CASE WHEN COUNT(DISTINCT co.cmt_ght_author_id) = 1 THEN MIN(co.cmt_ght_author_id::text)::uuid END
+		 FROM aveloxis_data.commits co
+		 JOIN eras b ON b.repo_id = co.repo_id
+		 WHERE co.cmt_author_timestamp IS NOT NULL
+		   AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date = (b.era_start AT TIME ZONE 'UTC')::date
+		 GROUP BY 1, 2, 3
+		 HAVING bool_or(co.cmt_author_timestamp < b.era_start)
+		 ON CONFLICT (repo_id, day, author_email) DO UPDATE
+		 SET commits = EXCLUDED.commits, cntrb_id = EXCLUDED.cntrb_id, computed_at = NOW()
+		 WHERE EXCLUDED.commits > repo_commit_daily.commits
+		 RETURNING repo_id)
+		 UPDATE aveloxis_data.repos SET data_changed_at = NOW()
+		  WHERE repo_id IN (SELECT repo_id FROM restored UNION SELECT repo_id FROM refolded)`)
+
+	// 0.29.141 (aveloxis-cve's request): its author resolution matches a
+	// commit's e-mail case-insensitively, lower(<column>) = $email, against
+	// these three tables, and nothing indexed the expressions —
+	// idx_contributors_email_lookup (above) is on the plain column, so is
+	// alias_email's UNIQUE, and contributor_identities.email had no index —
+	// so each call (one per 5,000-commit sync batch) read all three in full.
+	// aveloxis-cve may not create objects in Aveloxis's schemas. The
+	// expressions are exactly lower(<column>): the planner matches an
+	// expression index only when the predicate's expression is identical (no
+	// trim(), no COLLATE, no partial WHERE). Non-unique, so no dedup first
+	// (SR-1); fleet-scale tables, so migration-only CONCURRENTLY (SR-2); new
+	// names (SR-4).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributors_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_email_lower
+		 ON aveloxis_data.contributors (lower(cntrb_email))`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributors_aliases_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_aliases_email_lower
+		 ON aveloxis_data.contributors_aliases (lower(alias_email))`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributor_identities_email_lower",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributor_identities_email_lower
+		 ON aveloxis_data.contributor_identities (lower(email))`)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by
@@ -2832,7 +2938,70 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 	if err != nil {
 		logger.Error("schema migration error", "step", label, "error", err)
 		*errs = append(*errs, fmt.Errorf("%s: %w", label, err))
+		return
 	}
+	// An index on an expression is useless to the planner until its table is
+	// analyzed (expressionIndexTableWithoutStatistics). Decided on the
+	// missing statistics, not on "just built", so a failed ANALYZE, or a host
+	// that built the index before this rule, converges at the next migrate.
+	// ANALYZE samples a fixed number of rows whatever the table's size and
+	// takes a lock that blocks neither reads nor writes.
+	// A failed ANALYZE (or probe) is the step's error, as a failed build is:
+	// the migrate leaves no schema stamp, so the next serve or migrate walks
+	// the step again (declined as a policy change in the 0.29.142 review:
+	// statistics are what make the index usable at all).
+	analyzeLabel := "analyze for index " + indexName
+	err = retryOnDeadlock(ctx, logger, analyzeLabel, func() error {
+		table, err := expressionIndexTableWithoutStatistics(ctx, pg, schema, indexName)
+		if err != nil || table == "" {
+			return err
+		}
+		start := time.Now()
+		if _, err := pg.pool.Exec(ctx, `ANALYZE `+table); err != nil {
+			return fmt.Errorf("analyze %s: %w", table, err)
+		}
+		logger.Info("analyzed a table for its expression index", "index", schema+"."+indexName, "table", table, "duration", time.Since(start).Round(time.Millisecond))
+		return nil
+	})
+	if err != nil {
+		logger.Error("schema migration error", "step", analyzeLabel, "error", err)
+		*errs = append(*errs, fmt.Errorf("%s: %w", analyzeLabel, err))
+	}
+}
+
+// expressionIndexTableWithoutStatistics names, quoted, the table of a VALID
+// index on an expression that has no statistics yet, or "" when there is
+// nothing to do (a plain column index, an expression index with statistics,
+// no such index — SR-5: no rows means nothing to do, any other failure is the
+// caller's error). PostgreSQL gathers an expression's statistics only when
+// the table is analyzed, never when the index is built, and until then the
+// planner prices every lookup at 0.5% of the table (0.29.142: aveloxis-cve's
+// lower(email) joins scanned a kate-shaped contributors table, 7.1 s, with
+// the 0.29.141 indexes valid; 0.5 s one ANALYZE later). pg_stats shows an
+// index's rows to its table's owner, which the migrate is; a role that cannot
+// see them reads "none" and analyzes, the safe direction. An empty table
+// never gets statistics, so its expression index is analyzed at every
+// migrate, which costs nothing.
+func expressionIndexTableWithoutStatistics(ctx context.Context, pg *PostgresStore, schema, indexName string) (string, error) {
+	var table string
+	err := pg.pool.QueryRow(ctx, `
+		SELECT quote_ident(tn.nspname) || '.' || quote_ident(t.relname)
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_class t ON t.oid = i.indrelid
+		JOIN pg_namespace tn ON tn.oid = t.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2
+		  AND i.indisvalid AND i.indexprs IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM pg_stats s WHERE s.schemaname = $1 AND s.tablename = $2)`,
+		schema, indexName).Scan(&table)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("probe %s.%s for missing expression statistics: %w", schema, indexName, err)
+	}
+	return table, nil
 }
 
 // watchBlockers periodically polls pg_stat_activity for aveloxis
@@ -3671,8 +3840,16 @@ func startupMigrateRefusal(stamp string, stampErr error, sight OtherServe) error
 // ErrNoRows and an absent schema_meta (42P01, pre-v0.14.5) are the
 // only definitive absences; everything else is a failed read.
 func (s *PostgresStore) schemaVersionProbe(ctx context.Context) (string, error) {
+	return schemaVersionOf(ctx, s.pool)
+}
+
+// schemaVersionOf is the one reader of a database's schema stamp
+// (schemaVersionProbe, and CatalogDiff for each side): "" when the database
+// is definitively unstamped (no row, or no schema_meta at all), the error for
+// any other failure (SR-5).
+func schemaVersionOf(ctx context.Context, q lockQuerier) (string, error) {
 	var version string
-	err := s.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`,
 	).Scan(&version)
 	if err == nil {
@@ -3752,13 +3929,20 @@ func logSchemaVersionCheck(logger *slog.Logger, dbVersion string, readErr error)
 	}
 }
 
+// toolVersionDefaultExpr is a (text) tool_version column's default for
+// version v, as the sweep below sets it and as PostgreSQL renders it back: the
+// one form the sweep writes and compares against, and CatalogDiff normalizes.
+func toolVersionDefaultExpr(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'::text"
+}
+
 // setToolVersionDefaults updates the DEFAULT for every tool_version column to
 // the current ToolVersion. This way new INSERTs that omit tool_version
 // automatically get the correct value without needing it in every INSERT list.
 // Only alters tables whose default doesn't already match, so on most startups
 // this is a no-op.
 func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
-	expectedDefault := fmt.Sprintf("'%s'::text", ToolVersion)
+	expectedDefault := toolVersionDefaultExpr(ToolVersion)
 	rows, err := pg.pool.Query(ctx, `
 		SELECT table_schema || '.' || table_name
 		FROM information_schema.columns
@@ -3780,8 +3964,8 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 			continue
 		}
 		if _, err := pg.pool.Exec(ctx, fmt.Sprintf(
-			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT '%s'`,
-			table, ToolVersion)); err != nil {
+			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT %s`,
+			table, toolVersionDefaultExpr(ToolVersion))); err != nil {
 			logger.Warn("tool_version default sweep: alter failed", "table", table, "error", err)
 		}
 	}

@@ -114,7 +114,11 @@ func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID 
 	// The repository's place is already held (v0.29.89): by the approved
 	// item this pass stamps next (reachSQL counts it until then), or the
 	// caller is an administrator's own session, which the quota exempts.
-	if _, err := s.linkWithinCap(ctx, groupID, []int64{repoID}, linkHeld); err != nil {
+	n, err := s.linkWithinCap(ctx, groupID, []int64{repoID}, linkHeld)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.goneIfUnlinked(ctx, n, repoID); err != nil {
 		return 0, err
 	}
 	return repoID, nil

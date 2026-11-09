@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.140 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.143 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=c6d77b2e"></script>
+      <script src="../_static/documentation_options.js?v=f12ff144"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-124">Changes for API clients in 0.29.124</a></li>
@@ -584,9 +585,12 @@
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#limitations">Limitations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#related">Related</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#column-fill-diff-v0-26-1">Column-fill diff (v0.26.1)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#a-fail-on-an-event-table-at-the-30-000-event-window">A FAIL on an event table at the 30,000-event window</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#expected-event-table-asymmetry-vs-pre-0-26-2-tags">Expected event-table asymmetry vs pre-0.26.2 tags</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#diff-only-re-running-the-diff-against-kept-databases-v0-27-129"><code class="docutils literal notranslate"><span class="pre">--diff-only</span></code>: re-running the diff against kept databases (v0.27.129)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="data-test.html#schema-shape-drift-in-the-report-v0-27-129">Schema shape drift in the report (v0.27.129)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#snapshot-mode-comparing-two-migrations-0-29-142">Snapshot mode: comparing two migrations (0.29.142)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-test.html#concurrency-stress-on-a-migrated-clone">Concurrency stress on a migrated clone</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="scaling.html">Scaling</a><ul>
@@ -784,7 +788,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-108-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (108 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
@@ -1563,6 +1567,8 @@
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#platforms">platforms</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups">repo_groups</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repos">repos</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-gone-history">repo_gone_history</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-forge-id-changes">repo_forge_id_changes</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-groups-list-serve">repo_groups_list_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message">email_message</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#email-message-ref">email_message_ref</a></li>
@@ -2960,32 +2966,64 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <h2>Dead repo sidelining and un-sidelining<a class="headerlink" href="#dead-repo-sidelining-and-un-sidelining" title="Link to this heading"></a></h2>
 <section id="how-sidelining-works">
 <h3>How sidelining works<a class="headerlink" href="#how-sidelining-works" title="Link to this heading"></a></h3>
-<p>When the prelim phase detects a 404/410/451 response:</p>
+<p>When the prelim phase detects a 404/410/451 response, the repository is
+sidelined in one transaction (<code class="docutils literal notranslate"><span class="pre">SidelineRepo</span></code>, 0.29.140):</p>
 <ul class="simple">
-<li><p>The repo is marked <code class="docutils literal notranslate"><span class="pre">repo_archived</span> <span class="pre">=</span> <span class="pre">TRUE</span></code></p></li>
-<li><p>It is removed from the collection queue</p></li>
-<li><p>All previously collected data is preserved</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">repos.repo_gone_at</span></code> is stamped (the “not reachable on its forge” state)
+and <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> set, so every archived-filtered surface excludes it</p></li>
+<li><p>a gone episode opens in <code class="docutils literal notranslate"><span class="pre">repo_gone_history</span></code> (shown on the repository page)</p></li>
+<li><p>it is removed from the collection queue</p></li>
+<li><p>all previously collected data is preserved</p></li>
 </ul>
 </section>
 <section id="un-sidelining-a-repo">
 <h3>Un-sidelining a repo<a class="headerlink" href="#un-sidelining-a-repo" title="Link to this heading"></a></h3>
-<p>If a repo comes back (e.g., was temporarily private), you can un-sideline it:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Un-sideline the repo</span>
-<span class="k">UPDATE</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">FALSE</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_git</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;https://github.com/owner/repo&#39;</span><span class="p">;</span>
-</pre></div>
-</div>
-<p>Then re-add it to the queue:</p>
+<p>A repository that comes back is un-sidelined by Aveloxis itself on a
+definitive sign of life: the gone recheck (every
+<code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code>, default 28), an org scan that lists it
+publicly under the forge ID the row stores, or an administrator adopting its
+recorded forge-ID change whose listing was seen public (a change observed
+before 0.29.140 carries no visibility, so adopting it keeps the repository
+gone until a scan lists it). Each clears the stamp, closes the episode, puts
+<code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> back to the forge’s latest recorded status and re-queues the
+repository. To bring ONE repository back sooner, re-add it: the next cycle’s
+prelim probe clears the stamp on a 2xx.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-repo<span class="w"> </span>https://github.com/owner/repo
 </pre></div>
 </div>
+<p>To probe the whole queueless cohort now (every row that is gone-stamped,
+archived or has commits but no queue row — one unauthenticated request each,
+<code class="docutils literal notranslate"><span class="pre">serve</span></code> may keep running):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>mark-gone-repos
+</pre></div>
+</div>
+<p>A 2xx on a GONE-STAMPED row clears the stamp and re-queues it. A 2xx on a
+row archived WITHOUT a stamp — what <code class="docutils literal notranslate"><span class="pre">reconcile-repos</span></code> left before 0.29.140,
+when its dead arm set the archived flag alone on a 404 (a repository the
+forge archived keeps its queue row) — puts the archived flag back to the
+forge’s latest recorded status and re-queues it (0.29.140), whether it
+answers at its own URL or through a redirect to a URL no row tracks (prelim
+then renames it in place). Redirected onto a repository that IS tracked, the
+row is a duplicate prelim dequeued and is left as it is: the command logs
+where it redirects, and no command consolidates an archived row today, so it
+keeps its data and is not collected. A
+definitive 404/410/451 leaves a row gone (and stamps a row that was archived
+without the stamp); anything else changes nothing. A 2xx on a queueless row
+that is neither stamped nor archived is counted as alive and left as it is:
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> is the command for those rows — one that answers
+at its own URL is re-queued, one that redirects to a tracked repository is
+consolidated into it. Do not edit <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> by
+hand: the stamp, not the flag, is the sidelined state, and the flag is
+rewritten from the forge on the next collection.</p>
 </section>
 <section id="list-all-sidelined-repos">
 <h3>List all sidelined repos<a class="headerlink" href="#list-all-sidelined-repos" title="Link to this heading"></a></h3>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span>
+<p>The sidelined state is the gone stamp. <code class="docutils literal notranslate"><span class="pre">repo_archived</span></code> alone also covers
+repositories the forge archived and still serves (tens of thousands on a
+large fleet), so it is not the filter.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">,</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">,</span><span class="w"> </span><span class="n">repo_git</span><span class="p">,</span><span class="w"> </span><span class="n">repo_gone_at</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repos</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_archived</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">TRUE</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_gone_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repo_owner</span><span class="p">,</span><span class="w"> </span><span class="n">repo_name</span><span class="p">;</span>
 </pre></div>
 </div>

@@ -69,7 +69,7 @@ func TestPrelimSidelinesLegallyBlockedRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !archived {
-		t.Error("the repository row must be archived (MarkRepoGone) so the queue drops it and the GUI says it is unavailable")
+		t.Error("the repository row must be archived (SidelineRepo) so the queue drops it and the GUI says it is unavailable")
 	}
 	if !goneStamped {
 		t.Error("repo_gone_at must be stamped so the gone recheck re-probes the block on its cadence")

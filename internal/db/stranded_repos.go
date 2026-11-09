@@ -77,13 +77,20 @@ func DedupRenamedRepoPair(ctx context.Context, store *PostgresStore, winnerID, l
 	if err := emailMessageFKIndexesReadyFor(ctx, store.pool, "repos"); err != nil {
 		return err
 	}
-	return dedupOnePair(ctx, store, RepoDupPair{
-		LowerGit:  loserGit + " -> " + winnerGit, // label for error/log text
-		WinnerID:  winnerID,
-		WinnerGit: winnerGit,
-		LoserID:   loserID,
-		LoserGit:  loserGit,
-		GroupSize: 2,
-		IsRename:  true,
+	// Retried on 40P01 like the case-variant batch (the fresh review of the
+	// PR #252 third round): the merge locks the loser's repos row first and
+	// its daily rows later, the reverse of `heal-commit-daily`'s order, so a
+	// fill of the loser running beside this merge can make one of them the
+	// deadlock victim; both sides retry.
+	return store.withRetry(ctx, func(ctx context.Context) error {
+		return dedupOnePair(ctx, store, RepoDupPair{
+			LowerGit:  loserGit + " -> " + winnerGit, // label for error/log text
+			WinnerID:  winnerID,
+			WinnerGit: winnerGit,
+			LoserID:   loserID,
+			LoserGit:  loserGit,
+			GroupSize: 2,
+			IsRename:  true,
+		})
 	})
 }

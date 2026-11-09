@@ -4,11 +4,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -49,6 +56,181 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(code, "\n"), "store.Migrate(") {
 		t.Error("mark-gone-repos must NOT run migrations (v0.21.5 contract)")
+	}
+}
+
+// What a definitive 2xx means for each candidate class (operator decision
+// 2026-11-07): a gone-stamped row is resurrected; a row archived WITHOUT a
+// stamp is the pre-0.29.140 reconcile-repos dead arm's sideline (a
+// forge-archived repository keeps its queue row) and is lifted the same way;
+// a queueless row that is neither (a data-bearing rename duplicate prelim
+// dequeued on purpose) is alive and left as it is.
+func TestOnReachableDecidesByClass(t *testing.T) {
+	// The lift needs the 2xx AT THE ROW'S OWN URL (the L10 pass on the
+	// first version: a forge-archived repository renamed onto a tracked one
+	// is a data-bearing duplicate prelim dequeued — two such rows on kate,
+	// redirecting to google/bigframes and CDCgov/... — and lifting it made
+	// prelim dequeue it again, every run).
+	// A redirect to an UNTRACKED target is lifted too (the L10 pass on the
+	// own-URL fix): reconcile-repos re-queues such a row so prelim renames it
+	// in place, and an archived row is outside reconcile's candidates, so
+	// leaving it would strand it for good. Only a TRACKED target makes it a
+	// duplicate.
+	for _, c := range []struct {
+		name          string
+		cand          db.GoneProbeCandidate
+		atOwnURL      bool
+		targetTracked bool
+		want          reachableAction
+	}{
+		{"gone-stamped", db.GoneProbeCandidate{GoneStamped: true, Archived: true}, true, false, reachableResurrect},
+		{"gone-stamped, flag cleared by hand", db.GoneProbeCandidate{GoneStamped: true}, true, false, reachableResurrect},
+		{"archived without a stamp, at its own URL", db.GoneProbeCandidate{Archived: true, HasData: true}, true, false, reachableLiftArchived},
+		{"archived without a stamp, no data, at its own URL", db.GoneProbeCandidate{Archived: true}, true, false, reachableLiftArchived},
+		{"archived without a stamp, renamed to an untracked URL", db.GoneProbeCandidate{Archived: true, HasData: true}, false, false, reachableLiftArchived},
+		{"archived without a stamp, renamed onto a tracked repository", db.GoneProbeCandidate{Archived: true, HasData: true}, false, true, reachableRenamed},
+		{"a kept duplicate", db.GoneProbeCandidate{HasData: true}, true, false, reachableAlive},
+		{"a kept duplicate, redirected", db.GoneProbeCandidate{HasData: true}, false, true, reachableAlive},
+	} {
+		if got := onReachable(c.cand, c.atOwnURL, c.targetTracked); got != c.want {
+			t.Errorf("%s: onReachable = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// One URL rule with reconcile-repos (SR-17): the same normalizer decides
+	// "its own URL" in both commands.
+	for _, p := range [][2]string{
+		{"https://github.com/Owner/Repo.git", "https://github.com/owner/repo"},
+		{"https://github.com/owner/repo/", "https://github.com/owner/repo"},
+	} {
+		if !sameRepoURL(p[0], p[1]) {
+			t.Errorf("%q and %q are one repository's URL", p[0], p[1])
+		}
+	}
+	if sameRepoURL("https://github.com/googleapis/python-bigquery-dataframes", "https://github.com/google/bigframes") {
+		t.Error("a redirect to another repository is not the row's own URL")
+	}
+	recon := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runReconcileRepos("))
+	helper := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func sameRepoURL("))
+	pkg := srctest.StripGoComments(srctest.PackageSource(t, "cmd/aveloxis", 30))
+	if !strings.Contains(recon, "case !sameRepoURL(finalURL, sr.GitURL):") || strings.Count(helper, "normalizeReconcileURL(") != 2 ||
+		strings.Count(pkg, "normalizeReconcileURL(") != 3 { // the declaration and the helper's two calls
+		t.Error("reconcile-repos decides a rename with sameRepoURL, and normalizeReconcileURL is called only inside it")
+	}
+	// The loop dispatches on it, and the lift's error arm classifies a
+	// cancel first, like every other store write here.
+	src := srctest.StripGoComments(markGoneSrc(t))
+	if !strings.Contains(src, "switch onReachable(c, atOwnURL, targetTracked) {") || !strings.Contains(src, "finalURL, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)") ||
+		!strings.Contains(src, "atOwnURL := sameRepoURL(finalURL, c.GitURL)") {
+		t.Error("the 2xx arm dispatches on onReachable(c, atOwnURL, targetTracked), with the probe's final URL kept and compared by sameRepoURL")
+	}
+	// The target lookup runs only for an archived unstamped redirect, and a
+	// lookup ERROR is not "untracked" (SR-5): it skips, after classifying a
+	// cancel.
+	if regexIndex(src, `if c\.Archived && !c\.GoneStamped && !atOwnURL \{\s*winner, ferr := store\.FindRepoByURL\(ctx, finalURL\)\s*if ferr != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
+		t.Error("the target lookup runs only for an archived unstamped redirect, and its error arm begins with the cancel check")
+	}
+	if i := strings.Index(src, "winner, ferr := store.FindRepoByURL(ctx, finalURL)"); i < 0 || !strings.Contains(src[i:i+600], "tally.skipped++") {
+		t.Error("a target lookup error skips the row (SR-5: an error is not \"untracked\")")
+	}
+	if regexIndex(src, `store\.ResurrectArchivedSideline\(ctx, c\.RepoID, 10, db\.GoneSourceMarkGoneRepos\)\s*if err != nil \{\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`) < 0 {
+		t.Error("the lift's error arm must BEGIN `if ctx.Err() != nil { return interrupted() }`")
+	}
+}
+
+// The gone-state commands do not migrate (Copilot PR #252, fourteenth
+// review): a run that WRITES refuses on a database behind this binary BEFORE
+// its first read, instead of failing on every row; a dry run writes nothing
+// and previews on any schema (the code review of that fix). The gate is a
+// top-level `if !dryRun { if err := store.RequireMigrated(ctx); err != nil {
+// return err } }` (the L10 pass: an order check alone passed a discarded
+// error or a call under another condition). The adoption's gate is a
+// top-level statement of the command's body AFTER the --list block ends and
+// before the keys are loaded, so no forge request is spent on an unmigrated
+// database (the code review: an index of `if list {` let a gate inside that
+// block pass).
+func TestGoneStateCommandsRefuseAnUnmigratedSchemaFirst(t *testing.T) {
+	gate := regexp.MustCompile(`\n\tif !dryRun \{\s*if err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}\s*\}`)
+	for fn, first := range map[string]string{
+		"func runMarkGoneRepos(":  "store.GetGoneProbeCandidates(",
+		"func runReconcileRepos(": "store.CountStrandedRepos(",
+		"func runDedupRepos(":     "db.CountCaseVariantRepoDups(",
+	} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", fn))
+		at := gate.FindStringIndex(body)
+		if at == nil || strings.Index(body, first) < at[1] {
+			t.Errorf("%s must open with a top-level `if !dryRun { if err := store.RequireMigrated(ctx); err != nil { return err } }` before %s", fn, first)
+		}
+	}
+	// The two other non-migrating commands that write a 0.29.140 object
+	// through the metadata writer (Copilot PR #252, fifteenth review) fail
+	// fast before loading keys: collect, and backfill-repo-metadata's writing
+	// run (after its --dry-run branch).
+	collect := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runCollect("))
+	if c := regexp.MustCompile(`\n\tif err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(collect); c == nil || strings.Index(collect, "loadKeys(") < c[1] {
+		t.Error("collect refuses on an unmigrated database before loading keys")
+	}
+	backfill := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func backfillRepoMetadataCmd("))
+	dry := strings.Index(backfill, "\n\t\t\tif dryRun {")
+	if dry < 0 {
+		t.Fatal("backfill-repo-metadata's --dry-run block not found")
+	}
+	dryEnd := dry + strings.Index(backfill[dry:], "\n\t\t\t}\n")
+	if c := regexp.MustCompile(`\n\t\t\tif err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(backfill); c == nil || c[0] < dryEnd || strings.Index(backfill, "loadKeys(") < c[1] {
+		t.Error("backfill-repo-metadata's writing run refuses on an unmigrated database after its --dry-run block and before loading keys")
+	}
+	adopt := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func adoptForgeIDCmd("))
+	listAt := strings.Index(adopt, "\n\t\t\tif list {")
+	if listAt < 0 {
+		t.Fatal("adopt-forge-id's --list block (`if list {` at the RunE body's level) not found")
+	}
+	listEnd := listAt + strings.Index(adopt[listAt:], "\n\t\t\t}\n")
+	check := regexp.MustCompile(`\n\t\t\tif err := store\.RequireMigrated\(ctx\); err != nil \{\s*return err\s*\}`).FindStringIndex(adopt)
+	keys := strings.Index(adopt, "loadKeys(")
+	if check == nil || check[0] < listEnd || keys < check[1] {
+		t.Errorf("adopt-forge-id gates at the RunE body's level after the --list block (ends %d) and before loading keys (%d); gate at %v", listEnd, keys, check)
+	}
+}
+
+// The gate, run: mark-gone-repos (writing) on the package's test database
+// with the stamp behind this binary returns ErrSchemaNotMigrated and reads
+// nothing.
+func TestMarkGoneReposRefusesAnUnmigratedSchema(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("integration: set AVELOXIS_TEST_DB to run")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	var original string
+	if err := store.Pool().QueryRow(ctx, `SELECT schema_version FROM aveloxis_ops.schema_meta WHERE id = TRUE`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Restored with retries and reported (CLAUDE.md: everything that
+		// errors is logged; a deadlock victim is retried).
+		var rerr error
+		for attempt := 0; attempt < 5; attempt++ {
+			if _, rerr = store.Pool().Exec(context.Background(), `UPDATE aveloxis_ops.schema_meta SET schema_version = $1 WHERE id = TRUE`, original); rerr == nil {
+				return
+			}
+			time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+		}
+		t.Errorf("restore the schema stamp %q: %v", original, rerr)
+	})
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_ops.schema_meta SET schema_version = '0.29.139' WHERE id = TRUE`); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	err = runMarkGoneRepos(ctx, store, slog.New(slog.NewTextHandler(&logs, nil)), false, 0)
+	if !errors.Is(err, db.ErrSchemaNotMigrated) {
+		t.Fatalf("mark-gone-repos on an unmigrated database = %v, want ErrSchemaNotMigrated", err)
+	}
+	if strings.Contains(logs.String(), "mark-gone-repos starting") {
+		t.Error("it refuses before reading the candidates")
 	}
 }
 
@@ -112,9 +294,9 @@ func TestMarkGoneReposIsDefinitiveOnly(t *testing.T) {
 	loopArm := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return interrupted\(\)`)
 	closureArm := regexp.MustCompile(`^\s*if ctx\.Err\(\) != nil \{\s*return\s*\n`)
 	for write, arm := range map[string]*regexp.Regexp{
-		"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {": closureArm,
-		"store.MarkRepoGone(ctx, c.RepoID); err != nil {":        loopArm,
-		"store.ResurrectRepo(ctx, c.RepoID, 10); err != nil {":   loopArm,
+		"store.MarkRepoGoneChecked(ctx, c.RepoID); err != nil {":                              closureArm,
+		"store.SidelineRepo(ctx, c.RepoID, status, db.GoneSourceMarkGoneRepos); err != nil {": loopArm,
+		"store.ResurrectRepo(ctx, c.RepoID, 10, db.GoneSourceMarkGoneRepos); err != nil {":    loopArm,
 	} {
 		at := strings.Index(stripped, write)
 		if at < 0 {

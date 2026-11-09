@@ -11,7 +11,6 @@ aveloxis_data.repo_distribution
 aveloxis_data.repo_distribution_history
 aveloxis_data.repo_distribution_manifest
 aveloxis_data.repo_distribution_manifest_history
-aveloxis_data.repo_forge_id_changes
 aveloxis_data.repo_info_history
 aveloxis_data.repo_lockfile_edges
 aveloxis_data.repo_lockfile_packages

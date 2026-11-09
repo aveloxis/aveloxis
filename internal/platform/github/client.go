@@ -1159,7 +1159,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		ForkParent:      restForkParent,
 		ForkCount:       raw.ForksCount,
 		StarCount:       raw.StargazersCount,
-		WatcherCount:    raw.WatchersCount,
+		WatcherCount:    raw.SubscribersCount,
 		OpenIssues:      raw.OpenIssuesCount,
 		DefaultBranch:   raw.DefaultBranch,
 		License:         license,

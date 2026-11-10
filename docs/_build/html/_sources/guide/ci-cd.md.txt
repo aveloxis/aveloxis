@@ -268,5 +268,5 @@ The GitLab statistics canary (`TestLiveGitLabProjectStatisticsContract`, since v
 
 The same workflow has two more jobs:
 
-- **`tools`** installs the latest scancode and scc (what production's monthly updater installs) and runs their output through the real parse structs.
+- **`tools`** installs the latest scancode and the pinned scc (what production's monthly updater installs) and runs their output through the real parse structs.
 - **`sbom-validators`** (since v0.29.67) installs the official SBOM validators, the SPDX project's `pyspdxtools` and CycloneDX's `cyclonedx-python-lib`, and runs `TestSBOMsPassTheOfficialValidators` on generated documents. It is its own job so a failing tool canary cannot skip it. Locally, set `AVELOXIS_TEST_SBOM_TOOLS` to a Python with both installed; the test skips without it.

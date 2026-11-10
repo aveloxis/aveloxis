@@ -85,11 +85,13 @@ jobs:
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade
   # + self-authored parse fixtures + zero-findings-without-error). The
-  # job installs the CURRENT latest of each tool (deliberately: that is
-  # exactly what production's monthly updater will install) and runs
-  # the installed binaries through our REAL parse structs. A new tool
-  # version failing the allowlist is the alert doing its job: eyeball
-  # the run, extend the allowlist in tool_output_canary_test.go.
+  # job installs what production's monthly updater installs: the
+  # CURRENT latest scancode and the PINNED scc (0.29.144,
+  # collector.SCCInstallCmd; TestSCCPinIsTheSameEverywhere keeps this
+  # file on the same pin), and runs the installed binaries through our
+  # REAL parse structs. A new tool version failing the allowlist is the
+  # alert doing its job: eyeball the run, extend the allowlist in
+  # tool_output_canary_test.go (for scc, move the pin with it).
   tools:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -98,12 +100,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install analysis tools (latest — matching production's updater)
+      - name: Install analysis tools (as production's updater does - scc pinned, the others latest)
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q pipx libmagic1
           pipx install scancode-toolkit-mini
           pipx inject scancode-toolkit-mini typecode-libmagic
-          go install github.com/boyter/scc/v3@latest
+          go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Run tool-output canaries
@@ -111,7 +113,7 @@ jobs:
           AVELOXIS_TEST_TOOLS: "1"
         run: |
           go test ./internal/collector/ -run TestLiveScancodeOutputShape -count=1 -v -timeout 15m
-          go test ./internal/collector/ -run TestLiveSCCOutputShape -count=1 -v
+          go test ./internal/collector/ -run 'TestLiveSCCOutputShape|TestLiveSCCStreamingDecodeMatchesUnmarshal' -count=1 -v
           # scorecard's release-tarball install is exercised by
           # `aveloxis install-tools` in production; here the canary
           # skips if absent — the scancode + scc coverage is the

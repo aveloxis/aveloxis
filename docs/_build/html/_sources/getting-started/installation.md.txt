@@ -117,7 +117,7 @@ To install `scc`:
 aveloxis install-tools
 ```
 
-This downloads and compiles `scc` using `go install`. It requires Go to be installed (which you already have if you built Aveloxis).
+This downloads and compiles `scc` using `go install`, pinned to the one version Aveloxis validates (see [Analysis](../architecture/analysis.md)). It requires Go to be installed (which you already have if you built Aveloxis); if your Go is older than the go line of that scc version, the go command downloads the newer toolchain unless `GOTOOLCHAIN` is set to `local`.
 
 After installation, the analysis phase will automatically populate the `repo_labor` table with per-file metrics including:
 

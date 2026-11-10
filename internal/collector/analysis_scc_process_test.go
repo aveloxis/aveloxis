@@ -76,6 +76,12 @@ func runScanSCC(t *testing.T, ctx context.Context, budget time.Duration) error {
 // that assert on what scanSCC logs.
 func runScanSCCWith(t *testing.T, ac *AnalysisCollector, ctx context.Context, budget time.Duration) error {
 	t.Helper()
+	return runScanSCCIn(t, ac, ctx, budget, t.TempDir())
+}
+
+// runScanSCCIn is runScanSCCWith on a caller-supplied checkout directory.
+func runScanSCCIn(t *testing.T, ac *AnalysisCollector, ctx context.Context, budget time.Duration, workDir string) error {
+	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		defer func() {
@@ -95,7 +101,7 @@ func runScanSCCWith(t *testing.T, ac *AnalysisCollector, ctx context.Context, bu
 			}
 			done <- fmt.Errorf("scanSCC panicked before reaching the snapshot write: %v\n%s", r, stack)
 		}()
-		done <- ac.scanSCC(ctx, 1, t.TempDir(), &AnalysisResult{})
+		done <- ac.scanSCC(ctx, 1, workDir, &AnalysisResult{})
 	}()
 	select {
 	case err := <-done:

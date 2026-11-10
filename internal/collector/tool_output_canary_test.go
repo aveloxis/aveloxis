@@ -23,6 +23,7 @@ package collector
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -43,6 +44,17 @@ var (
 	}
 	sccValidatedMajors = map[string]bool{
 		"3": true, // scc 3.x JSON shape (Files/Lines/Code/Complexity)
+		// 2026-11-10 (0.29.144): 4.1.0 and 4.2.0 (beta) at 62ac0b03 — the
+		// pin, sccPin — run against 3.7.0 on fresh clones of aveloxis, augur,
+		// 8Knot and aveloxis-gui: the same keys but Hash (unread), the same
+		// files and languages, Lines and Bytes identical per file, and the
+		// streaming decoder equal to json.Unmarshal. Code/Comment/Blank and
+		// Complexity move: 4.x fixed quote handling (a '`' rune in Go, an
+		// apostrophe in a Python docstring, a JS regex literal such as /'/g
+		// in 4.2.0) that made 3.x count the lines after it as code — e.g.
+		// 8Knot's Python code -14%, aveloxis-gui's JS -8%. Recorded per row
+		// in repo_labor.data_source.
+		"4": true,
 	}
 )
 
@@ -109,7 +121,7 @@ func TestLiveSCCOutputShape(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "fixture.go"), []byte(mitHeader+"\nfunc F() int { return 1 }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b, err := exec.Command("scc", "-f", "json", "--by-file", dir).Output()
+	b, err := liveSCCReport(t, dir)
 	if err != nil {
 		t.Fatalf("scc run failed: %v", err)
 	}
@@ -126,14 +138,18 @@ func TestLiveSCCOutputShape(t *testing.T) {
 	if !sawGo {
 		t.Error("scc parsed to zero Go lines for a real Go file — shape drift")
 	}
-	if v, err := exec.Command("scc", "--version").Output(); err == nil {
-		fields := strings.Fields(string(v))
-		if len(fields) >= 3 {
-			major, _, _ := strings.Cut(strings.TrimPrefix(fields[2], "v"), ".")
-			if !sccValidatedMajors[major] {
-				t.Errorf("scc major version %s not in the validated set — eyeball a green run and extend sccValidatedMajors", major)
-			}
-		}
+	// Production's own probe (0.29.144, review F2): a --version output it
+	// cannot read would leave every repo_labor row at data_source "scc".
+	v, err := probeSCCVersion(context.Background(), "scc", sccVersionProbeTimeout)
+	if err != nil {
+		t.Fatalf("production's version probe cannot read the installed scc: %v", err)
+	}
+	major, _, _ := strings.Cut(strings.TrimPrefix(v, "v"), ".")
+	if !sccValidatedMajors[major] {
+		t.Errorf("scc major version %s not in the validated set — eyeball a green run and extend sccValidatedMajors", major)
+	}
+	if v != sccPinReports {
+		t.Errorf("the installed scc reports %q, the pin %q — install it with %s (what install-tools, upgrade-tools and the monthly update run), or move the pin after validating %q", v, sccPinReports, SCCInstallCmd, v)
 	}
 }
 
@@ -160,7 +176,7 @@ func TestLiveSCCStreamingDecodeMatchesUnmarshal(t *testing.T) {
 		}
 	}
 
-	raw, err := exec.Command("scc", "-f", "json", "--by-file", dir).Output()
+	raw, err := liveSCCReport(t, dir)
 	if err != nil {
 		t.Fatalf("scc run failed: %v", err)
 	}
@@ -230,4 +246,16 @@ func TestLiveScorecardOutputShape(t *testing.T) {
 	if !named {
 		t.Error("every parsed check has an empty name — the check-name key drifted")
 	}
+}
+
+// liveSCCReport runs the installed scc the way production does, through
+// sccCommand (no host config, an empty working directory; review round 4).
+func liveSCCReport(t *testing.T, dir string) ([]byte, error) {
+	t.Helper()
+	cmd, cleanup, err := sccCommand(context.Background(), "scc", "-f", "json", "--by-file", dir)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return cmd.Output()
 }

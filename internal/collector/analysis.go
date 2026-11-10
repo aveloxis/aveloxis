@@ -2819,8 +2819,26 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	sccCtx, cancelSCC := context.WithCancel(ctx)
 	defer cancelSCC()
 
+	// The file the scan runs, recorded before it starts: the version read
+	// after the scan labels the rows only if this is still the file at
+	// sccPath (an upgrade-tools during the scan renames a new binary into
+	// place while this scan runs the old one). See sccDataSource.
+	scanned, scannedErr := os.Stat(sccPath)
+
+	// scc runs from an empty directory with no SCC_CONFIG_PATH, so no host
+	// config changes what it counts (see sccCommand); workDir must then be
+	// absolute.
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return fmt.Errorf("scc: resolve the checkout %s: %w", workDir, err)
+	}
+	cmd, cleanupCmd, err := sccCommand(sccCtx, sccPath, "-f", "json", "--by-file", absWork)
+	if err != nil {
+		return fmt.Errorf("scc failed to start: %w", err)
+	}
+	defer cleanupCmd()
+
 	started := time.Now()
-	cmd := exec.CommandContext(sccCtx, sccPath, "-f", "json", "--by-file", workDir)
 
 	// startSweptCommand owns the stdout pipe and sweeps scc's process
 	// group when the leader exits; see its doc for why cmd.StdoutPipe()
@@ -2835,7 +2853,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
-	decodeErr := streamSCCLabor(dec, workDir, now, func(row *db.RepoLaborRow) {
+	decodeErr := streamSCCLabor(dec, absWork, now, func(row *db.RepoLaborRow) {
 		laborRows = append(laborRows, row)
 		if sccRowStreamed != nil {
 			sccRowStreamed()
@@ -2946,6 +2964,12 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 			"duration", time.Since(started).String())
 	}
 
+	// 0.29.144: every row records the scc that produced it. Probed only
+	// now, after a scan that succeeded: a failed scan writes nothing, and a
+	// probe that fails falls back to "scc" (version unknown) without
+	// failing the scan.
+	dataSource := ac.sccDataSource(ctx, sccPath, repoID, scanned, scannedErr)
+
 	// v0.27.7: ONE atomic snapshot replace per analysis run. The store
 	// rotates the previous snapshot to repo_labor_history and inserts
 	// the fresh rows in the SAME transaction — rotation can neither be
@@ -2957,12 +2981,148 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// truth). Do NOT revert to per-file inserts — that is the
 	// unbounded-growth bug (2.0M rows / 29 GB in production) that
 	// v0.27.7 fixed; TestScanSCCUsesAtomicSnapshotReplace pins this.
-	if err := ac.store.ReplaceRepoLaborSnapshot(ctx, repoID, laborRows); err != nil {
+	if err := ac.store.ReplaceRepoLaborSnapshot(ctx, repoID, dataSource, laborRows); err != nil {
 		return fmt.Errorf("replacing repo_labor snapshot: %w", err)
 	}
 	result.LaborFiles += len(laborRows)
 
 	return nil
+}
+
+// sccDataSourceUnknown is repo_labor.data_source for rows whose scc version
+// is not known: every row written before 0.29.144, and a scan whose version
+// probe failed.
+const sccDataSourceUnknown = "scc"
+
+// sccVersionProbeTimeout bounds `scc --version`. Printing a version does no
+// work; the bound only keeps a wedged binary from holding the collection
+// worker, and is far above a cold start of a Go binary on a loaded host.
+const sccVersionProbeTimeout = 30 * time.Second
+
+// sccVersionOutputMaxBytes is the most of `scc --version`'s output the probe
+// reads (and a failed probe logs): over five times the longest version line
+// scc prints ("scc version 4.2.0 (beta)" is 24 bytes), rounded up to a power
+// of two — enough to show what answered instead, never a whole report.
+const sccVersionOutputMaxBytes = 128
+
+// sccVersionLine is the first line `scc --version` prints: "scc version
+// 3.7.0", "scc version 4.2.0 (beta)". The version is a release number with
+// an optional pre-release suffix and an optional parenthesised label, and
+// nothing else, so no other output (a fake, a wrapper script, an error
+// message) is ever stored as a version.
+var sccVersionLine = regexp.MustCompile(`^scc version (v?[0-9]+(?:\.[0-9]+)*(?:-[0-9A-Za-z.]+)?(?: \([0-9A-Za-z. ]+\))?)$`)
+
+// parseSCCVersion reads the version from `scc --version` output.
+func parseSCCVersion(out []byte) (string, bool) {
+	first, _, _ := strings.Cut(string(out), "\n")
+	m := sccVersionLine.FindStringSubmatch(strings.TrimSpace(first))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// probeSCCVersion runs `scc --version` under timeout. It is a swept
+// command, like the scan: the process group is swept when the leader exits,
+// so nothing the binary spawned outlives the probe (TestScanSCCKillsDetachedStragglers
+// covers both runs), and the timeout kills the group of a binary that never
+// answers.
+func probeSCCVersion(ctx context.Context, sccPath string, timeout time.Duration) (string, error) {
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd, cleanupCmd, err := sccCommand(pctx, sccPath, "--version")
+	if err != nil {
+		return "", err
+	}
+	defer cleanupCmd()
+	swept, err := startSweptCommand(cmd)
+	if err != nil {
+		return "", execErr(pctx, err)
+	}
+	defer swept.Close()
+	out, readErr := io.ReadAll(io.LimitReader(swept.Stdout, sccVersionOutputMaxBytes))
+	if waitErr := swept.Wait(); waitErr != nil {
+		return "", execErr(pctx, waitErr)
+	}
+	if readErr != nil {
+		return "", fmt.Errorf("read `scc --version` output: %w", readErr)
+	}
+	v, ok := parseSCCVersion(out)
+	if !ok {
+		first, _, _ := strings.Cut(string(out), "\n")
+		return "", fmt.Errorf("unrecognised `scc --version` output %q", first)
+	}
+	return v, nil
+}
+
+// sccCommand builds every scc run (the scan and the version probe; 0.29.144
+// review round 3). scc 4.x loads $SCC_CONFIG_PATH and ./.sccconfig from its
+// working directory on every run (3.x read neither), and a config can change
+// what it counts — excluded directories, languages counted as others,
+// complexity off — while the rows still name the pinned version. So scc runs
+// with the variable removed and from a fresh empty directory: never serve's
+// working directory, and never the checkout, whose own .sccconfig would
+// steer its counts. --no-config would do the same on 4.x but is an unknown
+// flag to 3.x, which a host runs until its upgrade. Arguments that are paths
+// must be absolute. The caller runs cleanup after the command has finished.
+func sccCommand(ctx context.Context, sccPath string, args ...string) (*exec.Cmd, func(), error) {
+	dir, err := os.MkdirTemp("", "aveloxis-scc-")
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("create scc's empty working directory: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, sccPath, args...)
+	cmd.Dir = dir
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "SCC_CONFIG_PATH=") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = env
+	return cmd, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// sccDataSource is repo_labor.data_source for a scan by the scc at sccPath:
+// "scc <version>", so a row's counts can be read against the scc that
+// produced them (4.x counts lines differently from 3.x). A failed probe is
+// logged and falls back to sccDataSourceUnknown — the version is a label on
+// the rows, never a reason to discard a successful scan. A shutdown logs
+// nothing: the snapshot write that follows reports it.
+//
+// scanned is the file the scan ran, stat'ed before it started. The probe
+// runs the file at sccPath NOW, so its answer is the scan's only if that is
+// still the same file (inode, size and modification time — a go install
+// renames a new file into place, a copy rewrites it in place). Otherwise,
+// or when the scanned file was never identified, the rows say "scc": an
+// upgrade during a scan must not label old counts with the new version.
+func (ac *AnalysisCollector) sccDataSource(ctx context.Context, sccPath string, repoID int64, scanned os.FileInfo, scannedErr error) string {
+	v, err := probeSCCVersion(ctx, sccPath, sccVersionProbeTimeout)
+	if err != nil {
+		if ctx.Err() != nil {
+			return sccDataSourceUnknown
+		}
+		ac.logger.Warn("could not read the scc version — this scan's repo_labor rows record data_source 'scc' (version unknown)",
+			"repo_id", repoID, "error", err)
+		return sccDataSourceUnknown
+	}
+	if scannedErr != nil || scanned == nil {
+		ac.logger.Warn("could not identify the scc binary this scan ran — its repo_labor rows record data_source 'scc' (version unknown)",
+			"repo_id", repoID, "path", sccPath, "error", scannedErr)
+		return sccDataSourceUnknown
+	}
+	now, err := os.Stat(sccPath)
+	if err != nil || !sameSCCBinary(scanned, now) {
+		ac.logger.Warn("the scc binary changed during this scan (an upgrade-tools while serve runs?) — its repo_labor rows record data_source 'scc' (version unknown); the next analysis records the new version",
+			"repo_id", repoID, "path", sccPath, "probed_version", v, "error", err)
+		return sccDataSourceUnknown
+	}
+	return sccDataSourceUnknown + " " + v
+}
+
+// sameSCCBinary reports whether two stats of the scc path are one unchanged
+// file.
+func sameSCCBinary(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
 
 // sccOutputLargeBytes marks a report big enough to be worth noticing. On

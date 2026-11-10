@@ -22,5 +22,9 @@ DROP TABLE IF EXISTS aveloxis_data.repo_gone_history;
 ALTER TABLE aveloxis_data.repo_forge_id_changes DROP COLUMN IF EXISTS observed_private;
 DELETE FROM aveloxis_ops.migration_ledger
 WHERE step_label LIKE 'v0.29.140 %' OR step_label LIKE 'v0.29.141 %'
-   OR tool_version IN ('0.29.140', '0.29.141', '0.29.142');
+   -- Every row a release newer than 0.29.139 stamped, compared as numbers
+   -- (as text 0.29.9 sorts above 0.29.140), never as a list of versions: a
+   -- list missed 0.29.143's rows the day it shipped.
+   OR (tool_version ~ '^[0-9]+(\.[0-9]+)*$'
+       AND string_to_array(tool_version, '.')::int[] > ARRAY[0, 29, 139]);
 UPDATE aveloxis_ops.schema_meta SET schema_version = '0.29.139';

@@ -433,7 +433,7 @@ func scanSCCBody(t *testing.T) string {
 func TestScanSCCFailsClosedOnSccError(t *testing.T) {
 	body := scanSCCBody(t)
 
-	replace := strings.Index(body, "ReplaceRepoLaborSnapshot(ctx, repoID, laborRows)")
+	replace := strings.Index(body, "ReplaceRepoLaborSnapshot(ctx, repoID, dataSource, laborRows)")
 	if replace < 0 {
 		t.Fatal("scanSCC no longer calls ReplaceRepoLaborSnapshot with the accumulated rows")
 	}

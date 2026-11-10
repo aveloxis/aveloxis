@@ -202,7 +202,7 @@ If [scc](https://github.com/boyter/scc) (Sloc Cloc and Code) is installed, Avelo
 aveloxis install-tools
 ```
 
-This installs `scc` via `go install github.com/boyter/scc@latest`.
+This installs `scc` with `go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a`: scc's master at commit 62ac0b03, which reports `scc version 4.2.0 (beta)`. Since 0.29.144 the install, `aveloxis upgrade-tools` and the monthly tool update all install this one pinned version, the one the tool-output canaries validate, so every host counts lines the same way and an update never delivers a version nobody checked (before 0.29.144 they installed `scc/v3@latest`, which can never be newer than 3.7.0).
 
 ### Execution
 
@@ -230,6 +230,20 @@ Results are stored in `aveloxis_data.repo_labor`:
 | `blank_lines` | Blank lines |
 | `code_complexity` | Cyclomatic complexity score |
 | `repo_url` | Git URL of the repo |
+| `data_source` | The scc that produced the row, `scc <version>` (since 0.29.144; earlier rows say `scc`) |
+
+### Which scc counted a row (0.29.144)
+
+scc 4.x counts lines differently from 3.x. 3.x lost track of quotes in a few common shapes, a backtick rune (`` '`' ``) in Go, an apostrophe in a Python docstring, a quote inside a JavaScript regular-expression literal such as `/'/g`, and counted the comment and blank lines after it as code until the next matching quote. 4.x (and, for the JavaScript case, only the pinned 4.2.0 build, not the 4.1.0 release) counts them correctly. The file list, the languages and each file's total lines are the same; code lines fall and comment lines, blank lines and complexity rise, most in Python and JavaScript projects. Estimates derived from code lines, such as the COCOMO `labor_investment` query, fall with them.
+
+Each analysis records the version in `data_source` on every row it writes: Aveloxis runs `scc --version` after a successful scan. If that probe fails, the scan is still stored and the rows say `scc` (version unknown), and the failure is logged as `could not read the scc version`. The version labels the rows only if the scc file is the one the scan ran: Aveloxis compares the file before the scan and after the probe (the same file, size and modification time), so an upgrade that lands during a scan leaves that scan's rows at `scc` and logs `the scc binary changed during this scan`. scc 4.x reads a configuration from `$SCC_CONFIG_PATH` and from `./.sccconfig` in its working directory, and either could change what it counts; Aveloxis runs scc (the scan and the version probe) with that variable removed and from a fresh empty directory, so neither a host's configuration nor a repository's own `.sccconfig` applies. The comparison is of the file `scc` resolves to (a symlink, as Homebrew installs, is followed); a wrapper script that runs another binary is compared as the script, so an upgrade of the binary behind it is not seen. Since 0.29.144 `aveloxis upgrade-tools` and the monthly update also check the installed binary: the update fails when another `scc` comes first on `PATH` or when the installed one does not report the pinned version. `repo_labor_history` keeps each snapshot's value, so a time series can be split where the counting changed:
+
+```sql
+SELECT data_source, MIN(rl_analysis_date), MAX(rl_analysis_date), SUM(code_lines)
+FROM aveloxis_data.repo_labor_history
+WHERE repo_id = 1
+GROUP BY data_source;
+```
 
 ### Snapshot rotation and history (v0.27.7)
 

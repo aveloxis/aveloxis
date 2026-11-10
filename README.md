@@ -573,13 +573,13 @@ Installs all optional third-party tools used by Aveloxis. Each tool is independe
 
 | Tool | Install command | Purpose |
 |---|---|---|
-| [scc](https://github.com/boyter/scc) | `go install github.com/boyter/scc/v3@latest` | Code complexity analysis — populates `repo_labor` with lines of code, comments, blanks, and complexity per file per language |
+| [scc](https://github.com/boyter/scc) | `go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a` | Code complexity analysis — populates `repo_labor` with lines of code, comments, blanks, and complexity per file per language. Pinned to the version Aveloxis validates (scc's master at commit 62ac0b03, which reports `4.2.0 (beta)`); each row records the scc that produced it in `data_source` (`scc 4.2.0 (beta)`; `scc` for rows written before 0.29.144) |
 | [scorecard](https://github.com/ossf/scorecard) | `go install github.com/ossf/scorecard/v5/cmd/scorecard@latest` | OpenSSF Scorecard — evaluates security practices (Code-Review, Maintained, Vulnerabilities, etc.) and populates `repo_deps_scorecard` |
 | [scancode](https://github.com/aboutcode-org/scancode-toolkit) | `pipx install scancode-toolkit-mini` (+ `pipx inject scancode-toolkit-mini typecode-libmagic`) | Per-file license and copyright detection — populates `aveloxis_scan.scancode_file_results` with SPDX license expressions, copyrights, holders, and package data. Runs on its own decoupled worker pool every 180 days per repo (`scancode_cadence_days`). Requires Python 3.10+ and libmagic (`brew install libmagic` on macOS, `apt-get install libmagic1` on Debian/Ubuntu). |
 
 Tools that are already installed are skipped. The command verifies each tool is on PATH after installation.
 
-**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it updates each installed tool (`go install ...@latest` for scc, the latest release tarball for scorecard, `pipx upgrade` + libmagic re-inject for scancode). Only tools already on PATH are updated — missing tools are not auto-installed. `aveloxis upgrade-tools` runs the same update pass on demand. The check timestamp is stored at `~/.aveloxis-tool-check`.
+**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it updates each installed tool (the pinned `go install` above for scc, so every host runs the validated version, the latest release tarball for scorecard, `pipx upgrade` + libmagic re-inject for scancode). Only tools already on PATH are updated — missing tools are not auto-installed. `aveloxis upgrade-tools` runs the same update pass on demand. The check timestamp is stored at `~/.aveloxis-tool-check`.
 
 ### `aveloxis start` — Start background processes
 

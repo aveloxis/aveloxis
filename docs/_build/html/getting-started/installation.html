@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Installation &mdash; Aveloxis 0.29.142 documentation</title>
+  <title>Installation &mdash; Aveloxis 0.29.144 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=5557755d"></script>
+      <script src="../_static/documentation_options.js?v=3aa66189"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -999,6 +999,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id2">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#which-scc-counted-a-row-0-29-144">Which scc counted a row (0.29.144)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#snapshot-rotation-and-history-v0-27-7">Snapshot rotation and history (v0.27.7)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#if-scc-is-not-installed">If scc is not installed</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#materialized-view">Materialized view</a></li>
@@ -1923,7 +1924,7 @@ aveloxis<span class="w"> </span>version
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>install-tools
 </pre></div>
 </div>
-<p>This downloads and compiles <code class="docutils literal notranslate"><span class="pre">scc</span></code> using <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span></code>. It requires Go to be installed (which you already have if you built Aveloxis).</p>
+<p>This downloads and compiles <code class="docutils literal notranslate"><span class="pre">scc</span></code> using <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span></code>, pinned to the one version Aveloxis validates (see <a class="reference internal" href="../architecture/analysis.html"><span class="std std-doc">Analysis</span></a>). It requires Go to be installed (which you already have if you built Aveloxis); if your Go is older than the go line of that scc version, the go command downloads the newer toolchain unless <code class="docutils literal notranslate"><span class="pre">GOTOOLCHAIN</span></code> is set to <code class="docutils literal notranslate"><span class="pre">local</span></code>.</p>
 <p>After installation, the analysis phase will automatically populate the <code class="docutils literal notranslate"><span class="pre">repo_labor</span></code> table with per-file metrics including:</p>
 <ul class="simple">
 <li><p>Programming language</p></li>

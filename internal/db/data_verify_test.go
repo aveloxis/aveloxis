@@ -44,7 +44,7 @@ func TestRunDataVerificationOnScratchDB(t *testing.T) {
 		"message heal worklist", "new cross-kind collisions",
 		"cached counts vs actual", "gathered vs metadata drift",
 		"batch vs single stats",
-		"gone episodes match the stamps", "gone and queued", "invalid indexes",
+		"gone episodes match the stamps", "gone and queued", "invalid indexes", "index builds in progress",
 		"earlier-era daily buckets", "lower(email) indexes",
 	} {
 		if !seen[want] {

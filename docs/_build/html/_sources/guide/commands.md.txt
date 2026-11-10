@@ -740,7 +740,9 @@ Exits non-zero if any tool fails to install or installs off PATH (the same `Look
 
 Upgrades the external analysis tools in place (v0.23.6). Unlike
 `install-tools` (which short-circuits when a tool exists), this re-runs
-the install path to pull updates: `go install ...@latest` for scc, a fresh
+the install path to pull updates: `go install` of the one pinned scc
+version Aveloxis validates (since 0.29.144; see the analysis architecture
+page), a fresh
 release tarball for scorecard, and `pipx upgrade` for scancode (preserving
 venv customizations) plus a `typecode-libmagic` re-injection.
 
@@ -1342,7 +1344,10 @@ migration-state awareness; since 0.29.142 also one open gone episode per
 gone-stamped repository and none on a reachable one, gone-stamped
 repositories that are queued (a WARN: pending re-probes), INVALID indexes,
 earlier-era daily buckets below their fold from the commits table, and the
-three lower(email) indexes), sampled count-integrity (cached queue
+three lower(email) indexes; since 0.29.144 a concurrent index build still
+running is reported apart as `index builds in progress`, a WARN, and the
+INVALID-index advice is to drop the index concurrently, since the migrate
+rebuilds only the indexes it builds itself), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).

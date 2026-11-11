@@ -20,11 +20,11 @@ const ladderChainFrom = "0.29.68"
 // TestEachLadderCarriesItsPredecessorsNotes (0.29.144 review F5): a fleet
 // skipping releases reads only the newest ladder, so each must carry every
 // earlier note — withStartNote(prev, note) prepends to the previous ladder's
-// start step. Two releases cut from the same base (0.29.143 on PR #255,
-// 0.29.144 here, both chained from 0.29.142) pass apart and break together:
-// once both are in the map, the later one must be rechained onto the earlier,
-// or a fleet going from 0.29.142 straight to 0.29.144 never reads 0.29.143's
-// note.
+// start step. Two releases cut from the same base (0.29.143 on PR #257,
+// which supersedes #255, and 0.29.144 here, both chained from 0.29.142) pass
+// apart and break together: once both are in the map, the later one must be
+// rechained onto the earlier, or a fleet going from 0.29.142 straight to
+// 0.29.144 never reads 0.29.143's note.
 func TestEachLadderCarriesItsPredecessorsNotes(t *testing.T) {
 	versions := make([]string, 0, len(deployChecklists))
 	for v := range deployChecklists {

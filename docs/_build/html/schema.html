@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.142 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.143 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=5557755d"></script>
+      <script src="_static/documentation_options.js?v=f12ff144"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -5054,7 +5054,7 @@ preserved (SR-6). See the identity chapter in
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">watcher_count</span></code></p></td>
 <td><p>INT</p></td>
-<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}</span></code>, GitLab: <code class="docutils literal notranslate"><span class="pre">/projects/{id}?statistics=true</span></code></p></td>
+<td><p>GitHub GraphQL <code class="docutils literal notranslate"><span class="pre">watchers.totalCount</span></code>; on the REST fallback <code class="docutils literal notranslate"><span class="pre">subscribers_count</span></code> of <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}</span></code> (REST’s <code class="docutils literal notranslate"><span class="pre">watchers_count</span></code> is the star count). GitLab: none (always 0; GitLab has no watchers API)</p></td>
 <td><p>Number of watchers.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">open_issues</span></code></p></td>

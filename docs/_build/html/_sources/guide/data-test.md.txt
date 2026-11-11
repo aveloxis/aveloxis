@@ -486,7 +486,7 @@ What it does:
    to every clone, because per-database settings and statistics do not travel
    with a template.
 4. **Compare.** The last A and B clones are compared schema object by schema
-   object (indexes with their validity, constraints, and each column's definition: type, NOT NULL, default, identity and generation, since on PostgreSQL 17 and earlier NOT NULL is not a constraint in the catalog) and row by row: each row as
+   object (indexes with their validity, constraints, and each column's definition: type, collation, NOT NULL, identity, and default or generation, since on PostgreSQL 17 and earlier NOT NULL is not a constraint in the catalog) and row by row: each row as
    JSON without the columns one side lacks, hashed inside each database, then
    drilled down by primary-key bucket where a table differs. `--expect` holds
    the release's rules: what may differ, what must differ (a rule nothing

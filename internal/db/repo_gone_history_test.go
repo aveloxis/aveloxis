@@ -1904,9 +1904,22 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 // nothing; one that always does nothing exhausts the attempts, one that did
 // so only some of the time could pass.
 func TestAClearerQueuedBehindASidelineClosesItsEpisode(t *testing.T) {
-	// The flipped order was 2.2% of attempts under eight concurrent copies
-	// (21 of 960); clearerBehindSidelineAttempts in a row flip with a
-	// probability of 0.022^5, about 5e-9.
+	// The rates, measured under eight concurrent copies (one attempt per run
+	// then; the doc comment's "21 of 960 runs"): the INTENDED order (the
+	// clearer last: the helper returns true and the loop stops) in 939 of
+	// 960 attempts, 97.8%; the FLIPPED order (the sideline last: the helper
+	// returns false and the loop retries on a fresh repository) in 21, 2.2%.
+	// A broken invariant in either order fails at once inside the helper;
+	// a subtest fails by exhaustion only when all
+	// clearerBehindSidelineAttempts attempts flip: 0.022^5, about 5e-9 per
+	// subtest, about 1e-8 for the two, assuming independent attempts at that
+	// loaded rate (an unloaded run flips less). Copilot's second review of
+	// PR #258 read 2.2% as the intended order's rate (each subtest would then
+	// fail 89.5% of the time); a 40-run check on the reviewed head ran 80
+	// subtests with 2 retries and no failure. No barrier can make the
+	// order deterministic: both waiters are queued inside PostgreSQL when the
+	// holder commits, and which one locks the row's new version is the
+	// server's race, not a step the test can sequence.
 	const clearerBehindSidelineAttempts = 5
 	for _, clearer := range []string{"ResurrectRepo", "ClearRepoGone"} {
 		t.Run(clearer, func(t *testing.T) {

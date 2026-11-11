@@ -32,6 +32,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -192,19 +193,6 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 			ok:  "no gone-stamped repository is queued",
 		},
 		{
-			check: "invalid indexes", severity: "FAIL",
-			// An interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index
-			// that serves no query and slows every write; the next migrate
-			// drops and rebuilds it.
-			query: `SELECT COUNT(*), COALESCE((array_agg(n.nspname || '.' || i.relname ORDER BY i.relname))[1:5]::text, '{}')
-				FROM pg_index x
-				JOIN pg_class i ON i.oid = x.indexrelid
-				JOIN pg_namespace n ON n.oid = i.relnamespace
-				WHERE NOT x.indisvalid AND n.nspname IN ('aveloxis_data', 'aveloxis_ops', 'aveloxis_scan')`,
-			bad: "%d INVALID indexes (an interrupted concurrent build) — run `aveloxis migrate` to rebuild — e.g. %s",
-			ok:  "no INVALID index",
-		},
-		{
 			check: "earlier-era daily buckets", severity: "FAIL",
 			// An adopted forge-ID change keeps the earlier repository's
 			// commits in the daily table: no bucket before the era boundary
@@ -243,6 +231,37 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 		} else {
 			add(inv.check, "OK", "%s", inv.ok)
 		}
+	}
+
+	// INVALID indexes (0.29.142; the advice and the in-progress split
+	// 0.29.144). See invalidIndexFindings for what each count means. The
+	// progress rows are matched by this database (index OIDs are per
+	// database; the view is cluster-wide). A build by another role is
+	// visible only to a role with pg_read_all_stats: without it the row keeps
+	// pid and datid and its index_relid is NULL, so such a build is counted
+	// as hidden and its index reads INVALID.
+	var building, hidden int64
+	var invalidNames, buildingNames string
+	if err := s.pool.QueryRow(ctx, `
+		WITH progress AS (
+			SELECT p.index_relid FROM pg_stat_progress_create_index p
+			WHERE p.datid = (SELECT oid FROM pg_database WHERE datname = current_database())),
+		v AS (
+			SELECT n.nspname || '.' || i.relname AS name,
+			       EXISTS (SELECT 1 FROM progress p WHERE p.index_relid = i.oid) AS building
+			FROM pg_index x
+			JOIN pg_class i ON i.oid = x.indexrelid
+			JOIN pg_namespace n ON n.oid = i.relnamespace
+			WHERE NOT x.indisvalid AND n.nspname IN ('aveloxis_data', 'aveloxis_ops', 'aveloxis_scan'))
+		SELECT (SELECT COUNT(*) FROM v WHERE NOT building),
+		       COALESCE((SELECT (array_agg(name ORDER BY name))[1:5]::text FROM v WHERE NOT building), '{}'),
+		       (SELECT COUNT(*) FROM v WHERE building),
+		       COALESCE((SELECT (array_agg(name ORDER BY name))[1:5]::text FROM v WHERE building), '{}'),
+		       (SELECT COUNT(*) FROM progress WHERE index_relid IS NULL)`).Scan(&n, &invalidNames, &building, &buildingNames, &hidden); err != nil {
+		probeErr("invalid indexes", err)
+		probeErr("index builds in progress", err)
+	} else {
+		out = append(out, invalidIndexFindings(n, invalidNames, building, buildingNames, hidden)...)
 	}
 
 	// The case-insensitive e-mail indexes (0.29.141): built by the migrate,
@@ -486,6 +505,49 @@ func SortVerifyResults(results []VerifyResult) []VerifyResult {
 				out = append(out, r)
 			}
 		}
+	}
+	return out
+}
+
+// invalidIndexFindings words the INVALID-index results (0.29.142; 0.29.144).
+// invalid counts INVALID indexes in the Aveloxis schemas with no visible
+// build in progress, building those with one, and hidden the builds in this
+// database whose index this role cannot see (another role's, without
+// pg_read_all_stats).
+//
+// An interrupted concurrent build leaves an INVALID index that serves no
+// query and still slows every write. The migrate drops and rebuilds only the
+// indexes it builds itself, so the advice covers the other kind too (kate's
+// idx_contributor_repo_repo_git, an aborted hand-run build no migrate
+// touches): drop it concurrently. A build still running is INVALID until it
+// finishes — an interrupted migrate leaves its build running on the server —
+// so it is a WARN, never an index to drop.
+func invalidIndexFindings(invalid int64, invalidNames string, building int64, buildingNames string, hidden int64) []VerifyResult {
+	var out []VerifyResult
+	if invalid > 0 {
+		detail := fmt.Sprintf("%d INVALID indexes (an interrupted concurrent build: it serves no query and slows every write) — e.g. %s. "+
+			"First confirm no build of it is running: SELECT pid, phase FROM pg_stat_progress_create_index WHERE index_relid = '<schema.index>'::regclass "+
+			"AND datid = (SELECT oid FROM pg_database WHERE datname = current_database()) returns no row, run as a role with pg_read_all_stats. "+
+			"Then drop it with DROP INDEX CONCURRENTLY <schema.index>; the next `aveloxis migrate` rebuilds it if it is one the migrate builds, and any other (a hand-run build) stays dropped",
+			invalid, invalidNames)
+		if hidden > 0 {
+			detail += fmt.Sprintf(". Caution: %d index builds of any kind are running in this database under a role this one cannot see (it lacks pg_read_all_stats), and an INVALID index above may be one of them", hidden)
+		}
+		out = append(out, VerifyResult{Check: "invalid indexes", Severity: "FAIL", Detail: detail})
+	} else {
+		out = append(out, VerifyResult{Check: "invalid indexes", Severity: "OK", Detail: "no INVALID index"})
+	}
+	var running []string
+	if building > 0 {
+		running = append(running, fmt.Sprintf("%d concurrent builds of INVALID indexes are running (INVALID until they finish; an interrupted migrate leaves its build running on the server) — e.g. %s", building, buildingNames))
+	}
+	if hidden > 0 {
+		running = append(running, fmt.Sprintf("%d index builds of any kind are running under a role this one cannot see (it lacks pg_read_all_stats)", hidden))
+	}
+	if len(running) > 0 {
+		out = append(out, VerifyResult{Check: "index builds in progress", Severity: "WARN", Detail: strings.Join(running, "; ") + "; rerun data-verify when they finish"})
+	} else {
+		out = append(out, VerifyResult{Check: "index builds in progress", Severity: "OK", Detail: "no concurrent index build is running"})
 	}
 	return out
 }

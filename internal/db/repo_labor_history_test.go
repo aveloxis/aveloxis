@@ -278,7 +278,7 @@ func TestScanSCCUsesAtomicSnapshotReplace(t *testing.T) {
 	}
 	src := stripLineComments(string(data))
 
-	if !strings.Contains(src, "ReplaceRepoLaborSnapshot(ctx, repoID, laborRows)") {
+	if !strings.Contains(src, "ReplaceRepoLaborSnapshot(ctx, repoID, dataSource, laborRows)") {
 		t.Error("scanSCC must call ReplaceRepoLaborSnapshot exactly once with the accumulated rows — rotation happens inside the store, once per analysis run, in the same tx as the insert")
 	}
 	if strings.Contains(src, "InsertRepoLabor(") {
@@ -495,8 +495,20 @@ func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 	}
 
 	// Snapshot 1: two files.
-	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, mk("a.go", "b.go")); err != nil {
+	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, "scc 4.2.0 (beta)", mk("a.go", "b.go")); err != nil {
 		t.Fatalf("replace 1: %v", err)
+	}
+	if got := rlSources(t, ctx, store, "aveloxis_data.repo_labor", rlRepoReplace); got != "scc 4.2.0 (beta)" {
+		t.Errorf("after replace 1: every current row records the scc that produced it, got data_source %q", got)
+	}
+
+	// An empty source is refused before anything rotates (0.29.144): a
+	// snapshot that cannot say which scc produced it is a caller defect.
+	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, " ", mk("z.go")); err == nil {
+		t.Error("a snapshot with an empty data source must be refused")
+	}
+	if n := rlCount(t, ctx, store, "aveloxis_data.repo_labor_history", rlRepoReplace); n != 0 {
+		t.Errorf("a refused snapshot rotated %d rows to history", n)
 	}
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_labor", rlRepoReplace); n != 2 {
 		t.Fatalf("after replace 1: want 2 current rows, got %d", n)
@@ -506,7 +518,7 @@ func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 	}
 
 	// Snapshot 2: three files — snapshot 1 rotates to history.
-	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, mk("a.go", "b.go", "c.go")); err != nil {
+	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, "scc 4.1.0", mk("a.go", "b.go", "c.go")); err != nil {
 		t.Fatalf("replace 2: %v", err)
 	}
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_labor", rlRepoReplace); n != 3 {
@@ -515,10 +527,18 @@ func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_labor_history", rlRepoReplace); n != 2 {
 		t.Errorf("after replace 2: want 2 history rows (snapshot 1), got %d", n)
 	}
+	// Each snapshot keeps its own scc version: the history rows are
+	// snapshot 1's, the current rows snapshot 2's.
+	if got := rlSources(t, ctx, store, "aveloxis_data.repo_labor", rlRepoReplace); got != "scc 4.1.0" {
+		t.Errorf("after replace 2: current rows' data_source = %q, want the new scan's scc", got)
+	}
+	if got := rlSources(t, ctx, store, "aveloxis_data.repo_labor_history", rlRepoReplace); got != "scc 4.2.0 (beta)" {
+		t.Errorf("after replace 2: history rows' data_source = %q, want the scc of the snapshot they were", got)
+	}
 
 	// Empty replace: successful scan observing zero files — the
 	// current truth is "no files"; snapshot 2 rotates out.
-	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, nil); err != nil {
+	if err := store.ReplaceRepoLaborSnapshot(ctx, rlRepoReplace, "scc 4.1.0", nil); err != nil {
 		t.Fatalf("empty replace: %v", err)
 	}
 	if n := rlCount(t, ctx, store, "aveloxis_data.repo_labor", rlRepoReplace); n != 0 {
@@ -529,6 +549,17 @@ func TestReplaceRepoLaborSnapshotEndToEnd(t *testing.T) {
 	}
 
 	rlCleanup(t, ctx, store, rlRepoReplace)
+}
+
+// rlSources returns the distinct data_source values of a repository's rows
+// in table, comma-joined in order ("" for no rows).
+func rlSources(t *testing.T, ctx context.Context, store *PostgresStore, table string, repoID int64) string {
+	t.Helper()
+	var got string
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(string_agg(DISTINCT data_source, ',' ORDER BY data_source), '') FROM `+table+` WHERE repo_id = $1`, repoID).Scan(&got); err != nil {
+		t.Fatalf("read %s data_source: %v", table, err)
+	}
+	return got
 }
 
 // TestRepoLaborHistoryHasNoNaturalKeyUniques is the v0.25.1-class

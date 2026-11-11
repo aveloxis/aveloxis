@@ -29,7 +29,8 @@ import (
 
 // ToolUpdateInterval is how often we check for updated tool versions.
 // Default: 30 days. On startup, if the last check was longer ago than this,
-// we re-run `go install ...@latest` for each installed tool to pull updates.
+// we re-run each installed tool's install: scc's pinned `go install`
+// (SCCInstallCmd), the latest release for the others.
 const ToolUpdateInterval = 30 * 24 * time.Hour
 
 // ExternalTool describes an optional third-party tool used by Aveloxis.
@@ -39,9 +40,36 @@ type ExternalTool struct {
 	InstallCmd  string                                    // go install or other install command (also used for manual install display)
 	InstallFunc func(ctx context.Context) error           // custom install function; takes priority over InstallCmd when set; every subprocess and request it runs is bound to ctx
 	BinDir      func(ctx context.Context) (string, error) // where the install puts the binary, when Go's rule decides it (nil when the installer — pipx — chooses and says so itself)
-	Description string                                    // what the tool does
-	Purpose     string                                    // which collection phase uses it
+	// VerifyInstalled checks, after a command install succeeded and is not
+	// shadowed on PATH, that the binary it wrote (BinDir/CheckBinary) is
+	// what the install promised; its error is the install's. Read only
+	// for a command install with a BinDir.
+	VerifyInstalled func(ctx context.Context, path string) error
+	Description     string // what the tool does
+	Purpose         string // which collection phase uses it
 }
+
+// The one scc every host installs: install-tools, upgrade-tools and the
+// monthly update all run SCCInstallCmd, so every host counts lines with the
+// version the tool-output canaries validated (tool_output_canary_test.go)
+// and an upgrade can never deliver one nobody ran them against. The pin is
+// an exact module version — a release tag or a pseudo-version naming one
+// commit, never @latest or a branch (TestSCCInstallIsPinnedToAValidatedVersion).
+// 0.29.144 pins scc's master at commit 62ac0b03 ("4.2.0 (beta)", the build
+// kate runs; the module proxy names it v4.1.1-0.20261108043418-62ac0b03d79a,
+// a pseudo-version, because no tag follows v4.1.0 yet): the 4.1.0
+// release still counts the lines after a JS regex literal holding a quote
+// (/'/g) as code. Move it to the v4.2.0 tag once scc publishes one, after a
+// canary run on it. A host's Go must build scc's go line (1.26.4 at this
+// commit), or the go command's default GOTOOLCHAIN=auto downloads it.
+const (
+	sccModule     = "github.com/boyter/scc/v4"
+	sccPin        = "v4.1.1-0.20261108043418-62ac0b03d79a"
+	SCCInstallCmd = "go install " + sccModule + "@" + sccPin
+	// sccPinReports is what the pinned build's `scc --version` reports
+	// (parseSCCVersion's reading of it); the live canary requires it.
+	sccPinReports = "4.2.0 (beta)"
+)
 
 // ExternalTools returns the list of all optional tools that Aveloxis can use.
 // Each tool is independently optional — if not installed, its phase is skipped.
@@ -50,10 +78,14 @@ func ExternalTools() []ExternalTool {
 		{
 			Name:        "scc",
 			CheckBinary: "scc",
-			InstallCmd:  "go install github.com/boyter/scc/v3@latest",
+			InstallCmd:  SCCInstallCmd,
 			BinDir:      GoBinDir,
-			Description: "Sloc Cloc and Code — counts lines of code, comments, blanks, and complexity per file per language",
-			Purpose:     "Phase 4 (Analysis): populates the repo_labor table with per-file code metrics",
+			// The binary must report the pinned build (0.29.144): a
+			// "successful" go install that delivered another version is
+			// a failed install, not an upgrade.
+			VerifyInstalled: verifySCCPin,
+			Description:     "Sloc Cloc and Code — counts lines of code, comments, blanks, and complexity per file per language",
+			Purpose:         "Phase 4 (Analysis): populates the repo_labor table with per-file code metrics",
 		},
 		{
 			Name:        "scorecard",
@@ -267,7 +299,8 @@ func IsToolUpdateCheckDue(lastCheck time.Time) bool {
 	return time.Since(lastCheck) > ToolUpdateInterval
 }
 
-// CheckAndUpdateTools re-installs all installed tools to pull the latest version.
+// CheckAndUpdateTools re-installs all installed tools: scc at its pinned
+// version, the others at their latest release.
 // Only runs tools that are already on PATH — does not install missing tools.
 // Called on scheduler startup when the last check was > 30 days ago.
 //
@@ -338,7 +371,44 @@ func runToolInstall(ctx context.Context, tool ExternalTool) error {
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return runToolCommand(ctx, cmd)
+	if err := runToolCommand(ctx, cmd); err != nil {
+		return err
+	}
+	// A command that installs into a known directory (scc's go install,
+	// GoBinDir) succeeded, but another copy first on PATH is the one serve
+	// runs — the same check scorecard's install makes (0.29.144 review F3;
+	// a Homebrew scc ahead of the Go bin directory kept running 4.1.0 after
+	// "ok scc upgraded"). A BinDir that cannot be resolved is an error, not
+	// "not shadowed" (SR-5).
+	if tool.BinDir == nil {
+		return nil
+	}
+	dir, err := tool.BinDir(ctx)
+	if err != nil {
+		return fmt.Errorf("%s installed, but its install directory could not be resolved to check PATH: %w", tool.Name, err)
+	}
+	written := filepath.Join(dir, tool.CheckBinary)
+	if w := shadowWarning(tool.CheckBinary, written); w != "" {
+		return fmt.Errorf("%s: %w", w, ErrInstallShadowed)
+	}
+	if tool.VerifyInstalled != nil {
+		return tool.VerifyInstalled(ctx, written)
+	}
+	return nil
+}
+
+// verifySCCPin is scc's VerifyInstalled: the binary at path must report the
+// pinned build's version (sccPinReports), read by the probe the analysis
+// uses to label repo_labor rows.
+func verifySCCPin(ctx context.Context, path string) error {
+	v, err := probeSCCVersion(ctx, path, sccVersionProbeTimeout)
+	if err != nil {
+		return fmt.Errorf("scc installed at %s, but its version could not be read: %w", path, err)
+	}
+	if v != sccPinReports {
+		return fmt.Errorf("scc installed at %s reports version %q, the pin %q (%s): %w", path, v, sccPinReports, SCCInstallCmd, ErrInstallWrongVersion)
+	}
+	return nil
 }
 
 // toolCheckTimestampFile returns the path to the timestamp file.
@@ -770,6 +840,10 @@ func GoBinDir(ctx context.Context) (string, error) {
 // failure — the error text names both paths.
 var ErrInstallShadowed = errors.New("installed copy is shadowed on PATH")
 
+// ErrInstallWrongVersion marks an install that succeeded but wrote a version
+// other than the one it pins (0.29.144, scc).
+var ErrInstallWrongVersion = errors.New("installed copy is not the pinned version")
+
 // shadowWarning says when PATH resolves name to a copy other than the one
 // just written (round 17: before v0.29.68 scorecard went to GOPATH/bin
 // whatever GOBIN said, so an upgrade into GoBinDir can leave the old copy
@@ -791,6 +865,14 @@ func shadowWarning(name, written string) string {
 	}
 	if found == w {
 		return ""
+	}
+	// Another spelling of the same file is not a shadow: a hard link, or a
+	// PATH entry differing only in case on a case-insensitive filesystem
+	// (macOS's default APFS).
+	if a, errA := os.Stat(found); errA == nil {
+		if b, errB := os.Stat(w); errB == nil && os.SameFile(a, b) {
+			return ""
+		}
 	}
 	return fmt.Sprintf("%s was written to %s, but %s is first on PATH — remove the older copy or reorder PATH, or serve keeps running it", name, written, found)
 }

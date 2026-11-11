@@ -732,7 +732,7 @@ Installs three external analysis tools: [scc](https://github.com/boyter/scc) (pe
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
-Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69).
+Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69); since 0.29.144 the same holds for scc, whose upgrade also fails when the installed scc does not report the pinned version.
 
 ---
 
@@ -740,7 +740,9 @@ Exits non-zero if any tool fails to install or installs off PATH (the same `Look
 
 Upgrades the external analysis tools in place (v0.23.6). Unlike
 `install-tools` (which short-circuits when a tool exists), this re-runs
-the install path to pull updates: `go install ...@latest` for scc, a fresh
+the install path to pull updates: `go install` of the one pinned scc
+version Aveloxis validates (since 0.29.144; see the analysis architecture
+page), a fresh
 release tarball for scorecard, and `pipx upgrade` for scancode (preserving
 venv customizations) plus a `typecode-libmagic` re-injection.
 
@@ -749,7 +751,10 @@ aveloxis upgrade-tools
 ```
 
 Exits non-zero if any tool fails to upgrade, so it can run from a
-maintenance cron.
+maintenance cron. Beside a running serve, an scc scan the upgrade
+overlaps records its rows as `scc` (version unknown) rather than the
+version; a deploy that moves the scc pin (0.29.144) runs it with the
+processes stopped, before the start.
 
 ---
 
@@ -1342,7 +1347,10 @@ migration-state awareness; since 0.29.142 also one open gone episode per
 gone-stamped repository and none on a reachable one, gone-stamped
 repositories that are queued (a WARN: pending re-probes), INVALID indexes,
 earlier-era daily buckets below their fold from the commits table, and the
-three lower(email) indexes), sampled count-integrity (cached queue
+three lower(email) indexes; since 0.29.144 a concurrent index build still
+running is reported apart as `index builds in progress`, a WARN, and the
+INVALID-index advice is to drop the index concurrently, since the migrate
+rebuilds only the indexes it builds itself), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).

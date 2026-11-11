@@ -1886,77 +1886,140 @@ func TestSidelineRepoDequeuesWhatAResurrectionItWaitedOnInserted(t *testing.T) {
 // reachable with an open episode no later clear would close (the stamp is
 // already NULL). Every clearer takes the row lock in a statement of its own
 // first, so the clear's snapshot is taken after the wait.
+//
+// PostgreSQL does not keep the two waiters' order here (0.29.144, the flake
+// of the 0.29.144 closing suite: 21 of 960 runs under eight concurrent
+// copies): the holder UPDATEs the row, so at its commit both waiters leave
+// the old row version and race for the new one, and the clearer can win.
+// It then runs first against a reachable row: ClearRepoGone's gated lock
+// locks the new version, its recheck fails, and it clears nothing (the row
+// stays locked to its commit); ResurrectRepo locks unconditionally, clears
+// nothing and upserts the queue row. Either way the sideline runs after it,
+// stamps and dequeues. That serial order is as valid as the other and keeps
+// the same invariant (gone, the sideline's episode the one open episode, no
+// queue row), so each attempt accepts either order and checks its invariant,
+// and the scenario is retried on a fresh repository until the intended order
+// (the clearer last, the one the fix is for) has run once. Residual: the
+// flipped branch cannot tell the race from a clearer that waited and did
+// nothing; one that always does nothing exhausts the attempts, one that did
+// so only some of the time could pass.
 func TestAClearerQueuedBehindASidelineClosesItsEpisode(t *testing.T) {
+	// The rates, measured under eight concurrent copies (one attempt per run
+	// then; the doc comment's "21 of 960 runs"): the INTENDED order (the
+	// clearer last: the helper returns true and the loop stops) in 939 of
+	// 960 attempts, 97.8%; the FLIPPED order (the sideline last: the helper
+	// returns false and the loop retries on a fresh repository) in 21, 2.2%.
+	// A broken invariant in either order fails at once inside the helper;
+	// a subtest fails by exhaustion only when all
+	// clearerBehindSidelineAttempts attempts flip: 0.022^5, about 5e-9 per
+	// subtest, about 1e-8 for the two, assuming independent attempts at that
+	// loaded rate (an unloaded run flips less). Copilot's second review of
+	// PR #258 read 2.2% as the intended order's rate (each subtest would then
+	// fail 89.5% of the time); a 40-run check on the reviewed head ran 80
+	// subtests with 2 retries and no failure. No barrier can make the
+	// order deterministic: both waiters are queued inside PostgreSQL when the
+	// holder commits, and which one locks the row's new version is the
+	// server's race, not a step the test can sequence.
+	const clearerBehindSidelineAttempts = 5
 	for _, clearer := range []string{"ResurrectRepo", "ClearRepoGone"} {
 		t.Run(clearer, func(t *testing.T) {
 			store, ctx := v0251Connect(t)
 			t.Cleanup(store.Close)
-			repoID := seedGoneHistoryRepo(t, store, ctx, "clear-queue-"+strings.ToLower(clearer))
-			if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
-				t.Fatal(err)
-			}
-			holder, err := store.pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer holder.Rollback(ctx) //nolint:errcheck // committed below
-			if _, err := holder.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, GoneSourceOrgScan, 100, false); err != nil {
-				t.Fatal(err)
-			}
-			waiters := func() int {
-				var n int
-				if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
-					WHERE datname = current_database() AND wait_event_type = 'Lock'
-					  AND (query LIKE '%marked AS%' OR query LIKE '%cleared AS%' OR query LIKE '%FOR NO KEY UPDATE%')`).Scan(&n); err != nil {
-					t.Fatal(err)
+			for attempt := 1; attempt <= clearerBehindSidelineAttempts; attempt++ {
+				if clearerRanBehindSideline(t, store, ctx, clearer, attempt) {
+					return
 				}
-				return n
+				t.Logf("attempt %d: the sideline ran last, its invariant held (the clearer won the race for the row's new version, or did nothing); retrying", attempt)
 			}
-			waitFor := func(n int, what string) {
-				deadline := time.Now().Add(10 * time.Second)
-				for waiters() < n {
-					if time.Now().After(deadline) {
-						t.Fatalf("%s never blocked on the row lock", what)
-					}
-					time.Sleep(20 * time.Millisecond)
-				}
-			}
-			sidelined := make(chan error, 1)
-			go func() { sidelined <- store.SidelineRepo(ctx, repoID, 410, GoneSourceMarkGoneRepos) }()
-			waitFor(1, "the sideline")
-			cleared := make(chan error, 1)
-			go func() {
-				if clearer == "ResurrectRepo" {
-					cleared <- store.ResurrectRepo(ctx, repoID, 10, GoneSourceRecheck)
-				} else {
-					cleared <- store.ClearRepoGone(ctx, repoID, GoneSourcePrelim)
-				}
-			}()
-			waitFor(2, "the clearer")
-			if err := holder.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := <-sidelined; err != nil {
-				t.Fatal(err)
-			}
-			if err := <-cleared; err != nil {
-				t.Fatal(err)
-			}
-			if repoGoneAt(ctx, t, store, repoID) != nil {
-				t.Fatal("the clearer ran last: the repository ends reachable")
-			}
-			eps := goneEpisodes(ctx, t, store, repoID)
-			if len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan {
-				t.Fatalf("the resurrection's closed episode, then the sideline's: %+v", eps)
-			}
-			if eps[1].restoredAt == nil || eps[1].status != 410 {
-				t.Fatalf("the sideline's episode is closed by the clearer that ran after it, not left open on a reachable repository: %+v", eps[1])
-			}
-			if clearer == "ResurrectRepo" && !hasQueueRow(ctx, t, store, repoID) {
-				t.Error("the resurrection that ran last re-queues the repository")
-			}
+			t.Fatalf("in %d attempts the clearer never ran after the sideline: the case the fix is for was never exercised (a clearer that does nothing after its wait also ends here)", clearerBehindSidelineAttempts)
 		})
 	}
+}
+
+// clearerRanBehindSideline runs one attempt of the scenario above on a fresh
+// repository and reports whether the clearer ran last. Either order's
+// invariant is asserted before it returns.
+func clearerRanBehindSideline(t *testing.T, store *PostgresStore, ctx context.Context, clearer string, attempt int) bool {
+	t.Helper()
+	repoID := seedGoneHistoryRepo(t, store, ctx, fmt.Sprintf("clear-queue-%s-%d", strings.ToLower(clearer), attempt))
+	if err := store.SidelineRepo(ctx, repoID, 404, GoneSourcePrelim); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck // committed below
+	if _, err := holder.Exec(ctx, resurrectSQL(goneSidelineSQL), repoID, GoneSourceOrgScan, 100, false); err != nil {
+		t.Fatal(err)
+	}
+	// The count is this database's alone, and the database is this test
+	// process's alone (testdb.Main creates one per process; internal/db runs
+	// no test in parallel), so only this attempt's sessions can match:
+	// 0.29.144's round 6 asked for pg_blocking_pids, declined on that reason,
+	// and the 21 diagnosed flips each listed exactly the two waiters.
+	waiters := func() int {
+		var n int
+		if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			  AND (query LIKE '%marked AS%' OR query LIKE '%cleared AS%' OR query LIKE '%FOR NO KEY UPDATE%')`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	waitFor := func(n int, what string) {
+		deadline := time.Now().Add(10 * time.Second)
+		for waiters() < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s never blocked on the row lock", what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	sidelined := make(chan error, 1)
+	go func() { sidelined <- store.SidelineRepo(ctx, repoID, 410, GoneSourceMarkGoneRepos) }()
+	waitFor(1, "the sideline")
+	cleared := make(chan error, 1)
+	go func() {
+		if clearer == "ResurrectRepo" {
+			cleared <- store.ResurrectRepo(ctx, repoID, 10, GoneSourceRecheck)
+		} else {
+			cleared <- store.ClearRepoGone(ctx, repoID, GoneSourcePrelim)
+		}
+	}()
+	waitFor(2, "the clearer")
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sidelined; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-cleared; err != nil {
+		t.Fatal(err)
+	}
+	eps := goneEpisodes(ctx, t, store, repoID)
+	if len(eps) != 2 || eps[0].restoredSource != GoneSourceOrgScan {
+		t.Fatalf("the resurrection's closed episode, then the sideline's: %+v", eps)
+	}
+	if eps[1].status != 410 {
+		t.Fatalf("the second episode is the sideline's (410): %+v", eps[1])
+	}
+	if repoGoneAt(ctx, t, store, repoID) != nil {
+		// The sideline ran last: it stamped, so its episode is the open one,
+		// and the repository is out of the queue.
+		if eps[1].restoredAt != nil || hasQueueRow(ctx, t, store, repoID) {
+			t.Fatalf("the sideline ran last: the repository must end gone with the sideline's episode open and no queue row: %+v, queued %v",
+				eps[1], hasQueueRow(ctx, t, store, repoID))
+		}
+		return false
+	}
+	if eps[1].restoredAt == nil {
+		t.Fatalf("the sideline's episode is closed by the clearer that ran after it, not left open on a reachable repository: %+v", eps[1])
+	}
+	if clearer == "ResurrectRepo" && !hasQueueRow(ctx, t, store, repoID) {
+		t.Error("the resurrection that ran last re-queues the repository")
+	}
+	return true
 }
 
 // A clear of a row that is not sidelined takes no lock and waits for nothing

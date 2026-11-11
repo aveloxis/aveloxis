@@ -26,8 +26,9 @@ import (
 //
 // Per-tool upgrade strategy:
 //
-//   - scc / scorecard — re-run their install function. scc uses
-//     `go install ...@latest` so the install IS the upgrade. scorecard
+//   - scc / scorecard — re-run their install function. scc's install
+//     is `go install` of the one pinned version (collector.SCCInstallCmd),
+//     so the upgrade brings every host to that version. scorecard
 //     re-downloads the latest tarball into collector.GoBinDir (where
 //     `go install` would put it), and warns when an older copy
 //     elsewhere is first on PATH.
@@ -46,11 +47,12 @@ import (
 func upgradeToolsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "upgrade-tools",
-		Short: "Upgrade scc, scorecard, scancode to latest versions and re-inject typecode-libmagic",
-		Long: `Upgrades each optional analysis tool to its latest release.
+		Short: "Upgrade scc to its pinned version, scorecard and scancode to their latest, and re-inject typecode-libmagic",
+		Long: `Upgrades each optional analysis tool: scc to the one version Aveloxis
+validates, the others to their latest release.
 
 Tools handled:
-  scc        — go install github.com/boyter/scc/v3@latest (idempotent re-install)
+  scc        — ` + collector.SCCInstallCmd + ` (idempotent re-install)
   scorecard  — re-download latest tarball from GitHub releases
   scancode   — pipx upgrade scancode-toolkit-mini (preserves venv customizations)
 
@@ -123,14 +125,14 @@ Ctrl-C ends the walk.`,
 
 // upgradeOne dispatches per-tool upgrade logic. scancode uses pipx upgrade
 // + libmagic re-inject; everything else just re-runs the install pipeline
-// (which uses @latest / fetches the newest tarball).
+// (scc's pinned go install, scorecard's newest tarball).
 func upgradeOne(ctx context.Context, tool collector.ExternalTool) error {
 	if tool.Name == "scancode" {
 		return upgradeScancode(ctx)
 	}
-	// scc, scorecard, and any future tools: re-run the install. The
-	// install functions / commands already use @latest or fetch the
-	// newest release, so a fresh install IS the upgrade.
+	// scc, scorecard, and any future tools: re-run the install. scc's
+	// command installs its one pinned version and scorecard's function
+	// fetches the newest release, so a fresh install IS the upgrade.
 	return collector.RunToolInstall(ctx, tool)
 }
 

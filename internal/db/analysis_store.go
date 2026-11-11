@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -173,7 +174,15 @@ func (s *PostgresStore) InsertSBOMWithFormat(ctx context.Context, repoID int64, 
 // table, a follow-up beyond v0.27.7 — this insert should trip 23505
 // visibly. (The exception entry in TestBatchInsertsHaveOnConflict
 // documents the same decision from the test side.)
-func (s *PostgresStore) ReplaceRepoLaborSnapshot(ctx context.Context, repoID int64, rows []*RepoLaborRow) error {
+//
+// dataSource (0.29.144) is what every row records in data_source: the scc
+// that produced the snapshot ("scc 4.2.0 (beta)", or "scc" when its version
+// is unknown). scc 4.x counts lines differently from 3.x, so a row's counts
+// are read against it. An empty one is refused before anything rotates.
+func (s *PostgresStore) ReplaceRepoLaborSnapshot(ctx context.Context, repoID int64, dataSource string, rows []*RepoLaborRow) error {
+	if strings.TrimSpace(dataSource) == "" {
+		return fmt.Errorf("repo_labor snapshot for repo %d: a data source naming the scc that produced it is required", repoID)
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -204,10 +213,10 @@ func (s *PostgresStore) ReplaceRepoLaborSnapshot(ctx context.Context, repoID int
 						 blank_lines, code_complexity,
 						 tool_source, data_source, data_collection_date)
 					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-						'aveloxis-scc', 'scc', NOW())`,
+						'aveloxis-scc', $12, NOW())`,
 					repoID, row.CloneDate, row.AnalysisDate, row.Language,
 					row.FilePath, row.FileName, row.TotalLines, row.CodeLines, row.CommentLines,
-					row.BlankLines, row.Complexity)
+					row.BlankLines, row.Complexity, dataSource)
 			}
 			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 				return fmt.Errorf("insert repo_labor snapshot rows %d..%d: %w", start, end, err)

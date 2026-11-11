@@ -2,7 +2,7 @@ module github.com/aveloxis/aveloxis
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	filippo.io/age v1.2.1

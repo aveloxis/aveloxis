@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis &mdash; Aveloxis 0.29.143 documentation</title>
+  <title>Analysis &mdash; Aveloxis 0.29.144 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=f12ff144"></script>
+      <script src="../_static/documentation_options.js?v=3aa66189"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -999,6 +999,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#execution">Execution</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id2">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#which-scc-counted-a-row-0-29-144">Which scc counted a row (0.29.144)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#snapshot-rotation-and-history-v0-27-7">Snapshot rotation and history (v0.27.7)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#if-scc-is-not-installed">If scc is not installed</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#materialized-view">Materialized view</a></li>
@@ -2115,7 +2116,7 @@ distinction: a <code class="docutils literal notranslate"><span class="pre">path
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>install-tools
 </pre></div>
 </div>
-<p>This installs <code class="docutils literal notranslate"><span class="pre">scc</span></code> via <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span> <span class="pre">github.com/boyter/scc&#64;latest</span></code>.</p>
+<p>This installs <code class="docutils literal notranslate"><span class="pre">scc</span></code> with <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">install</span> <span class="pre">github.com/boyter/scc/v4&#64;v4.1.1-0.20261108043418-62ac0b03d79a</span></code>: scc’s master at commit 62ac0b03, which reports <code class="docutils literal notranslate"><span class="pre">scc</span> <span class="pre">version</span> <span class="pre">4.2.0</span> <span class="pre">(beta)</span></code>. Since 0.29.144 the install, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">upgrade-tools</span></code> and the monthly tool update all install this one pinned version, the one the tool-output canaries validate, so every host counts lines the same way and an update never delivers a version nobody checked (before 0.29.144 they installed <code class="docutils literal notranslate"><span class="pre">scc/v3&#64;latest</span></code>, which can never be newer than 3.7.0).</p>
 </section>
 <section id="execution">
 <h3>Execution<a class="headerlink" href="#execution" title="Link to this heading"></a></h3>
@@ -2170,8 +2171,22 @@ distinction: a <code class="docutils literal notranslate"><span class="pre">path
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_url</span></code></p></td>
 <td><p>Git URL of the repo</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">data_source</span></code></p></td>
+<td><p>The scc that produced the row, <code class="docutils literal notranslate"><span class="pre">scc</span> <span class="pre">&lt;version&gt;</span></code> (since 0.29.144; earlier rows say <code class="docutils literal notranslate"><span class="pre">scc</span></code>)</p></td>
+</tr>
 </tbody>
 </table>
+</section>
+<section id="which-scc-counted-a-row-0-29-144">
+<h3>Which scc counted a row (0.29.144)<a class="headerlink" href="#which-scc-counted-a-row-0-29-144" title="Link to this heading"></a></h3>
+<p>scc 4.x counts lines differently from 3.x. 3.x lost track of quotes in a few common shapes, a backtick rune (<code class="docutils literal notranslate"><span class="pre">'`'</span></code>) in Go, an apostrophe in a Python docstring, a quote inside a JavaScript regular-expression literal such as <code class="docutils literal notranslate"><span class="pre">/'/g</span></code>, and counted the comment and blank lines after it as code until the next matching quote. 4.x (and, for the JavaScript case, only the pinned 4.2.0 build, not the 4.1.0 release) counts them correctly. The file list, the languages and each file’s total lines are the same; code lines fall and comment lines, blank lines and complexity rise, most in Python and JavaScript projects. Estimates derived from code lines, such as the COCOMO <code class="docutils literal notranslate"><span class="pre">labor_investment</span></code> query, fall with them.</p>
+<p>Each analysis records the version in <code class="docutils literal notranslate"><span class="pre">data_source</span></code> on every row it writes: Aveloxis runs <code class="docutils literal notranslate"><span class="pre">scc</span> <span class="pre">--version</span></code> after a successful scan. If that probe fails, the scan is still stored and the rows say <code class="docutils literal notranslate"><span class="pre">scc</span></code> (version unknown), and the failure is logged as <code class="docutils literal notranslate"><span class="pre">could</span> <span class="pre">not</span> <span class="pre">read</span> <span class="pre">the</span> <span class="pre">scc</span> <span class="pre">version</span></code>. The version labels the rows only if the scc file is the one the scan ran: Aveloxis compares the file before the scan and after the probe (the same file, size and modification time), so an upgrade that lands during a scan leaves that scan’s rows at <code class="docutils literal notranslate"><span class="pre">scc</span></code> and logs <code class="docutils literal notranslate"><span class="pre">the</span> <span class="pre">scc</span> <span class="pre">binary</span> <span class="pre">changed</span> <span class="pre">during</span> <span class="pre">this</span> <span class="pre">scan</span></code>. scc 4.x reads a configuration from <code class="docutils literal notranslate"><span class="pre">$SCC_CONFIG_PATH</span></code> and from <code class="docutils literal notranslate"><span class="pre">./.sccconfig</span></code> in its working directory, and either could change what it counts; Aveloxis runs scc (the scan and the version probe) with that variable removed and from a fresh empty directory, so neither a host’s configuration nor a repository’s own <code class="docutils literal notranslate"><span class="pre">.sccconfig</span></code> applies. The comparison is of the file <code class="docutils literal notranslate"><span class="pre">scc</span></code> resolves to (a symlink, as Homebrew installs, is followed); a wrapper script that runs another binary is compared as the script, so an upgrade of the binary behind it is not seen. Since 0.29.144 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">upgrade-tools</span></code> and the monthly update also check the installed binary: the update fails when another <code class="docutils literal notranslate"><span class="pre">scc</span></code> comes first on <code class="docutils literal notranslate"><span class="pre">PATH</span></code> or when the installed one does not report the pinned version. <code class="docutils literal notranslate"><span class="pre">repo_labor_history</span></code> keeps each snapshot’s value, so a time series can be split where the counting changed:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">data_source</span><span class="p">,</span><span class="w"> </span><span class="n">MIN</span><span class="p">(</span><span class="n">rl_analysis_date</span><span class="p">),</span><span class="w"> </span><span class="n">MAX</span><span class="p">(</span><span class="n">rl_analysis_date</span><span class="p">),</span><span class="w"> </span><span class="n">SUM</span><span class="p">(</span><span class="n">code_lines</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_labor_history</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">repo_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">data_source</span><span class="p">;</span>
+</pre></div>
+</div>
 </section>
 <section id="snapshot-rotation-and-history-v0-27-7">
 <h3>Snapshot rotation and history (v0.27.7)<a class="headerlink" href="#snapshot-rotation-and-history-v0-27-7" title="Link to this heading"></a></h3>

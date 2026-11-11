@@ -98,5 +98,24 @@ aveloxis.nsa.json
 # .buildinfo is tracked, the backup is build noise (PR #197 round 15).
 docs/_build/html/.buildinfo.bak
 
+# Sphinx's cache: environment.pickle and one .doctree per page, Python pickles.
+# sphinx-build without -E loads them, and unpickling runs the callables a file
+# names, so a tracked one is code a pull request can ship unseen; they also
+# embed the builder's checkout path. The site needs none of them. Python
+# bytecode is the same class: every docs build imports docs/_ext, and an import
+# reads a __pycache__ .pyc even under sys.dont_write_bytecode (0.29.144,
+# TestNoTrackedCodeOnLoadCaches). Any builder's .doctrees/ (latex, epub too);
+# sphinx-build -M writes docs/_build/doctrees/; a native extension module is
+# imported before the .py of its name, replacing the reviewed source (*.so and
+# *.dylib are ignored above with the other binaries; *.pyd is Windows').
+.doctrees/
+docs/_build/doctrees/
+*.pickle
+*.doctree
+*.pkl
+__pycache__/
+*.py[co]
+*.pyd
+
 # Production logs copied in for a review session (0.29.140); never committed.
 kate-logs/

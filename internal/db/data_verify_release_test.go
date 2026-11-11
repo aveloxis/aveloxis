@@ -94,8 +94,90 @@ func TestDataVerifyFailsOnAnInvalidIndex(t *testing.T) {
 	if r.Severity != "FAIL" || !strings.Contains(r.Detail, table+"_u") {
 		t.Errorf("an INVALID index FAILs and is named: %+v", r)
 	}
+	// The advice holds for an index the migrate does not own (0.29.144: kate's
+	// idx_contributor_repo_repo_git, a hand-run build, which no migrate
+	// touches): drop it concurrently, and the migrate rebuilds only its own.
+	for _, want := range []string{"DROP INDEX CONCURRENTLY", "pg_stat_progress_create_index", "rebuilds"} {
+		if !strings.Contains(r.Detail, want) {
+			t.Errorf("the INVALID-index advice must say %q: %s", want, r.Detail)
+		}
+	}
+	if strings.Contains(r.Detail, "run `aveloxis migrate` to rebuild —") {
+		t.Errorf("the advice must not promise that a migrate rebuilds every INVALID index (it rebuilds only its own): %s", r.Detail)
+	}
 	if r := verifyFinding(ctx, t, store, "lower(email) indexes"); r.Severity != "OK" {
 		t.Errorf("a migrated database has the three lower(email) indexes: %+v", r)
+	}
+}
+
+// A concurrent build still running is INVALID until it finishes: it is a
+// WARN naming it under "index builds in progress", never an "invalid
+// indexes" FAIL (an interrupted migrate leaves its build running on the
+// server, and dropping that index would be the wrong advice).
+func TestDataVerifyReportsABuildInProgressNotAnInvalidIndex(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	table := fmt.Sprintf("zz_dv_building_%d", time.Now().UnixNano())
+	index := table + "_b"
+	mustExecRetry(ctx, t, store, `CREATE TABLE aveloxis_data.`+table+` (a int)`)
+	t.Cleanup(func() { cleanupExecRetry(context.Background(), store, `DROP TABLE IF EXISTS aveloxis_data.`+table) })
+
+	// A writer holds the table, so the build creates its (INVALID) index and
+	// then waits for that writer.
+	holder, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(ctx, `INSERT INTO aveloxis_data.`+table+` VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	built := make(chan error, 1)
+	go func() {
+		_, err := store.pool.Exec(context.Background(), `CREATE INDEX CONCURRENTLY `+index+` ON aveloxis_data.`+table+` (a)`)
+		built <- err
+	}()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holder.Rollback(context.Background())
+			if err := <-built; err != nil {
+				t.Errorf("the concurrent build failed once released: %v", err)
+			}
+		}
+	}
+	t.Cleanup(release)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var n int
+		if err := store.pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM pg_stat_progress_create_index p JOIN pg_class i ON i.oid = p.index_relid
+			WHERE i.relname = $1 AND p.datid = (SELECT oid FROM pg_database WHERE datname = current_database())`, index).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the concurrent build never reported progress on its index")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if r := verifyFinding(ctx, t, store, "invalid indexes"); strings.Contains(r.Detail, index) {
+		t.Errorf("a build in progress is not an INVALID index to drop: %+v", r)
+	}
+	if r := verifyFinding(ctx, t, store, "index builds in progress"); r.Severity != "WARN" || !strings.Contains(r.Detail, index) {
+		t.Errorf("a build in progress is a WARN naming it: %+v", r)
+	}
+
+	release()
+	if r := verifyFinding(ctx, t, store, "index builds in progress"); strings.Contains(r.Detail, index) {
+		t.Errorf("a finished build is no longer reported: %+v", r)
+	}
+	if r := verifyFinding(ctx, t, store, "invalid indexes"); strings.Contains(r.Detail, index) {
+		t.Errorf("a finished build is valid: %+v", r)
 	}
 }
 
@@ -199,5 +281,53 @@ func TestDataVerifyDeterministicSampleReadsAlike(t *testing.T) {
 				t.Fatalf("%q with the deterministic sample: present, not marked sampled, identical every run: %+v vs %+v", check, a, b)
 			}
 		}
+	}
+}
+
+// Builds by other roles are hidden from a role without pg_read_all_stats:
+// their progress rows keep only pid and datid (index_relid is NULL), so the
+// index they build reads INVALID here (0.29.144 review F4). The findings say
+// so instead of advising a drop without the caveat, and the advice's own
+// check query is scoped to this database.
+func TestInvalidIndexFindingsNameBuildsThisRoleCannotSee(t *testing.T) {
+	find := func(rs []VerifyResult, check string) VerifyResult {
+		t.Helper()
+		for _, r := range rs {
+			if r.Check == check {
+				return r
+			}
+		}
+		t.Fatalf("finding %q missing: %+v", check, rs)
+		return VerifyResult{}
+	}
+
+	rs := invalidIndexFindings(1, "{aveloxis_data.x}", 0, "{}", 2)
+	if r := find(rs, "invalid indexes"); r.Severity != "FAIL" || !strings.Contains(r.Detail, "2 index builds") || !strings.Contains(r.Detail, "pg_read_all_stats") {
+		t.Errorf("an INVALID index alongside hidden builds names the hidden builds: %+v", r)
+	}
+	// Only hidden builds: the detail names them alone, with no "0 builds,
+	// e.g. {}" clause for the visible ones (review round 2).
+	if r := find(invalidIndexFindings(0, "{}", 0, "{}", 2), "index builds in progress"); r.Severity != "WARN" ||
+		r.Detail != "2 index builds of any kind are running under a role this one cannot see (it lacks pg_read_all_stats); rerun data-verify when they finish" {
+		t.Errorf("hidden builds alone are named alone: %+v", r)
+	}
+	if r := find(rs, "invalid indexes"); !strings.Contains(r.Detail, "datid = (SELECT oid FROM pg_database WHERE datname = current_database())") {
+		t.Errorf("the advice's check query is scoped to this database (index OIDs are per database): %+v", r)
+	}
+
+	rs = invalidIndexFindings(0, "{}", 1, "{aveloxis_data.y}", 0)
+	if r := find(rs, "invalid indexes"); r.Severity != "OK" {
+		t.Errorf("only a visible build in progress: no INVALID finding: %+v", r)
+	}
+	if r := find(rs, "index builds in progress"); r.Severity != "WARN" || !strings.Contains(r.Detail, "aveloxis_data.y") || strings.Contains(r.Detail, "cannot see") {
+		t.Errorf("a visible build is named, with no hidden-build caveat: %+v", r)
+	}
+
+	rs = invalidIndexFindings(1, "{aveloxis_data.x}", 0, "{}", 0)
+	if r := find(rs, "invalid indexes"); r.Severity != "FAIL" || strings.Contains(r.Detail, "cannot see") {
+		t.Errorf("no hidden builds: no caveat: %+v", r)
+	}
+	if r := find(rs, "index builds in progress"); r.Severity != "OK" {
+		t.Errorf("no builds: OK: %+v", r)
 	}
 }

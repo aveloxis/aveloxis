@@ -612,7 +612,7 @@ GitHub Actions runs:
 - `lint.yml`: `go vet` → `staticcheck` → `golangci-lint` (pinned version), all blocking.
 - `codeql.yml`: security scanning.
 - `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
-- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`), and real-tool checks: the latest scancode and scc, and the official SBOM validators (`pyspdxtools` and `cyclonedx-python-lib`, via `AVELOXIS_TEST_SBOM_TOOLS`, which names a Python with both installed; the test skips when it is unset). To run the SBOM check locally, see the comment on `TestSBOMsPassTheOfficialValidators`.
+- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`), and real-tool checks: the latest scancode and the pinned scc, and the official SBOM validators (`pyspdxtools` and `cyclonedx-python-lib`, via `AVELOXIS_TEST_SBOM_TOOLS`, which names a Python with both installed; the test skips when it is unset). To run the SBOM check locally, see the comment on `TestSBOMsPassTheOfficialValidators`.
 - `docs.yml`: `sphinx-build -W --keep-going` over `docs/` — every Sphinx/MyST warning (unknown fence language, block that does not lex, dead cross-reference) is an error.
 
 The first four plus `docs.yml` must pass for a PR to merge — a Sphinx warning fails the docs job the same way a lint finding fails `lint.yml`. The maintainers can override but rarely do.

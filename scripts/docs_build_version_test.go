@@ -17,8 +17,8 @@ import (
 // its version from internal/db/version.go at build time — so a version bump
 // without a rebuild publishes pages that name the previous release (PR #226
 // review 5448678338: 0.29.74 shipped with 0.29.73 in every page title).
-// Rebuild: cd docs && sphinx-build -W -b html . _build/html (the pinned
-// toolchain in docs/requirements.txt).
+// Rebuild with README's "Build docs" recipe (the pinned toolchain in
+// docs/requirements.txt, the search index deleted, every page with -E).
 func TestTrackedDocsBuildCarriesTheCurrentVersion(t *testing.T) {
 	root := srctest.Root(t)
 	js, err := os.ReadFile(filepath.Join(root, "docs", "_build", "html", "_static", "documentation_options.js"))
@@ -30,6 +30,6 @@ func TestTrackedDocsBuildCarriesTheCurrentVersion(t *testing.T) {
 		t.Fatal("docs/_build/html/_static/documentation_options.js has no VERSION line")
 	}
 	if got := string(m[1]); got != db.ToolVersion {
-		t.Errorf("the tracked docs build is version %s, internal/db/version.go is %s — rebuild it: cd docs && sphinx-build -W -b html . _build/html", got, db.ToolVersion)
+		t.Errorf("the tracked docs build is version %s, internal/db/version.go is %s — rebuild it with README's \"Build docs\" recipe", got, db.ToolVersion)
 	}
 }

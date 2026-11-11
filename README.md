@@ -1223,7 +1223,7 @@ The suite currently stands at **~2,960 test functions across ~670 test files** (
 
 # Build docs
 
-`docs/requirements.txt` pins the docs toolchain to the versions the tracked `docs/_build` was built with, so install from it, preferably in a virtualenv, with Python 3.12 or later (what CI and Read the Docs use; the pinned Sphinx needs it). The recipe deletes the search index and rebuilds every page (`-E`), so the index is rebuilt from nothing. Sphinx's cache, `docs/_build/html/.doctrees/`, is not tracked: its files are Python pickles, which a build without `-E` loads and which run code when loaded, so a tracked one could carry code into the next build.
+`docs/requirements.txt` pins the docs toolchain to the versions the tracked `docs/_build` was built with, so install from it, preferably in a virtualenv, with Python 3.12 or later (what CI and Read the Docs use; the pinned Sphinx needs it). The recipe deletes the search index and rebuilds every page (`-E`), so the index is rebuilt from nothing. Sphinx's cache, `docs/_build/html/.doctrees/`, and Python's `__pycache__` are not tracked: the first holds Python pickles, which a build without `-E` loads, the second bytecode, which every build reads when it imports `docs/_ext`; both run code when loaded, so a tracked one could carry code into the next build.
 
 ```bash
 cd docs

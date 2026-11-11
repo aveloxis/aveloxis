@@ -101,9 +101,13 @@ docs/_build/html/.buildinfo.bak
 # Sphinx's cache: environment.pickle and one .doctree per page, Python pickles.
 # sphinx-build without -E loads them, and unpickling runs the callables a file
 # names, so a tracked one is code a pull request can ship unseen; they also
-# embed the builder's checkout path. The site needs none of them (0.29.144,
-# TestTrackedDocsBuildHasNoPickles).
+# embed the builder's checkout path. The site needs none of them. Python
+# bytecode is the same class: every docs build imports docs/_ext, and an import
+# reads a __pycache__ .pyc even under sys.dont_write_bytecode (0.29.144,
+# TestNoTrackedCodeOnLoadCaches).
 docs/_build/html/.doctrees/
+__pycache__/
+*.py[co]
 
 # Production logs copied in for a review session (0.29.140); never committed.
 kate-logs/

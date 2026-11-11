@@ -104,10 +104,17 @@ docs/_build/html/.buildinfo.bak
 # embed the builder's checkout path. The site needs none of them. Python
 # bytecode is the same class: every docs build imports docs/_ext, and an import
 # reads a __pycache__ .pyc even under sys.dont_write_bytecode (0.29.144,
-# TestNoTrackedCodeOnLoadCaches).
+# TestNoTrackedCodeOnLoadCaches). sphinx-build -M writes its cache to
+# docs/_build/doctrees/; a native extension module under docs/ is imported
+# before the .py of its name, replacing the reviewed source (*.so and *.dylib
+# are ignored above with the other binaries; *.pyd is Windows').
 docs/_build/html/.doctrees/
+docs/_build/doctrees/
+*.pickle
+*.doctree
 __pycache__/
 *.py[co]
+*.pyd
 
 # Production logs copied in for a review session (0.29.140); never committed.
 kate-logs/

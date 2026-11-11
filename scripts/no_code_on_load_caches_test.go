@@ -35,29 +35,47 @@ func codeOnLoadCache(path string) bool {
 	return false
 }
 
-// docsImportPathHazard reports why a tracked entry under docs/ could put code
-// a review cannot see into a docs build, or "" when it cannot. docs/ is the
-// import path (Read the Docs runs sphinx with docs/ as the working directory,
-// so it is sys.path[0], and conf.py adds docs/_ext): a symlink there can
-// resolve to a native module stored elsewhere (a package directory linked
-// in, the .so beside its __init__), and a non-ASCII name can fold onto a
-// flagged one under macOS's Unicode case folding (U+017F "ſo" opens as
-// "so"), which no ASCII lower-casing sees. Neither exists today, so both are
-// refused outright rather than resolved spelling by spelling.
+// docsImportPathHazard reports why a tracked entry could put code a review
+// cannot see into a docs build, or "" when it cannot. docs/ is the import
+// path (Read the Docs runs sphinx with docs/ as the working directory, so it
+// is sys.path[0], and conf.py adds docs/_ext): a symlink or a submodule there
+// can supply a package directory from outside the reviewed tree, and a
+// non-ASCII name can fold onto a flagged one under macOS's Unicode case
+// folding (a pickle or .pyc a tool opens by path: U+017F "ſ" opens as "s"),
+// which no ASCII lower-casing sees. "docs/" itself is decided the way macOS
+// opens it: Docs/, DOCS/ and a non-ASCII spelling of the first component all
+// land in docs/ there. None exists today, so each is refused outright rather
+// than resolved spelling by spelling.
 func docsImportPathHazard(mode, path string) string {
-	if !strings.HasPrefix(path, "docs/") {
+	first, _, _ := strings.Cut(path, "/")
+	if !strings.EqualFold(first, "docs") && isASCII(first) {
 		return ""
 	}
-	if mode == "120000" {
+	switch mode {
+	case "120000":
 		return "a symlink in the docs import path can resolve to code outside docs/"
+	case "160000":
+		return "a submodule in the docs import path supplies code the review never lists"
 	}
-	for i := 0; i < len(path); i++ {
-		if path[i] >= 0x80 {
-			return "a non-ASCII name in the docs import path can case-fold onto a code-on-load name on macOS"
-		}
+	if !isASCII(path) {
+		return "a non-ASCII name in the docs import path can case-fold onto a code-on-load name on macOS"
 	}
 	return ""
 }
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// gitIndexModes are the modes `git ls-files -s` prints for a tracked entry:
+// a parse that yields anything else has broken, and would silently turn the
+// symlink and submodule refusals off.
+var gitIndexModes = map[string]bool{"100644": true, "100755": true, "120000": true, "160000": true}
 
 // TestNoTrackedCodeOnLoadCaches (0.29.144, the review of PR #257 and its L10
 // rounds): the tracked Sphinx site carried docs/_build/html/.doctrees, and
@@ -90,6 +108,9 @@ func TestNoTrackedCodeOnLoadCaches(t *testing.T) {
 			t.Fatalf("git ls-files -s entry without a path: %q", entry)
 		}
 		mode, _, _ := strings.Cut(meta, " ")
+		if !gitIndexModes[mode] {
+			t.Fatalf("git ls-files -s entry %q parsed to mode %q: the parse broke", entry, mode)
+		}
 		seen[f] = true
 		if codeOnLoadCache(f) {
 			t.Errorf("%s is tracked: a file a tool executes when it loads it; git rm --cached %s", f, f)
@@ -124,6 +145,8 @@ func TestNoTrackedCodeOnLoadCaches(t *testing.T) {
 		"docs/_ext/model.pkl",
 		"docs/_ext/__pycache__/aveloxis_openapi.cpython-312.pyc",
 		"docs/__pycache__/conf.cpython-314.pyc",
+		// __pycache__/ alone: the temporary name of Python's atomic write.
+		"docs/_ext/__pycache__/aveloxis_openapi.cpython-312.pyc.4372",
 		// A sourceless .pyc beside the extension: an import of its name loads
 		// it when no .py of that name exists.
 		"docs/_ext/aveloxis_helpers.pyc",
@@ -220,6 +243,12 @@ func TestDocsImportPathHazard(t *testing.T) {
 		{"120000", "docs/README.md", true},
 		{"100644", "docs/_ext/aveloxis_openapi/__init__.cpython-315-darwin.ſo", true},
 		{"100644", "docs/_build/html/x.picKle", true},
+		{"160000", "docs/_ext/aveloxis_openapi", true},
+		{"120000", "Docs/_ext/x", true},
+		{"120000", "DOCS/x", true},
+		{"100644", "doc\u017f/x.md", true},
+		{"100644", "Docs/_ext/aveloxis_openapi.py", false},
+		{"160000", "vendor/lib", false},
 		{"100644", "docs/_ext/aveloxis_openapi.py", false},
 		{"100755", "docs/_ext/tool.py", false},
 		{"120000", "scripts/link", false},

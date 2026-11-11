@@ -21,10 +21,11 @@ const ladderChainFrom = "0.29.68"
 // skipping releases reads only the newest ladder, so each must carry every
 // earlier note — withStartNote(prev, note) prepends to the previous ladder's
 // start step. Two releases cut from the same base (0.29.143 on PR #257,
-// which supersedes #255, and 0.29.144 here, both chained from 0.29.142) pass
-// apart and break together: once both are in the map, the later one must be
-// rechained onto the earlier, or a fleet going from 0.29.142 straight to
-// 0.29.144 never reads 0.29.143's note.
+// which superseded #255, and 0.29.144 on PR #258, both chained from 0.29.142)
+// passed apart and broke together: once both were in the map, the later one
+// had to be rechained onto the earlier (done at the merge of main into PR
+// #258), or a fleet going from 0.29.142 straight to 0.29.144 never reads
+// 0.29.143's note.
 func TestEachLadderCarriesItsPredecessorsNotes(t *testing.T) {
 	versions := make([]string, 0, len(deployChecklists))
 	for v := range deployChecklists {
@@ -57,8 +58,8 @@ func TestEachLadderCarriesItsPredecessorsNotes(t *testing.T) {
 			t.Errorf("ladder %s does not carry ladder %s's notes — build it as withStartNote(the %s ladder, note)", v, prev, prev)
 		}
 	}
-	// Guard the denominator: 76 ladders when this was written (every
-	// release from 0.29.68 to 0.29.142, and 0.29.144), so a broken ordering
-	// or filter cannot pass by checking nothing.
-	srctest.MinCount(t, "ladders checked for their chain", checked, 76)
+	// Guard the denominator: 77 ladders at the merge of 0.29.143 and
+	// 0.29.144 (every release from 0.29.68 to 0.29.144), so a broken
+	// ordering or filter cannot pass by checking nothing.
+	srctest.MinCount(t, "ladders checked for their chain", checked, 77)
 }

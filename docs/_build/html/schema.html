@@ -5055,7 +5055,7 @@ preserved (SR-6). See the identity chapter in
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">watcher_count</span></code></p></td>
 <td><p>INT</p></td>
-<td><p>GitHub REST: <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}</span></code>, GitLab: <code class="docutils literal notranslate"><span class="pre">/projects/{id}?statistics=true</span></code></p></td>
+<td><p>GitHub GraphQL <code class="docutils literal notranslate"><span class="pre">watchers.totalCount</span></code>; on the REST fallback <code class="docutils literal notranslate"><span class="pre">subscribers_count</span></code> of <code class="docutils literal notranslate"><span class="pre">/repos/{o}/{r}</span></code> (REST’s <code class="docutils literal notranslate"><span class="pre">watchers_count</span></code> is the star count). GitLab: none (always 0; GitLab has no watchers API)</p></td>
 <td><p>Number of watchers.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">open_issues</span></code></p></td>

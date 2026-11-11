@@ -111,6 +111,6 @@ func TestV029144SummaryNamesUpgradeTools(t *testing.T) {
 		t.Fatalf("the upgrade-tools heal row has %d cells, want Order, Command, Since, Repairs, When", len(cells)-2)
 	}
 	if since := cells[3]; !strings.Contains(since, "0.29.144") {
-		t.Errorf("the upgrade-tools heal row's Since %q does not name 0.29.144: a fleet coming from 0.29.142 skips it by the table's rule", strings.TrimSpace(since))
+		t.Errorf("the upgrade-tools heal row's Since %q does not name 0.29.144: a fleet coming from an earlier release skips it by the table's rule", strings.TrimSpace(since))
 	}
 }

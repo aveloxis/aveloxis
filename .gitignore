@@ -98,5 +98,12 @@ aveloxis.nsa.json
 # .buildinfo is tracked, the backup is build noise (PR #197 round 15).
 docs/_build/html/.buildinfo.bak
 
+# Sphinx's cache: environment.pickle and one .doctree per page, Python pickles.
+# sphinx-build without -E loads them, and unpickling runs the callables a file
+# names, so a tracked one is code a pull request can ship unseen; they also
+# embed the builder's checkout path. The site needs none of them (0.29.144,
+# TestTrackedDocsBuildHasNoPickles).
+docs/_build/html/.doctrees/
+
 # Production logs copied in for a review session (0.29.140); never committed.
 kate-logs/

@@ -1175,7 +1175,7 @@ func (c *Client) fetchRepoInfoREST(ctx context.Context, owner, repo string) (*mo
 		Status: statusStr(raw.Archived, raw.Disabled),
 		Origin: model.DataOrigin{
 			ToolSource: "aveloxis",
-			DataSource: "GitHub REST",
+			DataSource: model.DataSourceGitHubREST,
 		},
 	}, nil
 }

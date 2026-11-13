@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.144 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.145 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3aa66189"></script>
+      <script src="../_static/documentation_options.js?v=9edee590"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
@@ -676,6 +677,8 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#http-410-gone-on-individual-issues-prs">HTTP 410 Gone on individual issues / PRs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-repo-info-commit-count-is-0-but-facade-found-commits">GitLab repo_info.commit_count is 0 but facade found commits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#analysis-fails-with-local-clone-failed">Analysis fails with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-maintenance-lock-present-before-the-fetch">Git maintenance lock present before the fetch</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
@@ -8180,7 +8183,7 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dd>
 </dl>
 <p><strong>Returns the star count at each metadata snapshot.</strong></p>
-<p>One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first; <code class="docutils literal notranslate"><span class="pre">period</span></code> and the window do not apply. An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
+<p>One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first; <code class="docutils literal notranslate"><span class="pre">period</span></code> and the window do not apply. Since 0.29.145 a snapshot whose star count is unknown is left out (it was returned as 0). An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleStars</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -8283,7 +8286,7 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dd>
 </dl>
 <p><strong>Returns the fork count at each metadata snapshot.</strong></p>
-<p>One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first. An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
+<p>One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first. Since 0.29.145 a snapshot whose fork count is unknown is left out (it was returned as 0). An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleForks</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -8386,7 +8389,7 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dd>
 </dl>
 <p><strong>Returns the watcher count over time, from the metadata snapshots.</strong></p>
-<p>One row per metadata snapshot (the history and the current one, oldest first; since 0.29.99 — before, only the latest snapshot, so one row at most). Rows carry <code class="docutils literal notranslate"><span class="pre">watchers</span></code> where the <code class="docutils literal notranslate"><span class="pre">stars</span></code> and <code class="docutils literal notranslate"><span class="pre">forks</span></code> series carry <code class="docutils literal notranslate"><span class="pre">value</span></code> (Augur’s own name). A snapshot without a date is left out. An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
+<p>One row per metadata snapshot (the history and the current one, oldest first; since 0.29.99 — before, only the latest snapshot, so one row at most). Rows carry <code class="docutils literal notranslate"><span class="pre">watchers</span></code> where the <code class="docutils literal notranslate"><span class="pre">stars</span></code> and <code class="docutils literal notranslate"><span class="pre">forks</span></code> series carry <code class="docutils literal notranslate"><span class="pre">value</span></code> (Augur’s own name). A snapshot without a date is left out, and since 0.29.145 so is a snapshot whose watcher count is unknown (the GitHub REST fallback stored the star count before 0.29.143; the 0.29.145 migrate cleared those values). An empty result is <code class="docutils literal notranslate"><span class="pre">[]</span></code>.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleWatchers</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -8438,7 +8441,7 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 </dd>
 </dl>
 <p><strong>Returns the latest watcher count.</strong></p>
-<p>From the latest metadata snapshot. A repository without one answers <code class="docutils literal notranslate"><span class="pre">watchers</span></code> 0 and an empty <code class="docutils literal notranslate"><span class="pre">repo_name</span></code>.</p>
+<p>From the latest metadata snapshot. A repository without one answers <code class="docutils literal notranslate"><span class="pre">watchers</span></code> 0 and an empty <code class="docutils literal notranslate"><span class="pre">repo_name</span></code>; a snapshot whose watcher count is unknown answers <code class="docutils literal notranslate"><span class="pre">watchers</span></code> 0.</p>
 <p>Handler: <code class="docutils literal notranslate"><span class="pre">handleWatchersCount</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>

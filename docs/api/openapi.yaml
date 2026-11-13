@@ -6395,7 +6395,7 @@ paths:
       tags: ["Augur metrics"]
       summary: "Returns the star count at each metadata snapshot."
       description: |
-        One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first; `period` and the window do not apply. An empty result is `[]`.
+        One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first; `period` and the window do not apply. Since 0.29.145 a snapshot whose star count is unknown is left out (it was returned as 0). An empty result is `[]`.
 
         Handler: `handleStars`.
       security:
@@ -6489,7 +6489,7 @@ paths:
       tags: ["Augur metrics"]
       summary: "Returns the fork count at each metadata snapshot."
       description: |
-        One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first. An empty result is `[]`.
+        One row per stored metadata snapshot (the latest and the earlier ones kept in history), oldest first. Since 0.29.145 a snapshot whose fork count is unknown is left out (it was returned as 0). An empty result is `[]`.
 
         Handler: `handleForks`.
       security:
@@ -6583,7 +6583,7 @@ paths:
       tags: ["Augur metrics"]
       summary: "Returns the watcher count over time, from the metadata snapshots."
       description: |
-        One row per metadata snapshot (the history and the current one, oldest first; since 0.29.99 — before, only the latest snapshot, so one row at most). Rows carry `watchers` where the `stars` and `forks` series carry `value` (Augur's own name). A snapshot without a date is left out. An empty result is `[]`.
+        One row per metadata snapshot (the history and the current one, oldest first; since 0.29.99 — before, only the latest snapshot, so one row at most). Rows carry `watchers` where the `stars` and `forks` series carry `value` (Augur's own name). A snapshot without a date is left out, and since 0.29.145 so is a snapshot whose watcher count is unknown (the GitHub REST fallback stored the star count before 0.29.143; the 0.29.145 migrate cleared those values). An empty result is `[]`.
 
         Handler: `handleWatchers`.
       security:
@@ -6637,7 +6637,7 @@ paths:
       tags: ["Augur metrics"]
       summary: "Returns the latest watcher count."
       description: |
-        From the latest metadata snapshot. A repository without one answers `watchers` 0 and an empty `repo_name`.
+        From the latest metadata snapshot. A repository without one answers `watchers` 0 and an empty `repo_name`; a snapshot whose watcher count is unknown answers `watchers` 0.
 
         Handler: `handleWatchersCount`.
       security:

@@ -24,6 +24,15 @@ Bare clones contain only the git object database (no working tree). They are:
   `--prune` -- a bare clone carries no fetch refspec, so a plain
   `git fetch --all` would download objects without ever advancing
   `refs/heads/*`
+- **Repacked by git itself, before the fetch returns** (0.29.145). A fetch
+  ends by running git's automatic maintenance when the clone has collected
+  enough packs or loose objects. Git detaches that run by default; Aveloxis
+  passes `-c gc.autoDetach=false -c maintenance.autoDetach=false`, so the
+  repack is over when the next phase reads the clone. A stop ends the
+  repack with the fetch (SIGTERM, so git removes its lock and temporary
+  files; a kill only after 10 seconds), and a repack that fails is logged
+  without failing the fetch. A leftover `objects/maintenance.lock`, which
+  makes git skip the clone's maintenance, is logged before each fetch
 
 ### Full clones (temporary)
 
@@ -33,7 +42,7 @@ When the analysis phase needs to read file contents (for dependency scanning and
 git clone /path/to/bare.git /path/to/temp-checkout
 ```
 
-This is a local operation (no network request). After analysis completes, the temporary checkout is deleted.
+This is a local operation (no network request). After analysis completes, the temporary checkout is deleted. When the bare clones and the temporary directory are on different filesystems, git copies the pack files one by one, with nothing holding them in place: before 0.29.145 a repack still running after the fetch could remove a pack during the copy, and the analysis of that collection failed.
 
 ### Disk usage
 

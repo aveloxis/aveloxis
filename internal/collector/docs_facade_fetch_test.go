@@ -21,18 +21,18 @@ func facadeFetchRefspecs(t *testing.T) []string {
 	t.Helper()
 	body := srctest.StripGoComments(srctest.FuncBody(t,
 		srctest.Read(t, "internal/collector/facade.go"),
-		"func (f *FacadeCollector) ensureClone("))
+		"func fetchBareClone(")) // ensureClone's fetch (0.29.145 moved it here)
 	re := regexp.MustCompile(`"(\+refs/[^"]+)"`)
 	var specs []string
 	for _, m := range re.FindAllStringSubmatch(body, -1) {
 		specs = append(specs, m[1])
 	}
 	if len(specs) < 2 {
-		t.Fatalf("ensureClone names %d fetch refspecs; expected the heads and tags pair — "+
+		t.Fatalf("fetchBareClone names %d fetch refspecs; expected the heads and tags pair — "+
 			"if the fetch was rewritten, this derivation needs the new shape", len(specs))
 	}
 	if !strings.Contains(body, `"--prune"`) {
-		t.Fatal("ensureClone's fetch no longer passes --prune; the docs contract below assumes it")
+		t.Fatal("fetchBareClone's fetch no longer passes --prune; the docs contract below assumes it")
 	}
 	return specs
 }

@@ -354,7 +354,7 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 	// check).
 	// A clone or fetch consults the rule through the git endpoint's walk
 	// (resolveGitEndpoint), which consults it at every hop.
-	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, `"fetch", "origin"`, "walkRedirects(", `exec.LookPath("scorecard")`}
+	markers := []string{`"clone", "--bare"`, `"clone", "--depth"`, "fetchBareClone(", "walkRedirects(", `exec.LookPath("scorecard")`}
 	consults := func(body string) bool {
 		return strings.Contains(body, "currentOutboundPolicy().Refuse(") || strings.Contains(body, "refuseWithRetry(") ||
 			strings.Contains(body, "resolveGitEndpoint(") || strings.Contains(body, "walkRedirects(")
@@ -390,6 +390,15 @@ func TestEveryRepositoryHostBoundaryConsultsTheOutboundPolicy(t *testing.T) {
 			case "freshClone":
 				// Clones the URL ensureClone resolved (one walk per job): its
 				// only caller is ensureClone, pinned below.
+				continue
+			case "fetchBareClone":
+				// Fetches origin, which ensureClone pointed at the URL it
+				// resolved: its only caller is ensureClone
+				// (TestTheFetchIsTheOneForegroundMaintenanceFetch), counted
+				// as a boundary through the fetchBareClone( marker.
+				if !strings.Contains(body, "gitNoRedirects") {
+					t.Errorf("%s: fetchBareClone runs the fetch without gitNoRedirects", name)
+				}
 				continue
 			}
 			// Every network git command carries gitNoRedirects (the clones,

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Facade Commits &mdash; Aveloxis 0.29.144 documentation</title>
+  <title>Facade Commits &mdash; Aveloxis 0.29.145 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3aa66189"></script>
+      <script src="../_static/documentation_options.js?v=9edee590"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
@@ -676,6 +677,8 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#http-410-gone-on-individual-issues-prs">HTTP 410 Gone on individual issues / PRs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-repo-info-commit-count-is-0-but-facade-found-commits">GitLab repo_info.commit_count is 0 but facade found commits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#analysis-fails-with-local-clone-failed">Analysis fails with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-maintenance-lock-present-before-the-fetch">Git maintenance lock present before the fetch</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
@@ -1848,6 +1851,15 @@
 <code class="docutils literal notranslate"><span class="pre">--prune</span></code> – a bare clone carries no fetch refspec, so a plain
 <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--all</span></code> would download objects without ever advancing
 <code class="docutils literal notranslate"><span class="pre">refs/heads/*</span></code></p></li>
+<li><p><strong>Repacked by git itself, before the fetch returns</strong> (0.29.145). A fetch
+ends by running git’s automatic maintenance when the clone has collected
+enough packs or loose objects. Git detaches that run by default; Aveloxis
+passes <code class="docutils literal notranslate"><span class="pre">-c</span> <span class="pre">gc.autoDetach=false</span> <span class="pre">-c</span> <span class="pre">maintenance.autoDetach=false</span></code>, so the
+repack is over when the next phase reads the clone. A stop ends the
+repack with the fetch (SIGTERM, so git removes its lock and temporary
+files; a kill only after 10 seconds), and a repack that fails is logged
+without failing the fetch. A leftover <code class="docutils literal notranslate"><span class="pre">objects/maintenance.lock</span></code>, which
+makes git skip the clone’s maintenance, is logged before each fetch</p></li>
 </ul>
 </section>
 <section id="full-clones-temporary">
@@ -1856,7 +1868,7 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>/path/to/bare.git<span class="w"> </span>/path/to/temp-checkout
 </pre></div>
 </div>
-<p>This is a local operation (no network request). After analysis completes, the temporary checkout is deleted.</p>
+<p>This is a local operation (no network request). After analysis completes, the temporary checkout is deleted. When the bare clones and the temporary directory are on different filesystems, git copies the pack files one by one, with nothing holding them in place: before 0.29.145 a repack still running after the fetch could remove a pack during the copy, and the analysis of that collection failed.</p>
 </section>
 <section id="disk-usage">
 <h3>Disk usage<a class="headerlink" href="#disk-usage" title="Link to this heading"></a></h3>

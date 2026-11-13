@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.144 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.145 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3aa66189"></script>
+      <script src="../_static/documentation_options.js?v=9edee590"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
@@ -676,6 +677,8 @@
 <li class="toctree-l2"><a class="reference internal" href="#http-410-gone-on-individual-issues-prs">HTTP 410 Gone on individual issues / PRs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#gitlab-repo-info-commit-count-is-0-but-facade-found-commits">GitLab repo_info.commit_count is 0 but facade found commits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#release-collection-not-found-errors">Release collection “not found” errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#analysis-fails-with-local-clone-failed">Analysis fails with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#git-maintenance-lock-present-before-the-fetch">Git maintenance lock present before the fetch</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
@@ -2376,6 +2379,18 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 </div>
 </section>
 <hr class="docutils" />
+<section id="analysis-fails-with-local-clone-failed">
+<h2>Analysis fails with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed</span></code><a class="headerlink" href="#analysis-fails-with-local-clone-failed" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> the log shows <code class="docutils literal notranslate"><span class="pre">analysis</span> <span class="pre">failed</span></code> for a repository with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed:</span> <span class="pre">exit</span> <span class="pre">status</span> <span class="pre">128</span></code> and one of <code class="docutils literal notranslate"><span class="pre">fatal:</span> <span class="pre">failed</span> <span class="pre">to</span> <span class="pre">copy</span> <span class="pre">file</span> <span class="pre">to</span> <span class="pre">'…/objects/pack/…':</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code> or <code class="docutils literal notranslate"><span class="pre">fatal:</span> <span class="pre">trying</span> <span class="pre">to</span> <span class="pre">write</span> <span class="pre">ref</span> <span class="pre">'…'</span> <span class="pre">with</span> <span class="pre">nonexistent</span> <span class="pre">object</span> <span class="pre">…</span></code>. The job still completes; the repository keeps its previous dependency, libyear and scc rows until its next collection.</p>
+<p><strong>Cause (before 0.29.145):</strong> the fetch into the bare clone returned while git’s automatic maintenance was still repacking it in the background, and the analysis phase’s copy of the clone lost a pack file to the repack. Since 0.29.145 the fetch waits for the maintenance, so the two cannot overlap.</p>
+<p><strong>If it still appears on 0.29.145 or later:</strong> something other than Aveloxis is changing the bare clone while a collection runs: a <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">gc</span></code>, <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">repack</span></code> or <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">maintenance</span></code> started by hand or by a scheduled job (<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">maintenance</span> <span class="pre">start</span></code> registers one), or a backup tool that moves files. Look for such git processes while a collection runs (<code class="docutils literal notranslate"><span class="pre">pgrep</span> <span class="pre">-fl</span> <span class="pre">'git</span> <span class="pre">(gc|repack|maintenance)'</span></code>; Aveloxis’s own maintenance runs only as a child of its <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code>) and for a maintenance schedule registered for the account (<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">config</span> <span class="pre">--global</span> <span class="pre">--get-all</span> <span class="pre">maintenance.repo</span></code>). The next collection of the repository runs the analysis again; nothing needs repair.</p>
+</section>
+<section id="git-maintenance-lock-present-before-the-fetch">
+<h2>Git maintenance lock present before the fetch<a class="headerlink" href="#git-maintenance-lock-present-before-the-fetch" title="Link to this heading"></a></h2>
+<p><strong>Symptom:</strong> a WARN <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">maintenance</span> <span class="pre">lock</span> <span class="pre">present</span> <span class="pre">before</span> <span class="pre">the</span> <span class="pre">fetch</span></code> naming a bare clone and its <code class="docutils literal notranslate"><span class="pre">objects/maintenance.lock</span></code>, repeated at each collection of that repository. The clone’s <code class="docutils literal notranslate"><span class="pre">objects/pack</span></code> directory holds more pack files after every fetch.</p>
+<p><strong>Cause:</strong> git creates <code class="docutils literal notranslate"><span class="pre">objects/maintenance.lock</span></code> while a maintenance run is in progress and removes it when the run ends, including when the run is asked to stop. A run that was killed outright (the host lost power, the kernel’s out-of-memory killer, a <code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">-9</span></code>) leaves the file. Git never treats the file as stale: while it exists, every automatic maintenance of that clone is skipped, with exit status 0 and no message. Since 0.29.145 the maintenance runs inside the fetch, and Aveloxis reports the file before each fetch; it does not remove it, because the file may also belong to a maintenance someone started on the clone by hand.</p>
+<p><strong>Solution:</strong> confirm that no git maintenance is running on the clone (<code class="docutils literal notranslate"><span class="pre">pgrep</span> <span class="pre">-fl</span> <span class="pre">'git</span> <span class="pre">(gc|repack|maintenance)'</span></code>), then delete the file named in the WARN’s <code class="docutils literal notranslate"><span class="pre">lock</span></code> field. The next fetch of the repository repacks the clone.</p>
+</section>
 <section id="git-clone-exit-status-128">
 <h2>Git clone exit status 128<a class="headerlink" href="#git-clone-exit-status-128" title="Link to this heading"></a></h2>
 <p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">exit</span> <span class="pre">status</span> <span class="pre">128</span></code> during the facade phase.</p>

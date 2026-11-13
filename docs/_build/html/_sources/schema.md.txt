@@ -1020,7 +1020,7 @@ Point-in-time snapshots of repository metadata and statistics. A new row is inse
 | `pages_enabled` | TEXT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}` (`pages_access_level`) | Whether GitHub Pages / GitLab Pages is enabled. On GitLab every feature flag derives from its `*_access_level` (v0.28.18): the legacy `*_enabled` booleans read false for a members-only feature the token cannot see. |
 | `fork_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of forks. |
 | `star_count` | INT | GitHub REST: `/repos/{o}/{r}`, GitLab: `/projects/{id}?statistics=true` | Number of stars. |
-| `watcher_count` | INT | GitHub GraphQL `watchers.totalCount`; on the REST fallback `subscribers_count` of `/repos/{o}/{r}` (REST's `watchers_count` is the star count). GitLab: none (always 0; GitLab has no watchers API) | Number of watchers. |
+| `watcher_count` | INT | GitHub GraphQL `watchers.totalCount`; on the REST fallback `subscribers_count` of `/repos/{o}/{r}` (REST's `watchers_count` is the star count). GitLab: none (always 0; GitLab has no watchers API). NULL: unknown — the 0.29.145 migrate cleared the star count the REST fallback stored here before 0.29.143 | Number of watchers. |
 | `open_issues` | INT | GitHub REST: `/repos/{o}/{r}` | Number of open issues (GitHub includes PRs). |
 | `committer_count` | INT | Computed | Distinct committers. |
 | `commit_count` | BIGINT | GitLab: `/projects/{id}?statistics=true` / Computed | Total commits. |

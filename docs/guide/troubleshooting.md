@@ -640,6 +640,22 @@ UPDATE aveloxis_ops.collection_queue SET locked_at = NULL WHERE repo_id = ?;
 
 ---
 
+## Analysis fails with `local clone failed`
+
+**Symptom:** the log shows `analysis failed` for a repository with `local clone failed: exit status 128` and one of `fatal: failed to copy file to '…/objects/pack/…': No such file or directory` or `fatal: trying to write ref '…' with nonexistent object …`. The job still completes; the repository keeps its previous dependency, libyear and scc rows until its next collection.
+
+**Cause (before 0.29.145):** the fetch into the bare clone returned while git's automatic maintenance was still repacking it in the background, and the analysis phase's copy of the clone lost a pack file to the repack. Since 0.29.145 the fetch waits for the maintenance, so the two cannot overlap.
+
+**If it still appears on 0.29.145 or later:** something other than Aveloxis is changing the bare clone while a collection runs: a `git gc`, `git repack` or `git maintenance` started by hand or by a scheduled job (`git maintenance start` registers one), or a backup tool that moves files. Look for such git processes while a collection runs (`pgrep -fl 'git (gc|repack|maintenance)'`; Aveloxis's own maintenance runs only as a child of its `git fetch`) and for a maintenance schedule registered for the account (`git config --global --get-all maintenance.repo`). The next collection of the repository runs the analysis again; nothing needs repair.
+
+## Git maintenance lock present before the fetch
+
+**Symptom:** a WARN `git maintenance lock present before the fetch` naming a bare clone and its `objects/maintenance.lock`, repeated at each collection of that repository. The clone's `objects/pack` directory holds more pack files after every fetch.
+
+**Cause:** git creates `objects/maintenance.lock` while a maintenance run is in progress and removes it when the run ends, including when the run is asked to stop. A run that was killed outright (the host lost power, the kernel's out-of-memory killer, a `kill -9`) leaves the file. Git never treats the file as stale: while it exists, every automatic maintenance of that clone is skipped, with exit status 0 and no message. Since 0.29.145 the maintenance runs inside the fetch, and Aveloxis reports the file before each fetch; it does not remove it, because the file may also belong to a maintenance someone started on the clone by hand.
+
+**Solution:** confirm that no git maintenance is running on the clone (`pgrep -fl 'git (gc|repack|maintenance)'`), then delete the file named in the WARN's `lock` field. The next fetch of the repository repacks the clone.
+
 ## Git clone exit status 128
 
 **Symptom:** Log shows `exit status 128` during the facade phase.

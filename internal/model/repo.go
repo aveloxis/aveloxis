@@ -11,6 +11,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// DataSourceGitHubREST is the data_source of a repo_info snapshot the
+// GitHub REST fallback wrote (the GraphQL repository-info query failed). One
+// spelling for the writer (github.fetchRepoInfoREST) and for the migrate
+// step that finds the fallback's rows by it (db.ClearStarCountWatchers).
+const DataSourceGitHubREST = "GitHub REST"
+
 // Platform identifies the source forge.
 type Platform int
 

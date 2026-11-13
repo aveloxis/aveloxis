@@ -262,14 +262,9 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 		}
 
 		f.logger.Info("fetching updates", "path", path)
-		var stderr bytes.Buffer
-		// Use an explicit refspec because git clone --bare does NOT create a
-		// fetch refspec in the config. Without one, git fetch downloads objects
-		// but never advances refs/heads/*, leaving the clone permanently stale.
-		cmd := exec.CommandContext(ctx, "git", "-C", path, "-c", gitNoRedirects,
-			"fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
+		f.warnLeftoverMaintenanceLock(path)
+		stderr, err := fetchBareClone(ctx, path)
+		if err != nil {
 			if ctx.Err() != nil {
 				// Shutdown killed the fetch — the bare clone is intact.
 				// Reading the kill as "fetch failed" deleted the clone
@@ -279,9 +274,17 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 				return ctx.Err()
 			}
 			f.logger.Warn("fetch failed, re-cloning",
-				"path", path, "error", err, "stderr", stderr.String())
+				"path", path, "error", err, "stderr", stderr)
 			_ = os.RemoveAll(path)
 			return f.freshClone(ctx, gitURL, cloneURL, path)
+		}
+		if complaint := gitComplaints(stderr); complaint != "" {
+			// The refs advanced; what failed ran after them (in
+			// practice the automatic maintenance). The clone is usable
+			// and the next fetch tries again; an operator sees why
+			// packs pile up.
+			f.logger.Warn("fetch succeeded but git reported errors (after the refs advanced; usually its automatic maintenance)",
+				"path", path, "git_errors", complaint)
 		}
 
 		// Sync HEAD to the remote's default branch. git clone --bare sets HEAD
@@ -299,6 +302,117 @@ func (f *FacadeCollector) ensureClone(ctx context.Context, gitURL, path string) 
 	}
 
 	return f.freshClone(ctx, gitURL, cloneURL, path)
+}
+
+// gitForegroundMaintenance makes a git command run its automatic
+// maintenance before it returns (0.29.145). A fetch ends by starting `git
+// maintenance run --auto`, detached by default: the fetch returned while a
+// repack was still renaming and deleting pack files, and the analysis
+// phase's copy of the pack directory, seconds later and across
+// filesystems, failed on a pack that vanished under it. Both settings,
+// because git before 2.47 reads only gc.autoDetach and later ones read
+// maintenance.autoDetach first. Turning the maintenance off instead would
+// close the same race and leave every bare clone to grow one pack per
+// fetch for ever.
+var gitForegroundMaintenance = []string{"-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"}
+
+// fetchBareClone fetches origin into the bare clone at path and returns
+// git's stderr. Its one caller is ensureClone, which resolved the endpoint
+// under the outbound-address rule and pointed origin at it; the fetch
+// names only origin.
+//
+// The maintenance runs as the fetch's child and holds its stderr, so the
+// command owns a process group and a stop ends the repack with the fetch
+// instead of waiting for it. The stop is SIGTERM (groupTerminated): git
+// then removes its maintenance lock and temporary packs, where SIGKILL
+// left objects/maintenance.lock and git skipped the clone's maintenance
+// from then on (review round 1). Run returns when every member of the
+// group has let go of stderr or sweptWaitDelay has passed; what is still
+// alive then is killed. A maintenance run that fails does not fail the
+// fetch (git ignores its exit status), which matters because the caller
+// answers a failed fetch with a from-scratch clone
+// (TestFailedMaintenanceDoesNotFailTheFetch).
+func fetchBareClone(ctx context.Context, path string) (string, error) {
+	// Use an explicit refspec because git clone --bare does NOT create a
+	// fetch refspec in the config. Without one, git fetch downloads objects
+	// but never advances refs/heads/*, leaving the clone permanently stale.
+	args := append([]string{"-C", path, "-c", gitNoRedirects}, gitForegroundMaintenance...)
+	args = append(args, "fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "--prune")
+	cmd := exec.CommandContext(ctx, "git", args...)
+	// As the clones: no credential prompt. In its own process group git
+	// could not read the terminal anyway; a prompt would stop it.
+	cmd.Env = gitCloneEnv()
+	groupTerminated(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		sweepGroup(cmd)
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// Git exited 0 and something it started still held stderr after
+		// sweptWaitDelay. The refs advanced: not a failed fetch, which
+		// would cost the clone. The caller logs the note.
+		stderr.WriteString("\nerror: a process git started still held its stderr " + sweptWaitDelay.String() + " after the fetch exited\n")
+		err = nil
+	}
+	return stderr.String(), err
+}
+
+// gitMaintenanceLock is the file git holds while a maintenance run is in
+// progress, relative to the bare clone.
+var gitMaintenanceLock = filepath.Join("objects", "maintenance.lock")
+
+// warnLeftoverMaintenanceLock reports a maintenance lock found before the
+// fetch. A collection job is the only writer of its clone, so the lock is
+// a leftover (a maintenance killed without the chance to remove it: the
+// host went down, the kernel killed it, it outlasted the stop's grace) —
+// or the mark of a maintenance someone else is running on the clone. Git
+// does not tell the two apart and neither can this: it skips its automatic
+// maintenance while the file exists, silently, so the clone gains a pack
+// with every fetch. Observation only (SR-7): the operator removes the file.
+func (f *FacadeCollector) warnLeftoverMaintenanceLock(path string) {
+	lock := filepath.Join(path, gitMaintenanceLock)
+	info, err := os.Stat(lock)
+	switch {
+	case err == nil:
+		f.logger.Warn("git maintenance lock present before the fetch: git skips this clone's automatic maintenance while it exists; if no git maintenance is running on the clone, remove the file",
+			"path", path, "lock", lock, "lock_modified", info.ModTime().UTC().Format(time.RFC3339))
+	case !errors.Is(err, fs.ErrNotExist):
+		f.logger.Warn("could not check for a leftover git maintenance lock", "path", path, "error", err)
+	}
+}
+
+// gitComplaintMaxLines and gitComplaintMaxBytes bound what one fetch's
+// complaints add to the log.
+const (
+	gitComplaintMaxLines = 5
+	gitComplaintMaxBytes = 1000
+)
+
+// gitComplaints returns the error and fatal lines of a git command's
+// stderr, bounded, for the log. A fetch that succeeded can carry them: its
+// maintenance runs in the foreground and git exits 0 when it fails, so the
+// exit status says nothing about the repack. For logging only; nothing is
+// decided on it.
+func gitComplaints(stderr string) string {
+	var kept []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "error:") && !strings.HasPrefix(line, "fatal:") {
+			continue
+		}
+		if len(kept) == gitComplaintMaxLines {
+			kept = append(kept, "(more)")
+			break
+		}
+		kept = append(kept, line)
+	}
+	out := strings.Join(kept, "; ")
+	if len(out) > gitComplaintMaxBytes {
+		out = strings.ToValidUTF8(out[:gitComplaintMaxBytes], "") + " (truncated)"
+	}
+	return out
 }
 
 // syncDefaultBranch updates the bare clone's HEAD to match the remote's default

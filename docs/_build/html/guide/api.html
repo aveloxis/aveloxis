@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.144 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.145 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=3aa66189"></script>
+      <script src="../_static/documentation_options.js?v=9edee590"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -343,6 +343,7 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-125">Changes for API clients in 0.29.125</a></li>
@@ -676,6 +677,8 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#http-410-gone-on-individual-issues-prs">HTTP 410 Gone on individual issues / PRs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-repo-info-commit-count-is-0-but-facade-found-commits">GitLab repo_info.commit_count is 0 but facade found commits</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#release-collection-not-found-errors">Release collection “not found” errors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#analysis-fails-with-local-clone-failed">Analysis fails with <code class="docutils literal notranslate"><span class="pre">local</span> <span class="pre">clone</span> <span class="pre">failed</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-maintenance-lock-present-before-the-fetch">Git maintenance lock present before the fetch</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#git-clone-exit-status-128">Git clone exit status 128</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#garbage-timestamps-year-0001-bc">Garbage timestamps (year 0001 BC)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#schema-version-mismatch-web-api-and-the-scancode-worker-refuse-to-start">Schema version mismatch: web, api and the scancode worker refuse to start</a></li>
@@ -1816,6 +1819,19 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-145">
+<h2>Changes for API clients in 0.29.145<a class="headerlink" href="#changes-for-api-clients-in-0-29-145" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stars</span></code>, <code class="docutils literal notranslate"><span class="pre">/forks</span></code> and <code class="docutils literal notranslate"><span class="pre">/watchers</span></code> leave out a metadata
+snapshot whose count is unknown (NULL in <code class="docutils literal notranslate"><span class="pre">repo_info</span></code> or its history); before,
+the row was returned with the value 0. For <code class="docutils literal notranslate"><span class="pre">/watchers</span></code> this removes rows: the
+migrate of 0.29.145 clears the watcher count of every snapshot the GitHub REST
+fallback wrote before 0.29.143, which held the repository’s star count. A
+client that plots the series sees a gap at those dates where it saw a spike.
+<code class="docutils literal notranslate"><span class="pre">/watchers-count</span></code> still answers 0 for a latest snapshot whose count is
+unknown. Since 0.29.143 a snapshot written by the REST fallback carries the
+number of watchers (<code class="docutils literal notranslate"><span class="pre">subscribers_count</span></code>) in <code class="docutils literal notranslate"><span class="pre">/watchers</span></code>; before, it carried
+the star count.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-140">
 <h2>Changes for API clients in 0.29.140<a class="headerlink" href="#changes-for-api-clients-in-0-29-140" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stats</span></code> carries <code class="docutils literal notranslate"><span class="pre">gone_history</span></code>: every stretch during
@@ -2125,7 +2141,8 @@ the lower id. The repository name of the group lookup now matches
 without regard to letter case, like the owner lookup. Sessions,
 administrators and callers without an identity keep the whole catalog.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">/watchers</span></code> returns the snapshot history</strong> (one row per metadata
-snapshot), like <code class="docutils literal notranslate"><span class="pre">/stars</span></code> and <code class="docutils literal notranslate"><span class="pre">/forks</span></code>; rows keep the <code class="docutils literal notranslate"><span class="pre">watchers</span></code> key.</p></li>
+snapshot), like <code class="docutils literal notranslate"><span class="pre">/stars</span></code> and <code class="docutils literal notranslate"><span class="pre">/forks</span></code>; rows keep the <code class="docutils literal notranslate"><span class="pre">watchers</span></code> key.
+Since 0.29.145 all three leave out a snapshot whose count is unknown.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">/repos/stats?ids=</span></code> refuses an entry that is not a repository id</strong>
 with a <code class="docutils literal notranslate"><span class="pre">400</span></code> (it skipped the entry before), and its rows carry
 <code class="docutils literal notranslate"><span class="pre">archived</span></code>, <code class="docutils literal notranslate"><span class="pre">forked_from</span></code>, <code class="docutils literal notranslate"><span class="pre">last_activity_at</span></code> and <code class="docutils literal notranslate"><span class="pre">forge_id_changes</span></code> as

@@ -11,8 +11,9 @@ import (
 )
 
 // Stage 1b item 7: one snapshot series for stars, forks and watchers over
-// the current snapshot and its history; a NULL count reads as 0 and a
-// NULL-dated row is skipped (before 1b a NULL failed the scan, a 500).
+// the current snapshot and its history; a NULL-dated row is skipped (before
+// 1b a NULL failed the scan, a 500) and so is a NULL count (0.29.145: an
+// unknown count was drawn as 0 until then).
 func TestSnapshotSeriesReadsHistoryAndTolerateNulls(t *testing.T) {
 	store, ctx := openSR5Store(t)
 	suffix := time.Now().UnixNano()
@@ -34,14 +35,22 @@ func TestSnapshotSeriesReadsHistoryAndTolerateNulls(t *testing.T) {
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info (repo_id, data_collection_date, star_count, fork_count, watcher_count) VALUES ($1, $2, 30, NULL, 3)`, repoID, d2)
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info_history (repo_id, data_collection_date, star_count, fork_count, watcher_count) VALUES ($1, $2, 10, 1, 1)`, repoID, d1)
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_info_history (repo_id, data_collection_date, star_count, fork_count, watcher_count) VALUES ($1, NULL, 99, 99, 99)`, repoID)
-	for column, want := range map[string][]int{"star_count": {10, 30}, "fork_count": {1, 0}, "watcher_count": {1, 3}} {
+	for column, want := range map[string][]int{"star_count": {10, 30}, "watcher_count": {1, 3}} {
 		rows, err := store.SnapshotSeries(ctx, repoID, column)
 		if err != nil {
 			t.Fatalf("%s: %v", column, err)
 		}
 		if len(rows) != 2 || rows[0].Value != want[0] || rows[1].Value != want[1] || !rows[0].Date.Equal(d1) || !rows[1].Date.Equal(d2) {
-			t.Errorf("%s = %+v; want the dated history then the current snapshot %v (the NULL-dated row skipped, a NULL count as 0)", column, rows, want)
+			t.Errorf("%s = %+v; want the dated history then the current snapshot %v (the NULL-dated row skipped)", column, rows, want)
 		}
+	}
+	// The current snapshot's fork count is NULL: unknown, so no point.
+	forks, err := store.SnapshotSeries(ctx, repoID, "fork_count")
+	if err != nil {
+		t.Fatalf("fork_count: %v", err)
+	}
+	if len(forks) != 1 || forks[0].Value != 1 || !forks[0].Date.Equal(d1) {
+		t.Errorf("fork_count = %+v; want the one snapshot with a count (a NULL count is unknown, not 0)", forks)
 	}
 	if _, err := store.SnapshotSeries(ctx, repoID, "repo_id"); err == nil {
 		t.Error("a column outside the allowlist must be refused")

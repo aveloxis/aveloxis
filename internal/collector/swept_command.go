@@ -61,7 +61,21 @@ type sweptCommand struct {
 // aborted pip left a half-upgraded venv), the scancode clone, scan and
 // preflight probe, and scorecard (round 14: four inline copies of this
 // block returned a raw errno from Cancel — SR-17, one shared function).
-func groupKilled(cmd *exec.Cmd) {
+func groupKilled(cmd *exec.Cmd) { groupSignalled(cmd, syscall.SIGKILL) }
+
+// groupTerminated is groupKilled for a subprocess that must be allowed to
+// clean up after itself: cancellation sends SIGTERM to the group, not
+// SIGKILL. Git is the case (0.29.145): on SIGTERM it removes its lock and
+// temporary files, and a maintenance run killed outright leaves
+// objects/maintenance.lock, which git never judges stale — every later
+// automatic maintenance of that clone is skipped, exit status 0, nothing
+// printed. WaitDelay still bounds the wait; the caller sweeps the group
+// with SIGKILL after Run for anything that ignored the request
+// (sweepGroup).
+func groupTerminated(cmd *exec.Cmd) { groupSignalled(cmd, syscall.SIGTERM) }
+
+// groupSignalled is the one body of groupKilled and groupTerminated.
+func groupSignalled(cmd *exec.Cmd, sig syscall.Signal) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -72,7 +86,7 @@ func groupKilled(cmd *exec.Cmd) {
 		// becomes Wait's error instead ("exec: canceling Cmd: operation
 		// not permitted"), and nil makes watchCtx believe it interrupted
 		// the command, so Wait returns ctx.Err().
-		if killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); killErr != nil {
+		if killErr := syscall.Kill(-cmd.Process.Pid, sig); killErr != nil {
 			if errors.Is(killErr, syscall.ESRCH) || errors.Is(killErr, syscall.EPERM) {
 				return os.ErrProcessDone
 			}
@@ -88,6 +102,15 @@ func groupKilled(cmd *exec.Cmd) {
 	// scancode, scorecard and preflight buffers) it does bound the
 	// post-cancel wait.
 	cmd.WaitDelay = sweptWaitDelay
+}
+
+// sweepGroup kills what is left of a started command's process group. For
+// after Wait, as startSweptCommand's sweep is: the group's members that
+// outlived the leader.
+func sweepGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 // startSweptCommand starts cmd with an owned stdout pipe, its own process

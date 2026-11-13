@@ -183,7 +183,7 @@ func runReconcileRepos(cfgPath string, limit int, dryRun bool) error {
 			// Renamed upstream. Tracked winner → heal/consolidate;
 			// untracked target → re-enqueue and let prelim rename it
 			// in place (rename detection is prelim's job).
-			winnerID, ferr := store.FindRepoByURL(ctx, finalURL)
+			winnerID, ferr := renameWinner(ctx, store, logger, sr.RepoID, finalURL)
 			if ferr != nil {
 				if ctx.Err() != nil {
 					return interrupted()
@@ -362,4 +362,24 @@ func reconcileInterruptedReport(w io.Writer, mode string, c reconcileCounts, tot
 	fmt.Fprintf(w, "reconcile-repos%s interrupted: dead=%d healed_dataless=%d consolidated=%d enqueued=%d skipped=%d refused=%d precondition_unmet=%d of %d stranded — a rerun walks the whole cohort again\n",
 		mode, c.dead, c.healedDataless, c.consolidated, c.enqueued, c.skipped, c.refused, c.preconditionUnmet, total)
 	return fmt.Errorf("reconcile-repos interrupted: %w", cause)
+}
+
+// renameWinner is the stored repository a redirect target names, or 0.
+// The target is judged before it is looked up, as prelim judges it
+// (0.29.146): a URL that is not a repository's (the owner's page, the
+// forge's sign-in page) is not a rename, and a row an older release stored
+// under such a URL is not a winner to heal or consolidate into. Such a
+// target answers 0, so the caller treats the row as it always treated an
+// untracked target (re-enqueue; prelim then declines the redirect and
+// collects against the stored URL) and the run converges. Only that class:
+// a target carrying credentials or longer than the stored-URL limit is
+// looked up as before and refused where it always was.
+func renameWinner(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoID int64, finalURL string) (int64, error) {
+	if refusal := db.RenameTargetRefusal(finalURL); refusal != nil &&
+		errors.Is(refusal, platform.ErrInvalidRepoURL) && !errors.Is(refusal, platform.ErrURLUserinfo) {
+		logger.Warn("reconcile: the redirect target is not a repository's URL — no stored repository is looked up under it",
+			"repo_id", repoID, "target", platform.RedactURLUserinfo(finalURL), "error", refusal)
+		return 0, nil
+	}
+	return store.FindRepoByURL(ctx, finalURL)
 }

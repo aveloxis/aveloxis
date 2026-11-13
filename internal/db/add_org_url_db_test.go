@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,8 +105,11 @@ func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
 			t.Errorf("UpsertRepo(owner %q, name %q) stored repository %d, want a refusal", r.Owner, r.Name, id)
 			continue
 		}
-		if !errors.Is(err, ErrRepoWithoutOwnerOrName) || !errors.Is(err, platform.ErrInvalidRepoURL) {
-			t.Errorf("UpsertRepo(owner %q, name %q): %v does not wrap ErrRepoWithoutOwnerOrName and platform.ErrInvalidRepoURL", r.Owner, r.Name, err)
+		if !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("UpsertRepo(owner %q, name %q): %v does not wrap platform.ErrInvalidRepoURL", r.Owner, r.Name, err)
+		}
+		if missing := strings.TrimSpace(r.Owner) == "" || model.NormalizeRepoName(r.Name) == ""; missing != errors.Is(err, ErrRepoWithoutOwnerOrName) {
+			t.Errorf("UpsertRepo(owner %q, name %q): %v; ErrRepoWithoutOwnerOrName is for a missing owner or name, and only that", r.Owner, r.Name, err)
 		}
 	}
 	var n int
@@ -123,9 +127,16 @@ func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
 		t.Fatal(err)
 	}
 	orgPage := fmt.Sprintf("https://github.com/avx-noowner-%d/", suffix)
+	// A forge's sign-in page has two path segments and parses like a
+	// repository: gitlab.com answers a project that went private with a
+	// redirect to it (review round 2). It is the forge's account space.
+	signIn := "https://gitlab.com/users/sign_in"
 	for name, rename := range map[string]func() error{
-		"UpdateRepoURL":  func() error { return store.UpdateRepoURL(ctx, id, orgPage) },
-		"UpdateRepoURLs": func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", orgPage) },
+		"UpdateRepoURL":                 func() error { return store.UpdateRepoURL(ctx, id, orgPage) },
+		"UpdateRepoURLs":                func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", orgPage) },
+		"UpdateRepoURL to a sign-in":    func() error { return store.UpdateRepoURL(ctx, id, signIn) },
+		"UpdateRepoURLs to a sign-in":   func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", signIn) },
+		"UpdateRepoURL to GitHub login": func() error { return store.UpdateRepoURL(ctx, id, "https://github.com/login/oauth") },
 	} {
 		if err := rename(); !errors.Is(err, platform.ErrInvalidRepoURL) {
 			t.Errorf("%s to an organization page = %v, want a refusal wrapping platform.ErrInvalidRepoURL", name, err)

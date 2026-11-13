@@ -936,11 +936,9 @@ func redirectStaysOnARepository(from *url.URL, location string) bool {
 	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
 		return false
 	}
-	switch strings.ToLower(segs[0]) {
-	case "users", "login", "sessions", "signin", "sign_in", "auth", "-":
-		return false // a forge's account or system space, not a repository
-	}
-	return true
+	// A forge's account or system space, not a repository (the one list:
+	// platform.IsForgeAccountSegment, shared with the store's rename rule).
+	return !platform.IsForgeAccountSegment(segs[0])
 }
 
 // --- add-key: store API keys in the database ---

@@ -33,6 +33,24 @@ func mentions(r VerifyResult, repoID int64) bool {
 	return false
 }
 
+// namesExample reports whether a probe's example list, the braces at the
+// end of its detail, names the repository. Unlike mentions it does not
+// read the rest of the sentence: on a fresh database a row id of 1 or 2 is
+// also the finding's row COUNT, and mentions took the count for the id (a
+// mutant that dropped a name from the pattern passed; 0.29.146).
+func namesExample(r VerifyResult, repoID int64) bool {
+	open, end := strings.LastIndex(r.Detail, "{"), strings.LastIndex(r.Detail, "}")
+	if open < 0 || end < open {
+		return false
+	}
+	for _, id := range strings.Split(r.Detail[open+1:end], ",") {
+		if strings.TrimSpace(id) == fmt.Sprint(repoID) {
+			return true
+		}
+	}
+	return false
+}
+
 // The gone history's invariant (0.29.140, the evaluation's release checks):
 // a gone-stamped repository has exactly one open episode, a reachable one
 // none. Both broken shapes FAIL and name the repository; the marker's own
@@ -107,11 +125,50 @@ func TestDataVerifyWarnsOnARepositoryWithoutOwnerOrName(t *testing.T) {
 		t.Fatalf("severity %s, want WARN: %+v", r.Severity, r)
 	}
 	// The examples are the five highest ids; these three are the newest rows.
-	if !mentions(r, orgPage) || !mentions(r, noName) {
+	if !namesExample(r, orgPage) || !namesExample(r, noName) {
 		t.Errorf("the rows without an owner or a name are not named: %+v", r)
 	}
-	if mentions(r, complete) {
+	if namesExample(r, complete) {
 		t.Errorf("a complete row is named: %+v", r)
+	}
+}
+
+// A forge repository row whose URL is under the forge's account space
+// (gitlab.com/users/sign_in, where a project that went private redirected
+// before 0.29.146) is not a repository, though it has an owner and a name.
+// A WARN naming it; a real repository and a generic host's are not named.
+func TestDataVerifyWarnsOnARepositoryAtAForgeAccountPage(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	suffix := time.Now().UnixNano()
+	insert := func(url, owner, name string, plat int) int64 {
+		t.Helper()
+		var id int64
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id)
+			VALUES ($1, $2, $3, $4) RETURNING repo_id`, url, owner, name, plat).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+		})
+		return id
+	}
+	// The suffix keeps the URLs unique; a query string is not what the
+	// forge sends, a longer path is.
+	signIn := insert(fmt.Sprintf("https://gitlab.com/users/sign_in/dv%d", suffix), "users", "sign_in", 2)
+	login := insert(fmt.Sprintf("https://GitHub.com/Login/dv%d", suffix), "login", "x", 1)
+	real1 := insert(fmt.Sprintf("https://gitlab.com/dv-acct-%d/users/project", suffix), "g/users", "project", 2)
+	generic := insert(fmt.Sprintf("https://git.example.invalid/users/dv%d", suffix), "users", "r", 3)
+	r := verifyFinding(ctx, t, store, "repositories at a forge account page")
+	if r.Severity != "WARN" {
+		t.Fatalf("severity %s, want WARN: %+v", r.Severity, r)
+	}
+	if !namesExample(r, signIn) || !namesExample(r, login) {
+		t.Errorf("the rows under a forge's account space are not named: %+v", r)
+	}
+	if namesExample(r, real1) || namesExample(r, generic) {
+		t.Errorf("a real repository, or a generic host's, is named: %+v", r)
 	}
 }
 

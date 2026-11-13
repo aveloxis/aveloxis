@@ -130,3 +130,72 @@ func TestRedirectToAPageThatIsNotARepositoryIsNotFollowed(t *testing.T) {
 		t.Errorf("want one ERROR saying the target is not a repository and was not followed; log:\n%s", logs.String())
 	}
 }
+
+// A row already stored under a URL that is not a repository's (written by
+// a release before 0.29.146) must not take other repositories with it: the
+// duplicate rule looked the redirect target up before anything judged it,
+// so the next repository redirected to the same page was dequeued as that
+// row's duplicate, or healed into it (review round 3). The target is
+// judged first: not followed, nothing looked up.
+func TestRedirectToAStoredNonRepositoryRowIsNotADuplicate(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_avpoison/repo" {
+			http.Redirect(w, r, "/_avpoisonpage/", http.StatusMovedPermanently)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	insert := func(url, owner, name string) int64 {
+		t.Helper()
+		var id int64
+		if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+			VALUES ($1, $2, $3, 3) RETURNING repo_id`, url, name, owner).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, id)
+			_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+		})
+		return id
+	}
+	poisoned := insert(srv.URL+"/_avpoisonpage", "", "") // the page, stored as a repository by an older release
+	orig := srv.URL + "/_avpoison/repo"
+	id := insert(orig, "_avpoison", "repo")
+	if err := store.EnqueueRepo(ctx, id, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	repo := &model.Repo{ID: id, GitURL: orig, Platform: model.PlatformGenericGit}
+	res, err := RunPrelim(ctx, store, repo, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil || res == nil {
+		t.Fatalf("RunPrelim = (%+v, %v)", res, err)
+	}
+	if res.Skip || res.Redirected {
+		t.Errorf("the repository was treated as a duplicate of the stored page (row %d): %+v", poisoned, res)
+	}
+	var stored string
+	var queued bool
+	if err := store.Pool().QueryRow(ctx, `SELECT r.repo_git, EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)
+		FROM aveloxis_data.repos r WHERE r.repo_id = $1`, id).Scan(&stored, &queued); err != nil {
+		t.Fatalf("the repository's row is gone (healed into the stored page?): %v", err)
+	}
+	if stored != orig || !queued {
+		t.Errorf("the row changed: repo_git %q, queued %v", stored, queued)
+	}
+	if !strings.Contains(logs.String(), "not a repository") || !strings.Contains(logs.String(), "not followed") {
+		t.Errorf("want an ERROR saying the target is not a repository and was not followed; log:\n%s", logs.String())
+	}
+}

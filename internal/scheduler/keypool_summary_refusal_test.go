@@ -5,6 +5,7 @@ package scheduler
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -76,6 +77,46 @@ func TestKeyPoolSummaryLifetimeCountersSurviveInvalidation(t *testing.T) {
 	for _, want := range []string{"refusals_lifetime=1", "secondary_hits_lifetime=1", "keys_alive=0", "keys_sidelined=1", "refused_core_now=0"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary line lacks %q:\n%s", want, line)
+		}
+	}
+}
+
+// A sidelined GitLab key is named at every summary tick; a GitLab pool
+// with nothing sidelined, and a scheduler without one, log nothing for it.
+func TestKeyPoolSummaryNamesSidelinedGitLabKeys(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	gl := platform.NewKeyPool([]string{"glpat-dead", "glpat-good"}, logger)
+	gl.SetKeyRefs(map[string]string{"glpat-dead": `aveloxis_ops.worker_oauth oauth_id=9 name="gl"`})
+
+	(&Scheduler{glKeys: gl, logger: logger}).logKeyPoolSummary()
+	(&Scheduler{logger: logger}).logKeyPoolSummary()
+	if strings.Contains(buf.String(), "sidelined") {
+		t.Errorf("nothing is sidelined, yet: %s", buf.String())
+	}
+	// Sideline the key that has the reference, whichever Acquire hands out.
+	var dead *platform.APIKey
+	for i := 0; i < 4 && dead == nil; i++ {
+		key, release, err := gl.Acquire(context.Background(), platform.ResourceCore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+		if key.Token == "glpat-dead" {
+			dead = key
+		}
+		key.Remaining-- // the pool prefers the key with more budget: make the other one next
+	}
+	if dead == nil {
+		t.Fatal("premise: Acquire never handed out the key under test")
+	}
+	gl.InvalidateKey(dead)
+	buf.Reset()
+	(&Scheduler{glKeys: gl, logger: logger}).logKeyPoolSummary()
+	line := buf.String()
+	for _, want := range []string{"level=WARN", "GitLab key pool: sidelined keys", "keys_sidelined=1", "keys_total=2", "oauth_id=9"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the GitLab line lacks %q:\n%s", want, line)
 		}
 	}
 }

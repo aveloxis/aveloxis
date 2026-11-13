@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -226,6 +227,51 @@ func IsForgeOwnerPageURL(rawURL string) bool {
 	}
 	path := strings.Trim(u.Path, "/")
 	return path != "" && !strings.Contains(path, "/")
+}
+
+// ForgeAccountSegments are the first path segments under which GitHub and
+// GitLab keep their own sign-in, session and account pages. The ONE list
+// (SR-17) behind the probe's redirect rule (cmd:
+// redirectStaysOnARepository), the store's rules (IsForgeAccountURL) and
+// data-verify's check for rows already stored there. Lower case.
+//
+// Not every name is reserved on every forge (GitLab reserves `users`,
+// `login` and `-`; `auth`, `sessions`, `signin` and `sign_in` may be real
+// namespaces there), so a repository can exist under one. The cost of
+// refusing such a one is small and visible: a rename to it is not
+// followed, with an ERROR at each collection, and collection goes on
+// against the old URL, which the forge keeps redirecting. The cost of the
+// other mistake was a sign-in page stored as a repository. For the same
+// reason the rule is applied to rename targets only, never to an add: a
+// tracked GitLab group named `auth` must stay collectable.
+//
+// The boundary, decided as a class (review round 4): the rule knows a
+// forge by its host name (github.com, a host containing "gitlab"). A
+// GitLab instance configured under another host name is not covered: its
+// sign-in redirect is still stored. data-verify's check matches such a row
+// afterwards (it goes by the row's platform, not the host).
+var ForgeAccountSegments = []string{"users", "login", "sessions", "signin", "sign_in", "auth", "-"}
+
+// IsForgeAccountSegment reports whether a first path segment is one of
+// ForgeAccountSegments. Whole segment, any letter case.
+func IsForgeAccountSegment(segment string) bool {
+	return slices.Contains(ForgeAccountSegments, strings.ToLower(segment))
+}
+
+// IsForgeAccountURL reports whether rawURL, on a forge recognized by its
+// host, has two or more path segments of which the first is the forge's
+// account space (IsForgeAccountSegment): https://gitlab.com/users/sign_in,
+// where gitlab.com sends a request for a project that went private. Such
+// a URL parses like owner/repo and is not a repository's. On a host this
+// build does not recognize as a forge any first segment may be an owner,
+// so the answer is false.
+func IsForgeAccountURL(rawURL string) bool {
+	u, err := url.Parse(WithDefaultScheme(strings.TrimSpace(rawURL)))
+	if err != nil || detectPlatform(strings.ToLower(u.Host)) == 0 {
+		return false
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	return len(segs) >= 2 && IsForgeAccountSegment(segs[0])
 }
 
 // ParseOrgURL extracts the host and org/group name from an org URL like

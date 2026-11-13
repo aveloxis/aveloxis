@@ -325,11 +325,17 @@ func TestOnlyCleanWitnessesInTheMajorityCount(t *testing.T) {
 			r.respond(b, http.StatusUnauthorized)
 			r.respond(c, http.StatusUnauthorized)
 		}, false},
-		{"a 403 or a 5xx is neither a success nor a refusal of the token", func(r *sidelineRig, b, c, d *APIKey) {
+		{"a 403, a 5xx or a 404 is not a success", func(r *sidelineRig, b, c, d *APIKey) {
 			r.respond(b, http.StatusForbidden)
 			r.respond(c, http.StatusBadGateway)
 			r.respond(d, http.StatusNotFound)
 		}, false},
+		{"nor is it a refusal of the token: a key that also succeeded stays clean", func(r *sidelineRig, b, c, d *APIKey) {
+			r.ok(b, c, d)
+			r.respond(b, http.StatusForbidden)
+			r.respond(c, http.StatusBadGateway)
+			r.respond(d, http.StatusNotFound)
+		}, true},
 	} {
 		r := newSidelineRig(t, quietLogger(), "ghp_a", "ghp_b", "ghp_c", "ghp_d")
 		a, b, c, d := r.key(0), r.key(1), r.key(2), r.key(3)

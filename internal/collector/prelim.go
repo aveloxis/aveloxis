@@ -171,6 +171,21 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	logger.Info("prelim: repo redirected",
 		"old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL), "repo_id", repo.ID)
 
+	// The target is judged before it is looked up (0.29.146, review round
+	// 3): a URL that is not a repository's (the owner's page, the forge's
+	// sign-in page) is not a rename, and a row an older release stored
+	// under such a URL must not be found below and taken for this
+	// repository's new home — that dequeued or healed away every repository
+	// that redirected there. Credentials and over-long targets keep their
+	// own handling further down.
+	if refusal := db.RenameTargetRefusal(finalURL); refusal != nil && errors.Is(refusal, platform.ErrInvalidRepoURL) && !errors.Is(refusal, platform.ErrURLUserinfo) {
+		logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", refusal)
+		result.Redirected = false
+		result.NewURL = ""
+		return result, nil
+	}
+
 	// Check if we already have a repo entry for the new URL.
 	existingID, err := store.FindRepoByURL(ctx, finalURL)
 	if err != nil {

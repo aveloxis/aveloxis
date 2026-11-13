@@ -490,6 +490,12 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	if strings.TrimSpace(r.Owner) == "" || strings.TrimSpace(r.Name) == "" {
 		return 0, ErrRepoWithoutOwnerOrName
 	}
+	// The forge-account rule (platform.IsForgeAccountURL) is NOT applied
+	// here, on purpose (review round 4, reversing round 3's): four of its
+	// names can be real GitLab namespaces, and refusing them at the add
+	// would keep a tracked group named `auth` from ever being collected.
+	// The rename path applies it, where the mistake costs one unfollowed
+	// redirect.
 
 	// Store repo_git without trailing "/" or ".git" (v0.25.32 hardening) —
 	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
@@ -901,8 +907,23 @@ func refuseRenameTarget(newURL string) error {
 	if _, err := platform.ParseAnyRepoURL(newURL); err != nil {
 		return fmt.Errorf("the new URL is not a repository's: %w", err)
 	}
+	// Two segments are not enough: gitlab.com answers a request for a
+	// project that went private with a redirect to /users/sign_in, which
+	// parses as owner "users", name "sign_in" (review round 2; stored, the
+	// next such project was taken for a duplicate of that row).
+	if platform.IsForgeAccountURL(newURL) {
+		return fmt.Errorf("%w: the new URL is a page of the forge's own (sign-in or account), not a repository", platform.ErrInvalidRepoURL)
+	}
 	return nil
 }
+
+// RenameTargetRefusal is why the store would refuse newURL as a
+// repository's new URL, or nil. For a caller that acts on a redirect
+// target before it reaches UpdateRepoURLs: prelim and reconcile-repos look
+// the target up among the stored repositories first, and a row stored
+// under a page that is not a repository's (by a release before 0.29.146)
+// would be found and taken for the repository's new home (review round 3).
+func RenameTargetRefusal(newURL string) error { return refuseRenameTarget(newURL) }
 
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.

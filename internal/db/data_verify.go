@@ -194,16 +194,17 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 		},
 		{
 			check: "repositories without owner or name", severity: "WARN",
-			// Not a repository (0.29.146): before that release the add path
-			// stored a URL that did not parse as one, such as an
-			// organization's page, as a git-only row with no owner and no
-			// name, and every collection of it fails at the clone. Nothing
-			// repairs it: the operator removes the row, and adds the
-			// organization if that was meant.
+			// A row that is not a repository's (0.29.146). Two paths wrote
+			// them before that release: the add path stored a URL that did
+			// not parse as one (an organization's page) as a git-only row
+			// with no owner and no name, never cloned; and a redirect to a
+			// URL that did not parse blanked the owner and name of a row
+			// that may hold collected data. Nothing repairs either: the
+			// operator looks at each (the upgrade guide has the query).
 			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
 				FROM aveloxis_data.repos r
 				WHERE COALESCE(r.repo_owner, '') = '' OR COALESCE(r.repo_name, '') = ''`,
-			bad: "%d repository rows have no owner or no name (a URL that is not a repository's, such as an organization page, stored before 0.29.146; its collections fail at the clone) — look at repo_git, then remove the row and add the organization if that was meant — e.g. repo_id %s",
+			bad: "%d repository rows have no owner or no name (written before 0.29.146: an add of a URL that is not a repository's, such as an organization page, or a redirect to one) — look at each row's repo_git and whether it holds collected data before removing anything; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
 			ok:  "every repository row has an owner and a name",
 		},
 		{

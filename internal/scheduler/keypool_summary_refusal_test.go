@@ -73,7 +73,7 @@ func TestKeyPoolSummaryLifetimeCountersSurviveInvalidation(t *testing.T) {
 	buf.Reset()
 	(&Scheduler{ghKeys: kp, logger: logger}).logKeyPoolSummary()
 	line := buf.String()
-	for _, want := range []string{"refusals_lifetime=1", "secondary_hits_lifetime=1", "keys_alive=0", "refused_core_now=0"} {
+	for _, want := range []string{"refusals_lifetime=1", "secondary_hits_lifetime=1", "keys_alive=0", "keys_sidelined=1", "refused_core_now=0"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary line lacks %q:\n%s", want, line)
 		}

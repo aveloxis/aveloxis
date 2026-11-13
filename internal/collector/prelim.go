@@ -245,6 +245,17 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			result.NewURL = ""
 			return result, nil
 		}
+		if errors.Is(err, platform.ErrInvalidRepoURL) && !errors.Is(err, platform.ErrURLUserinfo) {
+			// 0.29.146: the target is not a repository's URL (its owner's
+			// page, a sign-in page). Written, it blanked the row's owner
+			// and name and no collection could clone it. Not followed, as
+			// above: the row keeps its URL and collection goes on.
+			logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", err)
+			result.Redirected = false
+			result.NewURL = ""
+			return result, nil
+		}
 		return result, fmt.Errorf("updating repo URLs: %w", err)
 	}
 	logger.Info("prelim: updated repo URL to canonical",

@@ -108,8 +108,20 @@ func (s *Scheduler) logKeyPoolSummary() {
 		}
 		hot = append(hot, fmt.Sprintf("%s:%d", k.Hash, k.Inflight))
 	}
+	// 0.29.146: a sidelined key is reported in every summary, by where the
+	// operator finds it, not only in the one ERROR at the moment it
+	// happened. The key stays out until a restart, so the line repeats
+	// until someone removes it.
+	sidelined := make([]string, 0, len(keys)-alive)
+	for _, k := range keys {
+		if k.Invalid {
+			sidelined = append(sidelined, k.Ref)
+		}
+	}
 	s.logger.Info("key pool summary",
 		"keys_alive", alive,
+		"keys_sidelined", len(sidelined),
+		"sidelined_keys", strings.Join(sidelined, "; "),
 		"inflight", inflight,
 		"resting_secondary", resting,
 		"quarantined", quarantined,

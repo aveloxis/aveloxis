@@ -23,7 +23,7 @@ type APIKey struct {
 	Token     string
 	ResetAt   time.Time
 	Remaining int
-	Invalid   bool // legacy permanent-invalid backstop; the 401 path now quarantines instead
+	Invalid   bool // sidelined for the life of the process (0.29.146: recordAuthFailureLocked); never handed out again
 
 	// GraphQL has its OWN per-user budget (5,000 points/hr) entirely
 	// separate from the core bucket. Tracked per key since 2026-09-01:
@@ -58,17 +58,23 @@ type APIKey struct {
 	// SetKeyRefs; every log line about the key carries it (Ref), because a
 	// token hash alone does not say which row to delete.
 	ref string
-	// lastSuccess is the time of this key's latest 2xx response.
-	lastSuccess time.Time
-	// evidenceSince opens the stretch the next quarantine is judged over:
-	// this key's last success (the zero time, so the start of the process,
-	// for a key that never had one), then each quarantine.
-	evidenceSince time.Time
-	// sidelineEvidence counts this key's quarantines since its last success
-	// during whose stretch another key of the pool succeeded. At
-	// authSidelineQuarantines the key is sidelined (Invalid) for the life
-	// of the process. See recordAuthFailureLocked.
-	sidelineEvidence int
+	// lastSuccess and lastAuthFailure are the times of this key's latest
+	// 2xx and latest 401. Together they say whether the key worked cleanly
+	// through a stretch of time, which is what makes it a witness to
+	// another key's failures (cleanWitnessesLocked).
+	lastSuccess     time.Time
+	lastAuthFailure time.Time
+	// quarantineStreak counts this key's quarantines since its last
+	// success, and restStarted is when the latest of them began: the
+	// stretch from there to the next quarantine is one rest and the retry
+	// after it.
+	quarantineStreak int
+	restStarted      time.Time
+	// failedRests counts the rests of the current streak after which the
+	// key failed again while most of the pool's other keys worked cleanly.
+	// At authSidelineFailedRests the key is sidelined (Invalid) for the
+	// life of the process. See recordAuthFailureLocked.
+	failedRests int
 
 	// ── 2026-09-12 admission control ─────────────────────────────────
 	// inflight is the number of requests currently holding a lease on
@@ -195,7 +201,11 @@ type KeyPool struct {
 	// points/hr = 75 points/sec, at ~341 ms per GraphQL query ≈ 26 in
 	// flight saturates the ENTIRE budget — more concurrency cannot buy
 	// throughput, only rejections. Production ran ~264.
-	inflight          int
+	inflight int
+	// authClock is a TEST seam for the 401 bookkeeping's notion of now
+	// (the strikes, the rests, the witnesses); nil means time.Now.
+	authClock func() time.Time
+
 	maxInflight       int // 0 = unbounded
 	maxInflightPerKey int // 0 = unbounded
 	// foregroundReservePct is the share of each resource's pool-wide
@@ -293,16 +303,17 @@ const (
 	// verify it).
 	authQuarantineEscalate = 5
 
-	// authSidelineQuarantines is the number of quarantines in a row, with
-	// no success of the key's own between them and another key's success
-	// inside each one's stretch, after which a key is sidelined until the
-	// process restarts (operator decision, 2026-11-13: a revoked token on
-	// the fleet was rested and retried 37 times in 16 hours). It is the
-	// escalation count on purpose: the point at which the log has always
-	// said "probably actually revoked" is the point at which the pool now
-	// acts on it. At the cooldowns above that is 1+2+4+8+16 = 31 minutes of
-	// rests at the least.
-	authSidelineQuarantines = authQuarantineEscalate
+	// authSidelineFailedRests is the number of rests in a row a key must
+	// come back from and fail again, with no success of its own, each
+	// while most of the pool's other keys worked cleanly, before it is
+	// sidelined until the process restarts (operator decision, 2026-11-13:
+	// a revoked token on the fleet was rested and retried 37 times in 16
+	// hours). It is the escalation count on purpose: the point at which the
+	// log has always said "probably actually revoked" is the point at which
+	// the pool now acts on it. Five failed rests are the rests of the
+	// first five quarantines, 1+2+4+8+16 = 31 minutes at the cooldowns
+	// above for a key never quarantined before, longer for one that was.
+	authSidelineFailedRests = authQuarantineEscalate
 )
 
 // keyRefUnknown is Ref's answer for a key nobody described (a pool built
@@ -445,8 +456,10 @@ func (kp *KeyPool) Acquire(ctx context.Context, res Resource) (*APIKey, func(), 
 
 		case verdictBudgetBlocked, verdictReserveBlocked:
 			if allInvalid {
-				// Only reachable via the legacy permanent InvalidateKey
-				// path; the 401 quarantine path never sets Invalid.
+				// Not reachable through the 401 path: it sidelines a key
+				// only while most other keys work, so the last working
+				// key always stays (TestThePoolNeverEmpties). Kept for
+				// InvalidateKey, which only tests call.
 				return nil, nil, fmt.Errorf("%w: all API keys have been invalidated (bad credentials) — check your tokens", ErrAllKeysInvalidated)
 			}
 			if fastFail {
@@ -573,7 +586,7 @@ func (k *APIKey) refusedAt(now time.Time, res Resource) bool {
 // kp.mu. Returns the chosen key on verdictAdmit; on verdictBudgetBlocked
 // the earliest instant any key could become eligible (zero if unknown —
 // the caller stamps the probe window). allInvalid is true only when every
-// key carries the legacy permanent Invalid flag.
+// key is sidelined (Invalid).
 func (kp *KeyPool) selectLocked(now time.Time, res Resource, background bool) (*APIKey, admissionVerdict, time.Time, bool) {
 	// Pool-level foreground reservation: background is admitted only
 	// while the resource's usable total is ABOVE reservePct% of capacity
@@ -911,9 +924,9 @@ func (kp *KeyPool) UpdateFromResponse(key *APIKey, resp *http.Response) {
 		// The token works: whatever its 401s were, they were not a dead
 		// key. The time is what lets another key's failures be told from
 		// a forge-wide auth incident (recordAuthFailureLocked).
-		key.lastSuccess = time.Now()
-		key.sidelineEvidence = 0
-		key.evidenceSince = key.lastSuccess
+		key.lastSuccess = kp.authNow()
+		key.quarantineStreak = 0
+		key.failedRests = 0
 		// v0.27.34: any success closes the API-outage breaker instantly.
 		if kp.apiTripped {
 			kp.logger.Info("API-outage circuit breaker: recovered — resuming collection claims",
@@ -1204,10 +1217,10 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 	name := TokenHash(key.Token)
 	if validRemaining == 0 {
 		kp.logger.Error("LAST API key invalidated — all collection for this platform will fail",
-			"token_hash", name)
+			"token_hash", name, "key", key.Ref())
 	} else {
 		kp.logger.Warn("API key invalidated",
-			"token_hash", name, "valid_keys_remaining", validRemaining)
+			"token_hash", name, "key", key.Ref(), "valid_keys_remaining", validRemaining)
 	}
 }
 
@@ -1227,9 +1240,9 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 // growing cooldown elapses. Until 0.29.146 no key was ever permanently
 // disabled by this path, which left a revoked token to be rested and retried
 // for ever; now a key is sidelined for the life of the process, and only
-// when the evidence rules out a forge-wide incident (see below and
-// authSidelineQuarantines). A pool's last working key can never be: nothing
-// else could have succeeded.
+// when the evidence rules out an incident at the forge (see below and
+// authSidelineFailedRests). A pool's last working key can never be: no
+// other key could have worked.
 //
 // The exported RecordAuthFailure / RecordAuthSuccess wrappers were REMOVED
 // in v0.29.8 (fresh-context review of the round-2 fixes): once the strike
@@ -1238,7 +1251,16 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 // key quarantined after two transient 401s instead of three) comes back.
 // Remove-don't-deprecate; tests drive UpdateFromResponse.
 func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
-	now := time.Now()
+	now := kp.authNow()
+	key.lastAuthFailure = now
+	if now.Before(key.quarantineUntil) {
+		// The answer to a request that was already in flight when the key
+		// was quarantined. It says nothing the quarantine has not already
+		// acted on: counted, a burst of them quarantined the key again and
+		// again with no rest served between (and, since 0.29.146, could
+		// have sidelined it within milliseconds; review round 1).
+		return false
+	}
 	key.authStrikes++
 	if key.authStrikes < maxAuthStrikes {
 		kp.logger.Warn("API key 401 — treating as transient, key not quarantined",
@@ -1246,6 +1268,25 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 			"strike", key.authStrikes, "threshold", maxAuthStrikes)
 		return false
 	}
+
+	// Is this a dead token, or a forge rejecting valid ones? The 2026-06-17
+	// outage was the second: GitHub answered "Bad credentials" to good keys,
+	// intermittently, for hours. Judged per failed rest (a quarantine that
+	// follows another one of this streak: the key rested, was tried again
+	// and failed): over that stretch, did MOST of the pool's other keys
+	// work cleanly, a 2xx and not one 401? If so the forge's authentication
+	// was sound and this key was refused anyway. In an incident the other
+	// keys are refused too, so they are not clean and the stretch counts
+	// for nothing; it takes nothing away either. The key's own next success
+	// clears the count. The first quarantine of a streak is never judged:
+	// nothing was retried yet.
+	if key.quarantineStreak > 0 {
+		if clean, others := kp.cleanWitnessesLocked(key, key.restStarted); 2*clean > others {
+			key.failedRests++
+		}
+	}
+	key.quarantineStreak++
+	key.restStarted = now
 
 	// Threshold reached — quarantine with exponential backoff.
 	key.quarantineCount++
@@ -1260,34 +1301,22 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	key.quarantineUntil = now.Add(cooldown)
 	key.authStrikes = 0 // must re-accumulate before it can re-quarantine
 
-	// Is this a dead token or a forge that is rejecting valid ones? The
-	// 2026-06-17 outage was the second: GitHub answered "Bad credentials"
-	// to good keys for hours. The difference is observable: during this
-	// key's stretch of failures, did another key of the pool get a 2xx? If
-	// one did, the forge's auth was working and this key was refused
-	// anyway. A stretch with no such success counts for nothing (and takes
-	// nothing away); the key's own next success clears the count.
-	if kp.otherKeySucceededSinceLocked(key, key.evidenceSince) {
-		key.sidelineEvidence++
-	}
-	key.evidenceSince = now // the next quarantine is judged over its own stretch
-	if key.sidelineEvidence >= authSidelineQuarantines {
+	usable := kp.usableLocked(time.Now())
+	if key.failedRests >= authSidelineFailedRests {
 		key.Invalid = true
-		kp.logger.Error("API key sidelined until restart: it failed authentication through every one of its last rests while other keys of the pool worked — the token is revoked or expired; remove or replace it",
+		kp.logger.Error("API key sidelined until restart: it came back from every one of its last rests still refused while most other keys of the pool worked — the token is revoked or expired; remove or replace it",
 			"token_hash", TokenHash(key.Token), "key", key.Ref(),
-			"quarantines_while_others_worked", key.sidelineEvidence,
+			"failed_rests_while_others_worked", key.failedRests,
 			"quarantine_count", key.quarantineCount,
-			"usable_keys", kp.usableLocked(now))
+			"usable_keys", usable)
 		return true
 	}
-
-	usable := kp.usableLocked(now)
 	if key.quarantineCount >= authQuarantineEscalate || usable == 0 {
 		kp.logger.Error("API key quarantined after repeated 401s — verify the token is valid",
 			"token_hash", TokenHash(key.Token), "key", key.Ref(),
 			"quarantine_count", key.quarantineCount,
-			"quarantines_while_others_worked", key.sidelineEvidence,
-			"sidelined_at", authSidelineQuarantines,
+			"failed_rests_while_others_worked", key.failedRests,
+			"sidelined_at", authSidelineFailedRests,
 			"cooldown", cooldown, "usable_keys", usable)
 	} else {
 		kp.logger.Warn("API key quarantined after consecutive 401s (will auto-recover)",
@@ -1297,16 +1326,29 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	return true
 }
 
-// otherKeySucceededSinceLocked reports whether a key of the pool other
-// than key, and not itself sidelined, has had a 2xx response after since.
-// Caller holds kp.mu.
-func (kp *KeyPool) otherKeySucceededSinceLocked(key *APIKey, since time.Time) bool {
+// authNow is the 401 bookkeeping's clock: time.Now, or the test seam.
+func (kp *KeyPool) authNow() time.Time {
+	if kp.authClock != nil {
+		return kp.authClock()
+	}
+	return time.Now()
+}
+
+// cleanWitnessesLocked counts the pool's other keys that are not sidelined
+// (others) and, of those, the ones that worked cleanly since the given
+// time: a 2xx after it and no 401 after it (clean). A key that made no
+// request in the stretch is not clean: it saw nothing. Caller holds kp.mu.
+func (kp *KeyPool) cleanWitnessesLocked(key *APIKey, since time.Time) (clean, others int) {
 	for _, k := range kp.keys {
-		if k != key && !k.Invalid && k.lastSuccess.After(since) {
-			return true
+		if k == key || k.Invalid {
+			continue
+		}
+		others++
+		if k.lastSuccess.After(since) && !k.lastAuthFailure.After(since) {
+			clean++
 		}
 	}
-	return false
+	return clean, others
 }
 
 // NoteServerError records one 5xx attempt for the platform

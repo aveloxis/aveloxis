@@ -463,6 +463,12 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 	return id, err
 }
 
+// ErrRepoWithoutOwnerOrName is UpsertRepo's refusal of a row with no owner
+// or no name: what a URL that is not a repository's leaves behind (an
+// organization's page). It wraps platform.ErrInvalidRepoURL, so an add
+// item that hits it is a permanent failure of that item.
+var ErrRepoWithoutOwnerOrName = fmt.Errorf("%w: a repository needs an owner and a name", platform.ErrInvalidRepoURL)
+
 func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, error) {
 	// The store owns repo_git (SR-18): a URL carrying credentials is refused
 	// here, whatever path it arrived by, before any statement runs (v0.29.57,
@@ -476,6 +482,14 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
 	// 404 when the slug has a ".git" suffix.
 	r.Name = model.NormalizeRepoName(r.Name)
+	// A repository has an owner and a name on every platform (the generic
+	// parser takes the last path segment as the name and the rest as the
+	// owner). A caller that could not derive them does not have a
+	// repository URL, and the row it would write cannot be cloned
+	// (0.29.146, SR-18: enforced here, whatever path built the struct).
+	if strings.TrimSpace(r.Owner) == "" || strings.TrimSpace(r.Name) == "" {
+		return 0, ErrRepoWithoutOwnerOrName
+	}
 
 	// Store repo_git without trailing "/" or ".git" (v0.25.32 hardening) —
 	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
@@ -882,6 +896,11 @@ func refuseRenameTarget(newURL string) error {
 	if len(model.NormalizeRepoGitURL(newURL)) > MaxAddURLBytes {
 		return ErrURLTooLong
 	}
+	// A rename target is a repository's URL or it is not followed
+	// (0.29.146): written anyway, it blanked the row's owner and name.
+	if _, err := platform.ParseAnyRepoURL(newURL); err != nil {
+		return fmt.Errorf("the new URL is not a repository's: %w", err)
+	}
 	return nil
 }
 
@@ -995,8 +1014,9 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 		return fmt.Errorf("repo %d rename: %w", repoID, err)
 	}
 	// Parse owner/name from the new URL via the shared parser (v0.25.32
-	// consolidation; unparseable URLs keep empty owner/name — the URL
-	// column still updates, matching the historical permissiveness).
+	// consolidation). refuseRenameTarget above has already refused a URL
+	// that does not parse (0.29.146; it used to be written with an empty
+	// owner and name).
 	newURL = model.NormalizeRepoGitURL(newURL)
 	owner, name := parseRepoURLOwnerName(newURL)
 

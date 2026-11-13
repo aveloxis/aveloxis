@@ -72,3 +72,61 @@ func TestRedirectToAnOverLongURLIsNotFollowed(t *testing.T) {
 		t.Errorf("want one ERROR saying the target was not followed; log:\n%s", logs.String())
 	}
 }
+
+// TestRedirectToAPageThatIsNotARepositoryIsNotFollowed (0.29.146): the
+// rename path wrote any redirect target to repo_git and, when the target
+// did not parse as a repository, blanked the row's owner and name
+// ("historical permissiveness"): a repository whose page redirected to its
+// owner's page became a row no collection can clone. The store refuses the
+// target and prelim does not follow it: the row keeps its URL, owner and
+// name, collection goes on, one ERROR says why.
+func TestRedirectToAPageThatIsNotARepositoryIsNotFollowed(t *testing.T) {
+	dsn := os.Getenv("AVELOXIS_TEST_DB")
+	if dsn == "" {
+		t.Skip("AVELOXIS_TEST_DB not set")
+	}
+	ctx := context.Background()
+	store, err := db.NewPostgresStore(ctx, dsn, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_avownerredir/repo" {
+			http.Redirect(w, r, "/_avownerredir/", http.StatusMovedPermanently) // the owner's page
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	orig := srv.URL + "/_avownerredir/repo"
+	var id int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_name, repo_owner, platform_id)
+		VALUES ($1, 'repo', '_avownerredir', 3) RETURNING repo_id`, orig).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+	})
+
+	var logs bytes.Buffer
+	repo := &model.Repo{ID: id, GitURL: orig, Platform: model.PlatformGenericGit}
+	res, err := RunPrelim(ctx, store, repo, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil || res == nil || res.Skip {
+		t.Fatalf("RunPrelim = (%+v, %v); want collection to go on", res, err)
+	}
+	if res.Redirected || res.NewURL != "" {
+		t.Errorf("the result reports a followed redirect: %+v", res)
+	}
+	var stored, owner, name string
+	if err := store.Pool().QueryRow(ctx, `SELECT repo_git, repo_owner, repo_name FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&stored, &owner, &name); err != nil {
+		t.Fatal(err)
+	}
+	if stored != orig || repo.GitURL != orig || owner != "_avownerredir" || name != "repo" {
+		t.Errorf("the row changed: repo_git %q, owner %q, name %q (the repo struct: %q)", stored, owner, name, repo.GitURL)
+	}
+	if strings.Count(logs.String(), "level=ERROR") != 1 || !strings.Contains(logs.String(), "not followed") || !strings.Contains(logs.String(), "not a repository") {
+		t.Errorf("want one ERROR saying the target is not a repository and was not followed; log:\n%s", logs.String())
+	}
+}

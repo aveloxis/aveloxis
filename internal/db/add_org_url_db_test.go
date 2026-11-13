@@ -132,11 +132,8 @@ func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
 	// redirect to it (review round 2). It is the forge's account space.
 	signIn := "https://gitlab.com/users/sign_in"
 	for name, rename := range map[string]func() error{
-		"UpdateRepoURL":                 func() error { return store.UpdateRepoURL(ctx, id, orgPage) },
-		"UpdateRepoURLs":                func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", orgPage) },
-		"UpdateRepoURL to a sign-in":    func() error { return store.UpdateRepoURL(ctx, id, signIn) },
-		"UpdateRepoURLs to a sign-in":   func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", signIn) },
-		"UpdateRepoURL to GitHub login": func() error { return store.UpdateRepoURL(ctx, id, "https://github.com/login/oauth") },
+		"UpdateRepoURL":  func() error { return store.UpdateRepoURL(ctx, id, orgPage) },
+		"UpdateRepoURLs": func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", orgPage) },
 	} {
 		if err := rename(); !errors.Is(err, platform.ErrInvalidRepoURL) {
 			t.Errorf("%s to an organization page = %v, want a refusal wrapping platform.ErrInvalidRepoURL", name, err)
@@ -148,6 +145,28 @@ func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
 	}
 	if git != base+"/ok" || owner != "o" || repoName != "ok" {
 		t.Errorf("the refused renames changed the row: %q %q/%q", git, owner, repoName)
+	}
+	// The sign-in rule is the redirect's (RenameTargetRefusal), not the
+	// store's: prelim and reconcile-repos consult it before they look the
+	// target up. A rename the forge itself reports, into a namespace that
+	// carries one of the names, is a real rename and goes through (round 5).
+	for _, target := range []string{signIn, "https://github.com/login/oauth", orgPage} {
+		if err := RenameTargetRefusal(target); !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("RenameTargetRefusal(%s) = %v, want a refusal wrapping platform.ErrInvalidRepoURL", target, err)
+		}
+	}
+	if err := RenameTargetRefusal(base + "/renamed"); err != nil {
+		t.Errorf("RenameTargetRefusal(a repository URL) = %v", err)
+	}
+	inAuth := fmt.Sprintf("https://gitlab.com/auth/avx-noowner-%d", suffix)
+	if err := store.UpdateRepoURL(ctx, id, inAuth); err != nil {
+		t.Errorf("a forge-reported rename into a namespace named auth was refused: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, inAuth)
+	})
+	if err := store.UpdateRepoURL(ctx, id, base+"/ok"); err != nil {
+		t.Fatal(err)
 	}
 	// A rename to a repository's URL still goes through.
 	if err := store.UpdateRepoURL(ctx, id, base+"/renamed"); err != nil {

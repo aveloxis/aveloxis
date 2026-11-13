@@ -171,6 +171,12 @@ func TestRedirectToAStoredNonRepositoryRowIsNotADuplicate(t *testing.T) {
 		return id
 	}
 	poisoned := insert(srv.URL+"/_avpoisonpage", "", "") // the page, stored as a repository by an older release
+	// The premise: the lookup does find that row for the redirect's target.
+	// Without it the old code would reach the store's own refusal and
+	// produce the same result, and this test would prove nothing (round 5).
+	if found, err := store.FindRepoByURL(ctx, srv.URL+"/_avpoisonpage/"); err != nil || found != poisoned {
+		t.Fatalf("premise: FindRepoByURL(the page) = (%d, %v), want the stored row %d", found, err, poisoned)
+	}
 	orig := srv.URL + "/_avpoison/repo"
 	id := insert(orig, "_avpoison", "repo")
 	if err := store.EnqueueRepo(ctx, id, 100); err != nil {

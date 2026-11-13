@@ -71,8 +71,12 @@ func newMaintenanceFixture(t *testing.T, hook string) maintenanceFixture {
 	commit("v1")
 	git(tmp, "clone", "--bare", fx.upstream, fx.bare)
 	// Every fetch keeps its pack (unpackLimit 1); more than one pack is
-	// "too many" (autoPackLimit 1; gc.auto must be positive for the pack
-	// rule to be read at all).
+	// "too many" for git's gc strategy (autoPackLimit 1; gc.auto must be
+	// positive for the pack rule to be read at all). Git 2.54 and later
+	// maintain with a geometric repack instead, which fires here because
+	// packs of equal size break its progression (review round 2, by
+	// GIT_TRACE). Either way the premise checks fail loudly if a git stops
+	// maintaining this fixture.
 	git(fx.bare, "config", "gc.auto", "1")
 	git(fx.bare, "config", "gc.autoPackLimit", "1")
 	git(fx.bare, "config", "fetch.unpackLimit", "1")

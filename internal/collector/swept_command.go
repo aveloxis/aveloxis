@@ -65,8 +65,11 @@ func groupKilled(cmd *exec.Cmd) { groupSignalled(cmd, syscall.SIGKILL) }
 
 // groupTerminated is groupKilled for a subprocess that must be allowed to
 // clean up after itself: cancellation sends SIGTERM to the group, not
-// SIGKILL. Git is the case (0.29.145): on SIGTERM it removes its lock and
-// temporary files, and a maintenance run killed outright leaves
+// SIGKILL. Git is the case (0.29.145): on SIGTERM its maintenance removes
+// its lock and the repack's temporary packs (a transfer stopped while
+// receiving objects leaves its tmp_pack_ or tmp_obj_ files under either
+// signal; a later maintenance prunes them), and a maintenance run killed
+// outright leaves
 // objects/maintenance.lock, which git never judges stale — every later
 // automatic maintenance of that clone is skipped, exit status 0, nothing
 // printed. WaitDelay still bounds the wait; the caller sweeps the group

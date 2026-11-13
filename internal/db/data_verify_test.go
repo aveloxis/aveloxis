@@ -46,6 +46,7 @@ func TestRunDataVerificationOnScratchDB(t *testing.T) {
 		"batch vs single stats",
 		"gone episodes match the stamps", "gone and queued", "invalid indexes", "index builds in progress",
 		"earlier-era daily buckets", "lower(email) indexes",
+		"repositories without owner or name",
 	} {
 		if !seen[want] {
 			t.Errorf("probe %q missing from the battery", want)

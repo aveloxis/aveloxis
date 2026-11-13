@@ -134,6 +134,10 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 		// `invalid` (review round 1 F5: the documented field had no reader
 		// through the handler), the other goes through.
 		{"invalid lines are reported", store, gid, `{"urls":["not a url at all","` + urlPrefix + `works"],"kind":"repo"}`, http.StatusOK, `"invalid":["not a url at all: not a repository URL`, false},
+		// 0.29.146: an organization's page pasted as a repository is named
+		// for what it is, with where to add it (an older release stored one
+		// as a repository with no owner and no name).
+		{"an organization page is not a repository", store, gid, `{"urls":["https://github.com/_avapi-add-status-orgpage/","` + urlPrefix + `works"],"kind":"repo"}`, http.StatusOK, `"invalid":["https://github.com/_avapi-add-status-orgpage/: an organization, group or user page, not a repository`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}

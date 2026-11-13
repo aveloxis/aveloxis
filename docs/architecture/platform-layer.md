@@ -99,6 +99,16 @@ These rules are the contract; tests enforce each one.
    sweep also waits while the pool is at the foreground reserve line.
    Keys refused for `core` or `graphql`, quarantined or resting are not lent to
    scorecard either.
+5. **A dead key is sidelined; an incident sidelines nothing** (0.29.146).
+   Three 401s in a row quarantine a key (1 minute, doubling to 30). A key
+   quarantined 5 times in a row with no success of its own is sidelined
+   until the process restarts, but only when another key of the pool
+   succeeded during each of those stretches: that is what shows the forge's
+   authentication was working. With no such success the quarantine does
+   not count, so a forge rejecting valid tokens sidelines no key, and a
+   pool's only or last working key is never sidelined. Log lines about a
+   key carry `key=`, the `worker_oauth` row or config file entry it came
+   from.
 
 Other behaviour:
 

@@ -193,6 +193,20 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 			ok:  "no gone-stamped repository is queued",
 		},
 		{
+			check: "repositories without owner or name", severity: "WARN",
+			// Not a repository (0.29.146): before that release the add path
+			// stored a URL that did not parse as one, such as an
+			// organization's page, as a git-only row with no owner and no
+			// name, and every collection of it fails at the clone. Nothing
+			// repairs it: the operator removes the row, and adds the
+			// organization if that was meant.
+			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE COALESCE(r.repo_owner, '') = '' OR COALESCE(r.repo_name, '') = ''`,
+			bad: "%d repository rows have no owner or no name (a URL that is not a repository's, such as an organization page, stored before 0.29.146; its collections fail at the clone) — look at repo_git, then remove the row and add the organization if that was meant — e.g. repo_id %s",
+			ok:  "every repository row has an owner and a name",
+		},
+		{
 			check: "earlier-era daily buckets", severity: "FAIL",
 			// An adopted forge-ID change keeps the earlier repository's
 			// commits in the daily table: no bucket before the era boundary

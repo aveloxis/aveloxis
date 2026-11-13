@@ -327,8 +327,10 @@ var gitForegroundMaintenance = []string{"-c", "gc.autoDetach=false", "-c", "main
 // then removes its maintenance lock and temporary packs, where SIGKILL
 // left objects/maintenance.lock and git skipped the clone's maintenance
 // from then on (review round 1). Run returns when every member of the
-// group has let go of stderr or sweptWaitDelay has passed; what is still
-// alive then is killed. A maintenance run that fails does not fail the
+// group has let go of stderr or sweptWaitDelay has passed; after a stop,
+// what is still alive then is killed. Under a live context nothing is: a
+// process that outlives a fetch which exited 0 may be one git is meant to
+// leave running (an ssh connection it shares). A maintenance run that fails does not fail the
 // fetch (git ignores its exit status), which matters because the caller
 // answers a failed fetch with a from-scratch clone
 // (TestFailedMaintenanceDoesNotFailTheFetch).

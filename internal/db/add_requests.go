@@ -97,13 +97,19 @@ func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID 
 		return 0, fmt.Errorf("resolve repo URL: %w", err)
 	}
 	if repoID == 0 {
-		newRepo := &model.Repo{GitURL: repoURL, Platform: model.PlatformGenericGit}
-		if ru, perr := platform.ParseAnyRepoURLWithHints(repoURL, platform.GitLabWebHints(glWebBase)); perr == nil {
-			newRepo.Platform = ru.Platform
-			newRepo.Owner = ru.Owner
-			newRepo.Name = ru.Repo
+		// A URL that does not parse as a repository is refused (0.29.146,
+		// SR-18: the layer that writes the row enforces it). Until then it
+		// was stored anyway, as a git-only repository with no owner and no
+		// name ("historical permissiveness"), on the grounds that the web
+		// path had validated it: an organization page stored that way
+		// failed at the clone on every collection. The service still
+		// validates first; an item an older release saved reaches this
+		// function at its approval with no other check.
+		ru, perr := platform.ParseAnyRepoURLWithHints(repoURL, platform.GitLabWebHints(glWebBase))
+		if perr != nil {
+			return 0, fmt.Errorf("not a repository URL: %w", perr)
 		}
-		repoID, err = s.UpsertRepo(ctx, newRepo)
+		repoID, err = s.UpsertRepo(ctx, &model.Repo{GitURL: repoURL, Platform: ru.Platform, Owner: ru.Owner, Name: ru.Repo})
 		if err != nil {
 			return 0, err
 		}
@@ -936,6 +942,11 @@ func addItemFailurePermanent(err error) bool {
 	// can never succeed on retry: a legacy pending item carrying one would
 	// otherwise block its request's approval forever (round 3).
 	if errors.Is(err, platform.ErrURLUserinfo) || errors.Is(err, ErrURLTooLong) {
+		return true
+	}
+	// Nor can a URL that is not a repository's (an organization page, a
+	// scheme git cannot clone) become one.
+	if errors.Is(err, platform.ErrInvalidRepoURL) {
 		return true
 	}
 	var pgErr *pgconn.PgError

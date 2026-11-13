@@ -79,6 +79,42 @@ func TestDataVerifyWarnsOnAGoneAndQueuedRepository(t *testing.T) {
 	}
 }
 
+// A repository row without an owner or a name is not a repository: an
+// organization page stored by a release before 0.29.146, which no
+// collection can clone. A WARN naming it; a complete row is not named.
+func TestDataVerifyWarnsOnARepositoryWithoutOwnerOrName(t *testing.T) {
+	store, ctx := v0251Connect(t)
+	t.Cleanup(store.Close)
+	suffix := time.Now().UnixNano()
+	insert := func(url, owner, name string) int64 {
+		t.Helper()
+		var id int64
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id)
+			VALUES ($1, $2, $3, 3) RETURNING repo_id`, url, owner, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
+		})
+		return id
+	}
+	orgPage := insert(fmt.Sprintf("https://github.com/dv-noname-%d/", suffix), "", "")
+	noName := insert(fmt.Sprintf("https://git.example.invalid/dv-noname-%d/x", suffix), "o", "")
+	complete := insert(fmt.Sprintf("https://git.example.invalid/dv-noname-%d/ok", suffix), "o", "ok")
+	r := verifyFinding(ctx, t, store, "repositories without owner or name")
+	if r.Severity != "WARN" {
+		t.Fatalf("severity %s, want WARN: %+v", r.Severity, r)
+	}
+	// The examples are the five highest ids; these three are the newest rows.
+	if !mentions(r, orgPage) || !mentions(r, noName) {
+		t.Errorf("the rows without an owner or a name are not named: %+v", r)
+	}
+	if mentions(r, complete) {
+		t.Errorf("a complete row is named: %+v", r)
+	}
+}
+
 // An interrupted concurrent build leaves an INVALID index: a FAIL naming it.
 // A unique build over duplicate rows fails exactly that way.
 func TestDataVerifyFailsOnAnInvalidIndex(t *testing.T) {

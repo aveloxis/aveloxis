@@ -133,7 +133,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	if s.logger.Enabled(context.Background(), slog.LevelDebug) {
 		for _, k := range keys {
 			s.logger.Debug("key pool key",
-				"token_hash", k.Hash, "invalid", k.Invalid,
+				"token_hash", k.Hash, "key", k.Ref, "invalid", k.Invalid,
 				"inflight", k.Inflight, "lent", k.Lent,
 				"core", k.Core, "graphql", k.GraphQL,
 				"secondary_hits", k.SecondaryHits,

@@ -201,6 +201,33 @@ func ParseAnyRepoURLWithHints(rawURL string, gitlabWebBases []string) (RepoURL, 
 	}, nil
 }
 
+// IsForgeOwnerPageURL reports whether rawURL is the page of an
+// organization, group or user on a forge recognized by its host: exactly
+// one path segment on github.com or a GitLab host. It is not a repository
+// URL, and ParseRepoURL refuses it; the add form uses this to say what it
+// is, since it is what people paste when they mean the whole organization.
+// A URL carrying credentials answers false: that refusal has its own
+// message.
+func IsForgeOwnerPageURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return false
+	}
+	rawURL = WithDefaultScheme(rawURL)
+	if RefuseURLUserinfo(rawURL) != nil {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	if detectPlatform(strings.ToLower(u.Host)) == 0 {
+		return false
+	}
+	path := strings.Trim(u.Path, "/")
+	return path != "" && !strings.Contains(path, "/")
+}
+
 // ParseOrgURL extracts the host and org/group name from an org URL like
 // https://github.com/torvalds or https://gitlab.com/gitlab-org. The org
 // name is the FIRST path segment only (top-level org/group), the grammar of

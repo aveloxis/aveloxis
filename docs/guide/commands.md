@@ -1350,7 +1350,9 @@ earlier-era daily buckets below their fold from the commits table, and the
 three lower(email) indexes; since 0.29.144 a concurrent index build still
 running is reported apart as `index builds in progress`, a WARN, and the
 INVALID-index advice is to drop the index concurrently, since the migrate
-rebuilds only the indexes it builds itself), sampled count-integrity (cached queue
+rebuilds only the indexes it builds itself; since 0.29.146 repository rows
+with no owner or no name, a WARN: a URL that is not a repository's, such as
+an organization page, stored by an earlier release), sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).

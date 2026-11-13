@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.145 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.146 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=9edee590"></script>
+      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1890,19 +1890,29 @@ psql<span class="w"> </span>-d<span class="w"> </span>aveloxis<span class="w"> <
 <h2>Token invalidation (401 vs 403)<a class="headerlink" href="#token-invalidation-401-vs-403" title="Link to this heading"></a></h2>
 <section id="http-401-bad-credentials">
 <h3>HTTP 401 Bad Credentials<a class="headerlink" href="#http-401-bad-credentials" title="Link to this heading"></a></h3>
-<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">401</span> <span class="pre">Bad</span> <span class="pre">Credentials</span></code> for API calls.</p>
-<p><strong>Cause:</strong> The token is invalid, expired, or revoked.</p>
+<p><strong>Symptom:</strong> Log shows <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">401</span> <span class="pre">—</span> <span class="pre">treating</span> <span class="pre">as</span> <span class="pre">transient,</span> <span class="pre">key</span> <span class="pre">not</span> <span class="pre">quarantined</span></code>, then <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">quarantined</span> <span class="pre">after</span> <span class="pre">consecutive</span> <span class="pre">401s</span> <span class="pre">(will</span> <span class="pre">auto-recover)</span></code>, then at ERROR <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">quarantined</span> <span class="pre">after</span> <span class="pre">repeated</span> <span class="pre">401s</span> <span class="pre">—</span> <span class="pre">verify</span> <span class="pre">the</span> <span class="pre">token</span> <span class="pre">is</span> <span class="pre">valid</span></code>, and for a dead token <code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span> <span class="pre">sidelined</span> <span class="pre">until</span> <span class="pre">restart</span></code>.</p>
+<p><strong>Cause:</strong> Either the token is invalid, expired or revoked, or the forge is rejecting valid tokens for a while (GitHub’s authentication has done that for hours at a time). Aveloxis tells the two apart by what the other keys are doing:</p>
+<ul class="simple">
+<li><p>One 401 changes nothing. Three in a row with no success between them rest (“quarantine”) the key: 1 minute, then 2, 4, 8, 16 and 30 minutes for each further time. Any successful request clears the count.</p></li>
+<li><p>Since 0.29.146, a key is <strong>sidelined until the process restarts</strong> when it has been quarantined 5 times in a row with no success of its own, and during each of those stretches another key of the same pool made a successful request. That takes 31 minutes of rests at the least. Other keys working is what shows the forge’s authentication was fine and this token was refused anyway.</p></li>
+<li><p>When no other key succeeded during a stretch, that quarantine does not count: every key failing together is an incident at the forge, and nothing is sidelined however long it lasts. For the same reason a pool’s only key, or its last working one, is never sidelined.</p></li>
+</ul>
+<p>Before 0.29.146 a dead token was rested and retried for as long as the process ran.</p>
+<p><strong>Which key it is:</strong> since 0.29.146 every log line about a key carries <code class="docutils literal notranslate"><span class="pre">key=</span></code> next to <code class="docutils literal notranslate"><span class="pre">token_hash=</span></code>: the table, <code class="docutils literal notranslate"><span class="pre">oauth_id</span></code> and name of its row (<code class="docutils literal notranslate"><span class="pre">key=&quot;aveloxis_ops.worker_oauth</span> <span class="pre">oauth_id=17</span> <span class="pre">name=\&quot;ops\&quot;&quot;</span></code>), or its place in the config file (<code class="docutils literal notranslate"><span class="pre">key=&quot;config</span> <span class="pre">file</span> <span class="pre">github.api_keys[2]&quot;</span></code>, counted from 0). On an older release, find the row from the eight hex digits after <code class="docutils literal notranslate"><span class="pre">#</span></code> in <code class="docutils literal notranslate"><span class="pre">token_hash</span></code>:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">oauth_id</span><span class="p">,</span><span class="w"> </span><span class="k">name</span><span class="p">,</span><span class="w"> </span><span class="n">platform</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_ops</span><span class="mf">.</span><span class="n">worker_oauth</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">left</span><span class="p">(</span><span class="n">encode</span><span class="p">(</span><span class="n">sha256</span><span class="p">(</span><span class="n">convert_to</span><span class="p">(</span><span class="n">access_token</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;UTF8&#39;</span><span class="p">)),</span><span class="w"> </span><span class="s1">&#39;hex&#39;</span><span class="p">),</span><span class="w"> </span><span class="mf">8</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;51e017d7&#39;</span><span class="p">;</span>
+</pre></div>
+</div>
 <p><strong>Solution:</strong></p>
 <ul class="simple">
-<li><p>The key is permanently invalidated for the lifetime of the process. No action is needed during the current run – Aveloxis skips it automatically.</p></li>
-<li><p>Check that the token is still valid on GitHub/GitLab.</p></li>
-<li><p>If the token was rotated, add the new one:</p></li>
+<li><p>Check the token on GitHub or GitLab. If it is revoked or expired, remove its row (<code class="docutils literal notranslate"><span class="pre">DELETE</span> <span class="pre">FROM</span> <span class="pre">aveloxis_ops.worker_oauth</span> <span class="pre">WHERE</span> <span class="pre">oauth_id</span> <span class="pre">=</span> <span class="pre">17;</span></code> with the id from the log line) or its entry in the config file, and add its replacement:</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>add-key<span class="w"> </span>ghp_new_token<span class="w"> </span>--platform<span class="w"> </span>github
 </pre></div>
 </div>
 <ul class="simple">
-<li><p>Restart <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> to pick up the new key.</p></li>
+<li><p>Restart <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>: keys are read at startup. A sidelined key is tried again after a restart and, if it is still dead, sidelined again about half an hour later, so removing it is what ends the log lines.</p></li>
 </ul>
 </section>
 <section id="http-403-forbidden-rate-limited">
@@ -2389,7 +2399,7 @@ aveloxis<span class="w"> </span>prioritize<span class="w"> </span>https://github
 <h2>Git maintenance lock present before the fetch<a class="headerlink" href="#git-maintenance-lock-present-before-the-fetch" title="Link to this heading"></a></h2>
 <p><strong>Symptom:</strong> a WARN <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">maintenance</span> <span class="pre">lock</span> <span class="pre">present</span> <span class="pre">before</span> <span class="pre">the</span> <span class="pre">fetch</span></code> naming a bare clone and its <code class="docutils literal notranslate"><span class="pre">objects/maintenance.lock</span></code>, repeated at each collection of that repository. The clone’s <code class="docutils literal notranslate"><span class="pre">objects/pack</span></code> directory holds more pack files after every fetch.</p>
 <p><strong>Cause:</strong> git creates <code class="docutils literal notranslate"><span class="pre">objects/maintenance.lock</span></code> while a maintenance run is in progress and removes it when the run ends, including when the run is asked to stop. A run that was killed outright (the host lost power, the kernel’s out-of-memory killer, a <code class="docutils literal notranslate"><span class="pre">kill</span> <span class="pre">-9</span></code>) leaves the file. Git never treats the file as stale: while it exists, every automatic maintenance of that clone is skipped, with exit status 0 and no message. Since 0.29.145 the maintenance runs inside the fetch, and Aveloxis reports the file before each fetch; it does not remove it, because the file may also belong to a maintenance someone started on the clone by hand.</p>
-<p><strong>Solution:</strong> confirm that no git maintenance is running on the clone (<code class="docutils literal notranslate"><span class="pre">pgrep</span> <span class="pre">-fl</span> <span class="pre">'git</span> <span class="pre">(gc|repack|maintenance)'</span></code>), then delete the file named in the WARN’s <code class="docutils literal notranslate"><span class="pre">lock</span></code> field. The next fetch of the repository repacks the clone.</p>
+<p><strong>Solution:</strong> read the WARN’s <code class="docutils literal notranslate"><span class="pre">lock_modified</span></code> field. A time long before the WARN (hours or days) means a leftover: no maintenance of one clone runs that long without touching the file again. Delete the file named in the <code class="docutils literal notranslate"><span class="pre">lock</span></code> field; the next fetch of the repository repacks the clone. A time within the last minutes means a maintenance may be running on that clone now, and <code class="docutils literal notranslate"><span class="pre">pgrep</span> <span class="pre">-fl</span> <span class="pre">'git</span> <span class="pre">(gc|repack|maintenance)'</span></code> will not say which clone a process is working on (Aveloxis’s own maintenance runs carry no path in their arguments, and a busy fleet always has some): leave the file, and look again at the repository’s next collection.</p>
 </section>
 <section id="git-clone-exit-status-128">
 <h2>Git clone exit status 128<a class="headerlink" href="#git-clone-exit-status-128" title="Link to this heading"></a></h2>

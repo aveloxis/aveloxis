@@ -171,8 +171,12 @@ func (s *Service) AddToGroup(ctx context.Context, a Actor, groupID int64, paste 
 		ru, err := platform.ParseAnyRepoURLWithHints(platform.WithDefaultScheme(line), s.gitlabHints())
 		if err != nil {
 			reason := "not a repository URL (expected https://host/owner/repo)"
-			if errors.Is(err, platform.ErrURLUserinfo) {
+			switch {
+			case errors.Is(err, platform.ErrURLUserinfo):
 				reason = "URL must not contain credentials"
+			case platform.IsForgeOwnerPageURL(line):
+				// What people paste when they mean all of it (0.29.146).
+				reason = "an organization, group or user page, not a repository (add it as an organization or group instead, or give https://host/owner/repo)"
 			}
 			out.Invalid = append(out.Invalid, logURL(line)+": "+reason)
 			continue

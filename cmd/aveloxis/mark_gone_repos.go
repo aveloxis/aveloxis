@@ -242,6 +242,20 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// ERROR is not "untracked" (SR-5): skipped.
 			atOwnURL := sameRepoURL(finalURL, c.GitURL)
 			targetTracked := false
+			if c.Archived && !c.GoneStamped && !atOwnURL && redirectIsNotARename(finalURL) {
+				// Not a rename (review round 6: the third site that looked
+				// a redirect target up unjudged): the page answers, but
+				// under a URL no repository can have (its owner's page, the
+				// forge's sign-in page, where gitlab.com sends a project
+				// that went private). Not a duplicate of whatever row an
+				// older release stored under that URL, and not lifted
+				// either: re-queued, its collection would fail at every
+				// cycle. It stays as it is, with its data.
+				logger.Info("archived, unstamped and redirected to a page that is not a repository's — not a rename, not lifted; it stays as it is with its data",
+					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "redirects_to", platform.RedactURLUserinfo(finalURL))
+				tally.alive++
+				continue
+			}
 			if c.Archived && !c.GoneStamped && !atOwnURL {
 				winner, ferr := store.FindRepoByURL(ctx, finalURL)
 				if ferr != nil {

@@ -1253,6 +1253,12 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	now := kp.authNow()
 	key.lastAuthFailure = now
+	if key.Invalid {
+		// Sidelined already: the answer to a request that was in flight
+		// when it happened. Nothing more to decide, and the ERROR is not
+		// said twice (review round 6).
+		return false
+	}
 	if now.Before(key.quarantineUntil) {
 		// The answer to a request that was already in flight when the key
 		// was quarantined. It says nothing the quarantine has not already

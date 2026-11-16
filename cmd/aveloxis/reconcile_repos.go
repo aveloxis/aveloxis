@@ -375,11 +375,23 @@ func reconcileInterruptedReport(w io.Writer, mode string, c reconcileCounts, tot
 // a target carrying credentials or longer than the stored-URL limit is
 // looked up as before and refused where it always was.
 func renameWinner(ctx context.Context, store *db.PostgresStore, logger *slog.Logger, repoID int64, finalURL string) (int64, error) {
-	if refusal := db.RenameTargetRefusal(finalURL); refusal != nil &&
-		errors.Is(refusal, platform.ErrInvalidRepoURL) && !errors.Is(refusal, platform.ErrURLUserinfo) {
+	if redirectIsNotARename(finalURL) {
 		logger.Warn("reconcile: the redirect target is not a repository's URL — no stored repository is looked up under it",
-			"repo_id", repoID, "target", platform.RedactURLUserinfo(finalURL), "error", refusal)
+			"repo_id", repoID, "target", platform.RedactURLUserinfo(finalURL), "error", db.RenameTargetRefusal(finalURL))
 		return 0, nil
 	}
 	return store.FindRepoByURL(ctx, finalURL)
+}
+
+// redirectIsNotARename reports whether a probe's redirect target is a URL
+// no repository can have (db.RenameTargetRefusal: it does not parse as one,
+// or it is the forge's sign-in or account page). The ONE judgment
+// reconcile-repos and mark-gone-repos make before they look a target up
+// among the stored repositories (SR-17; prelim makes the same one in the
+// collector). A target carrying credentials or longer than the stored-URL
+// limit is not this class: those are refused where they always were.
+func redirectIsNotARename(finalURL string) bool {
+	refusal := db.RenameTargetRefusal(finalURL)
+	return refusal != nil && errors.Is(refusal, platform.ErrInvalidRepoURL) &&
+		!errors.Is(refusal, platform.ErrURLUserinfo) && !errors.Is(refusal, db.ErrURLTooLong)
 }

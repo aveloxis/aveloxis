@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // reconcile-repos looks a redirect target up among the stored repositories
@@ -65,5 +66,48 @@ func TestRenameWinnerIgnoresARowStoredUnderANonRepositoryURL(t *testing.T) {
 	// The premise: without the judgment the lookup does find the page's row.
 	if id, err := store.FindRepoByURL(ctx, page+"/"); err != nil || id != poisoned {
 		t.Fatalf("premise: FindRepoByURL(page) = (%d, %v), want the stored row %d", id, err, poisoned)
+	}
+}
+
+// The one judgment reconcile-repos and mark-gone-repos share: a redirect
+// target that is not a repository's URL is not a rename. Credentials and
+// an over-long target are other refusals, handled where they always were.
+func TestRedirectIsNotARename(t *testing.T) {
+	for target, want := range map[string]bool{
+		"https://gitlab.com/users/sign_in":                  true, // the forge's sign-in page
+		"https://github.com/login/oauth":                    true,
+		"https://github.com/chaoss/":                        true, // an owner's page
+		"https://git.example.invalid/onesegment":            true,
+		"ftp://github.com/chaoss/augur":                     true,
+		"https://github.com/chaoss/augur":                   false,
+		"https://gitlab.com/group/sub/project":              false,
+		"https://git.example.invalid/owner/repo.git":        false,
+		"https://user:pw@github.com/chaoss/augur":           false, // credentials: refused by its own rule
+		"https://github.com/o/" + strings.Repeat("x", 9000): false, // over-long: its own rule
+	} {
+		if got := redirectIsNotARename(target); got != want {
+			t.Errorf("redirectIsNotARename(%.60q) = %v, want %v", target, got, want)
+		}
+	}
+}
+
+// mark-gone-repos judges a redirect target before it looks it up, as
+// reconcile-repos and prelim do (review round 6: it was the third site,
+// and reported an archived row as "renamed onto a tracked repository" when
+// the target was a sign-in page an older release had stored).
+func TestMarkGoneReposJudgesARedirectTargetBeforeTheLookup(t *testing.T) {
+	src := srctest.StripGoComments(srctest.PackageSource(t, "cmd/aveloxis", 1))
+	if n := strings.Count(src, "store.FindRepoByURL(ctx, finalURL)"); n != 2 {
+		t.Fatalf("%d lookups of a redirect target in cmd/aveloxis, want 2 (renameWinner's and mark-gone-repos'): a new one must judge the target first", n)
+	}
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runMarkGoneRepos("))
+	judge, lookup := strings.Index(body, "redirectIsNotARename(finalURL)"), strings.Index(body, "store.FindRepoByURL(ctx, finalURL)")
+	if judge < 0 || lookup < judge {
+		t.Errorf("mark-gone-repos calls redirectIsNotARename(finalURL) before store.FindRepoByURL(ctx, finalURL) (offsets %d, %d)", judge, lookup)
+	}
+	winner := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func renameWinner("))
+	judge, lookup = strings.Index(winner, "redirectIsNotARename(finalURL)"), strings.Index(winner, "store.FindRepoByURL(ctx, finalURL)")
+	if judge < 0 || lookup < judge {
+		t.Errorf("renameWinner calls redirectIsNotARename(finalURL) before the lookup (offsets %d, %d)", judge, lookup)
 	}
 }

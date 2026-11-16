@@ -134,6 +134,20 @@ func TestDeadKeyIsSidelinedWhileOthersWork(t *testing.T) {
 	if elapsed := r.now.Sub(start); elapsed < rests {
 		t.Errorf("sidelined %v after the first 401, before the %v of rests it must sit out", elapsed, rests)
 	}
+	// A 401 still in flight for it changes nothing and is not announced
+	// again, even after its last rest has passed on the clock.
+	logged := strings.Count(buf.String(), "API key sidelined until restart")
+	quarantines := r.count(dead)
+	r.rest(dead)
+	for i := 0; i < 2*maxAuthStrikes; i++ {
+		r.respond(dead, http.StatusUnauthorized)
+	}
+	if got := strings.Count(buf.String(), "API key sidelined until restart"); got != logged || logged != 1 {
+		t.Errorf("the sideline was logged %d times, then %d after in-flight 401s; want once", logged, got)
+	}
+	if got := r.count(dead); got != quarantines {
+		t.Errorf("a sidelined key was quarantined again (%d → %d)", quarantines, got)
+	}
 	// The pool never hands it out again, whatever the clock says.
 	r.kp.mu.Lock()
 	dead.quarantineUntil = time.Time{}

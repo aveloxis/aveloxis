@@ -151,7 +151,7 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			stampChecked(c)
 			continue
 		}
-		_, status, perr := goneProbe(ctx, c.GitURL)
+		finalURL, status, perr := goneProbe(ctx, c.GitURL)
 		if errors.Is(perr, context.Canceled) {
 			return // shutdown mid-probe: classified before any failure arm (the ticker ratchet)
 		}
@@ -188,6 +188,16 @@ func (s *Scheduler) runGoneRecheck(ctx context.Context) {
 			continue
 		}
 		switch {
+		case status >= 200 && status < 300 && db.RedirectLeftTheRepository(c.GitURL, finalURL) != nil:
+			// The 2xx is a page's that is not the repository's (the forge's
+			// sign-in page, an owner's page): no sign of life (0.29.146,
+			// review round 7). Resurrected, the row would be collected
+			// against a URL that leads there. Counted with the
+			// indeterminate: gone stays, stamped, retried next cadence.
+			indeterminate++
+			s.logger.Warn("gone recheck: the probe was redirected to a page that is not a repository's — no sign of life; repo stays gone, retried next cadence",
+				"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "redirects_to", platform.RedactURLUserinfo(finalURL), "status", status)
+			stampChecked(c)
 		case status >= 200 && status < 300:
 			if err := s.store.ResurrectRepo(ctx, c.RepoID, 10, db.GoneSourceRecheck); err != nil {
 				if errors.Is(err, context.Canceled) {

@@ -69,45 +69,50 @@ func TestRenameWinnerIgnoresARowStoredUnderANonRepositoryURL(t *testing.T) {
 	}
 }
 
-// The one judgment reconcile-repos and mark-gone-repos share: a redirect
-// target that is not a repository's URL is not a rename. Credentials and
-// an over-long target are other refusals, handled where they always were.
-func TestRedirectIsNotARename(t *testing.T) {
-	for target, want := range map[string]bool{
-		"https://gitlab.com/users/sign_in":                  true, // the forge's sign-in page
-		"https://github.com/login/oauth":                    true,
-		"https://github.com/chaoss/":                        true, // an owner's page
-		"https://git.example.invalid/onesegment":            true,
-		"ftp://github.com/chaoss/augur":                     true,
-		"https://github.com/chaoss/augur":                   false,
-		"https://gitlab.com/group/sub/project":              false,
-		"https://git.example.invalid/owner/repo.git":        false,
-		"https://user:pw@github.com/chaoss/augur":           false, // credentials: refused by its own rule
-		"https://github.com/o/" + strings.Repeat("x", 9000): false, // over-long: its own rule
-	} {
-		if got := redirectIsNotARename(target); got != want {
-			t.Errorf("redirectIsNotARename(%.60q) = %v, want %v", target, got, want)
+// Every command that follows a redirect judges its target before looking
+// it up among the stored repositories (review rounds 3, 4 and 6 each found
+// one more site that did not). The judgment is the store's
+// (db.RedirectTargetNotARepository); here, the wiring: the files that probe
+// a redirect, the lookups in them, and the judgment ahead of each.
+func TestRedirectTargetsAreJudgedBeforeTheLookup(t *testing.T) {
+	probing := map[string]int{}
+	for _, file := range strings.Split(srctest.PackageSource(t, "cmd/aveloxis", 30), "// file: ")[1:] {
+		name, body, _ := strings.Cut(file, "\n")
+		body = srctest.StripGoComments(body)
+		if strings.Contains(body, "ResolveRedirectTarget(") {
+			probing[name] = strings.Count(body, ".FindRepoByURL(")
 		}
 	}
-}
-
-// mark-gone-repos judges a redirect target before it looks it up, as
-// reconcile-repos and prelim do (review round 6: it was the third site,
-// and reported an archived row as "renamed onto a tracked repository" when
-// the target was a sign-in page an older release had stored).
-func TestMarkGoneReposJudgesARedirectTargetBeforeTheLookup(t *testing.T) {
-	src := srctest.StripGoComments(srctest.PackageSource(t, "cmd/aveloxis", 1))
-	if n := strings.Count(src, "store.FindRepoByURL(ctx, finalURL)"); n != 2 {
-		t.Fatalf("%d lookups of a redirect target in cmd/aveloxis, want 2 (renameWinner's and mark-gone-repos'): a new one must judge the target first", n)
+	// Two commands probe (mark-gone-repos and reconcile-repos), each with
+	// one lookup; the functions holding them are checked by name below.
+	if len(probing) != 2 {
+		t.Errorf("files probing a redirect: %v, want 2 (a new one judges its target with db.RedirectTargetNotARepository before any lookup, and is counted here)", probing)
 	}
-	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func runMarkGoneRepos("))
-	judge, lookup := strings.Index(body, "redirectIsNotARename(finalURL)"), strings.Index(body, "store.FindRepoByURL(ctx, finalURL)")
-	if judge < 0 || lookup < judge {
-		t.Errorf("mark-gone-repos calls redirectIsNotARename(finalURL) before store.FindRepoByURL(ctx, finalURL) (offsets %d, %d)", judge, lookup)
+	for name, n := range probing {
+		if n != 1 {
+			t.Errorf("%s: %d repository lookups by URL, want 1, behind the judgment", name, n)
+		}
 	}
-	winner := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func renameWinner("))
-	judge, lookup = strings.Index(winner, "redirectIsNotARename(finalURL)"), strings.Index(winner, "store.FindRepoByURL(ctx, finalURL)")
-	if judge < 0 || lookup < judge {
-		t.Errorf("renameWinner calls redirectIsNotARename(finalURL) before the lookup (offsets %d, %d)", judge, lookup)
+	for _, site := range []struct{ dir, fn, judge, lookup string }{
+		{"cmd/aveloxis", "func runMarkGoneRepos(", "if needsTargetLookup(c, atOwnURL, targetNotARepo) {", ".FindRepoByURL("},
+		{"cmd/aveloxis", "func needsTargetLookup(", "!targetNotARepo", ""},
+		{"cmd/aveloxis", "func renameWinner(", "if refusal := db.RedirectTargetNotARepository(finalURL); refusal != nil {", ".FindRepoByURL("},
+		{"internal/collector", "func RunPrelim(", "if refusal := db.RedirectTargetNotARepository(finalURL); refusal != nil {", ".FindRepoByURL("},
+		// The gone stamp's clearers: a 2xx from a page that is not the
+		// repository's clears nothing (round 7).
+		{"internal/collector", "func RunPrelim(", "if statusCode >= 200 && statusCode < 300 && db.RedirectLeftTheRepository(repo.GitURL, finalURL) == nil {", ".ClearRepoGone("},
+		{"internal/scheduler", "func (s *Scheduler) runGoneRecheck(", "case status >= 200 && status < 300 && db.RedirectLeftTheRepository(c.GitURL, finalURL) != nil:", ".ResurrectRepo("},
+	} {
+		body := srctest.StripGoComments(srctest.PackageFunc(t, site.dir, site.fn))
+		judge := strings.Index(body, site.judge)
+		if judge < 0 {
+			t.Errorf("%s lacks the judgment `%s`", site.fn, site.judge)
+			continue
+		}
+		if site.lookup != "" {
+			if first := strings.Index(body, site.lookup); first < judge {
+				t.Errorf("%s: the first %s (offset %d) must follow the judgment (offset %d)", site.fn, site.lookup, first, judge)
+			}
+		}
 	}
 }

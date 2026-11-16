@@ -146,7 +146,10 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// indeterminate statuses — 403, 429, 5xx — prove nothing and must
 	// not flip a gone-stamped repo back to the false queued banner
 	// mid-outage.
-	if statusCode >= 200 && statusCode < 300 {
+	// And only when the 2xx is the repository's (0.29.146, review round 7):
+	// a redirect that ended on the forge's sign-in page or an owner's page
+	// answers 2xx for that page. It is declined below, logged at ERROR.
+	if statusCode >= 200 && statusCode < 300 && db.RedirectLeftTheRepository(repo.GitURL, finalURL) == nil {
 		if err := store.ClearRepoGone(ctx, repo.ID, db.GoneSourcePrelim); err != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
@@ -178,7 +181,7 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// repository's new home — that dequeued or healed away every repository
 	// that redirected there. Credentials and over-long targets keep their
 	// own handling further down.
-	if refusal := db.RenameTargetRefusal(finalURL); refusal != nil && errors.Is(refusal, platform.ErrInvalidRepoURL) && !errors.Is(refusal, platform.ErrURLUserinfo) {
+	if refusal := db.RedirectTargetNotARepository(finalURL); refusal != nil {
 		logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
 			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", refusal)
 		result.Redirected = false

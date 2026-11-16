@@ -3504,6 +3504,13 @@ to a URL no row tracks (prelim renames it in place once queued).
 Renamed onto a repository that IS tracked, the row is a duplicate
 prelim dequeued: counted <code class="docutils literal notranslate"><span class="pre">alive</span></code>, left as it is, and logged with where
 it redirects (no command consolidates an archived row today).</p></li>
+<li><p><strong>200 from a page that is not a repository’s</strong> (0.29.146) → nothing is
+written. A redirect can end on an owner’s page or on the forge’s
+sign-in page (where gitlab.com sends a request for a project that went
+private). That page answering says nothing about the repository, so a
+gone stamp is not cleared (the row is counted <code class="docutils literal notranslate"><span class="pre">already_gone</span></code>) and an
+archived row is not lifted (counted <code class="docutils literal notranslate"><span class="pre">alive</span></code>). The row is logged with
+where it redirects.</p></li>
 <li><p><strong>200 on any other candidate</strong> (a queueless row that is neither
 stamped nor archived) → counted as <code class="docutils literal notranslate"><span class="pre">alive</span></code> and left as it is;
 <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">reconcile-repos</span></code> re-queues it if it answers at its own URL
@@ -3542,7 +3549,10 @@ re-probes every gone-stamped repository once per
 <code class="docutils literal notranslate"><span class="pre">collection.gone_repo_recheck_days</span></code> (default 28, up to 500 per hour,
 never-checked rows first) with the same probe and the same verdict
 rule, and logs <code class="docutils literal notranslate"><span class="pre">gone</span> <span class="pre">recheck:</span> <span class="pre">repository</span> <span class="pre">is</span> <span class="pre">reachable</span> <span class="pre">again</span></code> when it
-resurrects one. This command remains the immediate, whole-cohort form:
+resurrects one. A 200 from a page that is not a repository’s (the
+probe redirected to an owner’s page or the forge’s sign-in page) is not
+that: the repository stays gone and is tried again at the next cadence.
+This command remains the immediate, whole-cohort form:
 run it after an upgrade or when you know an organization has flipped
 back, and it resets the cadence clock on every repository it verifies.
 The probe is one unauthenticated <code class="docutils literal notranslate"><span class="pre">HEAD</span></code> per candidate and consumes no

@@ -110,6 +110,12 @@ func TestRedirectToAPageThatIsNotARepositoryIsNotFollowed(t *testing.T) {
 		_, _ = store.Pool().Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, id)
 	})
 
+	// The row is gone-stamped: the 200 comes from the owner's page, which is
+	// not the repository answering, so the stamp must survive (review
+	// round 7: prelim cleared it on any 2xx, before judging the target).
+	if _, err := store.Pool().Exec(ctx, `UPDATE aveloxis_data.repos SET repo_gone_at = NOW() WHERE repo_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
 	var logs bytes.Buffer
 	repo := &model.Repo{ID: id, GitURL: orig, Platform: model.PlatformGenericGit}
 	res, err := RunPrelim(ctx, store, repo, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -122,6 +128,13 @@ func TestRedirectToAPageThatIsNotARepositoryIsNotFollowed(t *testing.T) {
 	var stored, owner, name string
 	if err := store.Pool().QueryRow(ctx, `SELECT repo_git, repo_owner, repo_name FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&stored, &owner, &name); err != nil {
 		t.Fatal(err)
+	}
+	var stillGone bool
+	if err := store.Pool().QueryRow(ctx, `SELECT repo_gone_at IS NOT NULL FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&stillGone); err != nil {
+		t.Fatal(err)
+	}
+	if !stillGone {
+		t.Error("the gone stamp was cleared by a 200 from a page that is not the repository's")
 	}
 	if stored != orig || repo.GitURL != orig || owner != "_avownerredir" || name != "repo" {
 		t.Errorf("the row changed: repo_git %q, owner %q, name %q (the repo struct: %q)", stored, owner, name, repo.GitURL)

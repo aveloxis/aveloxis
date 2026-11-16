@@ -28,6 +28,10 @@
 //     repository it is a data-bearing duplicate prelim dequeued, and is
 //     left as it is, as is any other 2xx (a queueless row that is neither
 //     stamped nor archived).
+//   - DEFINITIVE 200 from a redirect that ends on a page no repository can
+//     have (the owner's page, the forge's sign-in page; 0.29.146) → nothing
+//     is written, for every class: that page is not the forge serving the
+//     repository (db.RedirectTargetNotARepository).
 //   - Everything else (transport errors, rate limits, 5xx) SKIPS the
 //     repo (SR-16: only definitive answers decide) — a rerun retries.
 //
@@ -76,6 +80,9 @@ probes each URL against the forge:
               pre-0.29.140 reconcile-repos sideline coming back); one
               renamed onto a tracked repository is a duplicate and is
               left as it is
+  200 from a redirect to a page that is not a repository's (an owner's
+              page, the forge's sign-in page) -> nothing is written;
+              the row is logged with where it redirects
   200 on any other candidate -> counted alive, left as it is (re-add
               it with add-repo to resume collection)
   anything else -> skipped; re-run later (only definitive answers decide)
@@ -241,22 +248,13 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// place; a tracked one makes the row a duplicate). A lookup
 			// ERROR is not "untracked" (SR-5): skipped.
 			atOwnURL := sameRepoURL(finalURL, c.GitURL)
+			// A redirect that ends on a page no repository can have (its
+			// owner's page, the forge's sign-in page, where gitlab.com sends
+			// a project that went private) is judged before anything is
+			// looked up under it (review round 6: the third such site).
+			targetNotARepo := !atOwnURL && db.RedirectTargetNotARepository(finalURL) != nil
 			targetTracked := false
-			if c.Archived && !c.GoneStamped && !atOwnURL && redirectIsNotARename(finalURL) {
-				// Not a rename (review round 6: the third site that looked
-				// a redirect target up unjudged): the page answers, but
-				// under a URL no repository can have (its owner's page, the
-				// forge's sign-in page, where gitlab.com sends a project
-				// that went private). Not a duplicate of whatever row an
-				// older release stored under that URL, and not lifted
-				// either: re-queued, its collection would fail at every
-				// cycle. It stays as it is, with its data.
-				logger.Info("archived, unstamped and redirected to a page that is not a repository's — not a rename, not lifted; it stays as it is with its data",
-					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "redirects_to", platform.RedactURLUserinfo(finalURL))
-				tally.alive++
-				continue
-			}
-			if c.Archived && !c.GoneStamped && !atOwnURL {
+			if needsTargetLookup(c, atOwnURL, targetNotARepo) {
 				winner, ferr := store.FindRepoByURL(ctx, finalURL)
 				if ferr != nil {
 					if ctx.Err() != nil {
@@ -268,7 +266,23 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 				}
 				targetTracked = winner > 0 && winner != c.RepoID
 			}
-			switch onReachable(c, atOwnURL, targetTracked) {
+			switch onReachable(c, atOwnURL, targetTracked, targetNotARepo) {
+			case reachableNotARepository:
+				// The page that answered is not the repository's, so it says
+				// nothing about the repository: no stamp is cleared, no flag
+				// rewritten, nothing queued. The row stays as it is with its
+				// data; a gone-stamped one is counted with the rows still
+				// gone and its recheck time moves on, as for a repeated 404.
+				logger.Info("redirected to a page that is not a repository's — not a rename and not a sign of life; the row stays as it is with its data",
+					"repo_id", c.RepoID, "url", platform.RedactURLUserinfo(c.GitURL), "redirects_to", platform.RedactURLUserinfo(finalURL),
+					"gone_stamped", c.GoneStamped, "archived", c.Archived)
+				if c.GoneStamped {
+					tally.alreadyGone++
+					stampChecked(c)
+					continue
+				}
+				tally.alive++
+				continue
 			case reachableAlive:
 				tally.alive++
 				continue
@@ -380,6 +394,9 @@ const (
 	// reachableRenamed: archived without a stamp, renamed onto a TRACKED
 	// repository — a duplicate, counted alive, left as it is.
 	reachableRenamed
+	// reachableNotARepository: the 2xx came from a redirect to a page no
+	// repository can have. It decides nothing about the row.
+	reachableNotARepository
 )
 
 func (a reachableAction) String() string {
@@ -390,6 +407,8 @@ func (a reachableAction) String() string {
 		return "lift-archived"
 	case reachableRenamed:
 		return "renamed"
+	case reachableNotARepository:
+		return "not-a-repository"
 	}
 	return "alive"
 }
@@ -404,8 +423,15 @@ func (a reachableAction) String() string {
 // have prelim dequeue it again at every run (the L10 passes: two such rows
 // on kate). targetTracked is read only for an archived unstamped redirect.
 // The store re-checks the class in the statement; this picks the call.
-func onReachable(c db.GoneProbeCandidate, atOwnURL, targetTracked bool) reachableAction {
+//
+// targetNotARepo (0.29.146, review round 7) comes first and for every
+// class: a redirect that ends on a page that is not a repository's is not
+// the forge serving the repository, so it clears no stamp and lifts no
+// flag. It is never true at the row's own URL.
+func onReachable(c db.GoneProbeCandidate, atOwnURL, targetTracked, targetNotARepo bool) reachableAction {
 	switch {
+	case targetNotARepo && !atOwnURL:
+		return reachableNotARepository
 	case c.GoneStamped:
 		return reachableResurrect
 	case c.Archived && (atOwnURL || !targetTracked):
@@ -414,6 +440,14 @@ func onReachable(c db.GoneProbeCandidate, atOwnURL, targetTracked bool) reachabl
 		return reachableRenamed
 	}
 	return reachableAlive
+}
+
+// needsTargetLookup reports whether a 2xx's redirect target is looked up
+// among the stored repositories: only for an archived unstamped redirect
+// (the one class targetTracked decides), and never a target that is not a
+// repository's URL, under which an older release may have stored a row.
+func needsTargetLookup(c db.GoneProbeCandidate, atOwnURL, targetNotARepo bool) bool {
+	return c.Archived && !c.GoneStamped && !atOwnURL && !targetNotARepo
 }
 
 // markGoneInterruptedReport logs the interruption with every counter and

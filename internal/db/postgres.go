@@ -938,6 +938,40 @@ func RenameTargetRefusal(newURL string) error {
 	return nil
 }
 
+// RedirectTargetNotARepository is why a probe's redirect target is not a
+// repository's URL (it does not parse as one, or it is the forge's sign-in
+// or account page), or nil. The ONE judgment prelim, reconcile-repos and
+// mark-gone-repos make before they look a target up among the stored
+// repositories or take the answer for the repository's own (SR-17; review
+// round 7 moved the three spellings here). A target carrying credentials
+// or longer than the stored-URL limit is not this class and answers nil:
+// refuseRenameTarget returns those two before it parses, and each caller
+// refuses them where it always did.
+func RedirectTargetNotARepository(finalURL string) error {
+	if refusal := RenameTargetRefusal(finalURL); errors.Is(refusal, platform.ErrInvalidRepoURL) {
+		return refusal
+	}
+	return nil
+}
+
+// RedirectLeftTheRepository is why a probe of storedURL that ended at
+// finalURL did not reach a repository: it was redirected, and to a page
+// that is not a repository's (RedirectTargetNotARepository). Nil at the
+// stored URL itself and for a redirect to a repository's URL (a rename).
+//
+// A 2xx from such a page is the forge answering for its sign-in or an
+// owner's page, not for the repository, so it is no sign of life: the gone
+// stamp's clearers (prelim, serve's gone recheck; mark-gone-repos makes the
+// same judgment through its own-URL rule) ask this before they clear
+// (review round 7). The own-URL comparison is the stored spelling's
+// (model.NormalizeRepoGitURL), case-insensitively, as reconcile-repos'.
+func RedirectLeftTheRepository(storedURL, finalURL string) error {
+	if strings.EqualFold(model.NormalizeRepoGitURL(storedURL), model.NormalizeRepoGitURL(finalURL)) {
+		return nil
+	}
+	return RedirectTargetNotARepository(finalURL)
+}
+
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.

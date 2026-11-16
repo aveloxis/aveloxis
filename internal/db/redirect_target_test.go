@@ -67,6 +67,21 @@ func TestRedirectLeftTheRepository(t *testing.T) {
 		{"https://github.com/chaoss/augur", "https://github.com/login", true},
 		{"https://github.com/chaoss", "https://github.com/chaoss/", false}, // the stored URL itself
 		{"https://github.com/chaoss/augur", "https://user:pw@github.com/login", false},
+		// The scheme is not part of the own-URL rule (review round 8): an
+		// http row answered over https is at its own URL, also when that
+		// URL would not pass the target rule.
+		{"http://gitlab.com/auth/proj", "https://gitlab.com/auth/proj", false},
+		{"http://git.example.invalid/dwm", "HTTPS://git.example.invalid/dwm", false},
+		// A repository stored under a namespace named like an account
+		// segment (GitLab allows a group named auth) and renamed inside
+		// it: the stored row is the evidence the namespace is real.
+		{"https://gitlab.com/auth/proj", "https://gitlab.com/auth/proj-renamed", false},
+		{"https://gitlab.com/Auth/proj", "https://gitlab.com/auth/sub/proj", false},
+		// Not from another namespace, another host, or to a page that
+		// does not parse as a repository at all.
+		{"https://gitlab.com/group/proj", "https://gitlab.com/users/sign_in", true},
+		{"https://gitlab.com/users/proj", "https://gitlab.example.invalid/users/sign_in", true},
+		{"https://gitlab.com/auth/proj", "https://gitlab.com/auth", true},
 	} {
 		err := RedirectLeftTheRepository(c.stored, c.final)
 		if (err != nil) != c.left {

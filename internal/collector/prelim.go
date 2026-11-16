@@ -148,7 +148,9 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// mid-outage.
 	// And only when the 2xx is the repository's (0.29.146, review round 7):
 	// a redirect that ended on the forge's sign-in page or an owner's page
-	// answers 2xx for that page. It is declined below, logged at ERROR.
+	// answers 2xx for that page (and is declined below, logged at ERROR).
+	// A re-added gone repository in that state stays gone AND queued:
+	// data-verify's "gone and queued" check names it.
 	if statusCode >= 200 && statusCode < 300 && db.RedirectLeftTheRepository(repo.GitURL, finalURL) == nil {
 		if err := store.ClearRepoGone(ctx, repo.ID, db.GoneSourcePrelim); err != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a

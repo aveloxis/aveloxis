@@ -186,12 +186,15 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 			check: "gone and queued", severity: "WARN",
 			// A pending re-probe: a user's re-add of a gone repository, which
 			// prelim's next probe clears or sidelines. Many of them, or old
-			// ones, mean the probe is not reaching them.
+			// ones, mean the probe is not reaching them, or that it ends on
+			// a page that is not the repository's (0.29.146: the forge's
+			// sign-in page answers 200, which neither clears nor sidelines;
+			// the log has `redirect target is not a repository URL`).
 			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
 				FROM aveloxis_data.repos r
 				WHERE r.repo_gone_at IS NOT NULL
 				  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)`,
-			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each — e.g. repo_id %s",
+			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each, unless it is redirected to a page that is not the repository's (the log then says `redirect target is not a repository URL` at each collection) — e.g. repo_id %s",
 			ok:  "no gone-stamped repository is queued",
 		},
 		{

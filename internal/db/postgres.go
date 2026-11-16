@@ -964,12 +964,33 @@ func RedirectTargetNotARepository(finalURL string) error {
 // stamp's clearers (prelim, serve's gone recheck; mark-gone-repos makes the
 // same judgment through its own-URL rule) ask this before they clear
 // (review round 7). The own-URL comparison is the stored spelling's
-// (model.NormalizeRepoGitURL), case-insensitively, as reconcile-repos'.
+// (model.NormalizeRepoGitURL), case-insensitively and without the scheme.
 func RedirectLeftTheRepository(storedURL, finalURL string) error {
-	if strings.EqualFold(model.NormalizeRepoGitURL(storedURL), model.NormalizeRepoGitURL(finalURL)) {
+	if strings.EqualFold(schemeless(model.NormalizeRepoGitURL(storedURL)), schemeless(model.NormalizeRepoGitURL(finalURL))) {
 		return nil
 	}
-	return RedirectTargetNotARepository(finalURL)
+	refusal := RedirectTargetNotARepository(finalURL)
+	// The account-page rule alone refused it (the URL does parse as a
+	// repository's), and the stored repository lives in that very
+	// namespace on that host: a group named `auth` is a real GitLab
+	// namespace, the stored row is the evidence, and a rename inside it is
+	// the repository answering (review round 8). A sign-in page reached
+	// from any other namespace stays refused.
+	if refusal != nil && refuseRenameTarget(finalURL) == nil && platform.SameHostAndFirstSegment(storedURL, finalURL) {
+		return nil
+	}
+	return refusal
+}
+
+// schemeless drops an http or https scheme, in any letter case: the forge
+// answering an http row over https is the same URL (prelim's rule).
+func schemeless(u string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if len(u) >= len(scheme) && strings.EqualFold(u[:len(scheme)], scheme) {
+			return u[len(scheme):]
+		}
+	}
+	return u
 }
 
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs

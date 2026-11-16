@@ -242,8 +242,13 @@ func IsForgeOwnerPageURL(rawURL string) bool {
 // followed, with an ERROR at each collection, and collection goes on
 // against the old URL, which the forge keeps redirecting. The cost of the
 // other mistake was a sign-in page stored as a repository. For the same
-// reason the rule is applied to rename targets only, never to an add: a
-// tracked GitLab group named `auth` must stay collectable.
+// reason the rule is applied to redirect targets only, never to an add: a
+// tracked GitLab group named `auth` must stay collectable. Since review
+// round 7 a redirect target also decides whether a 2xx is a sign of life
+// for a repository marked gone (db.RedirectLeftTheRepository); there a
+// target inside the namespace the repository is already stored under is
+// excepted (round 8), so a project renamed inside a group named `auth`
+// is still found alive.
 //
 // The boundary, decided as a class (review round 4): the rule knows a
 // forge by its host name (github.com, a host containing "gitlab"). A
@@ -272,6 +277,26 @@ func IsForgeAccountURL(rawURL string) bool {
 	}
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
 	return len(segs) >= 2 && IsForgeAccountSegment(segs[0])
+}
+
+// SameHostAndFirstSegment reports whether two URLs name the same host and
+// the same first path segment, in any letter case: the same top-level
+// namespace of one forge. False when either does not parse or has no path.
+func SameHostAndFirstSegment(a, b string) bool {
+	key := func(raw string) (string, bool) {
+		u, err := url.Parse(WithDefaultScheme(strings.TrimSpace(raw)))
+		if err != nil || u.Host == "" {
+			return "", false
+		}
+		first, _, _ := strings.Cut(strings.Trim(u.Path, "/"), "/")
+		if first == "" {
+			return "", false
+		}
+		return strings.ToLower(u.Host) + "/" + strings.ToLower(first), true
+	}
+	ka, oka := key(a)
+	kb, okb := key(b)
+	return oka && okb && ka == kb
 }
 
 // ParseOrgURL extracts the host and org/group name from an org URL like

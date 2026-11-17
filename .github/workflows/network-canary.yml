@@ -81,6 +81,12 @@ jobs:
           # a key with at least the Reporter role (and read_api), so
           # the canary skips, visibly, on a 403 or 404.
           go test ./internal/platform/gitlab/ -run TestLiveGitLabProjectStatisticsContract -count=1 -v
+          # v0.29.145 — the REST fallback's watcher count (0.29.143 read
+          # it from subscribers_count; watchers_count is the star count).
+          # The canary has existed since 0.29.143 and was never
+          # scheduled: the unit test serves a body we wrote, so only
+          # this sees GitHub rename or drop the field.
+          go test ./internal/platform/github/ -run TestLiveRESTRepoInfoReadsSubscribers -count=1 -v
 
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade

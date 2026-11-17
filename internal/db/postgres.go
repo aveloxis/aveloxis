@@ -463,6 +463,12 @@ func (s *PostgresStore) UpsertRepoGroup(ctx context.Context, name, rgType, websi
 	return id, err
 }
 
+// ErrRepoWithoutOwnerOrName is UpsertRepo's refusal of a row with no owner
+// or no name: what a URL that is not a repository's leaves behind (an
+// organization's page). It wraps platform.ErrInvalidRepoURL, so an add
+// item that hits it is a permanent failure of that item.
+var ErrRepoWithoutOwnerOrName = fmt.Errorf("%w: a repository needs an owner and a name", platform.ErrInvalidRepoURL)
+
 func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, error) {
 	// The store owns repo_git (SR-18): a URL carrying credentials is refused
 	// here, whatever path it arrived by, before any statement runs (v0.29.57,
@@ -476,6 +482,21 @@ func (s *PostgresStore) UpsertRepo(ctx context.Context, r *model.Repo) (int64, e
 	// reaches the DB. API URLs built from repo_name (/repos/{owner}/{name}/...)
 	// 404 when the slug has a ".git" suffix.
 	r.Name = model.NormalizeRepoName(r.Name)
+	// A repository has an owner and a name on every platform (the generic
+	// parser takes the last path segment as the name and the rest as the
+	// owner). A caller that could not derive them does not have a
+	// repository URL, and the row it would write cannot be cloned
+	// (0.29.146, SR-18: enforced here, whatever path built the struct).
+	if strings.TrimSpace(r.Owner) == "" || strings.TrimSpace(r.Name) == "" {
+		return 0, ErrRepoWithoutOwnerOrName
+	}
+	// The forge-account rule (platform.IsForgeAccountURL) is NOT applied
+	// here, on purpose (review round 4, reversing round 3's): four of its
+	// names can be real GitLab namespaces, and refusing them at the add
+	// would keep a tracked group named `auth` from ever being collected.
+	// It is applied to redirect targets only (RenameTargetRefusal), where
+	// the mistake costs one unfollowed redirect; this function's own
+	// forge-ID rename heal below is not one (round 5).
 
 	// Store repo_git without trailing "/" or ".git" (v0.25.32 hardening) —
 	// suffix variants would otherwise slip past both ON CONFLICT (repo_git)
@@ -882,7 +903,122 @@ func refuseRenameTarget(newURL string) error {
 	if len(model.NormalizeRepoGitURL(newURL)) > MaxAddURLBytes {
 		return ErrURLTooLong
 	}
+	// A rename target is a repository's URL or it is not followed
+	// (0.29.146): written anyway, it blanked the row's owner and name.
+	if _, err := platform.ParseAnyRepoURL(newURL); err != nil {
+		return fmt.Errorf("the new URL is not a repository's: %w", err)
+	}
 	return nil
+}
+
+// RenameTargetRefusal is why the store would refuse newURL as a
+// repository's new URL, or nil. For a caller that acts on a redirect
+// target before it reaches UpdateRepoURLs: prelim and reconcile-repos look
+// the target up among the stored repositories first, and a row stored
+// under a page that is not a repository's (by a release before 0.29.146)
+// would be found and taken for the repository's new home (review round 3).
+//
+// It adds the one rule that is about redirects and nothing else: two
+// path segments are not enough. gitlab.com answers a request for a project
+// that went private with a redirect to /users/sign_in, which parses as
+// owner "users", name "sign_in" (review round 2; stored, the next such
+// project was taken for a duplicate of that row). UpdateRepoURLs itself
+// does not apply it (review round 5): its other two callers, the forge-ID
+// rename heal inside UpsertRepo and HealRepoCaseDrift, pass the forge's
+// own listing of a real repository, and four of the names can be real
+// GitLab namespaces, so a project moved into a group named `auth` must
+// still be renamed.
+func RenameTargetRefusal(newURL string) error {
+	if err := refuseRenameTarget(newURL); err != nil {
+		return err
+	}
+	if platform.IsForgeAccountURL(newURL) {
+		return errForgeAccountPage
+	}
+	return nil
+}
+
+// RedirectTargetNotARepository is why a probe's redirect target is not a
+// repository's URL (it does not parse as one, or it is the forge's sign-in
+// or account page), or nil. The ONE judgment prelim and reconcile-repos
+// make before they look a target up among the stored repositories, and
+// the one RedirectLeftTheRepository builds on (SR-17; review round 7
+// moved the three spellings here). A target carrying credentials
+// answers nil: the probe never returns one (it refuses the redirect). A
+// target longer than the stored-URL limit is judged by what page it is:
+// a repository's over-long URL answers nil and is refused as a rename
+// where it always was; an over-long sign-in or owner page is this class.
+func RedirectTargetNotARepository(finalURL string) error {
+	refusal := RenameTargetRefusal(finalURL)
+	if errors.Is(refusal, ErrURLTooLong) {
+		// The length is the store's limit on what it keeps, not a fact
+		// about the page (Copilot's review of PR #261): gitlab.com's
+		// sign-in redirect carries the address to return to, and past the
+		// limit it was taken for the repository, so a gone one came back
+		// on it. The page is judged by the same two rules, without the
+		// length.
+		refusal = redirectPageRefusal(finalURL)
+	}
+	if errors.Is(refusal, platform.ErrInvalidRepoURL) {
+		return refusal
+	}
+	return nil
+}
+
+// redirectPageRefusal is RenameTargetRefusal's judgment of what kind of
+// page a URL is, without the store's credential and length rules: nil
+// for a repository's URL.
+func redirectPageRefusal(finalURL string) error {
+	if _, err := platform.ParseAnyRepoURL(finalURL); err != nil {
+		return fmt.Errorf("the new URL is not a repository's: %w", err)
+	}
+	if platform.IsForgeAccountURL(finalURL) {
+		return errForgeAccountPage
+	}
+	return nil
+}
+
+// errForgeAccountPage is the redirect rule's refusal of a forge's sign-in
+// or account page (RenameTargetRefusal).
+var errForgeAccountPage = fmt.Errorf("%w: the redirect target is a page of the forge's own (sign-in or account), not a repository", platform.ErrInvalidRepoURL)
+
+// RedirectLeftTheRepository is why a probe of storedURL that ended at
+// finalURL did not reach a repository: it was redirected, and to a page
+// that is not a repository's (RedirectTargetNotARepository). Nil at the
+// stored URL itself and for a redirect to a repository's URL (a rename).
+//
+// A 2xx from such a page is the forge answering for its sign-in or an
+// owner's page, not for the repository, so it is no sign of life: the gone
+// stamp's clearers (prelim, serve's gone recheck, mark-gone-repos) ask this
+// before they clear (review round 7; mark-gone-repos since the review of
+// PR #261, 2026-11-17). The own-URL comparison is the stored spelling's
+// (model.NormalizeRepoGitURL), case-insensitively and without the scheme.
+func RedirectLeftTheRepository(storedURL, finalURL string) error {
+	if strings.EqualFold(schemeless(model.NormalizeRepoGitURL(storedURL)), schemeless(model.NormalizeRepoGitURL(finalURL))) {
+		return nil
+	}
+	refusal := RedirectTargetNotARepository(finalURL)
+	// The account-page rule alone refused it (the URL does parse as a
+	// repository's), and the stored repository lives in that very
+	// namespace on that host: a group named `auth` is a real GitLab
+	// namespace, the stored row is the evidence, and a rename inside it is
+	// the repository answering (review round 8). A sign-in page reached
+	// from any other namespace stays refused.
+	if errors.Is(refusal, errForgeAccountPage) && platform.SameHostAndFirstSegment(storedURL, finalURL) {
+		return nil
+	}
+	return refusal
+}
+
+// schemeless drops an http or https scheme, in any letter case: the forge
+// answering an http row over https is the same URL (prelim's rule).
+func schemeless(u string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if len(u) >= len(scheme) && strings.EqualFold(u[:len(scheme)], scheme) {
+			return u[len(scheme):]
+		}
+	}
+	return u
 }
 
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
@@ -995,8 +1131,9 @@ func (s *PostgresStore) UpdateRepoURL(ctx context.Context, repoID int64, newURL 
 		return fmt.Errorf("repo %d rename: %w", repoID, err)
 	}
 	// Parse owner/name from the new URL via the shared parser (v0.25.32
-	// consolidation; unparseable URLs keep empty owner/name — the URL
-	// column still updates, matching the historical permissiveness).
+	// consolidation). refuseRenameTarget above has already refused a URL
+	// that does not parse (0.29.146; it used to be written with an empty
+	// owner and name).
 	newURL = model.NormalizeRepoGitURL(newURL)
 	owner, name := parseRepoURLOwnerName(newURL)
 

@@ -8,6 +8,19 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.145
+
+`GET /api/v1/repos/{id}/stars`, `/forks` and `/watchers` leave out a metadata
+snapshot whose count is unknown (NULL in `repo_info` or its history); before,
+the row was returned with the value 0. For `/watchers` this removes rows: the
+migrate of 0.29.145 clears the watcher count of every snapshot the GitHub REST
+fallback wrote before 0.29.143, which held the repository's star count. A
+client that plots the series sees a gap at those dates where it saw a spike.
+`/watchers-count` still answers 0 for a latest snapshot whose count is
+unknown. Since 0.29.143 a snapshot written by the REST fallback carries the
+number of watchers (`subscribers_count`) in `/watchers`; before, it carried
+the star count.
+
 ## Changes for API clients in 0.29.140
 
 `GET /api/v1/repos/{id}/stats` carries `gone_history`: every stretch during
@@ -322,6 +335,7 @@ these routes answer. Each line gives the new behavior and the reason.
   administrators and callers without an identity keep the whole catalog.
 - **`/watchers` returns the snapshot history** (one row per metadata
   snapshot), like `/stars` and `/forks`; rows keep the `watchers` key.
+  Since 0.29.145 all three leave out a snapshot whose count is unknown.
 - **`/repos/stats?ids=` refuses an entry that is not a repository id**
   with a `400` (it skipped the entry before), and its rows carry
   `archived`, `forked_from`, `last_activity_at` and `forge_id_changes` as

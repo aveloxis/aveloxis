@@ -1350,7 +1350,12 @@ earlier-era daily buckets below their fold from the commits table, and the
 three lower(email) indexes; since 0.29.144 a concurrent index build still
 running is reported apart as `index builds in progress`, a WARN, and the
 INVALID-index advice is to drop the index concurrently, since the migrate
-rebuilds only the indexes it builds itself), sampled count-integrity (cached queue
+rebuilds only the indexes it builds itself; since 0.29.146 repository rows
+with no owner or no name, a WARN: a URL that is not a repository's, such as
+an organization page, stored by an earlier release's add or redirect path,
+and GitHub or GitLab rows whose URL is under the forge's own account pages,
+also a WARN: a sign-in page stored as a redirect target),
+sampled count-integrity (cached queue
 counts vs actual rows, gathered vs forge metadata at the gap
 detector's 5% line, batch-vs-single stats agreement), and fill rates
 (report-only unless floors are set).
@@ -1557,6 +1562,13 @@ The probe is bidirectional and only DEFINITIVE answers decide:
   Renamed onto a repository that IS tracked, the row is a duplicate
   prelim dequeued: counted `alive`, left as it is, and logged with where
   it redirects (no command consolidates an archived row today).
+- **200 from a page that is not a repository's** (0.29.146) → nothing is
+  written. A redirect can end on an owner's page or on the forge's
+  sign-in page (where gitlab.com sends a request for a project that went
+  private). That page answering says nothing about the repository, so a
+  gone stamp is not cleared (the row is counted `already_gone`) and an
+  archived row is not lifted (counted `alive`). The row is logged with
+  where it redirects.
 - **200 on any other candidate** (a queueless row that is neither
   stamped nor archived) → counted as `alive` and left as it is;
   `aveloxis reconcile-repos` re-queues it if it answers at its own URL
@@ -1597,7 +1609,10 @@ re-probes every gone-stamped repository once per
 `collection.gone_repo_recheck_days` (default 28, up to 500 per hour,
 never-checked rows first) with the same probe and the same verdict
 rule, and logs `gone recheck: repository is reachable again` when it
-resurrects one. This command remains the immediate, whole-cohort form:
+resurrects one. A 200 from a page that is not a repository's (the
+probe redirected to an owner's page or the forge's sign-in page) is not
+that: the repository stays gone and is tried again at the next cadence.
+This command remains the immediate, whole-cohort form:
 run it after an upgrade or when you know an organization has flipped
 back, and it resets the cadence clock on every repository it verifies.
 The probe is one unauthenticated `HEAD` per candidate and consumes no

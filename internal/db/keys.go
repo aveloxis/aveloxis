@@ -12,12 +12,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// LoadAPIKeys loads API tokens for the given platform. It reads from
-// aveloxis_ops.worker_oauth first, then optionally falls back to
-// augur_operations.worker_oauth if fallbackToAugur is true.
+// APIKeyRow is one stored API key with the row it came from.
+type APIKeyRow struct {
+	ID    int64  // oauth_id
+	Name  string // the operator's label for the key
+	Token string
+	Table string // the table read: aveloxis_ops.worker_oauth or augur_operations.worker_oauth
+}
+
+// Ref says where an operator finds the key: table, oauth_id and name. It
+// is what the key pool's log lines carry (platform.KeyPool.SetKeyRefs), so
+// a line about a failing key names the row to delete. Never the token; the
+// name is quoted, since it is free text.
+func (r APIKeyRow) Ref() string {
+	return fmt.Sprintf("%s oauth_id=%d name=%q", r.Table, r.ID, r.Name)
+}
+
+// LoadAPIKeys loads the API keys of the given platform, each with its row.
+// It reads from aveloxis_ops.worker_oauth first, then optionally falls back
+// to augur_operations.worker_oauth if fallbackToAugur is true.
 //
 // The platform parameter should be "github" or "gitlab".
-func LoadAPIKeys(ctx context.Context, pool *pgxpool.Pool, platform string, fallbackToAugur bool) ([]string, error) {
+func LoadAPIKeys(ctx context.Context, pool *pgxpool.Pool, platform string, fallbackToAugur bool) ([]APIKeyRow, error) {
 	return loadAPIKeysFrom(ctx, pool, "aveloxis_ops.worker_oauth", "augur_operations.worker_oauth", platform, fallbackToAugur)
 }
 
@@ -28,7 +44,7 @@ func LoadAPIKeys(ctx context.Context, pool *pgxpool.Pool, platform string, fallb
 // (SR-5; worklist item 55): a lost connection or a cancelled context read as
 // "no keys configured", and with the fallback a failed primary read silently
 // answered with the Augur keys.
-func loadAPIKeysFrom(ctx context.Context, pool *pgxpool.Pool, primary, augur, platform string, fallbackToAugur bool) ([]string, error) {
+func loadAPIKeysFrom(ctx context.Context, pool *pgxpool.Pool, primary, augur, platform string, fallbackToAugur bool) ([]APIKeyRow, error) {
 	keys, err := loadKeysFromTable(ctx, pool, primary, platform)
 	if err != nil && !tableMissing(err) {
 		return nil, fmt.Errorf("load %s keys from %s: %w", platform, primary, err)
@@ -61,10 +77,10 @@ func SaveAPIKey(ctx context.Context, pool *pgxpool.Pool, name, token, platform s
 	return err
 }
 
-func loadKeysFromTable(ctx context.Context, pool *pgxpool.Pool, table, platform string) ([]string, error) {
+func loadKeysFromTable(ctx context.Context, pool *pgxpool.Pool, table, platform string) ([]APIKeyRow, error) {
 	// Can't parameterize table names, but these are hardcoded internal values.
 	query := fmt.Sprintf(`
-		SELECT access_token FROM %s
+		SELECT oauth_id, COALESCE(name, ''), access_token FROM %s
 		WHERE platform = $1 AND access_token != ''
 		ORDER BY oauth_id`, table)
 
@@ -74,13 +90,13 @@ func loadKeysFromTable(ctx context.Context, pool *pgxpool.Pool, table, platform 
 	}
 	defer rows.Close()
 
-	var keys []string
+	var keys []APIKeyRow
 	for rows.Next() {
-		var token string
-		if err := rows.Scan(&token); err != nil {
+		key := APIKeyRow{Table: table}
+		if err := rows.Scan(&key.ID, &key.Name, &key.Token); err != nil {
 			return nil, err
 		}
-		keys = append(keys, token)
+		keys = append(keys, key)
 	}
 	return keys, rows.Err()
 }

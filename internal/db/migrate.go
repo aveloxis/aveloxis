@@ -2847,6 +2847,27 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_contributor_identities_email_lower",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributor_identities_email_lower
 		 ON aveloxis_data.contributor_identities (lower(email))`)
+
+	// 0.29.145: before 0.29.143 the GitHub REST fallback stored the star
+	// count as watcher_count (REST's watchers_count is an alias of
+	// stargazers_count). Those snapshots are identifiable (the fallback's
+	// data_source, a tool_version before the fix) and their values known
+	// wrong, so they become NULL, once: the /watchers series leaves a NULL
+	// point out. Ledgered: two reads and two writes over repo_info and its
+	// history with no index on data_source, and the fallback has stored
+	// the watcher count since 0.29.143 (ClearStarCountWatchers names the
+	// two cases its version test cannot see).
+	runOnce(ctx, pg, logger, errs,
+		"v0.29.145 clear the star counts the GitHub REST fallback stored as watcher_count",
+		func(errs *[]error) {
+			history, current, err := pg.ClearStarCountWatchers(ctx)
+			if err != nil {
+				*errs = append(*errs, fmt.Errorf("clear the star counts the GitHub REST fallback stored as watcher_count: %w", err))
+				return
+			}
+			logger.Info("cleared the star counts the GitHub REST fallback stored as watcher_count before 0.29.143",
+				"history_snapshots", history, "current_snapshots", current)
+		})
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

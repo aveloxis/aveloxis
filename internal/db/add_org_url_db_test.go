@@ -1,0 +1,240 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package db
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/platform"
+)
+
+// A URL that is not a repository never becomes a repository row (0.29.146).
+// The add machinery used to keep going when the URL did not parse: the row
+// was stored as a git-only repository with no owner and no name, and every
+// collection of it failed at the clone. An organization page did exactly
+// that on the fleet (`https://github.com/<org>/`, stored as git-only). The
+// service validates before it calls the store, but an item saved by an
+// older release reaches the store at its approval with no such check.
+func TestAURLThatIsNotARepositoryIsNeverStored(t *testing.T) {
+	store, ctx := openSR5Store(t)
+	suffix := time.Now().UnixNano()
+	login := fmt.Sprintf("avx-orgurl-%d", suffix)
+	clean := func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, "%avx-orgurl-%")
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repos WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, "%avx-orgurl-%")
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1`, "%avx-orgurl-%")
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	}
+	t.Cleanup(clean)
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "org url probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	org := fmt.Sprintf("avx-orgurl-%d", suffix)
+	for _, u := range []string{
+		"https://github.com/" + org + "/", // the fleet's row
+		"https://github.com/" + org,
+		"https://gitlab.com/" + org,
+		"https://github.com/" + org + "/a/b", // GitHub is exactly owner/repo
+		"https://git.example.invalid/" + org, // a generic host needs owner/repo too
+		"https://github.com/",                // no path at all
+		"ftp://github.com/" + org + "/repo",  // not a web URL
+	} {
+		id, err := store.ensureRepoCollectedInGroup(ctx, gid, u, "")
+		if err == nil {
+			t.Errorf("%s: stored as repository %d, want a refusal", u, id)
+			continue
+		}
+		if !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("%s: error %v does not wrap platform.ErrInvalidRepoURL", u, err)
+		}
+		// Retrying cannot make it a repository: an approval pass marks the
+		// item failed and goes on, it does not stop at it for ever.
+		if !addItemFailurePermanent(err) {
+			t.Errorf("%s: the refusal is not a permanent item failure, so one such item would block its request's approval", u)
+		}
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_git LIKE $1`, "%"+org+"%").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d repository rows were written for URLs that are not repositories", n)
+	}
+
+	// A repository URL still goes in, on a forge and on a generic host.
+	for _, u := range []string{"https://github.com/" + org + "/repo", "https://git.example.invalid/" + org + "/repo"} {
+		if id, err := store.ensureRepoCollectedInGroup(ctx, gid, u, ""); err != nil || id <= 0 {
+			t.Errorf("%s: (%d, %v), want it stored", u, id, err)
+		}
+	}
+}
+
+// The store is the layer that writes the row, so it is the layer that
+// refuses one without an owner or a name, whichever caller built it, and a
+// rename to a URL that is not a repository's (SR-18).
+func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
+	store, ctx := openSR5Store(t)
+	suffix := time.Now().UnixNano()
+	base := fmt.Sprintf("https://git.example.invalid/avx-noowner-%d", suffix)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1`, base+"%")
+	})
+	for _, r := range []*model.Repo{
+		{GitURL: base + "/a", Platform: model.PlatformGenericGit},
+		{GitURL: base + "/b", Platform: model.PlatformGenericGit, Owner: "o"},
+		{GitURL: base + "/c", Platform: model.PlatformGenericGit, Name: "c"},
+		{GitURL: base + "/d", Platform: model.PlatformGitHub, Owner: " ", Name: "d"},
+		{GitURL: base + "/e", Platform: model.PlatformGitHub, Owner: "o", Name: ".git"}, // the name normalizes to nothing
+	} {
+		id, err := store.UpsertRepo(ctx, r)
+		if err == nil {
+			t.Errorf("UpsertRepo(owner %q, name %q) stored repository %d, want a refusal", r.Owner, r.Name, id)
+			continue
+		}
+		if !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("UpsertRepo(owner %q, name %q): %v does not wrap platform.ErrInvalidRepoURL", r.Owner, r.Name, err)
+		}
+		if missing := strings.TrimSpace(r.Owner) == "" || model.NormalizeRepoName(r.Name) == ""; missing != errors.Is(err, ErrRepoWithoutOwnerOrName) {
+			t.Errorf("UpsertRepo(owner %q, name %q): %v; ErrRepoWithoutOwnerOrName is for a missing owner or name, and only that", r.Owner, r.Name, err)
+		}
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repos WHERE repo_git LIKE $1`, base+"%").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d rows were written without an owner or a name", n)
+	}
+
+	// A rename: the row keeps what it has when the target is not a
+	// repository's URL.
+	id, err := store.UpsertRepo(ctx, &model.Repo{GitURL: base + "/ok", Platform: model.PlatformGenericGit, Owner: "o", Name: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgPage := fmt.Sprintf("https://github.com/avx-noowner-%d/", suffix)
+	// A forge's sign-in page has two path segments and parses like a
+	// repository: gitlab.com answers a project that went private with a
+	// redirect to it (review round 2). It is the forge's account space.
+	signIn := "https://gitlab.com/users/sign_in"
+	for name, rename := range map[string]func() error{
+		"UpdateRepoURL":  func() error { return store.UpdateRepoURL(ctx, id, orgPage) },
+		"UpdateRepoURLs": func() error { return store.UpdateRepoURLs(ctx, id, base+"/ok", orgPage) },
+	} {
+		if err := rename(); !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("%s to an organization page = %v, want a refusal wrapping platform.ErrInvalidRepoURL", name, err)
+		}
+	}
+	var git, owner, repoName string
+	if err := store.pool.QueryRow(ctx, `SELECT repo_git, repo_owner, repo_name FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&git, &owner, &repoName); err != nil {
+		t.Fatal(err)
+	}
+	if git != base+"/ok" || owner != "o" || repoName != "ok" {
+		t.Errorf("the refused renames changed the row: %q %q/%q", git, owner, repoName)
+	}
+	// The sign-in rule is the redirect's (RenameTargetRefusal), not the
+	// store's: prelim and reconcile-repos consult it before they look the
+	// target up. A rename the forge itself reports, into a namespace that
+	// carries one of the names, is a real rename and goes through (round 5).
+	for _, target := range []string{signIn, "https://github.com/login/oauth", orgPage} {
+		if err := RenameTargetRefusal(target); !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("RenameTargetRefusal(%s) = %v, want a refusal wrapping platform.ErrInvalidRepoURL", target, err)
+		}
+	}
+	if err := RenameTargetRefusal(base + "/renamed"); err != nil {
+		t.Errorf("RenameTargetRefusal(a repository URL) = %v", err)
+	}
+	inAuth := fmt.Sprintf("https://gitlab.com/auth/avx-noowner-%d", suffix)
+	if err := store.UpdateRepoURL(ctx, id, inAuth); err != nil {
+		t.Errorf("a forge-reported rename into a namespace named auth was refused: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, inAuth)
+	})
+	if err := store.UpdateRepoURL(ctx, id, base+"/ok"); err != nil {
+		t.Fatal(err)
+	}
+	// A rename to a repository's URL still goes through.
+	if err := store.UpdateRepoURL(ctx, id, base+"/renamed"); err != nil {
+		t.Errorf("a rename to a repository URL: %v", err)
+	}
+}
+
+// A row an older release stored under a URL that is not a repository's (an
+// organization page, kept as a git-only repository with no owner and no
+// name) is still there after the upgrade. Approving a saved item for the
+// same URL found that row and skipped the refusal, which ran only when no
+// row existed: the row was queued again and linked to the group (Copilot's
+// review 5943920317 of PR #261). The URL is judged before the lookup.
+func TestAnExistingRowUnderANonRepositoryURLIsNotQueuedOrLinked(t *testing.T) {
+	store, ctx := openSR5Store(t)
+	suffix := time.Now().UnixNano()
+	login := fmt.Sprintf("avx-legacyrow-%d", suffix)
+	// Two shapes, so the rule is the URL's and not one page's: a forge
+	// owner page, and a generic host's one-segment path.
+	pages := []string{
+		fmt.Sprintf("https://github.com/avx-legacyrow-%d/", suffix),
+		fmt.Sprintf("https://git.example.invalid/avx-legacyrow-%d", suffix),
+	}
+	like := fmt.Sprintf("%%avx-legacyrow-%d%%", suffix)
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repos WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	})
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "legacy row probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range pages {
+		stored := model.NormalizeRepoGitURL(page) // the spelling a row is stored under
+		// The legacy row, written as the old path wrote it; the store
+		// refuses it today, so it is seeded by hand.
+		var legacy int64
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, repo_group_id)
+			VALUES ($1, '', '', $2, 1) RETURNING repo_id`, stored, int(model.PlatformGenericGit)).Scan(&legacy); err != nil {
+			t.Fatal(err)
+		}
+		if found, err := store.FindRepoByURL(ctx, page); err != nil || found != legacy {
+			t.Fatalf("the premise: FindRepoByURL(%s) = (%d, %v), want the legacy row %d", page, found, err, legacy)
+		}
+
+		id, err := store.ensureRepoCollectedInGroup(ctx, gid, page, "")
+		if err == nil {
+			t.Errorf("%s: the legacy row %d was accepted as repository %d, want a refusal", page, legacy, id)
+		} else if !errors.Is(err, platform.ErrInvalidRepoURL) || !addItemFailurePermanent(err) {
+			t.Errorf("%s: error %v: want it to wrap platform.ErrInvalidRepoURL and be a permanent item failure", page, err)
+		}
+		var queued, linked int
+		if err := store.pool.QueryRow(ctx, `
+			SELECT (SELECT COUNT(*) FROM aveloxis_ops.collection_queue WHERE repo_id = $1),
+			       (SELECT COUNT(*) FROM aveloxis_ops.user_repos WHERE repo_id = $1)`, legacy).Scan(&queued, &linked); err != nil {
+			t.Fatal(err)
+		}
+		if queued != 0 || linked != 0 {
+			t.Errorf("%s: the legacy row has %d queue rows and %d group links, want none of either", page, queued, linked)
+		}
+	}
+}

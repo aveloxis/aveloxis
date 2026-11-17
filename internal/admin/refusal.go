@@ -234,6 +234,11 @@ func (e *supersededError) Unwrap() error { return db.ErrForgeIDNotAsExpected }
 // 5261384568), or a value the database rejected.
 const urlInputDetail = "a URL in the request is invalid, carries credentials or is too long"
 
+// ownerPageDetail is the sentence for a paste line that is an
+// organization's, group's or user's page (0.29.146): what people paste
+// when they mean all of its repositories.
+const ownerPageDetail = "an organization, group or user page is not a repository: add it as an organization or group instead, or give https://host/owner/repo"
+
 // rejectedValueDetail is the sentence for a value the database refused
 // (SQLSTATE class 22: invalid text such as a NUL byte, or a number out of
 // its column's range) on an operation that takes no URL.

@@ -936,11 +936,9 @@ func redirectStaysOnARepository(from *url.URL, location string) bool {
 	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
 		return false
 	}
-	switch strings.ToLower(segs[0]) {
-	case "users", "login", "sessions", "signin", "sign_in", "auth", "-":
-		return false // a forge's account or system space, not a repository
-	}
-	return true
+	// A forge's account or system space, not a repository (the one list:
+	// platform.IsForgeAccountSegment, shared with the store's rename rule).
+	return !platform.IsForgeAccountSegment(segs[0])
 }
 
 // --- add-key: store API keys in the database ---
@@ -2236,6 +2234,36 @@ func newLogger(cfg *config.Config) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
 }
 
+// keyTokens returns the tokens of rows, in order.
+func keyTokens(rows []db.APIKeyRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Token)
+	}
+	return out
+}
+
+// keyRefs says, per token, where an operator finds the key: its entry in
+// the config file (the section's api_keys list, by position from 0) and its
+// database row. A token configured in both places names both, since both
+// must go for the key to be gone.
+func keyRefs(section string, configTokens []string, rows []db.APIKeyRow) map[string]string {
+	refs := make(map[string]string, len(configTokens)+len(rows))
+	add := func(token, ref string) {
+		if prev, ok := refs[token]; ok {
+			ref = prev + "; " + ref
+		}
+		refs[token] = ref
+	}
+	for i, t := range configTokens {
+		add(t, fmt.Sprintf("config file %s.api_keys[%d]", section, i))
+	}
+	for _, r := range rows {
+		add(r.Token, r.Ref())
+	}
+	return refs
+}
+
 // loadKeys builds key pools. Priority order:
 //  1. aveloxis_ops.worker_oauth (always checked)
 //  2. augur_operations.worker_oauth (if --augur-keys is set)
@@ -2253,17 +2281,19 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("load GitHub API keys from the database: %w", err)
 	}
+	ghRefs := keyRefs("github", ghTokens, dbGH)
 	if len(dbGH) > 0 {
 		logger.Info("loaded GitHub keys from database", "count", len(dbGH))
-		ghTokens = append(ghTokens, dbGH...)
+		ghTokens = append(ghTokens, keyTokens(dbGH)...)
 	}
 	dbGL, err := db.LoadAPIKeys(ctx, store.Pool(), "gitlab", useAugurKeys)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load GitLab API keys from the database: %w", err)
 	}
+	glRefs := keyRefs("gitlab", glTokens, dbGL)
 	if len(dbGL) > 0 {
 		logger.Info("loaded GitLab keys from database", "count", len(dbGL))
-		glTokens = append(glTokens, dbGL...)
+		glTokens = append(glTokens, keyTokens(dbGL)...)
 	}
 
 	if len(ghTokens) == 0 && len(glTokens) == 0 {
@@ -2278,6 +2308,11 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 
 	gh := platform.NewKeyPool(ghTokens, logger)
 	gl := platform.NewKeyPool(glTokens, logger)
+	// Every log line about a key says where the operator finds it
+	// (0.29.146): the pool knows tokens, and a token hash does not name the
+	// worker_oauth row to delete.
+	gh.SetKeyRefs(ghRefs)
+	gl.SetKeyRefs(glRefs)
 	// 2026-09-12 admission control: the pool is the single authority for
 	// every forge constraint (per-key and pool-wide in-flight ceilings,
 	// the foreground budget reservation). The accessors are the one
@@ -2296,7 +2331,8 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
 	gl.SetAdmission(maxInflight, glPerKey, reservePct)
 	logger.Info("API key pool admission",
-		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
+		"github_keys", gh.Len(), "gitlab_keys", gl.Len(), // the pools' counts: a token listed twice is one key
+
 		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
 		"gitlab_max_inflight_per_key", glPerKey,
 		"foreground_reserve_pct", reservePct)

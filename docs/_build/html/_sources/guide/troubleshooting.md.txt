@@ -97,20 +97,34 @@ Update any external tooling polling `/api/queue` to consume this envelope and to
 
 ### HTTP 401 Bad Credentials
 
-**Symptom:** Log shows `401 Bad Credentials` for API calls.
+**Symptom:** Log shows `API key 401 — treating as transient, key not quarantined`, then `API key quarantined after consecutive 401s (will auto-recover)`, then at ERROR `API key quarantined after repeated 401s — verify the token is valid`, and for a dead token `API key sidelined until restart`.
 
-**Cause:** The token is invalid, expired, or revoked.
+**Cause:** Either the token is invalid, expired or revoked, or the forge is rejecting valid tokens for a while (GitHub's authentication has done that for hours at a time). Aveloxis tells the two apart by what the other keys are doing:
+
+- One 401 changes nothing. Three in a row with no success between them rest ("quarantine") the key: 1 minute the first time, then 2, 4, 8, 16 and 30 minutes for each further time in the life of the process. A successful request clears the run of three; it does not shorten the next rest. A 401 that arrives while the key is already resting (the answer to a request that was in flight) counts for nothing.
+- Since 0.29.146, a key is **sidelined until the process restarts** when it has come back from 5 rests still refused, with no success of its own between them, and during each of those rests most of the pool's other keys worked cleanly: a successful request and no 401. For a key never quarantined before, those are the rests of 1, 2, 4, 8 and 16 minutes: 31 minutes at the soonest. Most other keys working cleanly is what shows the forge's authentication was sound and this token was refused anyway.
+- When the other keys were refused too, or fewer than most of them made a successful request during the rest, that rest does not count (and does not undo the ones that did): keys failing together is an incident at the forge, and nothing is sidelined however long it lasts. For the same reason a pool's only key, or its last working one, is never sidelined, a dead key on a pool whose keys are mostly resting on spent rate-limit budgets is sidelined later than 31 minutes, and while a pool has more dead keys than working ones (a batch of tokens that expired together) none is sidelined: they are rested and retried as before, and the log names each.
+- One case cannot be told from a dead token: a forge that refuses some valid tokens for more than half an hour while most of the pool works. Those keys are sidelined; a restart brings them back.
+- A token listed more than once (in the config file, in `worker_oauth`, or in both) is one key: the pool keeps the first listing and logs `duplicate API keys ignored` at WARN with the number dropped and each such token's `token_hashes` entry. Before 0.29.146 each listing was a key of its own, with its own budget count for the forge's one.
+
+Before 0.29.146 a dead token was rested and retried for as long as the process ran.
+
+**Which key it is:** since 0.29.146 every log line about a key carries `key=` next to `token_hash=`: the table, `oauth_id` and name of its row (`key="aveloxis_ops.worker_oauth oauth_id=17 name=\"ops\""`), or its place in the config file (`key="config file github.api_keys[2]"`, counted from 0). On an older release, find the row from the eight hex digits after `#` in `token_hash`:
+
+```sql
+SELECT oauth_id, name, platform, created_at
+FROM aveloxis_ops.worker_oauth
+WHERE left(encode(sha256(convert_to(access_token, 'UTF8')), 'hex'), 8) = '51e017d7';
+```
 
 **Solution:**
-- The key is permanently invalidated for the lifetime of the process. No action is needed during the current run -- Aveloxis skips it automatically.
-- Check that the token is still valid on GitHub/GitLab.
-- If the token was rotated, add the new one:
+- Check the token on GitHub or GitLab. If it is revoked or expired, remove its row (`DELETE FROM aveloxis_ops.worker_oauth WHERE oauth_id = 17;` with the id from the log line) or its entry in the config file, and add its replacement:
 
 ```bash
 aveloxis add-key ghp_new_token --platform github
 ```
 
-- Restart `aveloxis serve` to pick up the new key.
+- Restart `aveloxis serve`: keys are read at startup. A sidelined key is tried again after a restart and, if it is still dead, sidelined again after its next five rests, so removing it is what ends the log lines. Until then the five-minute `key pool summary` line counts it in `keys_sidelined` and names it in `sidelined_keys` (for a GitLab key, the line `GitLab key pool: sidelined keys`).
 
 ### HTTP 403 Forbidden / Rate Limited
 
@@ -639,6 +653,22 @@ UPDATE aveloxis_ops.collection_queue SET locked_at = NULL WHERE repo_id = ?;
 ```
 
 ---
+
+## Analysis fails with `local clone failed`
+
+**Symptom:** the log shows `analysis failed` for a repository with `local clone failed: exit status 128` and one of `fatal: failed to copy file to '…/objects/pack/…': No such file or directory` or `fatal: trying to write ref '…' with nonexistent object …`. The job still completes; the repository keeps its previous dependency, libyear and scc rows until its next collection.
+
+**Cause (before 0.29.145):** the fetch into the bare clone returned while git's automatic maintenance was still repacking it in the background, and the analysis phase's copy of the clone lost a pack file to the repack. Since 0.29.145 the fetch waits for the maintenance, so the two cannot overlap.
+
+**If it still appears on 0.29.145 or later:** something other than Aveloxis is changing the bare clone while a collection runs: a `git gc`, `git repack` or `git maintenance` started by hand or by a scheduled job (`git maintenance start` registers one), or a backup tool that moves files. Look for such git processes while a collection runs (`pgrep -fl 'git (gc|repack|maintenance)'`; Aveloxis's own maintenance runs only as a child of its `git fetch`) and for a maintenance schedule registered for the account (`git config --global --get-all maintenance.repo`). The next collection of the repository runs the analysis again; nothing needs repair.
+
+## Git maintenance lock present before the fetch
+
+**Symptom:** a WARN `git maintenance lock present before the fetch` naming a bare clone and its `objects/maintenance.lock`, repeated at each collection of that repository. The clone's `objects/pack` directory holds more pack files after every fetch.
+
+**Cause:** git creates `objects/maintenance.lock` while a maintenance run is in progress and removes it when the run ends, including when the run is asked to stop. A run that was killed outright (the host lost power, the kernel's out-of-memory killer, a `kill -9`) leaves the file. Git never treats the file as stale: while it exists, every automatic maintenance of that clone is skipped, with exit status 0 and no message. Since 0.29.145 the maintenance runs inside the fetch, and Aveloxis reports the file before each fetch; it does not remove it, because the file may also belong to a maintenance someone started on the clone by hand.
+
+**Solution:** read the WARN's `lock_modified` field. A time long before the WARN (hours or days) means a leftover: no maintenance of one clone runs that long without touching the file again. Delete the file named in the `lock` field; the next fetch of the repository repacks the clone. A time within the last minutes means a maintenance may be running on that clone now, and `pgrep -fl 'git (gc|repack|maintenance)'` will not say which clone a process is working on (Aveloxis's own maintenance runs carry no path in their arguments, and a busy fleet always has some): leave the file, and look again at the repository's next collection.
 
 ## Git clone exit status 128
 

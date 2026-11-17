@@ -1,0 +1,104 @@
+// SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
+// SPDX-License-Identifier: MIT
+
+package db
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/platform"
+)
+
+// The one judgment prelim, reconcile-repos and mark-gone-repos share: a
+// redirect target that is not a repository's URL is not a rename.
+// Credentials and an over-long target are other refusals, each handled
+// where it always was, so they are NOT this class even though the store
+// refuses them too (the order inside refuseRenameTarget is what keeps them
+// apart, and this is what holds that order).
+func TestRedirectTargetNotARepository(t *testing.T) {
+	for target, want := range map[string]bool{
+		"https://gitlab.com/users/sign_in":           true, // the forge's sign-in page
+		"https://github.com/login/oauth":             true,
+		"https://github.com/chaoss/":                 true, // an owner's page
+		"https://git.example.invalid/onesegment":     true,
+		"ftp://github.com/chaoss/augur":              true,
+		"":                                           true,
+		"https://github.com/chaoss/augur":            false,
+		"https://gitlab.com/group/sub/project":       false,
+		"https://git.example.invalid/owner/repo.git": false,
+		// Credentials answer nil whatever the page (the probe never returns
+		// such a target); a repository's over-long URL answers nil too and
+		// is refused as a rename by the store.
+		"https://user:pw@github.com/chaoss/augur":           false,
+		"https://user:pw@gitlab.com/users/sign_in":          false,
+		"https://github.com/o/" + strings.Repeat("x", 9000): false,
+		// The page type is judged apart from the length (Copilot's review
+		// of PR #261): a sign-in page with a long return address is still
+		// a sign-in page, and a gone repository must not come back on it.
+		"https://github.com/" + strings.Repeat("x", 9000) + "/":                     true,
+		"https://gitlab.com/users/sign_in?redirect_to=" + strings.Repeat("x", 9000): true,
+	} {
+		err := RedirectTargetNotARepository(target)
+		if (err != nil) != want {
+			t.Errorf("RedirectTargetNotARepository(%.60q) = %v, want a refusal: %v", target, err, want)
+		}
+		if err != nil && !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("RedirectTargetNotARepository(%.60q) = %v, want it to wrap platform.ErrInvalidRepoURL", target, err)
+		}
+		// The premise for the two "false" refusals: the store does refuse them.
+		if !want && (strings.Contains(target, "@") || len(target) > 2000) && RenameTargetRefusal(target) == nil {
+			t.Errorf("premise: RenameTargetRefusal(%.60q) = nil, want the store's own refusal", target)
+		}
+	}
+}
+
+// The gone stamp's clearers ask whether a probe that answered 2xx ended on
+// the repository: at its own URL (in any spelling the store treats as the
+// same) or at another repository's (a rename), yes; redirected to a page
+// that is not a repository's, no. The stored URL itself is never judged,
+// even when it is such a page (data-verify reports those rows).
+func TestRedirectLeftTheRepository(t *testing.T) {
+	for _, c := range []struct {
+		stored, final string
+		left          bool
+	}{
+		{"https://github.com/chaoss/augur", "https://github.com/chaoss/augur", false},
+		{"https://github.com/chaoss/augur.git", "https://github.com/Chaoss/Augur/", false},
+		{"https://github.com/chaoss/augur", "https://github.com/chaoss/augur-renamed", false},
+		{"https://gitlab.example.invalid/g/p", "https://gitlab.example.invalid/users/sign_in", true},
+		{"https://github.com/chaoss/augur", "https://github.com/chaoss", true},
+		{"https://github.com/chaoss/augur", "https://github.com/login", true},
+		{"https://github.com/chaoss", "https://github.com/chaoss/", false}, // the stored URL itself
+		{"https://github.com/chaoss/augur", "https://user:pw@github.com/login", false},
+		{"https://gitlab.com/g/p", "https://gitlab.com/users/sign_in?redirect_to=" + strings.Repeat("x", 9000), true},
+		{"https://gitlab.com/g/p", "https://gitlab.com/g/" + strings.Repeat("x", 9000), false},
+		// The namespace exception does not depend on the length either:
+		// inside a group named auth, as inside any other.
+		{"https://gitlab.com/auth/p", "https://gitlab.com/auth/" + strings.Repeat("x", 9000), false},
+		// The scheme is not part of the own-URL rule (review round 8): an
+		// http row answered over https is at its own URL, also when that
+		// URL would not pass the target rule.
+		{"http://gitlab.com/auth/proj", "https://gitlab.com/auth/proj", false},
+		{"http://git.example.invalid/dwm", "HTTPS://git.example.invalid/dwm", false},
+		// A repository stored under a namespace named like an account
+		// segment (GitLab allows a group named auth) and renamed inside
+		// it: the stored row is the evidence the namespace is real.
+		{"https://gitlab.com/auth/proj", "https://gitlab.com/auth/proj-renamed", false},
+		{"https://gitlab.com/Auth/proj", "https://gitlab.com/auth/sub/proj", false},
+		// Not from another namespace, another host, or to a page that
+		// does not parse as a repository at all.
+		{"https://gitlab.com/group/proj", "https://gitlab.com/users/sign_in", true},
+		{"https://gitlab.com/users/proj", "https://gitlab.example.invalid/users/sign_in", true},
+		{"https://gitlab.com/auth/proj", "https://gitlab.com/auth", true},
+	} {
+		err := RedirectLeftTheRepository(c.stored, c.final)
+		if (err != nil) != c.left {
+			t.Errorf("RedirectLeftTheRepository(%q, %q) = %v, want a refusal: %v", c.stored, c.final, err, c.left)
+		}
+		if err != nil && !errors.Is(err, platform.ErrInvalidRepoURL) {
+			t.Errorf("RedirectLeftTheRepository(%q, %q) = %v, want it to wrap platform.ErrInvalidRepoURL", c.stored, c.final, err)
+		}
+	}
+}

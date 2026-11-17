@@ -167,14 +167,19 @@ func TestAuthStrike_ExponentialCooldownIsBounded(t *testing.T) {
 			t.Fatalf("round %d cooldown %v exceeds cap %v", round, cooldown, authQuarantineMax)
 		}
 		lastCooldown = cooldown
-		// reset for the next round's strike accumulation
+		// The rest is served before the next round: a 401 that arrives
+		// while the key is still resting is the answer to a request that
+		// was in flight, and counts for nothing (0.29.146).
+		kp.mu.Lock()
+		key.quarantineUntil = time.Time{}
 		key.authStrikes = 0
+		kp.mu.Unlock()
 	}
 	// After many rounds the cooldown should have saturated near the cap.
 	if lastCooldown < authQuarantineMax-time.Minute {
 		t.Fatalf("cooldown %v did not saturate near cap %v after many quarantines", lastCooldown, authQuarantineMax)
 	}
 	if key.Invalid {
-		t.Fatal("a repeatedly-failing key must still never be permanently invalidated by the quarantine path")
+		t.Fatal("a pool's only key must never be sidelined, however often it fails: nothing else says the forge is working")
 	}
 }

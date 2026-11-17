@@ -136,6 +136,9 @@ var ledgeredStepLabels = []string{
 	// repository adopted before the release (commit_daily.go,
 	// restoreEarlierErasLabel).
 	"v0.29.140 restore the earlier era's daily buckets of adopted forge-ID changes",
+	// 0.29.145: the pre-0.29.143 REST fallback's star counts in
+	// watcher_count become NULL (repo_info_watchers.go).
+	"v0.29.145 clear the star counts the GitHub REST fallback stored as watcher_count",
 }
 
 // TestLedgeredStepRegistry verifies every registered label is present

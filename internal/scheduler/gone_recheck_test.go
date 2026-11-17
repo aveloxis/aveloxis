@@ -133,6 +133,11 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	unreach := mk("unreach") // transport error → stays gone, checked (same bound — review round 1 MEDIUM)
 	target := mk("target")   // the forge redirected to a credentialed URL → not followed; stays gone, checked (round 9)
 	private := mk("private") // the outbound-address rule refused the host (0.29.132) → stays gone, checked, logged under the operator's phrase
+	// The probe was redirected to the forge's sign-in page, which answers
+	// 200 (a self-hosted GitLab made private): that page is not the
+	// repository, so it is no sign of life (0.29.146, review round 7) →
+	// stays gone, checked, logged under its own phrase.
+	signin := mk("signin")
 	// A legacy row whose stored URL carries credentials (the store refuses
 	// such a URL on write, so it is planted by UPDATE): never probed — the
 	// HEAD would send the credential as basic auth — stays gone, stamped
@@ -155,13 +160,16 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	verdicts := map[string]struct {
 		status int
 		err    error
+		final  string // where the probe ended; the row's own URL when empty
 	}{
-		back.url:    {http.StatusOK, nil},
-		still.url:   {http.StatusNotFound, nil},
-		flaky.url:   {http.StatusServiceUnavailable, nil},
-		unreach.url: {0, errors.New("dial tcp: i/o timeout")},
-		target.url:  {0, platform.ErrRedirectTargetUserinfo},
-		private.url: {0, platform.ErrPrivateAddress},
+		// A real rename answers 200 at another repository's URL: reachable.
+		back.url:    {http.StatusOK, nil, "https://github.com/" + slug + "/back-renamed"},
+		still.url:   {http.StatusNotFound, nil, ""},
+		flaky.url:   {http.StatusServiceUnavailable, nil, ""},
+		unreach.url: {0, errors.New("dial tcp: i/o timeout"), ""},
+		target.url:  {0, platform.ErrRedirectTargetUserinfo, ""},
+		private.url: {0, platform.ErrPrivateAddress, ""},
+		signin.url:  {http.StatusOK, nil, "https://github.com/login"},
 	}
 	// Not in verdicts on purpose: a probe of creds.url is the failure.
 	prev := goneProbe
@@ -181,6 +189,9 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 		if !ok {
 			t.Errorf("probe called for an unexpected URL %q — a credentialed row must never be probed", platform.RedactURLUserinfo(url))
 			return "", 0, errors.New("unexpected")
+		}
+		if v.final != "" {
+			return v.final, v.status, v.err
 		}
 		return url, v.status, v.err
 	}
@@ -235,6 +246,12 @@ func TestGoneRecheckVerdictsEndToEnd(t *testing.T) {
 	}
 	if gone, checked, queued := state(target.id); !gone || !checked || queued {
 		t.Errorf("a credentialed redirect target must stay gone AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if gone, checked, queued := state(signin.id); !gone || !checked || queued {
+		t.Errorf("a 200 from a page that is not a repository's must stay gone AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)
+	}
+	if lines := linesWithRepoID(logs.String(), signin.id); !strings.Contains(lines, "not a repository's") || strings.Contains(lines, "reachable again") {
+		t.Errorf("the sign-in row must be logged by its own arm; its lines: %q", lines)
 	}
 	if gone, checked, queued := state(creds.id); !gone || !checked || queued {
 		t.Errorf("a credentialed row must stay gone, unprobed, AND stamp the check: gone=%v checked=%v queued=%v", gone, checked, queued)

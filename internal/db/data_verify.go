@@ -32,8 +32,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -184,13 +186,47 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 			check: "gone and queued", severity: "WARN",
 			// A pending re-probe: a user's re-add of a gone repository, which
 			// prelim's next probe clears or sidelines. Many of them, or old
-			// ones, mean the probe is not reaching them.
+			// ones, mean the probe is not reaching them, or that it ends on
+			// a page that is not the repository's (0.29.146: the forge's
+			// sign-in page answers 200, which neither clears nor sidelines;
+			// the log has `redirect target is not a repository URL`).
 			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
 				FROM aveloxis_data.repos r
 				WHERE r.repo_gone_at IS NOT NULL
 				  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)`,
-			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each — e.g. repo_id %s",
+			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each, unless it is redirected to a page that is not the repository's (the log then says `redirect target is not a repository URL` at each collection) — e.g. repo_id %s",
 			ok:  "no gone-stamped repository is queued",
+		},
+		{
+			check: "repositories without owner or name", severity: "WARN",
+			// A row that is not a repository's (0.29.146). Two paths wrote
+			// them before that release: the add path stored a URL that did
+			// not parse as one (an organization's page) as a git-only row
+			// with no owner and no name, never cloned; and a redirect to a
+			// URL that did not parse blanked the owner and name of a row
+			// that may hold collected data. Nothing repairs either: the
+			// operator looks at each (the upgrade guide has the query).
+			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE COALESCE(r.repo_owner, '') = '' OR COALESCE(r.repo_name, '') = ''`,
+			bad: "%d repository rows have no owner or no name (written before 0.29.146: an add of a URL that is not a repository's, such as an organization page, or a redirect to one) — look at each row's repo_git and whether it holds collected data before removing anything; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
+			ok:  "every repository row has an owner and a name",
+		},
+		{
+			check: "repositories at a forge account page", severity: "WARN",
+			// A GitHub or GitLab row whose URL is under the forge's own
+			// account space (platform.ForgeAccountSegments): before
+			// 0.29.146 a redirect to the sign-in page was stored as the
+			// repository's new URL (gitlab.com sends a project that went
+			// private to /users/sign_in), and every later repository
+			// redirected there was taken for that row's duplicate. A real
+			// namespace can carry one of the names on GitLab, so this is a
+			// WARN to look at, not a verdict.
+			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE r.platform_id IN (1, 2) AND r.repo_git ~* '` + forgeAccountPageRegex() + `'`,
+			bad: "%d GitHub or GitLab repository rows have a URL under the forge's own account pages (a sign-in page stored as a redirect target before 0.29.146, unless the namespace is real) — look at each row's repo_git; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
+			ok:  "no GitHub or GitLab repository row is stored under the forge's account pages",
 		},
 		{
 			check: "earlier-era daily buckets", severity: "FAIL",
@@ -550,4 +586,17 @@ func invalidIndexFindings(invalid int64, invalidNames string, building int64, bu
 		out = append(out, VerifyResult{Check: "index builds in progress", Severity: "OK", Detail: "no concurrent index build is running"})
 	}
 	return out
+}
+
+// forgeAccountPageRegex is the POSIX pattern (matched with ~*, any case)
+// of a URL whose first path segment is one of
+// platform.ForgeAccountSegments and which has a second segment: the SQL
+// form of platform.IsForgeAccountURL's path rule, built from the one list.
+// The segments are constants of this program, quoted for the pattern.
+func forgeAccountPageRegex() string {
+	quoted := make([]string, 0, len(platform.ForgeAccountSegments))
+	for _, seg := range platform.ForgeAccountSegments {
+		quoted = append(quoted, regexp.QuoteMeta(seg))
+	}
+	return `^https?://[^/]+/(` + strings.Join(quoted, "|") + `)/[^/]`
 }

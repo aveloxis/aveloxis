@@ -674,8 +674,11 @@ var snapshotColumns = map[string]bool{
 // and the current snapshot (the history pattern keeps only the latest in
 // repo_info — v0.27.37: without the union a "series" had one point),
 // oldest first. The one reader behind /stars, /forks and /watchers (stage
-// 1b, eval-4 item 7). A NULL count reads as 0 and a NULL-dated row (legacy
-// snapshots exist) is left out: both failed the scan before. Empty is [].
+// 1b, eval-4 item 7). A NULL-dated row (legacy snapshots exist) is left
+// out, and so is a NULL count (0.29.145): the count of that snapshot is
+// unknown, and drawing it as 0 put a false value in the chart — the
+// migrate's ClearStarCountWatchers makes such rows on purpose. Both failed
+// the scan before stage 1b. Empty is [].
 func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column string) ([]MetricRow, error) {
 	if !snapshotColumns[column] {
 		return nil, fmt.Errorf("invalid column: %s", column)
@@ -683,14 +686,14 @@ func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
 		SELECT snap.date, snap.value, r.repo_name
 		FROM (
-			SELECT data_collection_date AS date, COALESCE(%[1]s, 0) AS value, repo_id
+			SELECT data_collection_date AS date, %[1]s AS value, repo_id
 			FROM aveloxis_data.repo_info WHERE repo_id = $1
 			UNION ALL
-			SELECT data_collection_date, COALESCE(%[1]s, 0), repo_id
+			SELECT data_collection_date, %[1]s, repo_id
 			FROM aveloxis_data.repo_info_history WHERE repo_id = $1
 		) snap
 		JOIN aveloxis_data.repos r ON snap.repo_id = r.repo_id
-		WHERE snap.date IS NOT NULL
+		WHERE snap.date IS NOT NULL AND snap.value IS NOT NULL
 		ORDER BY snap.date`, column), repoID)
 	if err != nil {
 		return nil, err

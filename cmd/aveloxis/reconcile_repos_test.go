@@ -59,7 +59,9 @@ func TestReconcileReposIsInterruptedNotFailed(t *testing.T) {
 	// newline between them made a comment line a "missing write").
 	for _, write := range []struct{ binding, arm string }{
 		{"store.SidelineRepo(ctx, sr.RepoID, status, db.GoneSourceReconcile); err != nil {", ""},
-		{"winnerID, ferr := store.FindRepoByURL(ctx, finalURL)", `^\s*if ferr != nil \{`},
+		// renameWinner wraps the lookup since 0.29.146 (the target is
+		// judged first); its error is the store's FindRepoByURL error.
+		{"winnerID, ferr := renameWinner(ctx, store, logger, sr.RepoID, finalURL)", `^\s*if ferr != nil \{`},
 		{"healed, herr := store.HealRenamedDuplicate(ctx, sr.RepoID, winnerID)", `^\s*if herr != nil \{`},
 	} {
 		at := strings.Index(src, write.binding)

@@ -35,6 +35,10 @@ const keyPoolSummaryHotKeys = 5
 // in-flight count — enough to see concentration the moment it starts.
 // Per-key rows at Debug for the operator who wants all 54.
 func (s *Scheduler) logKeyPoolSummary() {
+	// The summary below is the GitHub pool's. A sidelined GitLab key gets
+	// its own recurring line (review round 2: it had the one ERROR at the
+	// moment it happened and nothing after).
+	s.logSidelinedGitLabKeys()
 	if s.ghKeys == nil {
 		return
 	}
@@ -108,8 +112,20 @@ func (s *Scheduler) logKeyPoolSummary() {
 		}
 		hot = append(hot, fmt.Sprintf("%s:%d", k.Hash, k.Inflight))
 	}
+	// 0.29.146: a sidelined key is reported in every summary, by where the
+	// operator finds it, not only in the one ERROR at the moment it
+	// happened. The key stays out until a restart, so the line repeats
+	// until someone removes it.
+	sidelined := make([]string, 0, len(keys)-alive)
+	for _, k := range keys {
+		if k.Invalid {
+			sidelined = append(sidelined, k.Ref)
+		}
+	}
 	s.logger.Info("key pool summary",
 		"keys_alive", alive,
+		"keys_sidelined", len(sidelined),
+		"sidelined_keys", strings.Join(sidelined, "; "),
 		"inflight", inflight,
 		"resting_secondary", resting,
 		"quarantined", quarantined,
@@ -133,7 +149,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 	if s.logger.Enabled(context.Background(), slog.LevelDebug) {
 		for _, k := range keys {
 			s.logger.Debug("key pool key",
-				"token_hash", k.Hash, "invalid", k.Invalid,
+				"token_hash", k.Hash, "key", k.Ref, "invalid", k.Invalid,
 				"inflight", k.Inflight, "lent", k.Lent,
 				"core", k.Core, "graphql", k.GraphQL,
 				"secondary_hits", k.SecondaryHits,
@@ -194,4 +210,26 @@ func (s *Scheduler) logIdleGitHubTasks() {
 		return
 	}
 	s.logger.Warn("GitHub key pool has no usable key — GitHub-only background tasks stay idle: contributor breadth and enrichment, the activity sweeps, search-resolve and the sender resolver's API tail, org scans, the repository-metadata backfill's GitHub candidates, legally blocked repositories' block notices; distribution scans of GitHub repositories fail and sideline (snapshots kept)")
+}
+
+// logSidelinedGitLabKeys names the GitLab pool's sidelined keys, when there
+// are any, at every summary tick: a sidelined key stays out until a
+// restart, so the line repeats until someone removes the key.
+func (s *Scheduler) logSidelinedGitLabKeys() {
+	if s.glKeys == nil {
+		return
+	}
+	keys, _ := s.glKeys.Snapshot()
+	var sidelined []string
+	for _, k := range keys {
+		if k.Invalid {
+			sidelined = append(sidelined, k.Ref)
+		}
+	}
+	if len(sidelined) == 0 {
+		return
+	}
+	s.logger.Warn("GitLab key pool: sidelined keys (out until a restart; remove or replace them)",
+		"keys_sidelined", len(sidelined), "keys_total", len(keys),
+		"sidelined_keys", strings.Join(sidelined, "; "))
 }

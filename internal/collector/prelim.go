@@ -146,7 +146,12 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// indeterminate statuses — 403, 429, 5xx — prove nothing and must
 	// not flip a gone-stamped repo back to the false queued banner
 	// mid-outage.
-	if statusCode >= 200 && statusCode < 300 {
+	// And only when the 2xx is the repository's (0.29.146, review round 7):
+	// a redirect that ended on the forge's sign-in page or an owner's page
+	// answers 2xx for that page (and is declined below, logged at ERROR).
+	// A re-added gone repository in that state stays gone AND queued:
+	// data-verify's "gone and queued" check names it.
+	if statusCode >= 200 && statusCode < 300 && db.RedirectLeftTheRepository(repo.GitURL, finalURL) == nil {
 		if err := store.ClearRepoGone(ctx, repo.ID, db.GoneSourcePrelim); err != nil {
 			// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 			// defect. Only the log is suppressed — surrounding behaviour is
@@ -170,6 +175,22 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	result.NewURL = finalURL
 	logger.Info("prelim: repo redirected",
 		"old_url", platform.RedactURLUserinfo(repo.GitURL), "new_url", platform.RedactURLUserinfo(finalURL), "repo_id", repo.ID)
+
+	// The target is judged before it is looked up (0.29.146, review round
+	// 3): a URL that is not a repository's (the owner's page, the forge's
+	// sign-in page) is not a rename, and a row an older release stored
+	// under such a URL must not be found below and taken for this
+	// repository's new home — that dequeued or healed away every repository
+	// that redirected there. A repository's over-long URL keeps its own
+	// handling further down (the store refuses the rename); an over-long
+	// sign-in or owner page is refused here, by what page it is.
+	if refusal := db.RedirectTargetNotARepository(finalURL); refusal != nil {
+		logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
+			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", refusal)
+		result.Redirected = false
+		result.NewURL = ""
+		return result, nil
+	}
 
 	// Check if we already have a repo entry for the new URL.
 	existingID, err := store.FindRepoByURL(ctx, finalURL)
@@ -241,6 +262,17 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 			// instead of the job failing every cycle.
 			logger.Error("prelim: redirect target is longer than the stored-URL limit — not followed, repo URL unchanged",
 				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target_bytes", len(finalURL), "limit_bytes", db.MaxAddURLBytes)
+			result.Redirected = false
+			result.NewURL = ""
+			return result, nil
+		}
+		if errors.Is(err, platform.ErrInvalidRepoURL) && !errors.Is(err, platform.ErrURLUserinfo) {
+			// 0.29.146: the target is not a repository's URL (its owner's
+			// page, a sign-in page). Written, it blanked the row's owner
+			// and name and no collection could clone it. Not followed, as
+			// above: the row keeps its URL and collection goes on.
+			logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
+				"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", err)
 			result.Redirected = false
 			result.NewURL = ""
 			return result, nil

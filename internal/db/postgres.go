@@ -940,10 +940,10 @@ func RenameTargetRefusal(newURL string) error {
 
 // RedirectTargetNotARepository is why a probe's redirect target is not a
 // repository's URL (it does not parse as one, or it is the forge's sign-in
-// or account page), or nil. The ONE judgment prelim, reconcile-repos and
-// mark-gone-repos make before they look a target up among the stored
-// repositories or take the answer for the repository's own (SR-17; review
-// round 7 moved the three spellings here). A target carrying credentials
+// or account page), or nil. The ONE judgment prelim and reconcile-repos
+// make before they look a target up among the stored repositories, and
+// the one RedirectLeftTheRepository builds on (SR-17; review round 7
+// moved the three spellings here). A target carrying credentials
 // answers nil: the probe never returns one (it refuses the redirect). A
 // target longer than the stored-URL limit is judged by what page it is:
 // a repository's over-long URL answers nil and is refused as a rename
@@ -989,9 +989,9 @@ var errForgeAccountPage = fmt.Errorf("%w: the redirect target is a page of the f
 //
 // A 2xx from such a page is the forge answering for its sign-in or an
 // owner's page, not for the repository, so it is no sign of life: the gone
-// stamp's clearers (prelim, serve's gone recheck; mark-gone-repos makes the
-// same judgment through its own-URL rule) ask this before they clear
-// (review round 7). The own-URL comparison is the stored spelling's
+// stamp's clearers (prelim, serve's gone recheck, mark-gone-repos) ask this
+// before they clear (review round 7; mark-gone-repos since the review of
+// PR #261, 2026-11-17). The own-URL comparison is the stored spelling's
 // (model.NormalizeRepoGitURL), case-insensitively and without the scheme.
 func RedirectLeftTheRepository(storedURL, finalURL string) error {
 	if strings.EqualFold(schemeless(model.NormalizeRepoGitURL(storedURL)), schemeless(model.NormalizeRepoGitURL(finalURL))) {

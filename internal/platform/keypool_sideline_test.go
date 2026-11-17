@@ -95,7 +95,7 @@ func (r *sidelineRig) alive() int {
 	return n
 }
 
-// A key that comes back from authSidelineFailedRests rests in a row still
+// A key that comes back from authSidelineFailedRests rests still
 // refused, with no success of its own, while the pool's other keys work
 // cleanly, is a dead token: it is sidelined for the life of the process
 // (0.29.146, operator decision 2026-11-13). One failed rest fewer is not
@@ -118,7 +118,7 @@ func TestDeadKeyIsSidelinedWhileOthersWork(t *testing.T) {
 		r.quarantine(dead)
 	}
 	if !r.sidelined(dead) {
-		t.Fatalf("not sidelined after %d failed rests in a row with the other keys working", authSidelineFailedRests)
+		t.Fatalf("not sidelined after %d failed rests with the other keys working", authSidelineFailedRests)
 	}
 	if r.sidelined(g1) || r.sidelined(g2) {
 		t.Fatal("a working key was sidelined")
@@ -496,5 +496,47 @@ func TestKeyRef(t *testing.T) {
 	snap, _ := kp.Snapshot()
 	if snap[0].Ref != "config file github.api_keys[0]" || snap[1].Ref != keyRefUnknown {
 		t.Errorf("the snapshot's references are %q and %q", snap[0].Ref, snap[1].Ref)
+	}
+}
+
+// A token listed twice (the config file and worker_oauth may both hold it)
+// is ONE key of the pool, the first listing: as two it was its own witness.
+// A dead token listed twice beside one working key was never sidelined (the
+// copy is an "other" that is never clean), and a working token listed twice
+// counted as two clean witnesses (review of PR #261, 2026-11-17).
+func TestAPoolHoldsEachTokenOnce(t *testing.T) {
+	var buf bytes.Buffer
+	r := newSidelineRig(t, slog.New(slog.NewTextHandler(&buf, nil)), "ghp_dead", "ghp_dead", "ghp_good", "ghp_dead")
+	if n := len(r.kp.keys); n != 2 {
+		t.Fatalf("a pool built from one token listed three times and another once holds %d keys, want 2", n)
+	}
+	if r.key(0).Token != "ghp_dead" || r.key(1).Token != "ghp_good" {
+		t.Fatalf("the keys are %q, %q: want the tokens in the order first listed", r.key(0).Token, r.key(1).Token)
+	}
+	out := buf.String()
+	if strings.Count(out, "duplicate API keys ignored") != 1 || !strings.Contains(out, "level=WARN") || !strings.Contains(out, "duplicates=2") ||
+		!strings.Contains(out, "keys=2") || !strings.Contains(out, "token_hashes="+TokenHash("ghp_dead")) {
+		t.Errorf("want one WARN with the 2 duplicates dropped, the 2 keys kept and the duplicated token's hash once, got: %s", out)
+	}
+	if strings.Contains(out, "ghp_dead") {
+		t.Errorf("the WARN carries a token: %s", out)
+	}
+	dead, good := r.key(0), r.key(1)
+	r.ok(good)
+	r.quarantine(dead)
+	for rest := 1; rest <= authSidelineFailedRests; rest++ {
+		r.ok(good)
+		r.rest(dead)
+		r.quarantine(dead)
+	}
+	if !r.sidelined(dead) || r.sidelined(good) {
+		t.Errorf("dead sidelined=%v, good sidelined=%v: want the dead token sidelined on its one working witness", r.sidelined(dead), r.sidelined(good))
+	}
+
+	// No duplicate, no WARN.
+	buf.Reset()
+	NewKeyPool([]string{"a", "b"}, slog.New(slog.NewTextHandler(&buf, nil)))
+	if buf.Len() != 0 {
+		t.Errorf("a pool without duplicates logged: %s", buf.String())
 	}
 }

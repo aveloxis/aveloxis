@@ -55,6 +55,7 @@ cmd/aveloxis TestRunScorecardPidfileErrorNamesThePathOnce
 cmd/aveloxis TestStopReportsAPidfileItCannotRemoveAfterSignalling
 cmd/aveloxis TestStopReportsAStalePidfileItCannotRemove
 internal/collector TestHasBareCloneDoesNotReadAStatFailureAsNoClone
+internal/collector TestScanGoModGraphReportsWalkFailureAsIncomplete
 internal/pidfile TestRemoveIfOwnReportsARefusedUnlink
 internal/scheduler TestRunFacadeAndAnalysis_ReturnsTheFacadeError
 # Process / network behaviour of the host:

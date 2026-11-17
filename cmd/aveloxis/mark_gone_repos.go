@@ -31,7 +31,7 @@
 //   - DEFINITIVE 200 from a redirect that ends on a page no repository can
 //     have (the owner's page, the forge's sign-in page; 0.29.146) → nothing
 //     is written, for every class: that page is not the forge serving the
-//     repository (db.RedirectTargetNotARepository).
+//     repository (db.RedirectLeftTheRepository).
 //   - Everything else (transport errors, rate limits, 5xx) SKIPS the
 //     repo (SR-16: only definitive answers decide) — a rerun retries.
 //
@@ -252,7 +252,11 @@ func runMarkGoneRepos(ctx context.Context, store *db.PostgresStore, logger *slog
 			// owner's page, the forge's sign-in page, where gitlab.com sends
 			// a project that went private) is judged before anything is
 			// looked up under it (review round 6: the third such site).
-			targetNotARepo := !atOwnURL && db.RedirectTargetNotARepository(finalURL) != nil
+			// The judgment prelim and the gone recheck make (review of PR
+			// #261, 2026-11-17): it excepts a target inside the namespace
+			// the row is stored under (a GitLab group named `auth`), which
+			// the bare target rule read as a sign-in page here alone.
+			targetNotARepo := !atOwnURL && db.RedirectLeftTheRepository(c.GitURL, finalURL) != nil
 			targetTracked := false
 			if needsTargetLookup(c, atOwnURL, targetNotARepo) {
 				winner, ferr := store.FindRepoByURL(ctx, finalURL)
@@ -417,7 +421,11 @@ func (a reachableAction) String() string {
 // decision 2026-11-07): the stamp first, then the old arm's archived flag —
 // lifted when the 2xx came from the row's own URL (atOwnURL, sameRepoURL)
 // or through a redirect to a target no row tracks (prelim renames it in
-// place once it is queued, as reconcile-repos does for a non-archived row).
+// place once it is queued, as reconcile-repos does for a non-archived row;
+// not a target inside a namespace named like a forge account page, a GitLab
+// group `auth`, which this command takes for the repository alive and
+// prelim's rename rule still declines: the row is collected at its old URL,
+// the cost platform.ForgeAccountSegments documents).
 // A forge-archived repository renamed onto a TRACKED one (targetTracked) is
 // a data-bearing duplicate prelim dequeued on purpose; lifting it would
 // have prelim dequeue it again at every run (the L10 passes: two such rows
@@ -444,8 +452,9 @@ func onReachable(c db.GoneProbeCandidate, atOwnURL, targetTracked, targetNotARep
 
 // needsTargetLookup reports whether a 2xx's redirect target is looked up
 // among the stored repositories: only for an archived unstamped redirect
-// (the one class targetTracked decides), and never a target that is not a
-// repository's URL, under which an older release may have stored a row.
+// (the one class targetTracked decides), and never a target that left the
+// repository (db.RedirectLeftTheRepository: a page that is not a
+// repository's, under which an older release may have stored a row).
 func needsTargetLookup(c db.GoneProbeCandidate, atOwnURL, targetNotARepo bool) bool {
 	return c.Archived && !c.GoneStamped && !atOwnURL && !targetNotARepo
 }

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -303,12 +304,14 @@ const (
 	// verify it).
 	authQuarantineEscalate = 5
 
-	// authSidelineFailedRests is the number of rests in a row a key must
-	// come back from and fail again, with no success of its own, each
+	// authSidelineFailedRests is the number of rests a key must come back
+	// from and fail again, with no success of its own between them, each
 	// while most of the pool's other keys worked cleanly, before it is
 	// sidelined until the process restarts (operator decision, 2026-11-13:
 	// a revoked token on the fleet was rested and retried 37 times in 16
-	// hours). It is the escalation count on purpose: the point at which the
+	// hours). The rests need not be consecutive: one during which the
+	// other keys were not clean neither counts nor clears the count; only
+	// the key's own success clears it. It is the escalation count on purpose: the point at which the
 	// log has always said "probably actually revoked" is the point at which
 	// the pool now acts on it. Five failed rests are the rests of the
 	// first five quarantines, 1+2+4+8+16 = 31 minutes at the cooldowns
@@ -349,9 +352,29 @@ func NewKeyPool(tokens []string, logger *slog.Logger) *KeyPool {
 
 // NewKeyPoolWithBuffer creates a pool with a custom rate-limit buffer.
 func NewKeyPoolWithBuffer(tokens []string, buffer int, logger *slog.Logger) *KeyPool {
-	keys := make([]*APIKey, len(tokens))
-	for i, t := range tokens {
-		keys[i] = &APIKey{Token: t, Remaining: 5000, GraphQLRemaining: graphQLPointsPerHour}
+	// One key per token, the first listing kept (review of PR #261,
+	// 2026-11-17). loadKeys appends worker_oauth's tokens to the config
+	// file's, and a token in both was two keys: two budgets tracked for the
+	// forge's one, twice the per-key in-flight ceiling, and the token its
+	// own witness in recordAuthFailureLocked (a dead token listed twice
+	// beside one working key was never sidelined; a working one listed
+	// twice counted as two clean witnesses).
+	keys := make([]*APIKey, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
+	var dupHashes []string
+	for _, t := range tokens {
+		if seen[t] {
+			if h := TokenHash(t); !slices.Contains(dupHashes, h) {
+				dupHashes = append(dupHashes, h)
+			}
+			continue
+		}
+		seen[t] = true
+		keys = append(keys, &APIKey{Token: t, Remaining: 5000, GraphQLRemaining: graphQLPointsPerHour})
+	}
+	if dup := len(tokens) - len(keys); dup > 0 && logger != nil {
+		logger.Warn("duplicate API keys ignored: a token listed more than once (in the config file, in worker_oauth, or in both) is one key",
+			"duplicates", dup, "keys", len(keys), "token_hashes", strings.Join(dupHashes, ","))
 	}
 	if buffer < 1 {
 		buffer = DefaultBuffer
@@ -1310,7 +1333,7 @@ func (kp *KeyPool) recordAuthFailureLocked(key *APIKey) bool {
 	usable := kp.usableLocked(time.Now())
 	if key.failedRests >= authSidelineFailedRests {
 		key.Invalid = true
-		kp.logger.Error("API key sidelined until restart: it came back from every one of its last rests still refused while most other keys of the pool worked — the token is revoked or expired; remove or replace it",
+		kp.logger.Error("API key sidelined until restart: with no success of its own it came back from rests still refused, each while most other keys of the pool worked (the count is failed_rests_while_others_worked) — the token is revoked or expired; remove or replace it",
 			"token_hash", TokenHash(key.Token), "key", key.Ref(),
 			"failed_rests_while_others_worked", key.failedRests,
 			"quarantine_count", key.quarantineCount,

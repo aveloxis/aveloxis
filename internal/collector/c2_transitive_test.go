@@ -165,6 +165,9 @@ func TestScanGoModGraphStopsOnExhaustedBudget(t *testing.T) {
 // then replaced the valid prior Go closure (SR-16: a walk error is
 // not "zero modules").
 func TestScanGoModGraphReportsWalkFailureAsIncomplete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny the directory walk")
+	}
 	dir := t.TempDir()
 	locked := filepath.Join(dir, "locked")
 	if err := os.MkdirAll(filepath.Join(locked, "mod"), 0o755); err != nil {

@@ -2331,7 +2331,8 @@ func loadKeys(ctx context.Context, cfg *config.Config, store *db.PostgresStore, 
 	gh.SetAdmission(maxInflight, maxPerKey, reservePct)
 	gl.SetAdmission(maxInflight, glPerKey, reservePct)
 	logger.Info("API key pool admission",
-		"github_keys", len(ghTokens), "gitlab_keys", len(glTokens),
+		"github_keys", gh.Len(), "gitlab_keys", gl.Len(), // the pools' counts: a token listed twice is one key
+
 		"max_inflight", maxInflight, "max_inflight_per_key", maxPerKey,
 		"gitlab_max_inflight_per_key", glPerKey,
 		"foreground_reserve_pct", reservePct)

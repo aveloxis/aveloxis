@@ -150,9 +150,9 @@ func TestOnReachableDecidesByClass(t *testing.T) {
 	// cancel first, like every other store write here.
 	src := srctest.StripGoComments(markGoneSrc(t))
 	if !strings.Contains(src, "switch onReachable(c, atOwnURL, targetTracked, targetNotARepo) {") ||
-		!strings.Contains(src, "targetNotARepo := !atOwnURL && db.RedirectTargetNotARepository(finalURL) != nil") || !strings.Contains(src, "finalURL, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)") ||
+		!strings.Contains(src, "targetNotARepo := !atOwnURL && db.RedirectLeftTheRepository(c.GitURL, finalURL) != nil") || !strings.Contains(src, "finalURL, status, perr := collector.ResolveRedirectTarget(ctx, c.GitURL)") ||
 		!strings.Contains(src, "atOwnURL := sameRepoURL(finalURL, c.GitURL)") {
-		t.Error("the 2xx arm dispatches on onReachable(c, atOwnURL, targetTracked, targetNotARepo), with the probe's final URL kept, compared by sameRepoURL and judged by db.RedirectTargetNotARepository")
+		t.Error("the 2xx arm dispatches on onReachable(c, atOwnURL, targetTracked, targetNotARepo), with the probe's final URL kept, compared by sameRepoURL and judged by db.RedirectLeftTheRepository (the judgment prelim and the gone recheck make)")
 	}
 	// The target lookup runs only for an archived unstamped redirect, and a
 	// lookup ERROR is not "untracked" (SR-5): it skips, after classifying a

@@ -72,7 +72,8 @@ func TestRenameWinnerIgnoresARowStoredUnderANonRepositoryURL(t *testing.T) {
 // Every command that follows a redirect judges its target before looking
 // it up among the stored repositories (review rounds 3, 4 and 6 each found
 // one more site that did not). The judgment is the store's
-// (db.RedirectTargetNotARepository); here, the wiring: the files that probe
+// (db.RedirectTargetNotARepository, or db.RedirectLeftTheRepository
+// built on it, which mark-gone-repos uses); here, the wiring: the files that probe
 // a redirect, the lookups in them, and the judgment ahead of each.
 func TestRedirectTargetsAreJudgedBeforeTheLookup(t *testing.T) {
 	probing := map[string]int{}
@@ -86,7 +87,7 @@ func TestRedirectTargetsAreJudgedBeforeTheLookup(t *testing.T) {
 	// Two commands probe (mark-gone-repos and reconcile-repos), each with
 	// one lookup; the functions holding them are checked by name below.
 	if len(probing) != 2 {
-		t.Errorf("files probing a redirect: %v, want 2 (a new one judges its target with db.RedirectTargetNotARepository before any lookup, and is counted here)", probing)
+		t.Errorf("files probing a redirect: %v, want 2 (a new one judges its target with db.RedirectTargetNotARepository or db.RedirectLeftTheRepository before any lookup, and is counted here)", probing)
 	}
 	for name, n := range probing {
 		if n != 1 {

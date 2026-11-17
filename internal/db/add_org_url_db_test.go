@@ -173,3 +173,68 @@ func TestTheStoreRefusesARepositoryWithoutOwnerOrName(t *testing.T) {
 		t.Errorf("a rename to a repository URL: %v", err)
 	}
 }
+
+// A row an older release stored under a URL that is not a repository's (an
+// organization page, kept as a git-only repository with no owner and no
+// name) is still there after the upgrade. Approving a saved item for the
+// same URL found that row and skipped the refusal, which ran only when no
+// row existed: the row was queued again and linked to the group (Copilot's
+// review 5943920317 of PR #261). The URL is judged before the lookup.
+func TestAnExistingRowUnderANonRepositoryURLIsNotQueuedOrLinked(t *testing.T) {
+	store, ctx := openSR5Store(t)
+	suffix := time.Now().UnixNano()
+	login := fmt.Sprintf("avx-legacyrow-%d", suffix)
+	// Two shapes, so the rule is the URL's and not one page's: a forge
+	// owner page, and a generic host's one-segment path.
+	pages := []string{
+		fmt.Sprintf("https://github.com/avx-legacyrow-%d/", suffix),
+		fmt.Sprintf("https://git.example.invalid/avx-legacyrow-%d", suffix),
+	}
+	like := fmt.Sprintf("%%avx-legacyrow-%d%%", suffix)
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_repos WHERE repo_id IN (SELECT repo_id FROM aveloxis_data.repos WHERE repo_git LIKE $1)`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_data.repos WHERE repo_git LIKE $1`, like)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.user_groups WHERE user_id IN (SELECT user_id FROM aveloxis_ops.users WHERE login_name = $1)`, login)
+		cleanupExecRetry(bg, store, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login)
+	})
+	uid, err := store.UpsertOAuthUser(ctx, OAuthUserInfo{Login: login, Provider: "github"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := store.CreateUserGroup(ctx, uid, "legacy row probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range pages {
+		stored := model.NormalizeRepoGitURL(page) // the spelling a row is stored under
+		// The legacy row, written as the old path wrote it; the store
+		// refuses it today, so it is seeded by hand.
+		var legacy int64
+		if err := store.pool.QueryRow(ctx, `
+			INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, repo_group_id)
+			VALUES ($1, '', '', $2, 1) RETURNING repo_id`, stored, int(model.PlatformGenericGit)).Scan(&legacy); err != nil {
+			t.Fatal(err)
+		}
+		if found, err := store.FindRepoByURL(ctx, page); err != nil || found != legacy {
+			t.Fatalf("the premise: FindRepoByURL(%s) = (%d, %v), want the legacy row %d", page, found, err, legacy)
+		}
+
+		id, err := store.ensureRepoCollectedInGroup(ctx, gid, page, "")
+		if err == nil {
+			t.Errorf("%s: the legacy row %d was accepted as repository %d, want a refusal", page, legacy, id)
+		} else if !errors.Is(err, platform.ErrInvalidRepoURL) || !addItemFailurePermanent(err) {
+			t.Errorf("%s: error %v: want it to wrap platform.ErrInvalidRepoURL and be a permanent item failure", page, err)
+		}
+		var queued, linked int
+		if err := store.pool.QueryRow(ctx, `
+			SELECT (SELECT COUNT(*) FROM aveloxis_ops.collection_queue WHERE repo_id = $1),
+			       (SELECT COUNT(*) FROM aveloxis_ops.user_repos WHERE repo_id = $1)`, legacy).Scan(&queued, &linked); err != nil {
+			t.Fatal(err)
+		}
+		if queued != 0 || linked != 0 {
+			t.Errorf("%s: the legacy row has %d queue rows and %d group links, want none of either", page, queued, linked)
+		}
+	}
+}

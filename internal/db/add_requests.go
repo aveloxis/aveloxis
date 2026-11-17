@@ -85,30 +85,37 @@ func (s *PostgresStore) GetGroupStatus(ctx context.Context, groupID int64) (stri
 // ensureRepoCollectedInGroup is the single "make this URL exist,
 // collect, and belong to the group" helper — shared by the admin
 // direct-add path and the approval processor so both behave
-// identically. Resolves the URL by its stored spelling and case; creates
-// the repos row only when absent (an existing repo is linked, not
-// re-upserted); always ensures a queue row; always links user_repos.
+// identically. Refuses a URL that is not a repository's first, whether or
+// not a row is stored under it; then resolves the URL by its stored
+// spelling and case; creates the repos row only when absent (an existing
+// repo is linked, not re-upserted); always ensures a queue row; always
+// links user_repos.
 // glWebBase is the configured GitLab instance's web base: a new row under
 // it is a GitLab repository whatever its host name says (round-3 review of
 // 0.29.100), as the org scan of that instance records its projects.
 func (s *PostgresStore) ensureRepoCollectedInGroup(ctx context.Context, groupID int64, repoURL, glWebBase string) (int64, error) {
+	// A URL that does not parse as a repository is refused (0.29.146,
+	// SR-18: the layer that writes the row enforces it). Until then it
+	// was stored anyway, as a git-only repository with no owner and no
+	// name ("historical permissiveness"), on the grounds that the web
+	// path had validated it: an organization page stored that way
+	// failed at the clone on every collection. The service still
+	// validates first; an item an older release saved reaches this
+	// function at its approval with no other check.
+	//
+	// Judged BEFORE the lookup (Copilot's review 5943920317 of PR #261):
+	// the row the old path stored under such a URL is still there. With the
+	// lookup first, that row was found, and it was queued again and linked
+	// with no check at all.
+	ru, perr := platform.ParseAnyRepoURLWithHints(repoURL, platform.GitLabWebHints(glWebBase))
+	if perr != nil {
+		return 0, fmt.Errorf("not a repository URL: %w", perr)
+	}
 	repoID, err := s.FindRepoByURL(ctx, repoURL)
 	if err != nil {
 		return 0, fmt.Errorf("resolve repo URL: %w", err)
 	}
 	if repoID == 0 {
-		// A URL that does not parse as a repository is refused (0.29.146,
-		// SR-18: the layer that writes the row enforces it). Until then it
-		// was stored anyway, as a git-only repository with no owner and no
-		// name ("historical permissiveness"), on the grounds that the web
-		// path had validated it: an organization page stored that way
-		// failed at the clone on every collection. The service still
-		// validates first; an item an older release saved reaches this
-		// function at its approval with no other check.
-		ru, perr := platform.ParseAnyRepoURLWithHints(repoURL, platform.GitLabWebHints(glWebBase))
-		if perr != nil {
-			return 0, fmt.Errorf("not a repository URL: %w", perr)
-		}
 		repoID, err = s.UpsertRepo(ctx, &model.Repo{GitURL: repoURL, Platform: ru.Platform, Owner: ru.Owner, Name: ru.Repo})
 		if err != nil {
 			return 0, err

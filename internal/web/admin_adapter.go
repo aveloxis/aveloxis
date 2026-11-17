@@ -142,7 +142,7 @@ func addErrorFlag(err error) string {
 		}
 		return "capacity"
 	case admin.InvalidInput, admin.TooMany:
-		return "invalid"
+		return addErrorInvalid
 	}
 	return "1"
 }

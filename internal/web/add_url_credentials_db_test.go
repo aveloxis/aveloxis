@@ -108,6 +108,26 @@ func TestAddURLWithCredentialsIsRefusedAndNotLogged(t *testing.T) {
 	if page := get(w.Header().Get("Location")); page.Code != http.StatusOK || !strings.Contains(page.Body.String(), repoNotice) {
 		t.Errorf("GET %s = %d; want 200 and the page to say %q", w.Header().Get("Location"), page.Code, repoNotice)
 	}
+	// An owner's page, alone or beside a good line, gets its own notice
+	// (Copilot's review of PR #261: the page said "not valid repository
+	// URLs ... credentials ... over-long", none of which it was).
+	const ownerNotice = "an organization, group or user page, not a repository"
+	for _, paste := range []string{"https://github.com/" + marker + "-org/", "https://github.com/" + marker + "-org/\nhttps://git.example.invalid/" + marker + "/beside"} {
+		w := post("/groups/add-repo", url.Values{"repo_urls": {paste}})
+		if want := fmt.Sprintf("/groups/%d?add_error=owner_page", gid); w.Code != http.StatusFound || w.Header().Get("Location") != want {
+			t.Errorf("add-repo of %q = %d %q; want 302 to %s", paste, w.Code, w.Header().Get("Location"), want)
+			continue
+		}
+		if page := get(w.Header().Get("Location")); page.Code != http.StatusOK || !strings.Contains(page.Body.String(), ownerNotice) || strings.Contains(page.Body.String(), repoNotice) {
+			t.Errorf("GET %s = %d; want 200, the page to say %q and not %q", w.Header().Get("Location"), page.Code, ownerNotice, repoNotice)
+		}
+	}
+	// The store refusing the whole paste (an over-long line) keeps the
+	// general notice even beside an owner's page: it is the one that says
+	// nothing from the paste was added (L10 on the PR #261 fix).
+	if w := post("/groups/add-repo", url.Values{"repo_urls": {"https://github.com/" + marker + "-org/\nhttps://git.example.invalid/" + marker + "/" + strings.Repeat("z", db.MaxAddURLBytes)}}); w.Code != http.StatusFound || !strings.HasSuffix(w.Header().Get("Location"), "?add_error=invalid") {
+		t.Errorf("owner page beside an over-long line = %d %q; want 302 to ?add_error=invalid", w.Code, w.Header().Get("Location"))
+	}
 	// An over-long URL is the store's refusal of the whole paste; it is the
 	// user's input too, not a "try again".
 	if w := post("/groups/add-repo", url.Values{"repo_urls": {"https://git.example.invalid/" + marker + "/" + strings.Repeat("y", db.MaxAddURLBytes)}}); w.Code != http.StatusFound || !strings.HasSuffix(w.Header().Get("Location"), "?add_error=invalid") {

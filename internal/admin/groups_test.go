@@ -241,6 +241,50 @@ func TestAddToGroupRefusals(t *testing.T) {
 			}
 		}
 	})
+	// Copilot's review of PR #261: a paste of nothing but an owner's page
+	// answered the generic sentence, so the guidance the mixed paste gets
+	// (0.29.146) was lost exactly where it is most needed.
+	t.Run("only an owner page keeps its guidance", func(t *testing.T) {
+		svc, _, _ := testService(t, &fakeStore{}, Options{})
+		for _, tc := range []struct {
+			paste      []string
+			ownerPages int
+			want, not  string
+		}{
+			{[]string{"https://github.com/chaoss/"}, 1, "an organization, group or user page is not a repository", urlInputDetail},
+			{[]string{"github.com/chaoss", "https://gitlab.com/gitlab-org/"}, 2, "an organization, group or user page is not a repository", urlInputDetail},
+			// Mixed with another refused line: both sentences.
+			{[]string{"https://github.com/chaoss/", "https://user:pw@github.com/o/r"}, 1, urlInputDetail + "; an organization, group or user page is not a repository", "pw"},
+			// No owner page: the one sentence, as before.
+			{[]string{"https://user:pw@github.com/o/r"}, 0, urlInputDetail, "organization"},
+		} {
+			out, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, tc.paste)
+			ref, ok := Classify(err)
+			if !errors.Is(err, ErrInvalidInput) || !ok || ref.Kind != InvalidInput || !strings.Contains(ref.Detail, tc.want) || strings.Contains(ref.Detail, tc.not) {
+				t.Errorf("AddToGroup(%q) = %v (%+v); want InvalidInput saying %q and not %q", tc.paste, err, ref, tc.want, tc.not)
+			}
+			if !out.AllRefused {
+				t.Errorf("AddToGroup(%q): the outcome does not say every line was refused: %+v", tc.paste, out)
+			}
+			if out.OwnerPages != tc.ownerPages || len(out.Invalid) != len(tc.paste) {
+				t.Errorf("AddToGroup(%q): outcome %+v; want %d owner pages among %d refused lines", tc.paste, out, tc.ownerPages, len(tc.paste))
+			}
+		}
+	})
+	// L10 on that fix: when the STORE refuses the whole paste (a line over
+	// its byte limit), nothing was added, and the outcome must not read as
+	// the service's own "no usable line" refusal: the web's owner-page
+	// notice says the other lines were skipped, which would be false.
+	t.Run("a store refusal is not the all-refused outcome", func(t *testing.T) {
+		st := &fakeStore{addReposToGroup: func(context.Context, int, int64, []string, int, string) (db.AddOutcome, error) {
+			return db.AddOutcome{}, db.ErrURLTooLong
+		}}
+		svc, _, _ := testService(t, st, Options{})
+		out, err := svc.AddToGroup(context.Background(), Actor{UserID: 7, Kind: Session}, 5, []string{"https://github.com/chaoss/", "github.com/a/b"})
+		if !errors.Is(err, db.ErrURLTooLong) || out.AllRefused || out.OwnerPages != 1 {
+			t.Errorf("= %+v, %v; want the store's refusal, one owner page counted and AllRefused false", out, err)
+		}
+	})
 	t.Run("the store's refusals pass through, scope hook only when something linked", func(t *testing.T) {
 		for _, tc := range []struct {
 			err    error

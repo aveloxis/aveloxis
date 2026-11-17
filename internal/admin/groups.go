@@ -126,6 +126,14 @@ func (s *Service) AuthorizeGroupRepo(ctx context.Context, a Actor, groupID, repo
 type AddOutcome struct {
 	db.AddOutcome
 	Invalid []string
+	// OwnerPages counts the Invalid lines that are an organization's,
+	// group's or user's page: the adapters say so in their own words,
+	// since "invalid, credentials or too long" describes none of it.
+	OwnerPages int
+	// AllRefused is set with the service's own refusal of a paste none of
+	// whose lines was usable (the store was not asked). A store refusal of
+	// the whole paste leaves it false.
+	AllRefused bool
 }
 
 // AddToGroup adds a paste of repository URLs to the actor's group under
@@ -177,6 +185,7 @@ func (s *Service) AddToGroup(ctx context.Context, a Actor, groupID int64, paste 
 			case platform.IsForgeOwnerPageURL(line):
 				// What people paste when they mean all of it (0.29.146).
 				reason = "an organization, group or user page, not a repository (add it as an organization or group instead, or give https://host/owner/repo)"
+				out.OwnerPages++
 			}
 			out.Invalid = append(out.Invalid, logURL(line)+": "+reason)
 			continue
@@ -188,7 +197,18 @@ func (s *Service) AddToGroup(ctx context.Context, a Actor, groupID int64, paste 
 			// The one sentence for a refused URL (the adapters answer the
 			// error, not the outcome); the refused lines, redacted, are
 			// logged here, since they are what an operator asks about.
-			err := refuseInput(urlInputDetail)
+			// An owner's page keeps its own sentence (Copilot's review of
+			// PR #261): alone when every refused line is one, after the
+			// general sentence otherwise. Neither echoes a line.
+			detail := urlInputDetail
+			switch {
+			case out.OwnerPages == len(out.Invalid):
+				detail = ownerPageDetail
+			case out.OwnerPages > 0:
+				detail = urlInputDetail + "; " + ownerPageDetail
+			}
+			out.AllRefused = true
+			err := refuseInput(detail)
 			s.refused(op, a, err, "group_id", groupID, "invalid", out.Invalid)
 			return out, err
 		}

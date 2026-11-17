@@ -165,7 +165,14 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request, sess *Ses
 		// Tell the user, who otherwise sees the page a success shows
 		// (Copilot review of PR #207); a rejected group gets its own
 		// notice, since trying again cannot work (round-24 review).
-		http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, addErrorFlag(err)), http.StatusFound)
+		flag := addErrorFlag(err)
+		// Only for the service's own "no usable line" refusal: when the
+		// store refused the whole paste, the general notice is the true
+		// one (it says nothing from the paste was added).
+		if flag == addErrorInvalid && out.AllRefused {
+			flag = invalidAddFlag(out)
+		}
+		http.Redirect(w, r, fmt.Sprintf("/groups/%d?add_error=%s", groupID, flag), http.StatusFound)
 		return
 	}
 	if len(out.Invalid) > 0 {
@@ -174,23 +181,42 @@ func (s *Server) handleAddRepo(w http.ResponseWriter, r *http.Request, sess *Ses
 		s.logger.Warn("some URLs were invalid", "group_id", groupID, "errors", out.Invalid)
 	}
 	if out.Pending > 0 {
-		http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d%s", groupID, out.Pending, invalidFlag(out.Invalid)), http.StatusFound)
+		http.Redirect(w, r, fmt.Sprintf("/groups/%d?pending=%d%s", groupID, out.Pending, invalidFlag(out)), http.StatusFound)
 		return
 	}
 	loc := fmt.Sprintf("/groups/%d", groupID)
 	if len(out.Invalid) > 0 {
-		loc += "?add_error=invalid"
+		loc += "?add_error=" + invalidAddFlag(out)
 	}
 	http.Redirect(w, r, loc, http.StatusFound)
 }
 
+// The group page's notices for refused paste lines: the general one, and
+// the one for an owner's page (Copilot's review of PR #261: the general
+// notice speaks of credentials and length, which an organization's page
+// has nothing to do with).
+const (
+	addErrorInvalid   = "invalid"
+	addErrorOwnerPage = "owner_page"
+)
+
+// invalidAddFlag names the notice for an outcome with refused lines: the
+// owner-page one when any of them was an owner's page (it also says the
+// other refused lines were skipped).
+func invalidAddFlag(out admin.AddOutcome) string {
+	if out.OwnerPages > 0 {
+		return addErrorOwnerPage
+	}
+	return addErrorInvalid
+}
+
 // invalidFlag is the add_error query fragment for a paste with refused
 // lines, empty when every line was accepted.
-func invalidFlag(invalid []string) string {
-	if len(invalid) == 0 {
+func invalidFlag(out admin.AddOutcome) string {
+	if len(out.Invalid) == 0 {
 		return ""
 	}
-	return "&add_error=invalid"
+	return "&add_error=" + invalidAddFlag(out)
 }
 
 func (s *Server) handleAddOrg(w http.ResponseWriter, r *http.Request, sess *Session) {

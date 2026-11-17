@@ -181,8 +181,9 @@ func RunPrelim(ctx context.Context, store *db.PostgresStore, repo *model.Repo, l
 	// sign-in page) is not a rename, and a row an older release stored
 	// under such a URL must not be found below and taken for this
 	// repository's new home — that dequeued or healed away every repository
-	// that redirected there. Credentials and over-long targets keep their
-	// own handling further down.
+	// that redirected there. A repository's over-long URL keeps its own
+	// handling further down (the store refuses the rename); an over-long
+	// sign-in or owner page is refused here, by what page it is.
 	if refusal := db.RedirectTargetNotARepository(finalURL); refusal != nil {
 		logger.Error("prelim: redirect target is not a repository URL — not followed, repo URL unchanged",
 			"repo_id", repo.ID, "url", platform.RedactURLUserinfo(repo.GitURL), "target", platform.RedactURLUserinfo(finalURL), "error", refusal)

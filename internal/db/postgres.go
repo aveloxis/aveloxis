@@ -933,7 +933,7 @@ func RenameTargetRefusal(newURL string) error {
 		return err
 	}
 	if platform.IsForgeAccountURL(newURL) {
-		return fmt.Errorf("%w: the redirect target is a page of the forge's own (sign-in or account), not a repository", platform.ErrInvalidRepoURL)
+		return errForgeAccountPage
 	}
 	return nil
 }
@@ -944,15 +944,43 @@ func RenameTargetRefusal(newURL string) error {
 // mark-gone-repos make before they look a target up among the stored
 // repositories or take the answer for the repository's own (SR-17; review
 // round 7 moved the three spellings here). A target carrying credentials
-// or longer than the stored-URL limit is not this class and answers nil:
-// refuseRenameTarget returns those two before it parses, and each caller
-// refuses them where it always did.
+// answers nil: the probe never returns one (it refuses the redirect). A
+// target longer than the stored-URL limit is judged by what page it is:
+// a repository's over-long URL answers nil and is refused as a rename
+// where it always was; an over-long sign-in or owner page is this class.
 func RedirectTargetNotARepository(finalURL string) error {
-	if refusal := RenameTargetRefusal(finalURL); errors.Is(refusal, platform.ErrInvalidRepoURL) {
+	refusal := RenameTargetRefusal(finalURL)
+	if errors.Is(refusal, ErrURLTooLong) {
+		// The length is the store's limit on what it keeps, not a fact
+		// about the page (Copilot's review of PR #261): gitlab.com's
+		// sign-in redirect carries the address to return to, and past the
+		// limit it was taken for the repository, so a gone one came back
+		// on it. The page is judged by the same two rules, without the
+		// length.
+		refusal = redirectPageRefusal(finalURL)
+	}
+	if errors.Is(refusal, platform.ErrInvalidRepoURL) {
 		return refusal
 	}
 	return nil
 }
+
+// redirectPageRefusal is RenameTargetRefusal's judgment of what kind of
+// page a URL is, without the store's credential and length rules: nil
+// for a repository's URL.
+func redirectPageRefusal(finalURL string) error {
+	if _, err := platform.ParseAnyRepoURL(finalURL); err != nil {
+		return fmt.Errorf("the new URL is not a repository's: %w", err)
+	}
+	if platform.IsForgeAccountURL(finalURL) {
+		return errForgeAccountPage
+	}
+	return nil
+}
+
+// errForgeAccountPage is the redirect rule's refusal of a forge's sign-in
+// or account page (RenameTargetRefusal).
+var errForgeAccountPage = fmt.Errorf("%w: the redirect target is a page of the forge's own (sign-in or account), not a repository", platform.ErrInvalidRepoURL)
 
 // RedirectLeftTheRepository is why a probe of storedURL that ended at
 // finalURL did not reach a repository: it was redirected, and to a page
@@ -976,7 +1004,7 @@ func RedirectLeftTheRepository(storedURL, finalURL string) error {
 	// namespace, the stored row is the evidence, and a rename inside it is
 	// the repository answering (review round 8). A sign-in page reached
 	// from any other namespace stays refused.
-	if refusal != nil && refuseRenameTarget(finalURL) == nil && platform.SameHostAndFirstSegment(storedURL, finalURL) {
+	if errors.Is(refusal, errForgeAccountPage) && platform.SameHostAndFirstSegment(storedURL, finalURL) {
 		return nil
 	}
 	return refusal

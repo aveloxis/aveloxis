@@ -373,8 +373,9 @@ func reconcileInterruptedReport(w io.Writer, mode string, c reconcileCounts, tot
 // caller treats the row as it always treated an untracked target
 // (re-enqueue; prelim then declines the redirect, logs it at ERROR and
 // collects against the stored URL) and the run converges. Only that
-// class: a target carrying credentials or longer than the stored-URL
-// limit is looked up as before and refused where it always was.
+// class: a repository's URL longer than the stored-URL limit is looked up
+// as before and refused where it always was (an over-long sign-in or
+// owner page is this class: the page is judged without its length).
 //
 // The re-enqueue is deliberate here although mark-gone-repos leaves its
 // archived twin alone (review round 7): this command's rows are neither

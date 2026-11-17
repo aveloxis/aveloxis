@@ -28,12 +28,17 @@ func TestRedirectTargetNotARepository(t *testing.T) {
 		"https://github.com/chaoss/augur":            false,
 		"https://gitlab.com/group/sub/project":       false,
 		"https://git.example.invalid/owner/repo.git": false,
-		// Credentials and length, alone and on a page that is also not a
-		// repository's: their own rules answer first.
-		"https://user:pw@github.com/chaoss/augur":               false,
-		"https://user:pw@gitlab.com/users/sign_in":              false,
-		"https://github.com/o/" + strings.Repeat("x", 9000):     false,
-		"https://github.com/" + strings.Repeat("x", 9000) + "/": false,
+		// Credentials answer nil whatever the page (the probe never returns
+		// such a target); a repository's over-long URL answers nil too and
+		// is refused as a rename by the store.
+		"https://user:pw@github.com/chaoss/augur":           false,
+		"https://user:pw@gitlab.com/users/sign_in":          false,
+		"https://github.com/o/" + strings.Repeat("x", 9000): false,
+		// The page type is judged apart from the length (Copilot's review
+		// of PR #261): a sign-in page with a long return address is still
+		// a sign-in page, and a gone repository must not come back on it.
+		"https://github.com/" + strings.Repeat("x", 9000) + "/":                     true,
+		"https://gitlab.com/users/sign_in?redirect_to=" + strings.Repeat("x", 9000): true,
 	} {
 		err := RedirectTargetNotARepository(target)
 		if (err != nil) != want {
@@ -67,6 +72,11 @@ func TestRedirectLeftTheRepository(t *testing.T) {
 		{"https://github.com/chaoss/augur", "https://github.com/login", true},
 		{"https://github.com/chaoss", "https://github.com/chaoss/", false}, // the stored URL itself
 		{"https://github.com/chaoss/augur", "https://user:pw@github.com/login", false},
+		{"https://gitlab.com/g/p", "https://gitlab.com/users/sign_in?redirect_to=" + strings.Repeat("x", 9000), true},
+		{"https://gitlab.com/g/p", "https://gitlab.com/g/" + strings.Repeat("x", 9000), false},
+		// The namespace exception does not depend on the length either:
+		// inside a group named auth, as inside any other.
+		{"https://gitlab.com/auth/p", "https://gitlab.com/auth/" + strings.Repeat("x", 9000), false},
 		// The scheme is not part of the own-URL rule (review round 8): an
 		// http row answered over https is at its own URL, also when that
 		// URL would not pass the target rule.

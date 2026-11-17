@@ -138,6 +138,9 @@ func TestGroupAddRepoErrorStatus(t *testing.T) {
 		// for what it is, with where to add it (an older release stored one
 		// as a repository with no owner and no name).
 		{"an organization page is not a repository", store, gid, `{"urls":["https://github.com/_avapi-add-status-orgpage/","` + urlPrefix + `works"],"kind":"repo"}`, http.StatusOK, `"invalid":["https://github.com/_avapi-add-status-orgpage/: an organization, group or user page, not a repository`, false},
+		// Alone, it is the whole answer (Copilot's review of PR #261: the
+		// generic sentence replaced it).
+		{"only an organization page", store, gid, `{"urls":["https://github.com/_avapi-add-status-orgpage/"],"kind":"repo"}`, http.StatusBadRequest, "an organization, group or user page is not a repository", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &lockedBuffer{}

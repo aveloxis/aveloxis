@@ -20,21 +20,9 @@ func TestLibyearHistoryTableExists(t *testing.T) {
 	}
 }
 
-// TestRotateLibyearToHistoryExists verifies the history rotation method exists.
-func TestRotateLibyearToHistoryExists(t *testing.T) {
-	src, err := os.ReadFile("../db/history.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	if !strings.Contains(code, "RotateLibyearToHistory") {
-		t.Error("history.go must contain RotateLibyearToHistory method")
-	}
-	if !strings.Contains(code, "repo_deps_libyear_history") {
-		t.Error("RotateLibyearToHistory must reference repo_deps_libyear_history")
-	}
-}
+// That the rotation exists, copies every column and survives a column the
+// history table lacks is held by behaviour in internal/db
+// (libyear_rotation_db_test.go), not by reading history.go here.
 
 // TestLibyearRotationCalledBeforeInsert verifies the analysis phase rotates
 // libyear data to history before inserting fresh data. Without rotation, old

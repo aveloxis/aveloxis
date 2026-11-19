@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -102,6 +103,47 @@ func (s *PostgresStore) RotateRepoInfoToHistory(ctx context.Context, repoID int6
 	})
 }
 
+// libyearRotatedColumns is every column of repo_deps_libyear, in the table's
+// order: what RotateLibyearToHistory copies. The history table is created
+// `LIKE repo_deps_libyear INCLUDING ALL` and follows no later ALTER (`license`
+// and `purl` were added to the current table by a migrate and never to the
+// history table), so the copy names its columns from this list and
+// ensureLibyearHistoryColumns adds each one to the history table. A column
+// added to repo_deps_libyear goes here, into that function, and onto both
+// tables in one migrate step: TestLibyearRotatedColumnsAreTheCurrentTablesColumns
+// fails until the list has it, and
+// TestMigrateGivesTheLibyearHistoryTableEveryRotatedColumn until the migrate
+// step does.
+var libyearRotatedColumns = []string{
+	"repo_deps_libyear_id",
+	"repo_id",
+	"name",
+	"requirement",
+	"type",
+	"package_manager",
+	"current_version",
+	"latest_version",
+	"current_release_date",
+	"latest_release_date",
+	"libyear",
+	"license",
+	"purl",
+	"tool_source",
+	"tool_version",
+	"data_source",
+	"data_collection_date",
+}
+
+// rotateLibyearInsertSQL copies one repository's current rows into the history
+// table by name, so the two tables need not have the same columns in the same
+// order.
+var rotateLibyearInsertSQL = func() string {
+	cols := strings.Join(libyearRotatedColumns, ", ")
+	return `INSERT INTO aveloxis_data.repo_deps_libyear_history (` + cols + `)
+			SELECT ` + cols + ` FROM aveloxis_data.repo_deps_libyear
+			WHERE repo_id = $1`
+}()
+
 // RotateLibyearToHistory moves all existing libyear rows for a repo into
 // repo_deps_libyear_history, then deletes them from the main table. This ensures
 // the main table always has the latest snapshot with current license data.
@@ -116,10 +158,7 @@ func (s *PostgresStore) RotateLibyearToHistory(ctx context.Context, repoID int64
 		}
 		defer tx.Rollback(ctx)
 
-		_, err = tx.Exec(ctx, `
-			INSERT INTO aveloxis_data.repo_deps_libyear_history
-			SELECT * FROM aveloxis_data.repo_deps_libyear
-			WHERE repo_id = $1`, repoID)
+		_, err = tx.Exec(ctx, rotateLibyearInsertSQL, repoID)
 		if err != nil {
 			return err
 		}

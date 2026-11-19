@@ -2868,6 +2868,12 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 			logger.Info("cleared the star counts the GitHub REST fallback stored as watcher_count before 0.29.143",
 				"history_snapshots", history, "current_snapshots", current)
 		})
+
+	// v0.29.147 (summary/70, 4.1.1): the libyear rotation copies by column
+	// name, so the history table must have every column it names. Depends on
+	// stage 1's adds of license and purl to the current table only in
+	// subject; it reads neither.
+	ensureLibyearHistoryColumns(ctx, pg, logger, errs)
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by
@@ -4287,6 +4293,37 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 		return
 	}
 	logger.Info("created case-insensitive unique index uq_repos_repo_git_ci — case-variant duplicate repos are now blocked at the database level")
+}
+
+// ensureLibyearHistoryColumns adds to repo_deps_libyear_history every column
+// the libyear rotation copies (libyearRotatedColumns). The history table was
+// created `LIKE repo_deps_libyear INCLUDING ALL`, which follows no later ALTER:
+// `license` and `purl` reached the current table through addColumnIfMissing
+// and never the history table, so a deployment whose history table predates
+// them lacks both, and a rotation that names its columns would fail there.
+// A history copy of a column is a plain column: it carries no key, constraint
+// or sequence beyond what LIKE gave the table when it was created. The calls
+// are written out, one per column, so the step-order golden sees each
+// (it reads literal call sites); the old-shape test fails if one is missing.
+// Idempotent; runs on every migrate.
+func ensureLibyearHistoryColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "repo_deps_libyear_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "repo_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "name", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "requirement", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "type", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "package_manager", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "current_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "latest_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "current_release_date", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "latest_release_date", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "libyear", "FLOAT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "license", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "purl", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "tool_source", "TEXT DEFAULT 'aveloxis'")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "tool_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_source", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_collection_date", "TIMESTAMPTZ DEFAULT NOW()")
 }
 
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for

@@ -281,7 +281,6 @@ internal/collector/identity_capture_test.go internal/platform/github/graphql_pr_
 internal/collector/identity_capture_test.go internal/platform/gitlab/client.go
 internal/collector/identity_capture_test.go internal/platform/gitlab/mr_map.go
 internal/collector/libyear_history_test.go internal/collector/analysis.go
-internal/collector/libyear_history_test.go internal/db/history.go
 internal/collector/libyear_registry_client_test.go internal/collector/analysis.go
 internal/collector/libyear_registry_client_test.go internal/scheduler/scheduler.go
 internal/collector/libyear_registry_test.go internal/collector/analysis.go

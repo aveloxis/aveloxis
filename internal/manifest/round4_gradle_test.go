@@ -73,47 +73,6 @@ func TestDirectoriesTimesTheScriptsOfASharedScriptIsNotAProduct(t *testing.T) {
 	}
 }
 
-// R4-M7. A build file past its own bound is read ONCE, however many times
-// the walk reaches it (as a build file of its own, then as the build file
-// above another directory), and what it costs comes out of nobody else's
-// allowance. It was charged its whole bound each time and allowed it once:
-// after a hostile file of 1 MB, 494 unrelated projects were refused.
-func TestAFilePastItsBoundCostsNothingToTheFilesAfterIt(t *testing.T) {
-	hostile := strings.Repeat("} a (", 20000) + strings.Repeat(")", 20000)
-	app := "dependencies {\n  implementation 'c:d:1'\n}\n"
-	files := map[string]string{"a/build.gradle": hostile, "a/x/build.gradle": app, "a/y/build.gradle": app}
-	const honest = 600
-	for i := 0; i < honest; i++ {
-		files[fmt.Sprintf("b/y%04d/build.gradle", i)] = app
-	}
-	root := writeTree(t, files)
-	w := NewWalk(root, nil)
-	if got := w.Read(filepath.Join(root, "a", "build.gradle"), Options{}); got.Failure == nil {
-		t.Fatal("the hostile file was read: the premise does not hold")
-	}
-	readings := w.gradle.fullReads
-	// Reached twice more, as the directory above two others: not read again.
-	for _, sub := range []string{"x", "y"} {
-		if got := w.Read(filepath.Join(root, "a", sub, "build.gradle"), Options{}); got.Failure == nil || !strings.Contains(got.Failure.Error(), "a/build.gradle") {
-			t.Errorf("a/%s: failure %v; want it refused, naming the file above it that could not be read", sub, got.Failure)
-		}
-	}
-	// Each of the two is read once itself (for what it applies); the file
-	// above them is not read again for either.
-	if more := w.gradle.fullReads - readings; more != 2 {
-		t.Errorf("%d readings for two files under a file past its bound; want one each, and none of the file above", more)
-	}
-	refused := 0
-	for i := 0; i < honest; i++ {
-		if got := w.Read(filepath.Join(root, "b", fmt.Sprintf("y%04d", i), "build.gradle"), Options{}); got.Failure != nil {
-			refused++
-		}
-	}
-	if refused != 0 {
-		t.Errorf("%d of %d unrelated projects were refused after one file past its bound", refused, honest)
-	}
-}
-
 // r4Publishing is an honest build of the kind that reads a script again for
 // every module: each module sets a property of its own (its artifact's
 // name) that the shared publishing script reads.
@@ -144,11 +103,10 @@ func r4Publishing(modules, scriptBytes int) (files map[string]string, reads []st
 	return files, reads
 }
 
-// R4-M13. An honest build of that kind is read, with room to spare: 1,000
-// modules of about a kilobyte, each reading its own property through a
-// 60 KB script. The walk's allowance was the file's factor, which a script
-// sixty-four times its modules' size passes: 138 modules were refused.
-func TestAnHonestPublishingBuildIsFarInsideTheWalksAllowance(t *testing.T) {
+// R4-M13. An honest build of that kind is read: 1,000 modules of about a
+// kilobyte, each reading its own property through a 60 KB script. (Under
+// the work allowances of 0.29.210 and 0.29.211, 138 modules were refused.)
+func TestAnHonestPublishingBuildIsRead(t *testing.T) {
 	files, reads := r4Publishing(1000, 60<<10)
 	root := writeTree(t, files)
 	w := NewWalk(root, nil)
@@ -157,11 +115,6 @@ func TestAnHonestPublishingBuildIsFarInsideTheWalksAllowance(t *testing.T) {
 		if got.Failure != nil || len(got.Deps) != 13 {
 			t.Fatalf("%s: %d dependencies, failure %v", rel, len(got.Deps), got.Failure)
 		}
-	}
-	used, limit := w.gradle.work.used, w.gradle.work.limit
-	t.Logf("honest publishing build: %d units used of %d allowed (%.1f-fold margin); %d readings", used, limit, float64(limit)/float64(max(used, 1)), w.gradle.fullReads)
-	if used*pomHonestMargin > limit {
-		t.Errorf("the build used %d of the walk's %d units: less than a %d-fold margin", used, limit, pomHonestMargin)
 	}
 }
 
@@ -188,66 +141,6 @@ func TestAScriptThatFoundANameMissingIsReadAgainWhereItIsDefined(t *testing.T) {
 		if got["with"] != "7.5" || got["without"] != "" {
 			t.Errorf("read in the order %v: with %q, without %q; want 7.5 and no version", order, got["with"], got["without"])
 		}
-	}
-}
-
-// R4-M6 (M17). A lookup of a name known from outside costs a unit for each
-// layer of the scope it passes: lookups times the depth of the chain is
-// counted.
-func TestAGradleLookupCostsTheLayersItPasses(t *testing.T) {
-	var outer *gradleVars
-	outer = outer.push(map[string]string{"deep": "1.0"}, nil)
-	const layers = 500
-	for i := 0; i < layers; i++ {
-		outer = outer.push(map[string]string{fmt.Sprintf("w%d", i): "x"}, nil)
-	}
-	var file strings.Builder
-	const lookups = 40
-	file.WriteString("dependencies {\n")
-	for i := 0; i < lookups; i++ {
-		fmt.Fprintf(&file, "  implementation \"g:a%d:$deep\"\n", i)
-	}
-	file.WriteString("}\n")
-	// The layers are the WALK's work (review round 5, M5-7): the file's own
-	// count is the same under both scopes, so whether it is inside its own
-	// bound does not depend on where it is read.
-	walkShallow, walkDeep := &gradleWalkWork{limit: 1 << 40}, &gradleWalkWork{limit: 1 << 40}
-	shallow := readGradleBuildWith(file.String(), (*gradleVars)(nil).push(map[string]string{"deep": "1.0"}, nil), nil, walkShallow)
-	deep := readGradleBuildWith(file.String(), outer, nil, walkDeep)
-	if len(deep.decls) != lookups || deep.decls[0].version != "1.0" {
-		t.Fatalf("%d declarations, first %+v", len(deep.decls), deep.decls)
-	}
-	if extra := walkDeep.used - walkShallow.used; extra < lookups*layers {
-		t.Errorf("under %d layers the walk was charged %d more than under one; %d lookups through them are at least %d", layers, extra, lookups, lookups*layers)
-	}
-	if deep.work != shallow.work {
-		t.Errorf("the file's own work is %d under %d layers and %d under one: its bound must be a fact about its text", deep.work, layers, shallow.work)
-	}
-}
-
-// R4-M6 (M18). Finding that a reading already made stands for this scope is
-// work too: each name the reading looked up is looked up again, through the
-// layers of the scope asking. It is charged to the walk.
-func TestCheckingAScriptsMemoIsCharged(t *testing.T) {
-	root := writeTree(t, map[string]string{"gradle/v.gradle": "ext.out = \"${deep}.1\"\n"})
-	w := NewWalk(root, nil)
-	var outer *gradleVars
-	outer = outer.push(map[string]string{"deep": "1.0"}, nil)
-	const layers = 300
-	for i := 0; i < layers; i++ {
-		outer = outer.push(map[string]string{fmt.Sprintf("w%d", i): "x"}, nil)
-	}
-	path := filepath.Join(root, "gradle", "v.gradle")
-	if _, ok := w.gradle.readApplied(path, outer); !ok {
-		t.Fatal("the script was not read")
-	}
-	readings, used := w.gradle.fullReads, w.gradle.work.used
-	e, ok := w.gradle.readApplied(path, outer)
-	if !ok || e.own["out"] != "1.0.1" || w.gradle.fullReads != readings {
-		t.Fatalf("the second asking: ok %v, own %v, %d more readings; want the first reading, not made again", ok, e.own, w.gradle.fullReads-readings)
-	}
-	if spent := w.gradle.work.used - used; spent < layers {
-		t.Errorf("checking the memo cost the walk %d units; the name it checks lies under %d layers", spent, layers)
 	}
 }
 

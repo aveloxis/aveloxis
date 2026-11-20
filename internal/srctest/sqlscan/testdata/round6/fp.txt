@@ -1,0 +1,91 @@
+@@f01 upsert fill text
+INSERT INTO aveloxis_data.repos (id, fe) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(NULLIF(repos.fe, ''), EXCLUDED.fe)
+@@f02 upsert fill nullable alias
+INSERT INTO aveloxis_data.repos AS r (id, fe) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(r.fe, EXCLUDED.fe)
+@@f03 guarded bare update
+UPDATE aveloxis_data.repos SET fe = $2 WHERE id = $1 AND COALESCE(fe, '') = ''
+@@f04 guarded bare update is null
+UPDATE aveloxis_data.repos r
+   SET fe = $2
+ WHERE r.id = $1
+   AND r.fe IS NULL
+@@f05 prefer nonempty
+INSERT INTO aveloxis_data.repos (id, pn) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET pn = COALESCE(NULLIF(EXCLUDED.pn, ''), repos.pn)
+@@f06 prefer nonempty schema-qualified stored
+INSERT INTO aveloxis_data.repos (id, pn) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET pn = COALESCE(NULLIF(EXCLUDED.pn, ''), aveloxis_data.repos.pn)
+@@f07 prefer nonnull
+UPDATE aveloxis_data.repos SET pnn = COALESCE($2, pnn) WHERE id = $1
+@@f08 greatest
+INSERT INTO aveloxis_data.repos (id, g) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET g = GREATEST(COALESCE(EXCLUDED.g, repos.g), COALESCE(repos.g, EXCLUDED.g))
+@@f09 always refresh now
+UPDATE aveloxis_data.repos SET ar = NOW() WHERE id = $1
+@@f10 always refresh excluded
+INSERT INTO aveloxis_data.repos (id, ar) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET ar = EXCLUDED.ar, x = EXCLUDED.x
+@@f11 earliest
+INSERT INTO aveloxis_data.repos (id, e) VALUES ($1, NOW()) ON CONFLICT (id) DO UPDATE SET e = LEAST(repos.e, EXCLUDED.e)
+@@f12 keep carry
+INSERT INTO aveloxis_data.repos (id, k) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET k = CASE WHEN repos.cls = EXCLUDED.cls THEN repos.k WHEN $3::timestamptz IS NOT NULL THEN $3::timestamptz ELSE NOW() END
+@@f13 insertonly untouched in conflict
+INSERT INTO aveloxis_data.repos (id, io) VALUES ($1, NOW()) ON CONFLICT (id) DO UPDATE SET x = EXCLUDED.x
+@@f14 batch unnest insert
+INSERT INTO aveloxis_data.repos (id, fe) SELECT * FROM unnest($1::bigint[], $2::text[]) ON CONFLICT (id) DO NOTHING
+@@f15 cte update returning then insert
+WITH moved AS (UPDATE aveloxis_data.repos SET x = $2 WHERE id = $1 RETURNING id, fe) INSERT INTO aveloxis_data.log (id, fe) SELECT id, fe FROM moved
+@@f16 delete using
+DELETE FROM aveloxis_data.repos r USING aveloxis_data.other o WHERE r.id = o.id AND r.fe IS NULL
+@@f17 update from values
+UPDATE aveloxis_data.repos r SET x = v.x FROM (VALUES ($1::bigint, $2::text)) AS v(id, x) WHERE r.id = v.id
+@@f18 guarded bare with FROM unnest
+UPDATE aveloxis_data.repos r SET fe = v.fe FROM unnest($1::bigint[], $2::text[]) AS v(id, fe) WHERE r.id = v.id AND COALESCE(r.fe, '') = ''
+@@f19 DO block migration with if exists
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'x') THEN ALTER TABLE aveloxis_data.repos ADD CONSTRAINT x CHECK (id > 0) NOT VALID; END IF; END $$
+@@f20 alter add column if not exists
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS added_at2 TIMESTAMPTZ DEFAULT NOW()
+@@f21 create index concurrently
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_x ON aveloxis_data.repos (lower(fe)) WHERE fe <> ''
+@@f22 select for update skip locked
+SELECT id FROM aveloxis_data.repos WHERE fe IS NULL ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED
+@@f23 advisory lock
+SELECT pg_advisory_xact_lock($1)
+@@f24 guard with extra parens
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (COALESCE(fe, '') = '') AND id = $2
+@@f25 guard or-empty form (natural)
+UPDATE aveloxis_data.repos SET fe = $1 WHERE id = $2 AND (fe IS NULL OR fe = '')
+@@f26 guard nullif is null (natural)
+UPDATE aveloxis_data.repos SET fe = $1 WHERE id = $2 AND NULLIF(fe, '') IS NULL
+@@f27 guard schema-qualified column
+UPDATE aveloxis_data.repos SET fe = $1 WHERE aveloxis_data.repos.fe IS NULL
+@@f28 fill with cast param
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1::text)
+@@f29 guarded bare with cast param
+UPDATE aveloxis_data.repos SET fe = $1::text WHERE fe IS NULL
+@@f30 greatest with cast
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($1::timestamptz, g), COALESCE(g, $1::timestamptz))
+@@f31 plpgsql with %ROWTYPE read only
+DO $$ DECLARE r aveloxis_data.repos%ROWTYPE; BEGIN SELECT * INTO r FROM aveloxis_data.repos LIMIT 1; RAISE NOTICE '%', r.fe; END $$
+@@f32 plpgsql with %TYPE
+DO $$ DECLARE v aveloxis_data.repos.fe%TYPE; BEGIN SELECT fe INTO v FROM aveloxis_data.repos LIMIT 1; END $$
+@@f33 plpgsql composite var field assign (not NEW)
+DO $$ DECLARE r aveloxis_data.other; BEGIN r.a := 1; END $$
+@@f34 trigger fn that only stamps another col
+CREATE OR REPLACE FUNCTION aveloxis_data.touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.touched := NOW(); RETURN NEW; END $$
+@@f35 plpgsql execute format for index (run-time)
+DO $$ BEGIN EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON aveloxis_data.other (a)', 'i'); END $$
+@@f36 PG18 returning with
+UPDATE aveloxis_data.repos SET x = $1 RETURNING WITH (OLD AS o) o.x
+@@f37 update other col with subquery from same table
+UPDATE aveloxis_data.repos r SET x = (SELECT count(*) FROM aveloxis_data.repos q WHERE q.fe = r.fe)
+@@f38 ar from subquery of other table with same col name
+UPDATE aveloxis_data.repos r SET ar = (SELECT max(s.ar) FROM s.stg s WHERE s.id = r.id)
+@@f39 refresh/analyze/vacuum
+ANALYZE aveloxis_data.repos; VACUUM (ANALYZE) aveloxis_data.repos
+@@f40 set local + update in one text
+SET LOCAL statement_timeout = '5s'; UPDATE aveloxis_data.repos SET x = 1 WHERE id = $1
+@@f41 view over registered and select
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS SELECT id, fe FROM aveloxis_data.repos
+@;
+SELECT fe FROM aveloxis_augur_data.repo
+@@f42 view over registered; update of ANOTHER column through... a different table with same name in other schema
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS SELECT id, fe FROM aveloxis_data.repos
+@;
+INSERT INTO aveloxis_augur_data.repo (id) VALUES (1)

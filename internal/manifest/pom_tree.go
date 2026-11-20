@@ -52,124 +52,52 @@ type pomTree struct {
 	// and its own coordinates, nothing that grows with what the chain
 	// manages.
 	contexts map[*pomModel]*pomContext
-	// work is the walk's counter of looks against what all the poms and
-	// Gradle files read allow (pomWorkFactor); shared with treeOnly.
-	work *pomWork
-	// noRoom are the poms that were read and not kept: the walk's account
-	// had no room for them (model).
-	noRoom map[string]bool
-	// acct is the walk's account (walkAccount): what is kept, asked and
-	// taken. The Gradle tree of the same walk holds the same one.
-	acct *walkAccount
-	// looks counts every look made, and importSteps every import a
-	// question passed over or looked at, for tests (a count where a clock
-	// cannot tell: passing a thousand dead imports costs microseconds).
-	looks       int
+	// importSteps counts every import a question passed over or looked at,
+	// and asked the questions put to the source, for tests (a count where a
+	// clock cannot tell: passing a thousand dead imports costs microseconds).
 	importSteps int
+	asked       int
+	// remoteLimit is how many coordinates this walk may ask the source for
+	// (SetRemotePomLimit); 0: no limit of its own. notAsked counts the
+	// questions past it.
+	remoteLimit int
+	notAsked    int
 }
 
-// The rule (0.29.210, after three review rounds each found another product):
-// a walk's total work and what it retains are linear in the bytes it reads.
-// A bound on each FILE does not give that. Two thousand modules under one
-// parent with two thousand managed entries are 763 KB of poms, and a copy of
-// the parent's entries per module was 498 MB; the same holds for every
-// structure that is built per file from what the file shares with others.
-// So:
+// What bounds the reading of a build tree (0.29.213).
 //
-//   - what a pom says is indexed ONCE, on its model (pomIndex), and an
-//     effective model (pomContext) is a view over its chain of models: a
-//     question walks the chain, at most pomChainLimit long;
-//   - work that is not constant per question is counted in units (a
-//     "look": one BOM import tried, or one managed entry whose coordinates
-//     hold a reference and must be interpolated to be compared; and
-//     pomLookBytes bytes of interpolation), twice: against the FILE being
-//     read (pomBudget), so that one pathological pom costs itself and not
-//     its neighbours, and against the walk (pomWork), so that the sum stays
-//     linear whatever the files share;
-//   - NOTHING kept for the walk is keyed by a pair (a file, and something
-//     another file says). What a question works out that depends on the
-//     file asking (an import whose coordinates hold a reference means a
-//     different BOM in each pom that inherits it) is kept for that file's
-//     reading only (pomBudget.resolved) and dropped with it. Round 4: the
-//     tree kept such a key per (pom, import), 330 MB for 92 KB of poms.
+// Rounds 2 to 6 of the review each found a path through these readers whose
+// time or memory was a product of what several files say, and each was met
+// with an allowance counted in the code: units of work per byte read, bytes
+// kept per byte read, requests per byte read, a wall-clock backstop. Round 6
+// found five more uncounted paths, and found the allowances themselves
+// refusing an honest build and giving a wrong version. They are gone. The
+// bound on a walk's time and memory is the operating system's: the collector
+// runs the whole manifest pass in a child process with a limit on its CPU
+// time and on its heap, and a repository that passes either has its analysis
+// stopped and reported by name (internal/collector, manifest_child.go).
+//
+// What stays here is what makes an HONEST large build cheap, as plain code,
+// and what is about correctness:
+//
+//   - what a pom says is indexed once, on its model (pomIndex), and an
+//     effective model (pomContext) is a view over its chain of models;
+//   - nothing kept for the walk is keyed by a pair (a file, and something
+//     another file says): what depends on the file asking is kept for that
+//     file's reading only (pomReading.resolved);
+//   - a file larger than a build file is, is not read (MaxBuildFileBytes); a
+//     chain of parents or imports ends at pomChainLimit, which is what ends a
+//     cycle; an interpolation ends at pomInterpolatedLimit.
 
-// pomWork is the walk's counter: every unit, against pomWorkFactor units
-// per byte of pom or Gradle build file read by the walk (each file once).
-type pomWork struct {
-	used, limit int
-	// carry is the bytes touched by work that belongs to no one file (a
-	// pass over the tree, the building of a chain) and not yet a whole unit.
-	carry int
-}
-
-// pomLookBytes is how many bytes of interpolation cost what one look
-// costs: counting the bytes is what makes the unit a unit of TIME. Round 4
-// measured a look at 0.5 us when it interpolated nothing long and at 9.5 us
-// through long properties, and a bound in looks alone was a bound on
-// neither.
-//
-// PROVISIONAL (summary/71, section 8). Its derivation is a measurement:
-// BenchmarkPomLook reads a pom whose looks pass BOM imports with literal
-// coordinates (120,000 units) and one whose looks interpolate a 2,600-byte
-// property through a chain into every managed entry they compare (53,923
-// units), and reports the time of each per unit, parsing included: 281 and
-// 277 ns (0.29.211, an Apple M-series core). With a kilobyte to the look
-// the cheapest and the dearest look cost the same per unit, which is what
-// the constant is for; it is a power of two, and was not tuned further.
-//
-// Round 5: the bytes are counted wherever a string is touched (pomBudget.touch:
-// an interpolation, a key joined and hashed, coordinates compared), not for
-// interpolation alone, and none is free. TestTheUnitsOfBothWalksAreUnitsOfTime
-// measures a look past short coordinates at about 40 ns a unit, one past a
-// 200 KB coordinate at about 240 and one that interpolates a 2,600-byte
-// property at about 170, parsing included: the unit is between 40 and 300 ns
-// whatever the poms hold, and a walk's poms cost at most that for every byte
-// read.
-const pomLookBytes = 1024
-
-// pomWorkFactor is the allowance: one unit per byte, for a file and for the
-// walk. PROVISIONAL (summary/71, section 8); its derivation:
-//
-// As a bound on a worker's time. A unit is about 0.3 microseconds
-// (BenchmarkPomLook), so a file of MaxBuildFileBytes (8 MiB) can cost its
-// reader about two and a half seconds, and a walk as much for every 8 MiB
-// it reads, whatever the files share (the hostile shapes of
-// TestBuildFileReadersScaleLinearly stop there).
-//
-// As room for honest builds. What costs a real build units is small beside
-// its text: a version-less dependency is some eighty bytes and asks one
-// question; the question costs a unit for each live BOM import it passes
-// and for each managed entry it must interpolate to compare, and those are
-// the entries whose artifact (or group) is the one asked for
-// (pomIndex.dynByArtifact), not all of them. Measured:
-// TestAnHonestReactorIsFarInsideTheWorkBound (600 modules of 30
-// version-less dependencies under a parent with 300 entries keyed by
-// ${project.groupId} and 2,200 plain ones) and
-// TestARealShapedMavenBuildIsFarFromTheWorkBound (300 dependencies no BOM
-// manages, forty BOMs) each ask for a tenfold margin and have far more. A
-// file that passes the bound is reported as a manifest that could not be
-// read.
-const pomWorkFactor = 1
-
-// pomBudget is what reading ONE file may cost the pom tree.
-type pomBudget struct {
-	tree        *pomTree
-	used, limit int
-	// counted are the poms whose bytes are already in limit.
-	counted map[*pomModel]bool
-	// tripped: a look was refused. What the file's reader worked out is
-	// then a part, and it takes nothing.
-	tripped bool
-	// walkOnly: no allowance of its own; the walk's is the only bound (a
-	// pass over the whole tree, SettleMavenManaged).
-	walkOnly bool
-	// carry is the bytes touched (touch) that are not yet a whole unit.
-	carry int
+// pomReading is the reading of ONE file by the pom tree: what its questions
+// worked out that depends on the model asking.
+type pomReading struct {
 	// resolved are the imports whose coordinates hold a reference, as this
 	// file's questions worked them out: what each means in the model that
-	// asked, and whether it led nowhere. Kept for the reading of this ONE
-	// file: the answer depends on the model asking, so across files it is
-	// a product (see the rule above).
+	// asked, and whether it led nowhere. Kept for the reading of this one
+	// file: the answer depends on the model asking, so across files it is a
+	// product (round 4: the tree kept such a key per pom and import, 330 MB
+	// for 92 KB of poms).
 	resolved map[pomImportAt]*pomResolvedImport
 }
 
@@ -188,122 +116,19 @@ type pomResolvedImport struct {
 	reason                   string
 }
 
-// interp is c.interpolate(s), with what it cost charged: pomLookBytes bytes
-// of it are a unit. ok is false when the allowance is used up.
-func (b *pomBudget) interp(c *pomContext, s string) (out string, ok bool) {
-	out, work := pomSubstituteWork(s, c.resolve)
-	if !b.touch(work) {
-		return s, false
-	}
-	return out, true
-}
-
-// touch charges n bytes read, written, compared or hashed: pomLookBytes of
-// them are a unit, and none is free (what is left of a unit is carried to
-// the next call). Everything whose cost grows with the length of a string is
-// charged here, where the string is touched: an interpolation, a key built
-// or hashed, a coordinate compared (review round 5: a look was one unit
-// whatever the length of the coordinates it concatenated and hashed, and an
-// import with a 6 MiB groupId cost 570,975 ns a unit). false: the allowance
-// is used up.
-func (b *pomBudget) touch(n int) bool {
-	carry := &b.carry
-	if b.walkOnly {
-		carry = &b.tree.walkWork().carry
-	}
-	*carry += n
-	if units := *carry / pomLookBytes; units > 0 {
-		*carry -= units * pomLookBytes
-		ok := b.spend(units)
-		if ok {
-			b.tree.looks -= units // bytes, not looks: the tests' count of looks is of looks
-		}
-		return ok
-	}
-	return !b.tripped || b.walkOnly
-}
-
-// importAt is what import n of m is in c, worked out once for this file. A
-// first working-out costs its interpolation, and a unit for each byte of
-// the coordinates it gives: they may become a key that is kept (an answer
-// from a repository is kept by coordinate, for the walk), and what is kept
-// must not outgrow what was read. nil: the allowance is used up.
-func (b *pomBudget) importAt(c *pomContext, m *pomModel, n int) *pomResolvedImport {
+// importAt is what import n of m is in c, worked out once for this file.
+func (r *pomReading) importAt(c *pomContext, m *pomModel, n int) *pomResolvedImport {
 	at := pomImportAt{c, m, n}
-	if r, ok := b.resolved[at]; ok {
-		return r
+	if got, ok := r.resolved[at]; ok {
+		return got
 	}
 	e := m.managed[m.index().imports[n]]
-	r := &pomResolvedImport{}
-	var ok1, ok2, ok3 bool
-	r.group, ok1 = b.interp(c, e.group)
-	r.artifact, ok2 = b.interp(c, e.artifact)
-	r.version, ok3 = b.interp(c, e.version)
-	if !ok1 || !ok2 || !ok3 || !b.spend(len(r.group)+len(r.artifact)+len(r.version)) {
-		return nil
+	got := &pomResolvedImport{group: c.interpolate(e.group), artifact: c.interpolate(e.artifact), version: c.interpolate(e.version)}
+	if r.resolved == nil {
+		r.resolved = map[pomImportAt]*pomResolvedImport{}
 	}
-	if b.resolved == nil {
-		b.resolved = map[pomImportAt]*pomResolvedImport{}
-	}
-	b.resolved[at] = r
-	return r
-}
-
-// budget is the allowance for one file of ownBytes bytes.
-func (t *pomTree) budget(ownBytes int) *pomBudget {
-	return &pomBudget{tree: t, limit: pomWorkFactor * (ownBytes + 1), counted: map[*pomModel]bool{}}
-}
-
-// walkBudget is a budget bounded by the walk's allowance alone.
-func (t *pomTree) walkBudget() *pomBudget {
-	return &pomBudget{tree: t, walkOnly: true}
-}
-
-// reach adds the bytes of the poms a question reaches, each once.
-func (b *pomBudget) reach(models ...*pomModel) {
-	if b.walkOnly {
-		return
-	}
-	for _, m := range models {
-		if !b.counted[m] {
-			b.counted[m] = true
-			b.limit += pomWorkFactor * (m.size + 1)
-		}
-	}
-}
-
-// spend records n looks; false when the file's allowance or the walk's is
-// used up.
-func (b *pomBudget) spend(n int) bool {
-	w := b.tree.walkWork()
-	if (!b.walkOnly && b.used+n > b.limit) || w.used+n > w.limit || b.tree.acct.tick(n) {
-		b.tripped = true
-		return false
-	}
-	b.used += n
-	w.used += n
-	b.tree.looks += n
-	return true
-}
-
-// pomRemoteEntryBytes stands for the size of one entry of a fetched pom,
-// whose text the tree never sees: about what one managed entry or property
-// takes in a pom.
-const pomRemoteEntryBytes = 100
-
-// errPomWorkBound: resolving the pom's managed versions passed pomWorkFactor.
-var errPomWorkBound = errors.New("the pom's managed versions could not be resolved within the reader's bound (pomWorkFactor); nothing was taken from it")
-
-func (t *pomTree) walkWork() *pomWork {
-	if t.work == nil {
-		t.work = &pomWork{}
-	}
-	return t.work
-}
-
-// allow grants the walk the work that reading n bytes allows.
-func (t *pomTree) allow(n int) {
-	t.walkWork().limit += pomWorkFactor * (n + 1)
+	r.resolved[at] = got
+	return got
 }
 
 type remoteAnswer struct {
@@ -410,21 +235,18 @@ func (r *RemotePom) modelOf(key string) *pomModel {
 // why a pom was not obtained; "" when it was, or when nothing was asked
 // because no source is installed.
 //
-// It is the ONE place the source is asked (TestOnlyRemotePomAsksTheSource),
-// and each request is counted against the walk's allowance of them
-// (walkAccount.mayAsk). bud is charged the bytes of the coordinates (they
-// are joined into a key and hashed). declared is asked for only when a
-// request is made; cost is what writing its list out took, in entries, and
-// is charged too. An answer is kept for the walk while its account has room
-// (keep); one that is not kept is asked for again, as another request. A
-// request that is not made, and a pom obtained that there is no room to
-// keep, are a lookup that failed: not an answer (SR-5).
-func (t *pomTree) remotePom(bud *pomBudget, group, artifact, version string, declared func() (list []string, cost int)) (m *pomModel, reason string) {
+// It is the ONE place the source is asked (TestOnlyRemotePomAsksTheSource).
+// declared is called only when a request is made. How many coordinates a
+// walk may ask for is the caller's to say (SetRemotePomLimit; the collector
+// gives its maxRemotePomCoordinates): a request is a network round trip, not
+// work of this package, and each answer is kept for the walk, so the limit is
+// also what bounds how many are kept. An import whose coordinates hold a
+// reference is another coordinate in each module that inherits it, and
+// modules times imports of them asked 199,651 times for 194 KB of poms
+// (review round 5).
+func (t *pomTree) remotePom(group, artifact, version string, declared func() []string) (m *pomModel, reason string) {
 	if t.remote == nil {
 		return nil, ""
-	}
-	if !bud.touch(len(group) + len(artifact) + len(version)) {
-		return nil, model.VersionReasonInheritedLookupFailed
 	}
 	// A snapshot is whatever was built last, a range is not one pom, and an
 	// unresolved reference is not a coordinate: none is asked for.
@@ -435,37 +257,23 @@ func (t *pomTree) remotePom(bud *pomBudget, group, artifact, version string, dec
 	key := group + ":" + artifact + ":" + version
 	ans, asked := t.remoteAnswers[key]
 	if !asked {
-		list, cost := declared()
-		if !bud.spend(cost/pomCompactPerUnit) || !t.acct.mayAsk() {
+		if t.remoteLimit > 0 && t.asked >= t.remoteLimit {
+			// Not asked, and not remembered: the answers kept are no more
+			// than the limit. Not an answer (SR-5): what depends on it is
+			// not determined.
+			if t.notAsked == 0 {
+				t.warn("this walk has asked for as many parent and BOM poms as one analysis may; the ones still wanted are not asked for, and what depends on them is reported as not obtained", "remote:"+key, errRemotePomLimit)
+			}
+			t.notAsked++
 			return nil, model.VersionReasonInheritedLookupFailed
 		}
-		t.acct.pause()
-		pom, outcome := t.remote.RemotePom(group, artifact, version, list)
-		t.acct.resume()
+		t.asked++
+		pom, outcome := t.remote.RemotePom(group, artifact, version, declared())
 		ans = remoteAnswer{outcome: outcome}
-		kept := memString(key) + walkMapSlot + 2*walkWord
 		if outcome == RemoteFound && pom != nil {
 			ans.model = pom.modelOf(key)
-			// A fetched pom's text is never seen: its entries stand for
-			// its size, in the walk's allowance and in the allowance of
-			// each file whose question reaches it.
-			ans.model.size = pomRemoteEntryBytes * (len(pom.Managed) + len(pom.Properties) + 1)
-			t.allow(ans.model.size)
-			t.acct.read += ans.model.size
-			kept += ans.model.bytes()
-			if !t.acct.keep(kept) {
-				// It cannot be used without being kept (the models that
-				// inherit from it hold it).
-				t.warn("a fetched pom was not kept: the walk's memory allowance (walkMemFactor) has no room for it, and what depends on it is reported as not obtained", "remote:"+key, errWalkMemory)
-				return nil, model.VersionReasonInheritedLookupFailed
-			}
-		} else {
-			if outcome == RemoteFound {
-				ans.outcome = RemoteFailed
-			}
-			if !t.acct.keep(kept) {
-				return ans.reason()
-			}
+		} else if outcome == RemoteFound {
+			ans.outcome = RemoteFailed // "found" with no pom is not an answer (SR-5)
 		}
 		if t.remoteAnswers == nil {
 			t.remoteAnswers = map[string]remoteAnswer{}
@@ -475,9 +283,9 @@ func (t *pomTree) remotePom(bud *pomBudget, group, artifact, version string, dec
 	return ans.reason()
 }
 
-// errWalkMemory: the walk's memory allowance has no room for a structure a
-// file cannot be read without.
-var errWalkMemory = errors.New("the walk's memory allowance (walkMemFactor times what was read) has no room for it")
+// errRemotePomLimit: the walk's limit on the coordinates it asks its source
+// for was reached.
+var errRemotePomLimit = errors.New("the limit on the poms one analysis asks repositories for was reached")
 
 // reason is the answer as its callers take it.
 func (ans remoteAnswer) reason() (m *pomModel, reason string) {
@@ -514,7 +322,7 @@ func worseReason(a, b string) string {
 }
 
 func newPomTree(root string, logger *slog.Logger) *pomTree {
-	return &pomTree{root: filepath.Clean(root), logger: logger, models: map[string]*pomModel{}, acct: newWalkAccount(logger)}
+	return &pomTree{root: filepath.Clean(root), logger: logger, models: map[string]*pomModel{}}
 }
 
 // pomModel is what one pom says, as written.
@@ -540,41 +348,8 @@ type pomModel struct {
 	// servedBy is the repository host a fetched pom came from; "" for a
 	// pom of the clone.
 	servedBy string
-	// size is the pom's size in bytes (for a fetched one, what its entries
-	// stand for): what reading it allows.
-	size int
 	// idx is index()'s answer.
 	idx *pomIndex
-}
-
-// pomModelBytes is the fixed part of what a pom's model and its index keep:
-// the two structs (the headers of their strings, slices and maps) and the
-// parent reference, 520 bytes, to the next multiple of 128 (the allocator's
-// class). pomEntryBytes is the fixed part of one managed entry:
-// its three string headers and flag in the model, and in the index its
-// place in one of the lists or maps, with a key of its own.
-const (
-	pomModelBytes = 640
-	pomEntryBytes = 3*walkStringHeader + walkWord + 2*walkStringHeader + 3*walkWord + walkMapSlot
-)
-
-// bytes is what the model keeps for the walk, its index included (the index
-// is built later and its size is known now: an entry's place in it and a
-// key made of the entry's own coordinates).
-func (m *pomModel) bytes() int {
-	n := pomModelBytes + len(m.path) + len(m.group) + len(m.artifact) + len(m.version) + len(m.servedBy)
-	if m.parent != nil {
-		n += len(m.parent.group) + len(m.parent.artifact) + len(m.parent.version) + len(m.parent.relativePath)
-	}
-	n += memStringMap(m.props)
-	for _, e := range m.managed {
-		n += pomEntryBytes + 2*(len(e.group)+len(e.artifact)+len(e.version))
-	}
-	n += memStrings(m.modules)
-	for _, r := range m.repositories {
-		n += 5*walkStringHeader + len(r.URL) + len(r.ManifestPath) // the entry, and its place in fetchable
-	}
-	return n
 }
 
 // pomIndex is what one pom's dependencyManagement says, read once and
@@ -690,40 +465,47 @@ func (m *pomModel) index() *pomIndex {
 	return idx
 }
 
-// candidates are the reference-keyed entries that can be the answer to a
-// question about group:artifact, in the order written: the ones filed under
-// that artifact or that group, and the ones with a reference in both
-// halves. A coordinate with a colon in it is not told apart from the colon
-// between the halves, so a question that has one compares them all, as the
-// comparison of whole keys always did.
-func (idx *pomIndex) candidates(group, artifact string) []int {
+// eachCandidate calls visit with the reference-keyed entries that can be
+// the answer to a question about group:artifact, in the order written: the
+// ones filed under that artifact or that group, and the ones with a
+// reference in both halves. It stops when visit returns false. A coordinate
+// with a colon in it is not told apart from the colon between the halves, so
+// a question that has one is shown them all, as the comparison of whole keys
+// always did.
+//
+// The three lists are merged as they are walked, and nothing is built: a
+// question answered by an entry written first never looks at the rest
+// (review round 6: the merged list was built whole for every question, 5 s
+// for a pom whose first entry answered each).
+func (idx *pomIndex) eachCandidate(group, artifact string, visit func(j int) bool) {
 	if len(idx.dynamic) == 0 {
-		return nil
+		return
 	}
 	if strings.Contains(group, ":") || strings.Contains(artifact, ":") {
-		return idx.dynamic
-	}
-	a, g, both := idx.dynByArtifact[artifact], idx.dynByGroup[group], idx.dynBoth
-	switch {
-	case len(g) == 0 && len(both) == 0:
-		return a
-	case len(a) == 0 && len(both) == 0:
-		return g
-	case len(a) == 0 && len(g) == 0:
-		return both
-	}
-	out := make([]int, 0, len(a)+len(g)+len(both))
-	for len(a)+len(g)+len(both) > 0 {
-		next := &a
-		for _, l := range []*[]int{&g, &both} {
-			if len(*l) > 0 && (len(*next) == 0 || (*l)[0] < (*next)[0]) {
-				next = l
+		for _, j := range idx.dynamic {
+			if !visit(j) {
+				return
 			}
 		}
-		out = append(out, (*next)[0])
-		*next = (*next)[1:]
+		return
 	}
-	return out
+	lists := [3][]int{idx.dynByArtifact[artifact], idx.dynByGroup[group], idx.dynBoth}
+	for {
+		next := -1
+		for k, l := range lists {
+			if len(l) > 0 && (next < 0 || l[0] < lists[next][0]) {
+				next = k
+			}
+		}
+		if next < 0 {
+			return
+		}
+		j := lists[next][0]
+		lists[next] = lists[next][1:]
+		if !visit(j) {
+			return
+		}
+	}
 }
 
 type pomParentRef struct {
@@ -802,21 +584,7 @@ func (t *pomTree) model(path string) *pomModel {
 		t.warn("a pom of the tree could not be parsed — it answers for nothing", path, err)
 		return nil
 	}
-	m.size = len(content)
-	t.acct.readFile(path, len(content))
-	// What the pom says is kept for the walk, and is registered first. A pom
-	// there is no room for is not kept: it answers for nothing, as one that
-	// could not be read does, and is named.
-	if !t.acct.keep(m.bytes() + 2*memString(path) + 2*walkMapSlot) {
-		t.warn("a pom of the tree was not kept: the walk's memory allowance (walkMemFactor) has no room for what it says; it answers for nothing", path, errWalkMemory)
-		if t.noRoom == nil {
-			t.noRoom = map[string]bool{}
-		}
-		t.noRoom[path] = true
-		return nil
-	}
 	t.models[path] = m
-	t.allow(len(content))
 	return m
 }
 
@@ -899,9 +667,6 @@ func (t *pomTree) chain(m *pomModel) ([]*pomModel, string) {
 // end: a pom with no parent. It is not when a parent could not be obtained
 // (in the tree or from a repository), the chain loops, or it is too long.
 func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap string, whole bool) {
-	// Building a chain belongs to no one file: its work (the coordinates of
-	// each parent asked for) is the walk's.
-	bud := t.walkBudget()
 	out := []*pomModel{m}
 	seen := map[string]bool{m.path: true}
 	for cur := m; cur.parent != nil && len(out) < pomChainLimit; {
@@ -925,9 +690,8 @@ func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap string, whole 
 		}
 		if p == nil {
 			soFar := out
-			remote, reason := t.remotePom(bud, cur.parent.group, cur.parent.artifact, cur.parent.version, func() ([]string, int) {
-				list := fetchableDeclared(soFar)
-				return list, declaredCost(soFar)
+			remote, reason := t.remotePom(cur.parent.group, cur.parent.artifact, cur.parent.version, func() []string {
+				return fetchableDeclared(soFar)
 			})
 			if remote == nil {
 				return out, reason, false
@@ -964,28 +728,25 @@ type pomContext struct {
 	// chainGap is why this model is not whole in its own chain: a parent
 	// could not be obtained. "" when the chain is whole.
 	chainGap string
-	// declaredList is declaredFor's answer, when it is held: the one
-	// declaring pom's own list, by reference, or a merged one the walk's
-	// account had room for.
+	// declaredList is declaredFor's answer: the one declaring pom's own
+	// list, by reference, or a merged one.
 	declaredList []string
 	declaredDone bool
 }
 
 // declaredFor is the repositories this model's chain declares and that may
-// be fetched from, and what writing the list out cost, in entries (0 when it
-// was held already).
+// be fetched from.
 //
 // The list belongs to the pom that DECLARES it (pomModel.fetchable) and is
 // shared by reference: a chain in which one pom declares repositories, which
 // is every module of a reactor whose root declares them, holds that pom's
 // list and nothing of its own. Round 5: each effective model kept its own
 // copy, the modules times the repositories (83 MB for 574 KB of poms). A
-// chain in which two or more poms declare has a list of its own, merged; it
-// is kept while the walk's account has room and written out again for each
-// request when it has not, which is charged.
-func (c *pomContext) declaredFor() (list []string, cost int) {
+// chain in which two or more poms declare has a list of its own, merged, and
+// it is written out only when a request is made.
+func (c *pomContext) declaredFor() []string {
 	if c.declaredDone {
-		return c.declaredList, 0
+		return c.declaredList
 	}
 	var only *pomModel
 	declaring := 0
@@ -998,26 +759,13 @@ func (c *pomContext) declaredFor() (list []string, cost int) {
 	}
 	switch declaring {
 	case 0:
-		c.declaredDone = true
-		return nil, 0
 	case 1:
-		c.declaredList, c.declaredDone = only.fetchable, true
-		return c.declaredList, 0
+		c.declaredList = only.fetchable
+	default:
+		c.declaredList = fetchableDeclared(c.chain)
 	}
-	list, cost = fetchableDeclared(c.chain), declaredCost(c.chain)
-	if c.tree.acct.keep(walkSliceHeader + walkStringHeader*len(list)) {
-		c.declaredList, c.declaredDone = list, true
-	}
-	return list, cost
-}
-
-// declaredCost is how many entries fetchableDeclared(chain) passes.
-func declaredCost(chain []*pomModel) int {
-	n := 0
-	for _, m := range chain {
-		n += len(m.fetchable)
-	}
-	return n
+	c.declaredDone = true
+	return c.declaredList
 }
 
 // context is the effective model of m, built once per tree: a BOM's used to
@@ -1027,23 +775,12 @@ func (t *pomTree) context(m *pomModel) *pomContext {
 		return c
 	}
 	c := t.newContext(m)
-	// Kept while the walk's account has room; built again for each question
-	// when it has not (the chain's poms are kept, so that is a walk along
-	// them).
-	if t.acct.keep(pomContextBytes + walkWord*len(c.chain)) {
-		if t.contexts == nil {
-			t.contexts = map[*pomModel]*pomContext{}
-		}
-		t.contexts[m] = c
+	if t.contexts == nil {
+		t.contexts = map[*pomModel]*pomContext{}
 	}
+	t.contexts[m] = c
 	return c
 }
-
-// pomContextBytes is what an effective model keeps beside its chain: the
-// struct (a pointer, three slice or string headers of the chain and list,
-// seven strings' headers whose bytes are the models') and its place in the
-// tree's map.
-const pomContextBytes = 3*walkSliceHeader + 8*walkStringHeader + 4*walkWord + walkMapSlot
 
 func (t *pomTree) newContext(m *pomModel) *pomContext {
 	chain, gap := t.chain(m)
@@ -1090,19 +827,43 @@ const pomSubstitutePasses = 10
 // longer than the bound is not a coordinate or a version and is returned
 // untouched. The cost of a call is at most the passes times the bound.
 func pomSubstitute(s string, resolve func(name string) (string, bool)) string {
-	out, _ := pomSubstituteWork(s, resolve)
-	return out
-}
-
-// pomSubstituteWork is pomSubstitute, and how many bytes it read and wrote
-// doing it (pomLookBytes of them are a unit of the work bound).
-func pomSubstituteWork(s string, resolve func(name string) (string, bool)) (out string, work int) {
 	if len(s) > pomInterpolatedLimit || !strings.Contains(s, "${") {
-		return s, 0
+		return s
+	}
+	// Each name is resolved once for this call: resolving walks a chain of
+	// up to pomChainLimit poms, and a value that names one property five
+	// hundred times, through ten passes, walked it for each (review round
+	// 6: 9 microseconds for each byte of pom read). The first answer is
+	// held in place and a map is made only for a second name, so the usual
+	// string, with one reference, allocates nothing for it. Nothing is kept
+	// beyond the call: an effective model holds its chain, never a copy of
+	// what the chain says.
+	var (
+		firstName, firstValue string
+		firstOK, haveFirst    bool
+		others                map[string]pomSubstituted
+	)
+	inner := resolve
+	resolve = func(name string) (string, bool) {
+		if haveFirst && name == firstName {
+			return firstValue, firstOK
+		}
+		if a, ok := others[name]; ok {
+			return a.value, a.ok
+		}
+		v, ok := inner(name)
+		if !haveFirst {
+			firstName, firstValue, firstOK, haveFirst = name, v, ok, true
+			return v, ok
+		}
+		if others == nil {
+			others = map[string]pomSubstituted{}
+		}
+		others[name] = pomSubstituted{v, ok}
+		return v, ok
 	}
 	original := s
 	for pass := 0; pass < pomSubstitutePasses && strings.Contains(s, "${"); pass++ {
-		work += len(s)
 		var sb strings.Builder
 		changed, over := false, false
 		write := func(piece string) {
@@ -1142,16 +903,21 @@ func pomSubstituteWork(s string, resolve func(name string) (string, bool)) (out 
 			}
 			i = start + end + 1
 		}
-		work += sb.Len()
 		if over {
-			return original, work
+			return original
 		}
 		if !changed {
 			break
 		}
 		s = sb.String()
 	}
-	return s, work
+	return s
+}
+
+// pomSubstituted is one name's answer within one substitution.
+type pomSubstituted struct {
+	value string
+	ok    bool
 }
 
 // interpolate resolves ${...} references. What it cannot resolve is left as
@@ -1195,11 +961,10 @@ func (c *pomContext) resolve(name string) (string, bool) {
 }
 
 // pomLookup is one question put to an effective model: which version
-// dependencyManagement gives a coordinate. It carries what the question
-// costs (bud), the BOMs it has already searched, and why it could not be
-// answered in full.
+// dependencyManagement gives a coordinate. It carries the reading it is part
+// of, the BOMs it has already searched, and what it could not consult.
 type pomLookup struct {
-	bud *pomBudget
+	rd *pomReading
 	// searched: a BOM is searched once per question. Searched again it
 	// answers the same, so a second route to it (a diamond, or a cycle of
 	// poms that import each other) is skipped. Without this the depth limit
@@ -1207,9 +972,18 @@ type pomLookup struct {
 	// imports: two poms importing each other twice were 2^32 calls (review
 	// round 1).
 	searched map[*pomModel]bool
-	// gap is the worst reason a pom that might have answered could not be
-	// obtained: a parent of a chain, or a BOM.
+	// gap is the worst reason a pom the question MET could not be obtained:
+	// the missing end of a chain it looked into, a BOM import that led
+	// nowhere. It is what a dependency NOTHING manages is reported with.
 	gap string
+	// before is the worst reason among the poms the question has come PAST
+	// that could not be obtained: the missing end of a parent chain whose
+	// own entries did not answer, and each BOM import that led nowhere.
+	// Maven consults them in that order, so when an answer is found, before
+	// is why it may not be the answer: a pom that comes first could not be
+	// read. (gap is not that: it also holds the missing end of the very
+	// chain whose nearer pom answered, which the nearer pom outranks.)
+	before string
 }
 
 // managed is the version dependencyManagement gives group:artifact in this
@@ -1220,86 +994,76 @@ type pomLookup struct {
 //
 // hosts are the repository hosts the answer came through beyond this
 // model's own chain: those of the BOM that supplied it and of that BOM's
-// chain. gap is why the answer may not be the whole truth: a pom of this
-// chain, or a BOM this question looked for, could not be obtained ("" when
-// all were).
-func (c *pomContext) managed(bud *pomBudget, group, artifact string) (version string, found bool, hosts []string, gap string) {
-	lk := &pomLookup{bud: bud, searched: map[*pomModel]bool{}, gap: c.chainGap}
+// chain.
+//
+// gap is why the answer may not be the whole truth: a pom of this chain, or
+// a BOM this question looked for, could not be obtained ("" when all were).
+//
+// before is why a FOUND answer is not known to be the answer: what a pom
+// consulted before the one that answered says is not known (its lookup
+// failed or was not made, or its repository may not be fetched from:
+// unknownAnswer); "" when there is none such. An answer with a before is NOT the version (review round 6,
+// SR-5): the pom that could not be read comes first, and what it says is not
+// known. A first BOM that a repository failed to serve, followed by a second
+// that manages the artifact, gave the second one's version as if the first
+// had said nothing.
+func (c *pomContext) managed(rd *pomReading, group, artifact string) (version string, found bool, hosts []string, gap, before string) {
+	lk := &pomLookup{rd: rd, searched: map[*pomModel]bool{}, gap: c.chainGap}
 	version, found, hosts = c.lookup(lk, group, artifact, 0)
-	return version, found, hosts, lk.gap
+	return version, found, hosts, lk.gap, lk.before
 }
 
 func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (version string, found bool, bomHosts []string) {
-	lk.bud.reach(c.chain...)
 	key := group + ":" + artifact
-	// The key is built here and hashed in every pom of the chain.
-	if !lk.bud.touch(len(key) * (1 + len(c.chain))) {
-		return "", false, nil
-	}
 	for _, m := range c.chain {
 		idx := m.index()
 		best, has := idx.plain[key]
 		// An entry whose coordinates hold a reference comes first if it is
-		// written first and means this coordinate here. Each one compared
-		// is a look, and its interpolation is charged by the byte.
-		for _, j := range idx.candidates(group, artifact) {
+		// written first and means this coordinate here.
+		idx.eachCandidate(group, artifact, func(j int) bool {
 			if has && j > best {
-				break
+				return false
 			}
-			if !lk.bud.spend(1) {
-				return "", false, nil
-			}
-			g, okG := lk.bud.interp(c, m.managed[j].group)
-			a, okA := lk.bud.interp(c, m.managed[j].artifact)
-			if !okG || !okA {
-				return "", false, nil
-			}
-			// Joined and compared: the candidate's own bytes.
-			if !lk.bud.touch(len(g) + len(a)) {
-				return "", false, nil
-			}
-			if g+":"+a == key {
+			if c.interpolate(m.managed[j].group)+":"+c.interpolate(m.managed[j].artifact) == key {
 				best, has = j, true
-				break
+				return false
 			}
-		}
+			return true
+		})
 		if has {
-			v, ok := lk.bud.interp(c, m.managed[best].version)
-			if !ok {
-				return "", false, nil
+			v := c.interpolate(m.managed[best].version)
+			if v != "" && !strings.Contains(v, "${") {
+				// The chain's own entry: nothing that could not be obtained
+				// comes before it (a chain is missing its far end, and the
+				// nearer pom wins).
+				return v, true, nil
 			}
-			return v, v != "" && !strings.Contains(v, "${"), nil
+			return v, false, nil
 		}
 	}
+	// No pom of the chain that was read manages it. One that could not be
+	// obtained may, and it comes before every import.
+	lk.before = worseReason(lk.before, unknownAnswer(c.chainGap))
 	if depth >= pomChainLimit {
 		return "", false, nil
 	}
 	for _, m := range c.chain {
-		if v, ok, via, done := c.lookupImports(lk, m, group, artifact, depth); done {
+		if v, ok, via := c.lookupImports(lk, m, group, artifact, depth); ok {
 			return v, ok, via
 		}
 	}
 	return "", false, nil
 }
 
-// lookupImports asks the BOMs that m imports, in order. done: the question
-// is settled (answered, or cut short by the bound).
+// lookupImports asks the BOMs that m imports, in order.
 //
 // The question takes the reason of every import it passes that leads
 // nowhere, and of none it does not reach: the ones in front of its answer
 // (idx.gapBefore, and what it finds dead itself), or all of them when no
 // import answers.
-func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact string, depth int) (version string, found bool, bomHosts []string, done bool) {
+func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact string, depth int) (version string, found bool, bomHosts []string) {
 	idx := m.index()
-	if idx.stale && idx.inUse == 0 {
-		// Dropping the dead ones is a pass over the list: charged, so that
-		// a pom whose imports die one question at a time does not make
-		// each question cost the whole list for nothing.
-		if !lk.bud.spend(len(idx.live) / pomCompactPerUnit) {
-			return "", false, nil, true
-		}
-		idx.compact()
-	}
+	idx.compact()
 	idx.inUse++
 	defer func() { idx.inUse-- }()
 	for k := 0; k < len(idx.live); k++ {
@@ -1307,7 +1071,7 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 		c.tree.importSteps++
 		if idx.dead[n] {
 			// Found so by a question inside this one, and passed.
-			lk.gap = worseReason(lk.gap, idx.deadReason[n])
+			lk.pass(idx.deadReason[n])
 			continue
 		}
 		e := m.managed[idx.imports[n]]
@@ -1317,40 +1081,27 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 		if !plain {
 			// Its coordinates hold a reference: what they are depends on
 			// the model being built. Worked out once for the file being
-			// read (charged there), and each passing of it is a look.
-			if at = lk.bud.importAt(c, m, n); at == nil {
-				return "", false, nil, true
-			}
-			if !lk.bud.spend(1) {
-				return "", false, nil, true
-			}
+			// read.
+			at = lk.rd.importAt(c, m, n)
 			if at.dead {
-				lk.gap = worseReason(lk.gap, at.reason)
+				lk.pass(at.reason)
 				continue
 			}
 			bg, ba, bv = at.group, at.artifact, at.version
-		} else if !lk.bud.spend(1) {
-			// One import looked at is one look: a pom with n version-less
-			// dependencies and n imports looks at n squared of them, and
-			// ends at the bound.
-			return "", false, nil, true
 		}
-		bom, ambiguous := c.tree.byCoordinates(lk.bud, bg, ba, bv)
+		bom, ambiguous := c.tree.byCoordinates(bg, ba, bv)
 		reason := ""
 		if bom == nil && !ambiguous {
 			// Not in the tree: asked of a repository. An AMBIGUOUS one is
 			// not: the tree holds two poms under that name, and a
 			// repository's would be a third candidate, not the answer.
-			bom, reason = c.tree.remotePom(lk.bud, bg, ba, bv, c.declaredFor)
-		}
-		if lk.bud.tripped {
-			return "", false, nil, true
+			bom, reason = c.tree.remotePom(bg, ba, bv, c.declaredFor)
 		}
 		if bom == nil {
 			// It leads nowhere: for every question of this walk when its
 			// coordinates are written out, for this file's when they depend
 			// on the model. Not looked for again.
-			lk.gap = worseReason(lk.gap, reason)
+			lk.pass(reason)
 			if plain {
 				idx.dead[n], idx.deadReason[n], idx.stale = true, reason, true
 			} else {
@@ -1366,32 +1117,39 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 		bc := c.tree.context(bom)
 		lk.gap = worseReason(lk.gap, bc.chainGap)
 		if v, ok, via := bc.lookup(lk, group, artifact, depth+1); ok {
-			lk.gap = worseReason(lk.gap, idx.gapBefore[k])
-			return v, true, mergeHosts(chainHosts(bc.chain), via), true
-		}
-		if lk.bud.tripped {
-			return "", false, nil, true
+			lk.pass(idx.gapBefore[k])
+			return v, true, mergeHosts(chainHosts(bc.chain), via)
 		}
 	}
-	lk.gap = worseReason(lk.gap, idx.gapBefore[len(idx.live)])
-	return "", false, nil, false
+	lk.pass(idx.gapBefore[len(idx.live)])
+	return "", false, nil
 }
 
-// pomCompactPerUnit is how many entries of an import list compact passes
-// over for one unit: a step of that pass is a comparison and a copy, a few
-// nanoseconds against a unit's half microsecond.
-const pomCompactPerUnit = 64
+// pass records an import the question came past that could not be obtained.
+func (lk *pomLookup) pass(reason string) {
+	lk.gap = worseReason(lk.gap, reason)
+	lk.before = worseReason(lk.before, unknownAnswer(reason))
+}
+
+// unknownAnswer is reason when it means that what a pom says is NOT KNOWN: a
+// lookup that failed (or was not made), a repository that may not be
+// fetched from. "Not found" is not that: every repository that is read
+// answered that it has no such pom, which is an answer (SR-5), and the build
+// goes on as it always did, to the next pom. Such a pom still makes the tree
+// not whole, and a dependency nothing manages still says so.
+func unknownAnswer(reason string) string {
+	if reason == model.VersionReasonInheritedLookupFailed || reason == model.VersionReasonInheritedRepositoryRefused {
+		return reason
+	}
+	return ""
+}
 
 // byCoordinates returns the one pom in the tree with these coordinates, or
 // nil when there is none or more than one (SR-6: fixture and template poms
 // share coordinates with real ones; neither is chosen). ambiguous says
 // which: more than one.
-//
-// bud is charged the bytes of the coordinates: they are scanned for a
-// reference, joined into a key and hashed, each time.
-func (t *pomTree) byCoordinates(bud *pomBudget, group, artifact, version string) (m *pomModel, ambiguous bool) {
-	if !bud.touch(len(group)+len(artifact)+len(version)) ||
-		group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") {
+func (t *pomTree) byCoordinates(group, artifact, version string) (m *pomModel, ambiguous bool) {
+	if group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") {
 		return nil, false
 	}
 	t.indexTree()
@@ -1430,14 +1188,6 @@ func (t *pomTree) indexTree() {
 			// send a request per pom of the tree.
 			c := t.treeOnly().context(m)
 			key := c.interpolate(c.group) + ":" + c.interpolate(c.artifact) + ":" + c.interpolate(c.version)
-			// A key is the pom's coordinates as interpolated, which can be
-			// far longer than the pom (a property of a parent, three times
-			// over). One there is no room for is not kept: the pom is then
-			// not found by its coordinates, and that is said.
-			if !t.acct.keep(memString(key) + walkMapSlot + walkSliceHeader + walkStringHeader) {
-				t.warn("a pom of the tree is not indexed by its coordinates: the walk's memory allowance (walkMemFactor) has no room for them; an import or parent that names it is looked for in a repository", path, errWalkMemory)
-				return nil
-			}
 			t.byCoord[key] = append(t.byCoord[key], m.path)
 			return nil
 		})
@@ -1450,52 +1200,24 @@ func (t *pomTree) treeOnly() *pomTree {
 	if t.remote == nil {
 		return t
 	}
-	return &pomTree{root: t.root, logger: t.logger, models: t.models, byCoord: t.byCoord, pomFiles: t.pomFiles, work: t.walkWork(), acct: t.acct, noRoom: t.noRoom}
+	return &pomTree{root: t.root, logger: t.logger, models: t.models, byCoord: t.byCoord, pomFiles: t.pomFiles}
 }
 
-// settleBounded gives the dependencies read from the pom at path what the tree
+// settle gives the dependencies read from the pom at path what the tree
 // knows: a version written as a property the pom inherits, and, for a
 // dependency with no version at all, the version dependencyManagement gives
 // it. The second is marked SourceManaged. What the tree cannot answer is
 // left as it was, for the remote resolver.
-//
-// An error (errPomWorkBound): the work bound cut it short. What was settled
-// is then a part, and the caller takes nothing from the pom.
-func (t *pomTree) settleBounded(path string, deps []model.LibyearDep) ([]model.LibyearDep, error) {
-	t.acct.enter()
-	defer t.acct.leave()
-	if t.acct.fired {
-		return nil, errWalkBackstop
-	}
+func (t *pomTree) settle(path string, deps []model.LibyearDep) []model.LibyearDep {
 	m := t.model(path)
 	if m == nil {
-		if t.noRoom[filepath.Clean(path)] {
-			// Not a pom that says nothing: one that was not kept. Its
-			// dependencies as written are not what it declares.
-			return nil, errWalkMemory
-		}
-		return deps, nil
+		return deps
 	}
-	// The pom's own allowance: its bytes, and those of every pom its
-	// questions reach (pomBudget.reach).
-	bud := t.budget(0)
-	out := t.settleDeps(m, deps, bud)
-	if t.acct.fired {
-		return nil, errWalkBackstop
-	}
-	if bud.tripped {
-		t.warn("a pom's managed versions could not be resolved within the reader's bound; nothing was taken from it", path, errPomWorkBound)
-		return nil, errPomWorkBound
-	}
-	return out, nil
+	return t.settleDeps(m, deps, &pomReading{})
 }
 
-func (t *pomTree) settleDeps(m *pomModel, deps []model.LibyearDep, bud *pomBudget) []model.LibyearDep {
+func (t *pomTree) settleDeps(m *pomModel, deps []model.LibyearDep, rd *pomReading) []model.LibyearDep {
 	c := t.context(m)
-	// What the file may cost includes the poms of its own chain, from the
-	// start: a version written as a property is interpolated before any
-	// question is asked.
-	bud.reach(c.chain...)
 	// Why a version-less dependency may have a version this reader could
 	// not see: a pom of the chain, or a BOM that a question of THIS pom
 	// looked for, could not be obtained. It grows with the pom's own
@@ -1508,23 +1230,29 @@ func (t *pomTree) settleDeps(m *pomModel, deps []model.LibyearDep, bud *pomBudge
 		}
 		switch {
 		case strings.Contains(deps[i].Version, "${"):
-			if v, _ := bud.interp(c, deps[i].Version); !strings.Contains(v, "${") {
+			if v := c.interpolate(deps[i].Version); !strings.Contains(v, "${") {
 				deps[i].Version = v
 				deps[i].Requirement = deps[i].Name + ":" + v
 				// The property may have come from a fetched parent.
 				deps[i].VersionHosts = chainHosts(c.chain)
 			}
 		case deps[i].Version == "":
-			v, found, via, g := c.managed(bud, group, artifact)
+			v, found, via, g, before := c.managed(rd, group, artifact)
 			gap = worseReason(gap, g)
-			if found {
+			switch {
+			case found && before == "":
 				deps[i].Version = v
 				deps[i].VersionSource = SourceManaged
 				// The hosts this version came through (0.29.185): the
 				// fetched poms of this pom's own chain, and of the BOM
 				// that supplied it.
 				deps[i].VersionHosts = mergeHosts(chainHosts(c.chain), via)
-			} else if gap != "" {
+			case found:
+				// A BOM manages it, and a pom consulted before that BOM
+				// could not be obtained: the version is not determined, and
+				// that is said (SR-5; see managed).
+				deps[i].VersionReason = before
+			case gap != "":
 				// It has no version, and a pom that might have given it
 				// one could not be obtained: that is said, and is not
 				// the same as "declares no version".

@@ -180,6 +180,16 @@ func catalogPickSQL(where string, n int) string {
 		LIMIT 1`
 }
 
+// catalogTwinSQL is catalogPick's unscoped probe: where is one of the
+// predicates catalogPick's callers write (as for catalogPickSQL).
+func catalogTwinSQL(where string) string {
+	return `
+		SELECT repo_id FROM aveloxis_data.repos
+		WHERE ` + where + `
+		ORDER BY platform_id, repo_id
+		LIMIT 1`
+}
+
 // catalogPick is the one lookup behind the two by-name readers: the first
 // match of where (its arguments first) inside the scope by platform then
 // id; otherwise an unscoped probe tells RepoOutOfScopeError (the twin's
@@ -201,11 +211,7 @@ func (s *PostgresStore) catalogPick(ctx context.Context, where string, args []an
 		return nil, fmt.Errorf("%s: %w", what, ErrRepoNotFound)
 	}
 	var twin int64
-	err = s.pool.QueryRow(ctx, `
-		SELECT repo_id FROM aveloxis_data.repos
-		WHERE `+where+`
-		ORDER BY platform_id, repo_id
-		LIMIT 1`, args...).Scan(&twin)
+	err = s.pool.QueryRow(ctx, catalogTwinSQL(where), args...).Scan(&twin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%s: %w", what, ErrRepoNotFound)
 	}

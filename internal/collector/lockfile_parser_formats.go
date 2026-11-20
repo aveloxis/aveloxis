@@ -8,11 +8,11 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/manifest"
-	"gopkg.in/yaml.v3"
 )
 
 // ============================================================
@@ -38,7 +38,7 @@ func parsePoetryStyleTOML(data []byte) (parsedLockfileData, error) {
 		if name != "" && version != "" {
 			scope := ""
 			if category == "dev" {
-				scope = "dev"
+				scope = lockfileScopeDev
 			}
 			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: version, Scope: scope})
 		}
@@ -327,24 +327,34 @@ func parseMixLock(data []byte) (parsedLockfileData, error) {
 // entries carry dependency: "direct main" / "direct dev" /
 // "direct overridden" / "transitive" — direct IS distinguished.
 func parsePubspecLock(data []byte) (parsedLockfileData, error) {
-	var doc struct {
-		Packages map[string]struct {
-			Dependency string `yaml:"dependency"`
-			Version    string `yaml:"version"`
-		} `yaml:"packages"`
+	// Through the node walk of lockfile_yaml.go: yaml.Unmarshal into a map
+	// is quadratic in the packages.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	packages, err := yamlPairs(yamlField(root, "packages"))
+	if err != nil {
 		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
-	for name, pkg := range doc.Packages {
-		if pkg.Version == "" {
+	for _, pkg := range packages {
+		fields, err := yamlPairs(pkg.val)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		version, verr := yamlString(yamlField(fields, "version"))
+		dependency, derr := yamlString(yamlField(fields, "dependency"))
+		if err := errors.Join(verr, derr); err != nil {
+			return parsedLockfileData{}, err
+		}
+		if version == "" {
 			continue
 		}
 		entries = append(entries, LockfileEntry{
-			Name:    name,
-			Version: pkg.Version,
-			Direct:  strings.HasPrefix(pkg.Dependency, "direct"),
+			Name:    pkg.key,
+			Version: version,
+			Direct:  strings.HasPrefix(dependency, "direct"),
 		})
 	}
 	return parsedLockfileData{Entries: entries, DirectKnown: true}, nil
@@ -510,19 +520,30 @@ var stackHackageNameVersionRe = regexp.MustCompile(`^(.+)-([0-9][0-9.]*)$`)
 // are declared, but the snapshot resolution model doesn't map onto a
 // direct/transitive split).
 func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
-	var doc struct {
-		Packages []struct {
-			Completed struct {
-				Hackage string `yaml:"hackage"`
-			} `yaml:"completed"`
-		} `yaml:"packages"`
+	// Through the node walk of lockfile_yaml.go: yaml.Unmarshal compares
+	// every key of a mapping with every other, into a struct as into a map.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	packages, err := yamlItems(yamlField(root, "packages"))
+	if err != nil {
 		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
-	for _, p := range doc.Packages {
-		spec := p.Completed.Hackage
+	for _, p := range packages {
+		item, err := yamlPairs(p)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		completed, err := yamlPairs(yamlField(item, "completed"))
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		spec, err := yamlString(yamlField(completed, "hackage"))
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
 		if at := strings.IndexByte(spec, '@'); at >= 0 {
 			spec = spec[:at]
 		}

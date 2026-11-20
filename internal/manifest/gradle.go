@@ -4,7 +4,6 @@
 package manifest
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -165,11 +164,6 @@ type gradleBuild struct {
 	// so a second reading with an outer that answers the same for these
 	// names gives the same result (gradleTree's memo of applied scripts).
 	reads map[string]gradleRead
-	// shared is the walk's work counter (gradleWalkWork); nil outside a
-	// tree. walkBound is set when it, not the file's own bound, ended the
-	// read.
-	shared    *gradleWalkWork
-	walkBound bool
 	// applies are the files this one applies ("apply from: ..."), as
 	// written.
 	applies []string
@@ -191,141 +185,366 @@ type gradleBuild struct {
 	// the kind and address of each, so an entry is looked for in one step.
 	repos    []gradleRepo
 	repoSeen map[string]bool
-	// work is what reading this file has cost so far and workLimit what it
-	// may cost (gradleWorkFactor); overBound is set when it is passed, and
-	// the walk stops.
-	work, workLimit int
-	overBound       bool
+	// idx is the index of the file's tokens (statement); fromsRead what
+	// applyFrom has read through it (fromParts).
+	idx       *gradleIndex
+	fromsRead gradleFromsRead
 }
 
-// gradleWorkFactor bounds the reading of one build file: its work may be
-// this many times the file's size in bytes, in all. The unit is a token of
-// a statement handed to a reader, a level of the block stack looked at for
-// a statement, or a byte of a variable reference looked up; each is at most
-// a byte of the file read once.
+// gradleIndex is what is worked out ONCE about a file's tokens so that
+// finding a statement costs nothing that grows with the statement (review
+// round 6). The reader restarts at every line and every brace, and a
+// statement runs to its end however far that is: an unclosed call after
+// every brace, or a comma at the end of every line, made every restart read
+// to the end of the file and copy what it read, the square of the file (49
+// KB took more than eight seconds). Until 0.29.212 a count of work ended
+// such a file; there is none now, and the reading is linear instead:
 //
-// Why a bound at all: the reader is not a parser of the language. It
-// restarts at every line and every brace, and a statement runs to its end
-// however far that is, so text can be written (an unclosed call after every
-// brace, a comma at the end of every line, calls nested in closing braces)
-// that makes each restart read to the end of the file: the square of its
-// size, 25 minutes for 600 KB on a collection worker. Each shape found was
-// closed; the bound is for the ones not found.
+//   - end[i] is where the statement that begins at toks[i] ends, for every
+//     i, from one pass (newGradleIndex);
+//   - flat is the tokens without their line ends, and pos[i] how many of
+//     toks[:i] are in it: a statement's tokens, which are its span without
+//     the line ends inside it, are flat[pos[i]:pos[end]], with no copy.
 //
-// Why this value: a build read in the ordinary way costs about its size
-// once (TestRealGradleBuildsAreFarFromTheWorkBound measures the corpus's
-// builds and a large generated one, and asks for a fourfold margin). The
-// factor is the depth figure this package already uses for a chain of poms
-// (pomChainLimit, 32), read here as: no token of a real build is part of
-// more than 32 statements. PROVISIONAL (summary/71, section 8): a real
-// build that passes it is reported as a manifest that could not be parsed,
-// by name, in the log and in coverage. So is every build file that depends
-// on a file that passed it (a settings file, a build file above, an
-// applied script, a buildSrc source): gradleTree.noteUnread names the file
-// in the log, and declared fails what depends on it, naming it (0.29.209).
-//
-// The rule the bound belongs to (0.29.209, after two review rounds each
-// found more shapes): every loop over a build file is linear in its size
-// or is counted here. TestBuildFileReadersScaleLinearly is its pin: a new
-// hostile shape is one line there.
-const gradleWorkFactor = pomChainLimit
+// gradleStatement is the same reading done the slow way, token by token. It
+// is kept for a slice of tokens that is not a whole file (a repository's own
+// block) and as what TestTheStatementIndexIsTheStatementReader compares the
+// index with.
+type gradleIndex struct {
+	toks []gradleTok
+	flat []gradleTok
+	pos  []int32
+	end  []int32
+	// What the readers of a statement ask of its tokens, by their place in
+	// flat, so that no reader goes through a statement to its end to learn
+	// one thing about it (a statement can be most of the file, and begin
+	// again at every brace inside it):
+	//
+	// partner[k] is the place of the parenthesis that closes the one at k
+	// (-1: none, or not an opening parenthesis): unparen.
+	// depth[k] is the brackets open before flat[k], from the start of the
+	// file; commas[d] are the places of the commas at depth d and froms[d]
+	// those of them that the word `from` follows: a statement's parts are
+	// cut at the commas at its own depth (parts, fromParts).
+	// nextString[k] is the first string that is not empty at or after k, nextApply[k] the
+	// first word `apply`, and lastVersion[k] the last string before k that
+	// follows the word `version` (len(flat) and -1 for none): plugin.
+	partner     []int32
+	depth       []int32
+	commas      map[int32][]int32
+	froms       map[int32][]int32
+	nextString  []int32
+	nextApply   []int32
+	lastVersion []int32
+}
 
-// gradleWalkFactor is the WALK's allowance: this many units for each byte
-// of Gradle file the walk reads (each file once). It is not the file's
-// factor. A file's bound says no one reading of it may cost more than
-// gradleWorkFactor times its size; the walk's says what all the readings
-// together may cost, and an honest build makes readings the file's bound
-// knows nothing of: a publishing script that reads a property every module
-// sets (its artifact's name) is read again for each module, because each
-// gives it another answer.
-//
-// PROVISIONAL (summary/71, section 8). Its derivation:
-//
-// Room for honest builds. TestAnHonestPublishingBuildIsFarInsideTheWalksAllowance
-// is 1,000 modules of about a kilobyte each reading such a property through
-// a 60 KB script: 27 million units for 1.1 MB of files, about 25 units a
-// byte read (a reading costs half a unit a byte of the script, and the
-// script is sixty times a module). With the file's factor as the walk's,
-// that build lost 138 modules (round 4). Ten times the file's factor is a
-// tenfold margin over it, with a little to spare.
-//
-// A bound on a worker's time, and the price of that margin. Where the
-// allowance is what ends a walk (projects that each read one script their
-// own way), a unit measured about 60 ns (0.29.211, an Apple M-series
-// core: 139 million units in 8.8 s), most of it the allocation of each
-// reading's assignments. 320 units a byte is then about 20 microseconds a
-// byte: some three minutes for every 8 MiB of Gradle files a walk reads,
-// whatever the files share, where the file's factor as the walk's gave
-// seventeen seconds. One number does not give both a tenfold margin for
-// that honest build and a bound of seconds; the margin was chosen.
-//
-// Round 5 made that a bound in fact: every unit is charged where bytes are
-// touched (the bytes tokenised, gradleScanBytes; the tokens passed,
-// gradleTokensPerUnit; the tokens of each statement; the layers of the
-// scope a lookup passes), so no reading costs time and no units, and a
-// script that is applied is tokenised once for the walk and read again from
-// its tokens (gradleTree.scan). TestTheUnitsOfBothWalksAreUnitsOfTime
-// measures each of those at its dearest: 15 to 41 ns a unit, so the three
-// minutes above is the bound with room, and walkBackstopFloor's clock is
-// set at ten times it.
-const gradleWalkFactor = 10 * gradleWorkFactor
-
-// gradleScanBytes is how many bytes of a file are tokenised for one unit,
-// and gradleTokensPerUnit how many of its tokens a pass over them steps
-// through for one: what makes a reading's units a measure of its TIME
-// whatever the file holds (review round 5: units were counted for the
-// tokens of statements, so blank lines and comments cost time and nothing;
-// 600 projects applying an 8 MiB script of them took 44 s for 0.02% of the
-// walk's allowance).
-//
-// PROVISIONAL (summary/71, section 8). Their derivation is a measurement
-// (TestEveryByteTokenisedIsCharged logs it): tokenising is dearest for a
-// file of line ends, a token each, at about 14 ns a byte, and cheapest for
-// comments, under 1 ns; a unit of the reader's other work is about 60 ns
-// (gradleWalkFactor). Four bytes to the unit is the power of two at which
-// the dearest tokenising costs no more per unit than that. A pass over
-// tokens that are not part of a statement (line ends) is a comparison each,
-// a few nanoseconds: sixteen to the unit.
-const (
-	gradleScanBytes     = 4
-	gradleTokensPerUnit = 16
-)
-
-// errGradleWorkBound: reading the file passed gradleWorkFactor.
-var errGradleWorkBound = errors.New("the build file is not one this reader can read within its bound (gradleWorkFactor); nothing was taken from it")
-
-// spend records n units of work, against the file's bound and the walk's.
-//
-// The walk is charged no more than the file's own bound for one reading of
-// it (the step that passes the bound may be as long as the file): what a
-// file adds to the walk's allowance is exactly what one reading of it can
-// cost, so a file that uses its whole bound takes nothing from the files
-// read after it.
-func (b *gradleBuild) spend(n int) {
-	charge := n
-	if room := b.workLimit - b.work; charge > room {
-		charge = max(room, 0)
+// place is where toks begins in flat, when toks is a part of it: a
+// statement the index handed out, or a slice of one. (flat is handed out
+// with its capacity, so a slice's capacity says where it begins.)
+func (x *gradleIndex) place(toks []gradleTok) (int, bool) {
+	if x == nil || len(toks) == 0 {
+		return 0, false
 	}
-	b.work += n
-	if b.work > b.workLimit {
-		b.overBound = true
+	at := cap(x.flat) - cap(toks)
+	if at < 0 || at+len(toks) > len(x.flat) || &x.flat[at] != &toks[0] {
+		return 0, false
 	}
-	if b.shared != nil && charge > 0 && !b.shared.spend(charge) {
-		b.overBound, b.walkBound = true, true
+	return at, true
+}
+
+// finish fills what is asked of flat.
+func (x *gradleIndex) finish() {
+	m := len(x.flat)
+	x.partner, x.depth = make([]int32, m), make([]int32, m+1)
+	x.nextString, x.nextApply, x.lastVersion = make([]int32, m+1), make([]int32, m+1), make([]int32, m+1)
+	x.commas, x.froms = map[int32][]int32{}, map[int32][]int32{}
+	var open []int32
+	last := int32(-1)
+	for k, t := range x.flat {
+		x.partner[k] = -1
+		x.depth[k+1] = x.depth[k]
+		x.lastVersion[k] = last
+		if t.kind == 's' && k > 0 && x.flat[k-1].kind == 'i' && x.flat[k-1].text == "version" {
+			last = int32(k)
+		}
+		if t.kind != 'p' {
+			continue
+		}
+		switch t.text {
+		case "(":
+			open = append(open, int32(k))
+			x.depth[k+1]++
+		case "[":
+			x.depth[k+1]++
+		case ")":
+			if len(open) > 0 {
+				x.partner[open[len(open)-1]] = int32(k)
+				open = open[:len(open)-1]
+			}
+			x.depth[k+1]--
+		case "]":
+			x.depth[k+1]--
+		case ",":
+			d := x.depth[k]
+			x.commas[d] = append(x.commas[d], int32(k))
+			if k+1 < m && x.flat[k+1].kind == 'i' && x.flat[k+1].text == "from" {
+				x.froms[d] = append(x.froms[d], int32(k))
+			}
+		}
+	}
+	x.lastVersion[m] = last
+	x.nextString[m], x.nextApply[m] = int32(m), int32(m)
+	for k := m - 1; k >= 0; k-- {
+		x.nextString[k], x.nextApply[k] = x.nextString[k+1], x.nextApply[k+1]
+		switch t := x.flat[k]; {
+		case t.kind == 's' && t.text != "":
+			x.nextString[k] = int32(k)
+		case t.kind == 'i' && t.text == "apply":
+			x.nextApply[k] = int32(k)
+		}
 	}
 }
 
-// spendWalk records n units that are the walk's and not the file's: work
-// whose amount depends on where the file is read, not on its text (the
-// layers of the scope a lookup passes). A file's own bound is a fact about
-// the file (review round 5: charged to the file, the layers put a script
-// inside its bound under a shallow scope and past it under a deep one, and
-// which projects were refused depended on the order they were read in).
-func (b *gradleBuild) spendWalk(n int) {
-	if b.shared != nil && n > 0 && !b.shared.spend(n) {
-		b.overBound, b.walkBound = true, true
+// firstAtOrAfter is the first of list (ascending) that is at least at; its
+// index in list.
+func firstAtOrAfter(list []int32, at int) int {
+	lo, hi := 0, len(list)
+	for lo < hi {
+		if mid := (lo + hi) / 2; int(list[mid]) < at {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
 	}
+	return lo
 }
+
+// unparen is gradleUnparen: for tokens of the file, from the index.
+func (b *gradleBuild) unparen(toks []gradleTok) []gradleTok {
+	at, ok := b.idx.place(toks)
+	if !ok {
+		return gradleUnparen(toks)
+	}
+	if len(toks) < 2 {
+		return toks
+	}
+	strip := 0
+	for strip < len(toks) && toks[strip].kind == 'p' && toks[strip].text == "(" && int(b.idx.partner[at+strip]) == at+len(toks)-1-strip {
+		strip++
+	}
+	return toks[strip : len(toks)-strip]
+}
+
+// parts is gradleSplit, at most max parts of it (0: all): for tokens of the
+// file, from the index. more: there are parts beyond the ones returned.
+func (b *gradleBuild) parts(toks []gradleTok, max int) (out [][]gradleTok, more bool) {
+	at, ok := b.idx.place(toks)
+	if !ok {
+		return gradleSplit(toks), false
+	}
+	commas := b.idx.commas[b.idx.depth[at]]
+	from := at
+	for k := firstAtOrAfter(commas, at); k < len(commas) && int(commas[k]) < at+len(toks); k++ {
+		if max > 0 && len(out) == max {
+			return out, true
+		}
+		c := int(commas[k])
+		out = append(out, toks[from-at:c-at])
+		from = c + 1
+	}
+	if max > 0 && len(out) == max {
+		return out, true
+	}
+	return append(out, toks[from-at:]), false
+}
+
+// fromParts are the parts of toks (gradleSplit) that begin with the word
+// `from`, in order: all that applyFrom reads.
+//
+// seen, when not nil, is what earlier statements of this reading have
+// already had read: a statement that begins again inside an earlier one
+// (the reader restarts at every line, and a line that ends in a comma
+// continues) has that one's parts again, all but its own first. Read again
+// they name the same files again, which applying skips; ten thousand such
+// lines read each other's parts fifty million times (review round 6). The
+// parts already read for a statement that ends where this one does are not
+// read again.
+func (b *gradleBuild) fromParts(toks []gradleTok, seen *gradleFromsRead) [][]gradleTok {
+	at, ok := b.idx.place(toks)
+	if !ok {
+		var out [][]gradleTok
+		for _, part := range gradleSplit(toks) {
+			if len(part) > 0 && part[0].kind == 'i' && part[0].text == "from" {
+				out = append(out, part)
+			}
+		}
+		return out
+	}
+	d := b.idx.depth[at]
+	commas, froms := b.idx.commas[d], b.idx.froms[d]
+	end := at + len(toks)
+	// partFrom is the part that begins at flat[p]: to the next comma at
+	// this depth, or the end.
+	partFrom := func(p int) []gradleTok {
+		stop := end
+		if k := firstAtOrAfter(commas, p); k < len(commas) && int(commas[k]) < end {
+			stop = int(commas[k])
+		}
+		return toks[p-at : stop-at]
+	}
+	var out [][]gradleTok
+	if toks[0].kind == 'i' && toks[0].text == "from" {
+		out = append(out, partFrom(at))
+	}
+	// The commas of this depth in the statement that `from` follows: places
+	// lo to hi of the list (a comma at end-1 has nothing after it here).
+	lo, hi := firstAtOrAfter(froms, at), firstAtOrAfter(froms, end-1)
+	if seen != nil {
+		if r, ok := seen.at[d]; ok && r.end == end && r.lo <= lo && hi <= r.hi {
+			return out
+		}
+		if seen.at == nil {
+			seen.at = map[int32]gradleFromRange{}
+		}
+		seen.at[d] = gradleFromRange{end: end, lo: lo, hi: hi}
+	}
+	for k := lo; k < hi; k++ {
+		out = append(out, partFrom(int(froms[k])+1))
+	}
+	return out
+}
+
+// gradleFromsRead is, for each depth of brackets, the `from` parts last
+// read: those between places lo and hi of the index's list for that depth,
+// for a statement that ended at end.
+type gradleFromsRead struct{ at map[int32]gradleFromRange }
+
+type gradleFromRange struct{ end, lo, hi int }
+
+func newGradleIndex(toks []gradleTok) *gradleIndex {
+	n := len(toks)
+	x := &gradleIndex{toks: toks, flat: make([]gradleTok, 0, n), pos: make([]int32, n+1), end: make([]int32, n)}
+	// depth[j]: the brackets open before toks[j], counted from the start of
+	// the file (it goes below zero where a bracket is closed that was not
+	// opened). A statement that begins at i has depth[j]-depth[i] open at j.
+	depth := make([]int32, n+1)
+	for j, t := range toks {
+		depth[j+1] = depth[j]
+		x.pos[j+1] = x.pos[j]
+		if t.kind == 'p' {
+			switch t.text {
+			case "(", "[":
+				depth[j+1]++
+			case ")", "]":
+				depth[j+1]--
+			}
+		}
+		if t.kind != 'n' {
+			x.flat = append(x.flat, t)
+			x.pos[j+1]++
+		}
+	}
+	// A statement that begins at i ends at the first token j at or after i
+	// that CAN end one (a brace; a line end that does not follow a comma, a
+	// colon, an operator or an equals sign: gradleStatementSpan) with no
+	// bracket of the statement's own open there: depth[j] <= depth[i].
+	//
+	// From the right, the tokens that can end a statement are kept on a
+	// stack, without those that a nearer one hides (a nearer one with no
+	// greater depth is met first by every statement that could end at the
+	// farther): what is left has its depths in order, and the first with
+	// depth at most depth[i] is found by halving.
+	var stops []int32
+	for i := n - 1; i >= 0; i-- {
+		t := toks[i]
+		canEnd := false
+		switch {
+		case t.kind == 'p' && (t.text == "{" || t.text == "}"):
+			canEnd = true
+		case t.kind == 'n':
+			canEnd = !(i > 0 && toks[i-1].kind == 'p' && strings.Contains(",:+=", toks[i-1].text))
+		}
+		if canEnd {
+			for len(stops) > 0 && depth[stops[len(stops)-1]] >= depth[i] {
+				stops = stops[:len(stops)-1]
+			}
+			stops = append(stops, int32(i))
+		}
+		if t.kind == 'n' {
+			x.end[i] = int32(i) // a line end is a statement of nothing, whatever precedes it
+			continue
+		}
+		// stops nearer the top are nearer i and deeper: the nearest whose
+		// depth is at most depth[i] is the greatest k with that depth.
+		lo, hi := 0, len(stops)
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if depth[stops[mid]] <= depth[i] {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		if lo == 0 {
+			x.end[i] = int32(n)
+		} else {
+			x.end[i] = stops[lo-1]
+		}
+	}
+	x.finish()
+	return x
+}
+
+// statement is gradleStatement for the file's own tokens, from the index:
+// the statement that begins at toks[i], without its line ends, and the
+// index after it.
+func (b *gradleBuild) statement(toks []gradleTok, i int) (stmt []gradleTok, next int) {
+	x := b.idx
+	if x == nil || i >= len(toks) || len(toks) != len(x.toks) || &toks[0] != &x.toks[0] {
+		return gradleStatement(toks, i)
+	}
+	end := int(x.end[i])
+	return x.flat[x.pos[i]:x.pos[end]], end
+}
+
+// gradleLevel is what the walk knows of one open block, worked out when the
+// block is entered: whether statements in it are declarations of a
+// dependencies block or entries of a repositories block (the innermost
+// block that is not control flow decides), and what the blocks around it
+// make of a repository declared there. It was asked of the whole stack at
+// every statement, which for blocks nested n deep is n times n.
+type gradleLevel struct {
+	inDeps, inRepos        bool
+	forPlugins, repoShared bool
+}
+
+func (above gradleLevel) enter(name string) gradleLevel {
+	lv := gradleLevel{forPlugins: above.forPlugins, repoShared: above.repoShared}
+	switch name {
+	case "pluginManagement", "buildscript":
+		lv.forPlugins = true
+	case "allprojects", "subprojects", "dependencyResolutionManagement":
+		lv.repoShared = true
+	}
+	if gradleControlFlow[name] {
+		lv.inDeps, lv.inRepos = above.inDeps, above.inRepos
+		return lv
+	}
+	lv.inRepos = name == "repositories" || name == "forRepository"
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		name = name[dot+1:]
+	}
+	lv.inDeps = name == "dependencies"
+	return lv
+}
+
+// What bounds the reading of a Gradle build (0.29.213): see pom_tree.go.
+// The reader is not a parser of the language: it restarts at every line and
+// every brace, and text can be written that makes each restart read far.
+// Each such shape found was made linear. For the ones not found there was a
+// count of work in this file (gradleWorkFactor, since 0.29.195) and, later,
+// one for the walk; both are gone. The bound on a walk's time is the limit
+// on the CPU time of the process the collector reads manifests in.
 
 // gradleRead is what one name looked up outside the file was given.
 type gradleRead struct {
@@ -406,9 +625,9 @@ func (s *gradleVars) find(name string) (value string, ok, settled bool, layers i
 
 // result is what the file leaves known below it, as a layer's two maps:
 // what it assigns, less the names it assigned twice differently, and those
-// names. A file that was not read whole leaves nothing.
+// names.
 func (b *gradleBuild) result() (own map[string]string, gone map[string]bool) {
-	if b.overBound || (len(b.own) == 0 && len(b.conflicted) == 0) {
+	if len(b.own) == 0 && len(b.conflicted) == 0 {
 		return nil, nil
 	}
 	if len(b.conflicted) == 0 {
@@ -439,36 +658,6 @@ func (l *gradleLibs) get(name string) ([]gradleDecl, bool) {
 	return nil, false
 }
 
-// gradleWalkWork is the walk's counter of the Gradle readers' work: every
-// unit a file's reading spends, against gradleWorkFactor units per byte of
-// Gradle file the walk has read (each file once). A file's own bound does
-// not bound the walk: a script applied by every project is read for each
-// of them, projects times its size. A reading that takes nothing new from
-// outside is not repeated (the memo), so an ordinary build spends its files
-// about once; past the allowance the files still to be read are not read,
-// and are reported so, by name.
-type gradleWalkWork struct {
-	used, limit int
-	// acct is the walk's account: its clock is looked at here, where the
-	// work is charged (the backstop).
-	acct *walkAccount
-}
-
-func (w *gradleWalkWork) spend(n int) bool {
-	w.used += n
-	if w.acct != nil && w.acct.tick(n) {
-		return false
-	}
-	return w.used <= w.limit
-}
-
-// statement is gradleStatement, with its cost recorded.
-func (b *gradleBuild) statement(toks []gradleTok, i int) (stmt []gradleTok, next int) {
-	stmt, next = gradleStatement(toks, i)
-	b.spend(next - i + 1)
-	return stmt, next
-}
-
 // gradleInterpolatedLimit bounds a string that is interpolated and what the
 // interpolation produces: pomInterpolatedLimit, for the same reason (a
 // variable that is another one twice over doubles at every line).
@@ -493,38 +682,34 @@ var gradleNotConfigurations = map[string]bool{
 // elsewhere (the next release's tree reader supplies them); the file's own
 // assignments are added to a copy.
 func readGradleBuild(content string, outer *gradleVars) *gradleBuild {
-	return readGradleBuildWith(content, outer, nil, nil)
+	return readGradleBuildWith(content, outer, nil)
 }
 
-// readGradleBuildWith is readGradleBuild with the catalogues' accessors and
-// the walk's work counter (nil outside a tree).
-func readGradleBuildWith(content string, outer *gradleVars, libs *gradleLibs, shared *gradleWalkWork) *gradleBuild {
-	return readGradleTokens(gradleTokens(content), len(content), true, outer, libs, shared)
+// readGradleBuildWith is readGradleBuild with the catalogues' accessors.
+func readGradleBuildWith(content string, outer *gradleVars, libs *gradleLibs) *gradleBuild {
+	return readGradleTokens(gradleTokens(content), outer, libs)
 }
 
-// readGradleTokens reads a build file of size bytes from its tokens.
-// tokenised says they were made for this reading (and not kept from an
-// earlier one of the same walk): the bytes are then charged.
-func readGradleTokens(toks []gradleTok, size int, tokenised bool, outer *gradleVars, libs *gradleLibs, shared *gradleWalkWork) *gradleBuild {
+// readGradleTokens reads a build file from its tokens.
+func readGradleTokens(toks []gradleTok, outer *gradleVars, libs *gradleLibs) *gradleBuild {
+	return readGradleIndexed(newGradleIndex(toks), outer, libs)
+}
+
+// readGradleIndexed reads a build file from its tokens and their index. A
+// nil index's fields are never read: every reader of a statement then reads
+// it token by token, as all did before the index
+// (TestAGradleFileIsReadTheSameWithAndWithoutItsIndex reads files both ways).
+func readGradleIndexed(idx *gradleIndex, outer *gradleVars, libs *gradleLibs) *gradleBuild {
+	return readGradleWith(idx.toks, idx, outer, libs)
+}
+
+func readGradleWith(toks []gradleTok, idx *gradleIndex, outer *gradleVars, libs *gradleLibs) *gradleBuild {
 	b := &gradleBuild{outer: outer, own: map[string]string{}, conflicted: map[string]bool{}, libs: libs,
-		reads: map[string]gradleRead{}, shared: shared, workLimit: gradleWorkFactor * (size + 1)}
-	// The bytes tokenised, and the two passes over the tokens: charged
-	// before either is made, whatever the tokens are.
-	units := 2 * (len(toks) / gradleTokensPerUnit)
-	if tokenised {
-		units += size / gradleScanBytes
-	}
-	b.spend(units)
+		reads: map[string]gradleRead{}, idx: idx}
 	// Two passes: the assignments first, so a variable assigned below its
 	// use (or in a later ext block) is known when the declarations are read.
 	b.walk(toks, false)
 	b.walk(toks, true)
-	if b.overBound {
-		// Not read whole: what was gathered is not the build, and a part
-		// of one reads as all of it. The variables known from outside stand.
-		b.decls, b.boms, b.repos, b.repoSeen, b.applies, b.plugins = nil, nil, nil, nil, nil, nil
-		return b
-	}
 	b.springBootBOM()
 	return b
 }
@@ -542,6 +727,14 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 	// level (0.29.209): it was joined again from every level at every
 	// statement, the depth times the names' length each time.
 	var quals []string
+	// levels runs beside stack too (gradleLevel).
+	var levels []gradleLevel
+	level := func() gradleLevel {
+		if len(levels) == 0 {
+			return gradleLevel{}
+		}
+		return levels[len(levels)-1]
+	}
 	second := "" // the word after head
 	head := ""   // the word that opened the current statement
 	atStart := true
@@ -555,9 +748,6 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 	// shared counts the allprojects and subprojects blocks on the stack.
 	shared := 0
 	for i := 0; i < len(toks); i++ {
-		if b.overBound {
-			return
-		}
 		t := toks[i]
 		switch {
 		case t.kind == 'p' && (t.text == "(" || t.text == "["):
@@ -572,6 +762,7 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 			atStart, head = true, ""
 			continue
 		case t.kind == 'p' && t.text == "{":
+			levels = append(levels, level().enter(head))
 			stack = append(stack, head)
 			if head == "allprojects" || head == "subprojects" {
 				shared++
@@ -599,7 +790,7 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 				if name := stack[len(stack)-1]; name == "allprojects" || name == "subprojects" {
 					shared--
 				}
-				stack, quals = stack[:len(stack)-1], quals[:len(quals)-1]
+				stack, quals, levels = stack[:len(stack)-1], quals[:len(quals)-1], levels[:len(levels)-1]
 			}
 			atStart, head = true, ""
 			continue
@@ -619,11 +810,8 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 				}
 			}
 		}
-		// What looking at the stack for this statement costs: the blocks
-		// that are control flow are passed over one by one, and the
-		// qualifier is built from every level.
-		b.spend(len(stack) + 1)
-		inDeps := gradleInDependencies(stack)
+		at := level()
+		inDeps := at.inDeps
 		b.inShared = shared > 0
 		switch {
 		case decls && inDeps:
@@ -631,8 +819,8 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 				i = next - 1
 				atStart, head = true, ""
 			}
-		case decls && gradleInRepositories(stack):
-			if next, ok := b.repository(toks, i, stack); ok {
+		case decls && at.inRepos:
+			if next, ok := b.repository(toks, i, at); ok {
 				i = next - 1
 				atStart, head = true, ""
 			}
@@ -660,23 +848,6 @@ const gradleNoQualifier = "\x00"
 // are: a declaration under "if" in a dependencies block is a declaration.
 var gradleControlFlow = map[string]bool{
 	"if": true, "else": true, "for": true, "while": true, "do": true, "try": true, "catch": true, "finally": true, "when": true,
-}
-
-// gradleInDependencies reports whether the innermost block that is not
-// control flow is a dependencies block (project.dependencies and
-// buildscript's count; constraints and components inside one do not).
-func gradleInDependencies(stack []string) bool {
-	for i := len(stack) - 1; i >= 0; i-- {
-		name := stack[i]
-		if gradleControlFlow[name] {
-			continue
-		}
-		if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
-			name = name[dot+1:]
-		}
-		return name == "dependencies"
-	}
-	return false
 }
 
 // gradleStatement returns the tokens of the statement that begins at
@@ -877,14 +1048,7 @@ func gradleEndOf(toks []gradleTok, end int) int {
 
 // arguments reads what a configuration is given.
 func (b *gradleBuild) arguments(config string, args []gradleTok, platform bool) {
-	// Each call reads what it is given once, and a call nested in a call
-	// (platform(platform(...))) reads the inner part again: counted, so a
-	// coordinate inside n calls ends at the work bound.
-	b.spend(len(args))
-	if b.overBound {
-		return
-	}
-	args = gradleUnparen(args)
+	args = b.unparen(args)
 	if len(args) == 0 {
 		return
 	}
@@ -1116,7 +1280,6 @@ func (b *gradleBuild) interpolate(s string) (out string, ok bool) {
 		path := s[i+1 : j]
 		found := false
 		for {
-			b.spend(len(path)) // a lookup reads the path it is given
 			if v, has := b.lookup(path); has {
 				sb.WriteString(v)
 				sb.WriteString(s[i+1+len(path) : j])
@@ -1170,8 +1333,7 @@ func (b *gradleBuild) lookup(expr string) (string, bool) {
 	if v, ok := b.own[name]; ok {
 		return v, true
 	}
-	v, ok, layers := b.outer.get(name)
-	b.spendWalk(layers)
+	v, ok, _ := b.outer.get(name)
 	if _, seen := b.reads[name]; !seen {
 		b.reads[name] = gradleRead{value: v, ok: ok}
 	}
@@ -1214,14 +1376,15 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 	}
 	head := stmt[0].text
 	if head == "apply" {
-		b.applyFrom(gradleUnparen(stmt[1:]))
+		b.applyFrom(b.unparen(stmt[1:]))
 		return
 	}
 	// set("name", "value") on ext or extra, or inside their block.
 	if base, isSet := strings.CutSuffix(head, ".set"); head == "set" || isSet {
 		if head == "set" || gradleVarName(base+".") == "" {
-			parts := gradleSplit(gradleUnparen(stmt[1:]))
-			if len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 's' {
+			// Two parts and no more: a third is looked for, and no further.
+			parts, more := b.parts(b.unparen(stmt[1:]), 2)
+			if !more && len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 's' {
 				b.assign(parts[0][0].text, parts[1])
 			}
 		}
@@ -1254,7 +1417,7 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 	case stmt[j].kind == 'i' && stmt[j].text == "by" && declared:
 		rest := stmt[j+1:]
 		if len(rest) >= 2 && rest[0].kind == 'i' && (rest[0].text == "extra" || strings.HasSuffix(rest[0].text, ".extra")) {
-			b.assign(name, gradleUnparen(rest[1:]))
+			b.assign(name, b.unparen(rest[1:]))
 		}
 	case stmt[j].kind == 'p' && stmt[j].text == "=":
 		// A plain "name = value" sets a property of the project where it is
@@ -1277,8 +1440,8 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 // string, or file('x') / rootProject.file('x'). The path is kept as written;
 // the tree reader resolves it.
 func (b *gradleBuild) applyFrom(args []gradleTok) {
-	for _, part := range gradleSplit(args) {
-		if len(part) < 3 || part[0].kind != 'i' || part[0].text != "from" {
+	for _, part := range b.fromParts(args, &b.fromsRead) {
+		if len(part) < 3 {
 			continue
 		}
 		v := part[2:]
@@ -1363,7 +1526,7 @@ func (b *gradleBuild) libyearDeps() []model.LibyearDep {
 // plugin: a BOM applied to the project, with no row of its own.
 func (b *gradleBuild) mavenBom(toks []gradleTok, i int) {
 	stmt, _ := b.statement(toks, i)
-	args := gradleUnparen(stmt[1:])
+	args := b.unparen(stmt[1:])
 	if len(args) == 0 || args[0].kind != 's' {
 		return
 	}
@@ -1379,22 +1542,45 @@ func (b *gradleBuild) mavenBom(toks []gradleTok, i int) {
 func (b *gradleBuild) plugin(toks []gradleTok, i int) {
 	stmt, _ := b.statement(toks, i)
 	id, version := "", ""
-	for j, t := range stmt {
-		if t.kind != 's' {
-			continue
+	if at, ok := b.idx.place(stmt); ok {
+		// From the index: the first string that is not empty is the id; the
+		// LAST string after it that follows the word `version` is the
+		// version; the word
+		// `apply` anywhere says the plugin is not applied here.
+		x, end := b.idx, at+len(stmt)
+		if int(x.nextApply[at]) < end {
+			return // "apply false": declared for others, not applied here
 		}
-		if id == "" {
-			id = t.text
-		} else if j > 0 && stmt[j-1].kind == 'i' && stmt[j-1].text == "version" {
+		first := int(x.nextString[at])
+		if first >= end {
+			return
+		}
+		id = x.flat[first].text
+		if v := int(x.lastVersion[end]); v > first {
+			t := x.flat[v]
 			version = t.text
 			if t.interp {
 				version, _ = b.interpolate(t.text)
 			}
 		}
-	}
-	for _, t := range stmt {
-		if t.kind == 'i' && t.text == "apply" {
-			return // "apply false": declared for others, not applied here
+	} else {
+		for j, t := range stmt {
+			if t.kind != 's' {
+				continue
+			}
+			if id == "" {
+				id = t.text
+			} else if j > 0 && stmt[j-1].kind == 'i' && stmt[j-1].text == "version" {
+				version = t.text
+				if t.interp {
+					version, _ = b.interpolate(t.text)
+				}
+			}
+		}
+		for _, t := range stmt {
+			if t.kind == 'i' && t.text == "apply" {
+				return // "apply false": declared for others, not applied here
+			}
 		}
 	}
 	if id != "" {
@@ -1458,24 +1644,10 @@ const (
 	gradleJCenterURL      = "https://jcenter.bintray.com"
 )
 
-// gradleInRepositories reports whether the innermost block that is not
-// control flow is a repositories block, or the forRepository block of an
-// exclusiveContent inside one: the places a repository is declared.
-func gradleInRepositories(stack []string) bool {
-	for i := len(stack) - 1; i >= 0; i-- {
-		name := stack[i]
-		if gradleControlFlow[name] {
-			continue
-		}
-		return name == "repositories" || name == "forRepository"
-	}
-	return false
-}
-
 // repository reads the entry at toks[i] of a repositories block. ok is
 // false for a statement that opens a block the walk should enter
 // (exclusiveContent, a condition).
-func (b *gradleBuild) repository(toks []gradleTok, i int, stack []string) (next int, ok bool) {
+func (b *gradleBuild) repository(toks []gradleTok, i int, at gradleLevel) (next int, ok bool) {
 	stmt, end := b.statement(toks, i)
 	if len(stmt) == 0 || stmt[0].kind != 'i' {
 		return gradleEndOf(toks, end), true
@@ -1484,14 +1656,9 @@ func (b *gradleBuild) repository(toks []gradleTok, i int, stack []string) (next 
 	if gradleControlFlow[head] || head == "exclusiveContent" || head == "forRepository" {
 		return i, false
 	}
-	kind, shared := RepositoryForDependencies, false
-	for _, name := range stack {
-		switch name {
-		case "pluginManagement", "buildscript":
-			kind = RepositoryForPlugins
-		case "allprojects", "subprojects", "dependencyResolutionManagement":
-			shared = true
-		}
+	kind, shared := RepositoryForDependencies, at.repoShared
+	if at.forPlugins {
+		kind = RepositoryForPlugins
 	}
 	// The entry's own block, when it has one: maven { url ... }.
 	var body []gradleTok

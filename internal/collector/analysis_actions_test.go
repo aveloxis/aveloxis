@@ -153,8 +153,16 @@ func TestActionsInventoryIsKnobGated(t *testing.T) {
 	}
 	// And the walk hands the collector's knobs to the roster.
 	code := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) scanLibyear("))
-	if !strings.Contains(code, "manifest.Options{DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps}") {
-		t.Error("scanLibyear must pass ac.DevBuildDeps and ac.GitHubActionsDeps to the roster as manifest.Options")
+	// (0.29.213: through the child that reads the manifests. The request
+	// carries them and the child hands them to the roster;
+	// TestTheChildReadsUnderTheAnalysisKnobs drives it.)
+	request := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) readClone("))
+	if !strings.Contains(request, "DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps") {
+		t.Error("readClone must put ac.DevBuildDeps and ac.GitHubActionsDeps in the manifest reader's request")
+	}
+	serve := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (c *manifestChild) serveDeclarations("))
+	if !strings.Contains(serve, "manifest.Options{DevBuildDeps: req.DevBuildDeps, GitHubActionsDeps: req.GitHubActionsDeps}") {
+		t.Error("the manifest reader must pass the request's two knobs to the roster as manifest.Options")
 	}
 	if !strings.Contains(code, "NoLibyear:      true") && !strings.Contains(code, "NoLibyear: true") {
 		t.Error("the githubactions resolver case must set NoLibyear — actions have no registry timeline")

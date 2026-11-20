@@ -48,6 +48,20 @@ type rotationExecer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// historyRotateInsertSQL and historyRotateDeleteSQL are the two statements
+// of a rotation, for the table pair rotateRepoRowsToHistory's callers name
+// (constants at each call, which the write-policy check runs these for;
+// the allowlist refuses any other pair before either is built).
+func historyRotateInsertSQL(historyTable, table string) string {
+	return fmt.Sprintf(
+		`INSERT INTO %s SELECT * FROM %s WHERE repo_id = $1`, historyTable, table)
+}
+
+func historyRotateDeleteSQL(table string) string {
+	return fmt.Sprintf(
+		`DELETE FROM %s WHERE repo_id = $1`, table)
+}
+
 // rotateRepoRowsToHistory copies a repo's current rows from table into
 // historyTable, then deletes them from table. Generic over the
 // identical-column history pairs in historyRotationAllowlist; any
@@ -59,12 +73,10 @@ func rotateRepoRowsToHistory(ctx context.Context, q rotationExecer, table, histo
 	if !ok || want != historyTable {
 		return fmt.Errorf("rotateRepoRowsToHistory: table pair (%q -> %q) is not in the rotation allowlist", table, historyTable)
 	}
-	if _, err := q.Exec(ctx, fmt.Sprintf(
-		`INSERT INTO %s SELECT * FROM %s WHERE repo_id = $1`, historyTable, table), repoID); err != nil {
+	if _, err := q.Exec(ctx, historyRotateInsertSQL(historyTable, table), repoID); err != nil {
 		return fmt.Errorf("rotate %s to history: %w", table, err)
 	}
-	if _, err := q.Exec(ctx, fmt.Sprintf(
-		`DELETE FROM %s WHERE repo_id = $1`, table), repoID); err != nil {
+	if _, err := q.Exec(ctx, historyRotateDeleteSQL(table), repoID); err != nil {
 		return fmt.Errorf("clear %s after rotation: %w", table, err)
 	}
 	return nil
@@ -453,12 +465,15 @@ func nonNilCounts(m map[string]int) map[string]int {
 	return m
 }
 
-// inventoryAttemptResults are the values RecordInventoryAttempt accepts.
-var inventoryAttemptResults = map[string]bool{
-	model.InventoryAttemptCloneUnavailable: true,
-	model.InventoryAttemptRootUnreadable:   true,
-	model.InventoryAttemptReplaceFailed:    true,
-}
+// inventoryAttemptResults are the values RecordInventoryAttempt accepts:
+// model's list.
+var inventoryAttemptResults = func() map[string]bool {
+	m := map[string]bool{}
+	for _, r := range model.InventoryAttemptResults() {
+		m[r] = true
+	}
+	return m
+}()
 
 // RecordInventoryAttempt records that an analysis did NOT replace the
 // repository's inventory, and why (one of model's InventoryAttempt*
@@ -471,7 +486,7 @@ var inventoryAttemptResults = map[string]bool{
 // attempt that failed.
 func (s *PostgresStore) RecordInventoryAttempt(ctx context.Context, repoID int64, result string) error {
 	if !inventoryAttemptResults[result] {
-		return fmt.Errorf("inventory attempt result %q is not one of clone_unavailable, root_unreadable, replace_failed", result)
+		return fmt.Errorf("inventory attempt result %q is not one of %s", result, strings.Join(model.InventoryAttemptResults(), ", "))
 	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		// One statement, which also moves the repository's cache state

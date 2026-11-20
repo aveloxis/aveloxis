@@ -1544,6 +1544,49 @@ var (
 	maskedLiteral = regexp.MustCompile(`"` + quotedMark + `([0-9]+)"`)
 )
 
+// gemLogicalLines splits a line at each `;` that ends a whole statement: a
+// block that opens and closes on the line (`group :test do gem 'a' end; gem
+// 'b'`), or a gem declaration. A `;` inside a block that is still open
+// (`group :x do; gem 'a'; end`) is not such a place, and the line is left
+// whole for the one-line block's own reading.
+//
+// Round 6: the one-line patterns end at the end of the line, so a block
+// followed by `; ...` was not seen as closed: its gem's requirement held the
+// `end`, and every gem after it took the block's group.
+func gemLogicalLines(line string) []string {
+	literals := quotedLiteral.FindAllString(line, -1)
+	n := -1
+	masked := quotedLiteral.ReplaceAllStringFunc(line, func(string) string { n++; return `"` + quotedMark + strconv.Itoa(n) + `"` })
+	if i := strings.Index(masked, "#"); i >= 0 {
+		masked = masked[:i]
+	}
+	restore := func(piece string) string {
+		return maskedLiteral.ReplaceAllStringFunc(piece, func(mark string) string {
+			k, err := strconv.Atoi(mark[1+len(quotedMark) : len(mark)-1])
+			if err != nil || k >= len(literals) {
+				return mark
+			}
+			return literals[k]
+		})
+	}
+	for i := 0; i < len(masked); i++ {
+		if masked[i] != ';' {
+			continue
+		}
+		head, rest := strings.TrimSpace(masked[:i]), strings.TrimSpace(masked[i+1:])
+		if head == "" || rest == "" {
+			continue
+		}
+		if gemOneLine.MatchString(head) || gemOneLineBraces.MatchString(head) || gemPlainDeclaration.MatchString(head) {
+			return append([]string{restore(head)}, gemLogicalLines(restore(rest))...)
+		}
+	}
+	return []string{line}
+}
+
+// gemPlainDeclaration: a gem declaration that opens no block.
+var gemPlainDeclaration = regexp.MustCompile(`^gem\b[^{]*$`)
+
 // gemSourceValue reads the address a `source` block or option names.
 var gemSourceValue = regexp.MustCompile(`(?:^|[\s,(])(?::source\s*=>|source:?)\s*\(?\s*(?:["']([^"']*)["']|:(\w+))`)
 
@@ -1635,8 +1678,11 @@ func ParseGemfileVersions(path string) []model.LibyearDep {
 	// its own `end`; and a gem inside a `path`, `git` or `source` block
 	// comes from there, not from rubygems.org.
 	var groupStack []gemBlock
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
+	var lines []string
+	for _, physical := range strings.Split(string(data), "\n") {
+		lines = append(lines, gemLogicalLines(strings.TrimSpace(physical))...)
+	}
+	for _, line := range lines {
 		// A block line, read without its comment or its strings.
 		opener := withoutQuoted(line)
 		if i := strings.Index(opener, "#"); i >= 0 {
@@ -2809,7 +2855,11 @@ func parsePubspecVersions(content string) []model.LibyearDep {
 		if versionAt >= 0 && trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			at := versionAt
 			versionAt = -1
-			if last >= 0 && indent > at {
+			// The value, when the line is one: a key of its own (`path:
+			// ../x`, `ref: v1`) or a list item is not a version, and is read
+			// below as what it is (round 6: it was taken for the version,
+			// and a source named there was never seen).
+			if last >= 0 && indent > at && pubPlainScalar(trimmed) {
 				if deps[last].Version == "" {
 					deps[last].Version = CleanVersion(yamlScalar(trimmed))
 				}
@@ -2882,6 +2932,26 @@ func parsePubspecVersions(content string) []model.LibyearDep {
 		}
 	}
 	return deps
+}
+
+// pubPlainScalar reports whether a line of a pubspec is a plain value: not
+// a mapping key and not a list item. A quoted line is a value whatever it
+// holds.
+func pubPlainScalar(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	if trimmed[0] == '"' || trimmed[0] == '\'' {
+		return true
+	}
+	if trimmed == "-" || strings.HasPrefix(trimmed, "- ") {
+		return false
+	}
+	// Without its comment.
+	if i := strings.Index(trimmed, " #"); i >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:i])
+	}
+	return !strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, ": ")
 }
 
 // parsePackageSwiftDeps extracts dependency names from Package.swift.

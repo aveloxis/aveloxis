@@ -53,19 +53,6 @@ const (
 	// function on compiler constants, RUN through the Env the store's test
 	// supplies (the real function). Text is the result.
 	StrictBuilt
-	// StrictNumbered: fixed text with NUMBERS in it: fmt.Sprintf of a
-	// readable format, or a + of readable text, whose every other operand
-	// is of an integer type. The statement is made by the real
-	// fmt.Sprintf for several numbers, and is accepted only if the number
-	// never changes its parse tree (numberedTexts). Texts are those
-	// statements.
-	StrictNumbered
-	// StrictFromCallers: fmt.Sprintf of a readable format, or a + of
-	// readable text, whose every other operand is a parameter of the
-	// function that nothing changes, where every caller (found by object,
-	// to any depth) passes text the reading reads. Texts are the statement
-	// for each caller, made by the real fmt.Sprintf.
-	StrictFromCallers
 	// StrictQueued: the SQL of a statement already queued on a batch, read
 	// back from it (q.SQL for q ranging over a pgx.Batch's QueuedQueries,
 	// to copy the batch). Every statement on a batch of the package got
@@ -80,7 +67,7 @@ const (
 )
 
 func (k StrictKind) String() string {
-	return [...]string{"constant", "pure", "built", "numbered", "from callers", "queued", "parameter", "hole"}[k]
+	return [...]string{"constant", "pure", "built", "queued", "parameter", "hole"}[k]
 }
 
 // StrictArg is one SQL argument of one call that runs SQL.
@@ -100,9 +87,6 @@ type StrictArg struct {
 	Kind   StrictKind
 	// Text is the statement, for a constant or a pure call.
 	Text string
-	// Texts are, for a numbered argument, the statement with each of
-	// several numbers in it.
-	Texts []string
 	// Expr is the argument as written.
 	Expr string
 	// Builder is, for a hole whose expression is exactly a call of a
@@ -162,6 +146,53 @@ var pureFuncs = map[string]func(args []constant.Value) (string, bool){
 		if len(a) == 0 || a[0].Kind() != constant.String {
 			return "", false
 		}
+		// Round 6: only the three verbs whose output does not depend on
+		// the Go type of what they are given, each with a constant of its
+		// own kind: %s with a string, %d with an integer, and %%. A
+		// constant is handed to fmt as a plain string or int, which is
+		// not the type the program's own call has (%T printed "int" for a
+		// uint, and so made another column's name); with these verbs the
+		// digits and the text are the same for every type. No flag, width
+		// or other verb is read.
+		format := constant.StringVal(a[0])
+		next, indexed := 1, false
+		for i := 0; i < len(format); i++ {
+			if format[i] != '%' {
+				continue
+			}
+			i++
+			if i < len(format) && format[i] == '[' {
+				// %[2]s: the argument named by its place.
+				end := strings.IndexByte(format[i:], ']')
+				n, err := strconv.Atoi(format[i+1 : i+max(end, 1)])
+				if end < 0 || err != nil || n < 1 {
+					return "", false
+				}
+				next, indexed = n, true
+				i += end + 1
+			}
+			if i >= len(format) {
+				return "", false
+			}
+			var want constant.Kind
+			switch format[i] {
+			case '%':
+				continue
+			case 's':
+				want = constant.String
+			case 'd':
+				want = constant.Int
+			default:
+				return "", false
+			}
+			if next >= len(a) || a[next].Kind() != want {
+				return "", false
+			}
+			next++
+		}
+		if !indexed && next != len(a) {
+			return "", false
+		}
 		vals := make([]any, 0, len(a)-1)
 		for _, v := range a[1:] {
 			g, ok := goValue(v)
@@ -170,7 +201,7 @@ var pureFuncs = map[string]func(args []constant.Value) (string, bool){
 			}
 			vals = append(vals, g)
 		}
-		out := fmt.Sprintf(constant.StringVal(a[0]), vals...)
+		out := fmt.Sprintf(format, vals...)
 		// fmt reports a verb with no argument, or an argument with no
 		// verb, inside its output. That is not SQL anyone wrote.
 		if strings.Contains(out, "%!") {
@@ -852,11 +883,6 @@ func StrictArguments(root string, files map[string]string, env Env) ([]StrictArg
 			a.Kind, a.Why = StrictQueued, ""
 		}
 		if a.Kind == StrictHole {
-			if texts, ok := t.numberedTexts(s.arg); ok {
-				a.Kind, a.Why, a.Texts = StrictNumbered, "", texts
-			}
-		}
-		if a.Kind == StrictHole {
 			var fn *types.Func
 			var bcall *ast.CallExpr
 			a.Builder, a.BuilderArgs, a.BuilderResult, fn, bcall = t.builderOf(s.arg)
@@ -886,7 +912,7 @@ func StrictArguments(root string, files map[string]string, env Env) ([]StrictArg
 						case rows != nil:
 							part.Args = append(part.Args, arg)
 							cols = append(cols, i)
-						case t.usesAParameter(arg) && (isBareIdent(arg) || isLenCall(arg)):
+						case t.usesAParameter(arg) && (isBareIdent(arg) || t.isLenCall(arg)):
 							// A parameter whose callers do not all pass
 							// constants is not a free input: it is unread.
 							whole = false
@@ -913,31 +939,7 @@ func StrictArguments(root string, files map[string]string, env Env) ([]StrictArg
 					}
 				}
 			}
-			var gapExprs []ast.Expr
-			a.Gaps, gapExprs, a.fill = t.gapsOf(s.arg)
-			// Fixed text whose every gap is a parameter nothing changes,
-			// with every caller passing text the reading reads: the
-			// statement is made, by the real fmt.Sprintf, for each caller.
-			if a.fill != nil && fn == nil && !a.BuilderIsVar {
-				probe := &ast.CallExpr{Args: gapExprs}
-				if c := t.callOfArg(s.arg); c != nil {
-					t.ix.parent[probe] = c
-					rows, _ := t.callerTuples(probe, 0)
-					delete(t.ix.parent, probe)
-					var texts []string
-					for _, row := range rows {
-						text, err := a.fill(row)
-						if err != nil {
-							texts = nil
-							break
-						}
-						texts = append(texts, text)
-					}
-					if len(texts) > 0 {
-						a.Kind, a.Why, a.Texts = StrictFromCallers, "", texts
-					}
-				}
-			}
+			a.Gaps, _, a.fill = t.gapsOf(s.arg)
 			a.rootIsParam = t.usesAParameter(s.arg)
 			ast.Inspect(s.arg, func(n ast.Node) bool {
 				if e, ok := n.(ast.Expr); ok {
@@ -1101,6 +1103,12 @@ func (t *typedPkg) looseUsesOf(fn *types.Func, places []int, depth int) (loose [
 		}
 		p := sig.Params().At(i)
 		if b, basic := p.Type().Underlying().(*types.Basic); basic && b.Info()&(types.IsNumeric|types.IsBoolean) != 0 {
+			if _, plain := p.Type().(*types.Basic); !plain {
+				// Round 6: a declared number or bool type may print
+				// through a String or Format method: it is not digits.
+				loose = append(loose, LooseUse{Param: p.Name(), Expr: "a parameter of the declared type " + p.Type().String() + ", which may print through a method"})
+				continue
+			}
 			if b.Info()&types.IsNumeric != 0 {
 				loose = append(loose, t.numberWrittenAsText(fd, p)...)
 			}
@@ -1121,6 +1129,14 @@ func (t *typedPkg) looseUsesOf(fn *types.Func, places []int, depth int) (loose [
 		// The value of a range over something tracked is tracked.
 		if r, ok := n.(*ast.RangeStmt); ok {
 			if root, ok := rootIdent(r.X); ok && tracked[t.info.Uses[root]] {
+				// Round 6: a range over a STRING gives its characters,
+				// which are numbers to the type checker and text to
+				// whoever writes them out; and a range that assigns to
+				// variables declared elsewhere gives them values this
+				// reading does not follow.
+				if b, isBasic := t.info.Types[r.X].Type.Underlying().(*types.Basic); (isBasic && b.Info()&types.IsString != 0) || (r.Tok != token.DEFINE && (r.Key != nil || r.Value != nil)) {
+					loose = append(loose, LooseUse{Param: root.Name, Expr: "ranged over as a string, or into variables declared elsewhere: " + t.srcNode(r.X)})
+				}
 				for _, e := range []ast.Expr{r.Key, r.Value} {
 					if vid, ok := e.(*ast.Ident); ok && r.Tok == token.DEFINE {
 						if o := t.info.Defs[vid]; o != nil {
@@ -1167,7 +1183,13 @@ func (t *typedPkg) looseUsesOf(fn *types.Func, places []int, depth int) (loose [
 		bad := func() {
 			in := ""
 			if depth > 0 {
+				// The function's own name; a method's with its receiver,
+				// so that a method named like a registered quoting helper
+				// is not taken for it (round 6).
 				in = fn.Name()
+				if r := sig.Recv(); r != nil {
+					in = types.TypeString(r.Type(), func(*types.Package) string { return "" }) + "." + in
+				}
 			}
 			loose = append(loose, LooseUse{Param: id.Name, Callee: in, Expr: t.srcNode(stack[k])})
 		}
@@ -1185,12 +1207,15 @@ func (t *typedPkg) looseUsesOf(fn *types.Func, places []int, depth int) (loose [
 				return true
 			}
 		case *ast.CompositeLit:
-			if isPgxIdentifier(t.info.Types[par].Type) {
+			// pgx.Identifier{...}.Sanitize(): the literal is quoted only
+			// when Sanitize is called ON it (round 6: indexed, or joined,
+			// it gave the name back unquoted).
+			if isPgxIdentifier(t.info.Types[par].Type) && sanitizedAt(stack, k) {
 				return true
 			}
 		case *ast.CallExpr:
 			if tv, ok := t.info.Types[par.Fun]; ok && tv.IsType() {
-				if isPgxIdentifier(tv.Type) {
+				if isPgxIdentifier(tv.Type) && sanitizedAt(stack, k) {
 					return true
 				}
 				break
@@ -1633,7 +1658,7 @@ type SiteReport struct {
 	// that are wrong or cover nothing. Any is a failure.
 	Problems []string
 	// Counts by kind, and of the sites executed, open and frozen.
-	Constant, Pure, Built, Numbered, FromCallers, Queued, Parameter, Executed, Open, Frozen int
+	Constant, Pure, Built, Queued, Parameter, Executed, Open, Frozen int
 	// Raw: the parameters of open builders that reach the text unquoted,
 	// by design.
 	Raw int
@@ -1667,24 +1692,12 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 		case StrictQueued:
 			rep.Queued++
 			continue
-		case StrictFromCallers:
-			rep.FromCallers++
-			for _, text := range a.Texts {
-				rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: text})
-			}
-			continue
-		case StrictNumbered:
-			rep.Numbered++
-			for _, text := range a.Texts {
-				rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: text})
-			}
-			continue
 		case StrictParameter:
 			rep.Parameter++
 			continue
 		}
 		if a.Kind != StrictHole {
-			rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: a.Text})
+			rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: a.Text})
 			continue
 		}
 		at := fmt.Sprintf("%s:%d %s#%d", a.File, a.Line, a.Decl, a.Ordinal)
@@ -1720,7 +1733,7 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 					bad("fill %q: %v", row, err)
 					continue
 				}
-				rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: text})
+				rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: text})
 				n++
 			}
 			if s.Harvest {
@@ -1735,7 +1748,7 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 					ws, err := ParseWrites(c)
 					switch {
 					case err == nil && len(ws) > 0:
-						rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: c})
+						rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: c})
 						n++
 						if ws[len(ws)-1].Kind == "insert" {
 							heads = append(heads, c)
@@ -1753,7 +1766,7 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 					for _, head := range heads {
 						whole := head + " ($1) " + tail
 						if _, err := ParseWrites(whole); err == nil {
-							rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: whole})
+							rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: whole})
 							joined++
 						}
 					}
@@ -1849,7 +1862,7 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 						bad("the builder refused the input %q, which the registration says is in its domain: %v", row, err)
 						continue
 					}
-					rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: text})
+					rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: text})
 				}
 			}
 			if s.Domain == "" {
@@ -1899,8 +1912,21 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 				// Every input is a bool: the type is the domain, and
 				// there is nothing outside it to refuse.
 				rep.Executed++
-				if want := 1 << a.BuilderParams; len(s.Tuples) != want {
-					bad("the builder takes %d bools, so its domain is %d inputs; the registration gives %d", a.BuilderParams, want, len(s.Tuples))
+				// The SET of combinations, not their number (round 6: the
+				// same combination twice passed for a builder of one bool).
+				distinct := map[string]bool{}
+				for _, row := range s.Tuples {
+					ok := len(row) == a.BuilderParams
+					for _, v := range row {
+						ok = ok && (v == "true" || v == "false")
+					}
+					if !ok {
+						bad("an input %q of a builder of %d bools is not %d of true and false", row, a.BuilderParams, a.BuilderParams)
+					}
+					distinct[strings.Join(row, ",")] = true
+				}
+				if want := 1 << a.BuilderParams; len(distinct) != want || len(s.Tuples) != want {
+					bad("the builder takes %d bools, so its domain is the %d combinations of them; the registration gives %d inputs, %d of them distinct", a.BuilderParams, want, len(s.Tuples), len(distinct))
 				}
 			case a.BuilderIsVar:
 				// A variable has no inputs: its one value is its domain.
@@ -1919,7 +1945,7 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 			}
 		}
 		for _, text := range s.Statements {
-			rep.Statements = append(rep.Statements, Stmt{File: a.File, SQL: text})
+			rep.Statements = append(rep.Statements, Stmt{File: a.File, Decl: a.Decl, Line: a.Line, SQL: text})
 		}
 	}
 	for i, s := range sites {
@@ -1965,6 +1991,7 @@ func StrictReferences(root string, files map[string]string) ([]Reference, error)
 		out = append(out, Reference{File: p.Filename, Line: p.Line, Why: r.why})
 	}
 	out = append(out, src.typed.carriers()...)
+	out = append(out, src.typed.rewriters()...)
 	for i := range out {
 		for _, f := range src.typed.files {
 			for _, d := range f.Decls {
@@ -2160,6 +2187,14 @@ func (t *typedPkg) callerTuples(call *ast.CallExpr, depth int) ([][]string, stri
 		at := map[types.Object]int{}
 		k := 0
 		for _, f := range ft.Params.List {
+			if _, variadic := f.Type.(*ast.Ellipsis); variadic {
+				// A variadic parameter holds every further argument of a
+				// call, not the one at its position (round 6): it is not
+				// followed, and an argument that is one is refused below
+				// as no parameter of the function.
+				k += max(1, len(f.Names))
+				continue
+			}
 			for _, pn := range f.Names {
 				at[t.info.Defs[pn]] = k
 				k++
@@ -2307,164 +2342,6 @@ func (t *typedPkg) callerTuples(call *ast.CallExpr, depth int) ([][]string, stri
 	return out, ""
 }
 
-// numberProbes are the numbers a numbered argument is made with. They
-// include the code points of the characters that could change a statement
-// if a number were ever written as a character (a quote, a semicolon, a
-// backslash): a format that does that (%c) gives another parse tree for
-// them, and is refused.
-var numberProbes = []int64{1, 0, 7, 34, 39, 45, 47, 59, 92, 1 << 40}
-
-// numberedTexts reads an argument that is fixed text with numbers in it
-// (StrictNumbered). It returns the statement for each of numberProbes, and
-// true, when
-//
-//   - the argument is fmt.Sprintf of a readable format, or a + of readable
-//     text, in which every operand that is not readable is of an integer
-//     type (go/types), a local given once by such an expression being
-//     followed into it;
-//   - made by the REAL fmt.Sprintf with each probe, the statement is
-//     always read by PostgreSQL's parser, and to the same parse tree but
-//     for the digits (treeShape: a number can then only ever be a number,
-//     or the digits of a name or a string);
-//   - when a gap's type is SIGNED, the statement has that same tree for
-//     negative numbers too (a minus sign changes it: LIMIT -1 is another
-//     constant, a name's digits are cut from the name, a second minus
-//     begins a comment). A number that is only ever a name's digits must be
-//     of an unsigned type.
-//
-// What it ASSUMES: fmt.Sprintf writes a basic integer the same way for
-// every value of the same sign (it does: the verb decides, not the value);
-// and that the ten probes show every shape a verb can give (they include
-// the code points of the characters that end a string, a statement and a
-// name).
-func (t *typedPkg) numberedTexts(e ast.Expr) ([]string, bool) {
-	gaps := 0
-	signed := false
-	var build func(e ast.Expr, depth int) func(n int64) (string, bool)
-	build = func(e ast.Expr, depth int) func(n int64) (string, bool) {
-		e = unparen(e)
-		if depth > 6 {
-			return nil
-		}
-		if text, kind, _ := t.strictText(e); kind != StrictHole {
-			return func(int64) (string, bool) { return text, true }
-		}
-		switch x := e.(type) {
-		case *ast.Ident:
-			if init, ok := t.onceGiven(x); ok {
-				return build(init, depth+1)
-			}
-		case *ast.BinaryExpr:
-			if x.Op != token.ADD || !t.isBasicString(x) {
-				return nil
-			}
-			l, r := build(x.X, depth+1), build(x.Y, depth+1)
-			if l == nil || r == nil {
-				return nil
-			}
-			return func(n int64) (string, bool) {
-				a, ok1 := l(n)
-				b, ok2 := r(n)
-				return a + b, ok1 && ok2
-			}
-		case *ast.CallExpr:
-			if t.stdlibName(x) != "fmt.Sprintf" || len(x.Args) == 0 || x.Ellipsis.IsValid() {
-				return nil
-			}
-			format, kind, _ := t.strictText(x.Args[0])
-			if kind == StrictHole {
-				return nil
-			}
-			type arg struct {
-				fixed any
-				gap   bool
-			}
-			var args []arg
-			for _, a := range x.Args[1:] {
-				if v, ok := t.basicConstant(unparen(a)); ok {
-					if g, ok := goValue(v); ok {
-						args = append(args, arg{fixed: g})
-						continue
-					}
-				}
-				// A BASIC integer type only: a declared one may print
-				// through a String or Format method, which the probe
-				// numbers (plain integers) would not go through.
-				tv, ok := t.info.Types[a]
-				if !ok || !isBasicInteger(tv.Type) {
-					return nil
-				}
-				if b, _ := tv.Type.Underlying().(*types.Basic); b == nil || b.Info()&types.IsUnsigned == 0 {
-					signed = true
-				}
-				args = append(args, arg{gap: true})
-				gaps++
-			}
-			return func(n int64) (string, bool) {
-				vals := make([]any, len(args))
-				for i, a := range args {
-					vals[i] = a.fixed
-					if a.gap {
-						vals[i] = n
-					}
-				}
-				out := fmt.Sprintf(format, vals...)
-				return out, !strings.Contains(out, "%!")
-			}
-		}
-		return nil
-	}
-	render := build(e, 0)
-	if render == nil || gaps == 0 {
-		return nil, false
-	}
-	// The shape of a statement is its parse tree with the digits masked
-	// (treeShape): PostgreSQL's parser says whether two numbers leave it
-	// one statement.
-	shape := treeShape
-	var texts []string
-	base := ""
-	for i, n := range numberProbes {
-		text, ok := render(n)
-		if !ok {
-			return nil, false
-		}
-		sh, ok := shape(text)
-		if !ok || (i > 0 && sh != base) {
-			return nil, false
-		}
-		base = sh
-		texts = append(texts, text)
-	}
-	// A number of a SIGNED type can be negative, and a minus sign changes
-	// the statement (LIMIT -1, a name's digits split from the name, a
-	// comment begun by a second minus): the statement must have the same
-	// parse tree for a negative number too, or it is not read. Only a
-	// number of an unsigned type is read where a sign would change it.
-	if signed {
-		for _, n := range []int64{-1, -(1 << 40)} {
-			neg, ok := render(n)
-			if !ok {
-				return nil, false
-			}
-			if sh, ok := shape(neg); !ok || sh != base {
-				return nil, false
-			}
-		}
-	}
-	return texts[:3], true
-}
-
-// callOfArg is a node inside the function the SQL argument e stands in,
-// to find that function from: e itself, which the index knows the parent
-// of.
-func (t *typedPkg) callOfArg(e ast.Expr) ast.Node {
-	if _, ok := t.ix.parent[e]; ok {
-		return e
-	}
-	return nil
-}
-
 // isStringSlice: the type []string itself (not a declared type of it).
 func isStringSlice(typ types.Type) bool {
 	sl, ok := typ.(*types.Slice)
@@ -2473,11 +2350,6 @@ func isStringSlice(typ types.Type) bool {
 	}
 	b, ok := sl.Elem().(*types.Basic)
 	return ok && b.Kind() == types.String
-}
-
-func isBasicInteger(typ types.Type) bool {
-	b, ok := typ.(*types.Basic)
-	return ok && b.Info()&types.IsInteger != 0
 }
 
 // isQueuedCopy: e is q.SQL, the library's field of a pgx.QueuedQuery, where
@@ -2529,13 +2401,18 @@ func isBareIdent(e ast.Expr) bool {
 	return ok
 }
 
-func isLenCall(e ast.Expr) bool {
+func (t *typedPkg) isLenCall(e ast.Expr) bool {
 	c, ok := unparen(e).(*ast.CallExpr)
 	if !ok {
 		return false
 	}
 	id, ok := unparen(c.Fun).(*ast.Ident)
-	return ok && id.Name == "len"
+	if !ok {
+		return false
+	}
+	// The builtin, by object: a function of the package named len is not it.
+	b, builtin := t.info.Uses[id].(*types.Builtin)
+	return builtin && b.Name() == "len"
 }
 
 // numberWrittenAsText are the uses of a numeric parameter p in fd that could
@@ -2562,6 +2439,12 @@ func (t *typedPkg) numberWrittenAsText(fd *ast.FuncDecl, p *types.Var) (loose []
 			switch x := stack[k].(type) {
 			case *ast.ParenExpr, *ast.BinaryExpr, *ast.UnaryExpr:
 				continue
+			case *ast.AssignStmt, *ast.ValueSpec, *ast.CompositeLit, *ast.KeyValueExpr, *ast.SendStmt:
+				// Round 6: a number copied to another variable, or put in
+				// a list, is followed no further: what is done with the
+				// copy (string(rune(m)), a []byte) is not seen.
+				loose = append(loose, LooseUse{Param: id.Name, Expr: "a number copied or put into a value this reading does not follow: " + t.srcNode(x)})
+				return true
 			case *ast.CallExpr:
 				bad := func(why string) {
 					loose = append(loose, LooseUse{Param: id.Name, Expr: why + ": " + t.srcNode(x)})
@@ -2591,6 +2474,19 @@ func (t *typedPkg) numberWrittenAsText(fd *ast.FuncDecl, p *types.Var) (loose []
 				}
 				switch cf.Pkg().Path() {
 				case "strconv":
+					// Digits only: Itoa, or FormatInt / FormatUint in base
+					// ten (round 6: base 36 writes letters, QuoteRune a
+					// character).
+					ten := false
+					if len(x.Args) == 2 {
+						if v, ok := t.basicConstant(unparen(x.Args[1])); ok {
+							n, exact := constant.Int64Val(constant.ToInt(v))
+							ten = exact && n == 10
+						}
+					}
+					if name := cf.Name(); name != "Itoa" && !((name == "FormatInt" || name == "FormatUint") && ten) {
+						bad("a number written by strconv." + name + ", which is not digits in base ten")
+					}
 					return true
 				case "fmt":
 					for _, a := range x.Args {
@@ -2619,3 +2515,63 @@ func (t *typedPkg) numberWrittenAsText(fd *ast.FuncDecl, p *types.Var) (loose []
 }
 
 var fmtVerb = regexp.MustCompile(`%[-+# 0-9.*\[\]]*[a-zA-Z%]`)
+
+// rewriters reports every argument of a call that runs SQL whose type has
+// a RewriteQuery method (pgx.QueryRewriter): the library hands such an
+// argument the statement and RUNS WHAT IT RETURNS, so the text this reader
+// read at the SQL position is not the statement (round 6). pgx.NamedArgs
+// is one. A rewriter behind an `any` is not seen here; the run-time judge
+// of the store's tests holds one against any statement sent with it.
+func (t *typedPkg) rewriters() []Reference {
+	var out []Reference
+	for _, c := range t.calls {
+		for i, a := range c.Args {
+			if _, sql := t.args[c][i]; sql {
+				continue
+			}
+			tv, ok := t.info.Types[a]
+			if !ok || tv.Type == nil {
+				continue
+			}
+			if hasMethod(tv.Type, "RewriteQuery") {
+				p := t.fset.Position(a.Pos())
+				out = append(out, Reference{File: p.Filename, Line: p.Line, Why: "an argument of a call that runs SQL is a query rewriter (" + tv.Type.String() + " has RewriteQuery): the library runs what it returns, not the text written at the call"})
+			}
+		}
+	}
+	return out
+}
+
+// hasMethod: the type, or a pointer to it, has a method of that name.
+func hasMethod(typ types.Type, name string) bool {
+	for _, t := range []types.Type{typ, types.NewPointer(typ)} {
+		ms := types.NewMethodSet(t)
+		for i := 0; i < ms.Len(); i++ {
+			if ms.At(i).Obj().Name() == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sanitizedAt: the node at stack[k] (a pgx.Identifier written in place) is
+// the receiver of a call of its Sanitize method, through brackets only.
+func sanitizedAt(stack []ast.Node, k int) bool {
+	node := stack[k]
+	for k--; k >= 0; k-- {
+		switch x := stack[k].(type) {
+		case *ast.ParenExpr:
+			node = x
+			continue
+		case *ast.SelectorExpr:
+			if x.X != node || x.Sel.Name != "Sanitize" || k == 0 {
+				return false
+			}
+			call, ok := stack[k-1].(*ast.CallExpr)
+			return ok && call.Fun == ast.Expr(x)
+		}
+		return false
+	}
+	return false
+}

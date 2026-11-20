@@ -95,11 +95,6 @@ type scalingShape struct {
 	// reads, for a multi-file shape, lists the files to read at size n, in
 	// order, all on one walk; read is then unused.
 	reads func(n int) []string
-	// gradleWalkFactor, when set, is the Gradle walk's allowance for this
-	// shape, in place of the constant of that name: a shape whose measure
-	// is what happens PAST the allowance reaches it at a size a test can
-	// run.
-	gradleWalkFactor int
 }
 
 // many is a multi-file shape: k files named by name(i), each read.
@@ -229,6 +224,25 @@ func scalingShapes() []scalingShape {
 				"pom.xml":     pomOf(`<dependencyManagement><dependencies><dependency><groupId>b</groupId><artifactId>bom</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement><dependencies>` + deps.String() + "</dependencies>"),
 			}
 		}},
+		// Round 6 (M6-6): the reference-keyed entries that could answer a
+		// question were merged into a list for every question, and the list
+		// thrown away when the pom's first, plain entry answered: a parent
+		// of many entries with a reference in both halves and a child of
+		// many dependencies it manages plainly was the product of the two.
+		{name: "pom: questions answered by a plain entry, past many reference-keyed ones", read: "child/pom.xml", files: func(n int) map[string]string {
+			var managed, deps strings.Builder
+			managed.WriteString("<dependency><groupId>g</groupId><artifactId>x</artifactId><version>1</version></dependency>")
+			for i := 0; managed.Len() < n/2; i++ {
+				fmt.Fprintf(&managed, "<dependency><groupId>${p}%d</groupId><artifactId>${p}%d</artifactId><version>1</version></dependency>", i, i)
+			}
+			for deps.Len() < n/2 {
+				deps.WriteString("<dependency><groupId>g</groupId><artifactId>x</artifactId></dependency>")
+			}
+			return map[string]string{
+				"pom.xml":       `<project><groupId>t</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><properties><p>q</p></properties><dependencyManagement><dependencies>` + managed.String() + `</dependencies></dependencyManagement></project>`,
+				"child/pom.xml": `<project><parent><groupId>t</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>child</artifactId><dependencies>` + deps.String() + `</dependencies></project>`,
+			}
+		}},
 		// --- build.gradle ---
 		// Every dependency asks every platform: counted by the pom tree.
 		{name: "gradle: many dependencies against many platforms of the clone", read: "build.gradle", files: func(n int) map[string]string {
@@ -294,10 +308,25 @@ func scalingShapes() []scalingShape {
 		one("gradle: conditions nested inside a dependencies block", "build.gradle", func(n int) string {
 			return "dependencies {\n" + rep("if ( {\n", n/7)
 		}),
+		// Round 6: a statement that begins again inside itself, and a reader
+		// of statements that goes through each to its end (the parts of a
+		// call, the scripts an `apply` names, a plugin's line): the index of
+		// the file's tokens answers each without reading the statement.
+		one("gradle: set( with two arguments inside braces, repeated", "build.gradle", func(n int) string { return rep("{set('a',b,", n/11) }),
+		one("gradle: lines that apply two scripts and end in a comma", "build.gradle", func(n int) string { return rep("apply from: 'a', from: 'b',\n", n/28) }),
+		one("gradle: plugin lines that end in a comma", "build.gradle", func(n int) string { return "plugins {\n" + rep("id 'x' version 'y',\n", n/20) }),
 		// --- a version catalogue (round 2, M5) ---
 		{name: "catalogue: an array that never closes", read: "build.gradle", files: func(n int) map[string]string {
 			return map[string]string{"build.gradle": "dependencies { implementation libs.x }\n",
 				"gradle/libs.versions.toml": "[versions]\na = [\n" + rep("1,\n", n/3)}
+		}},
+		// Round 6 (M6-1): every level of an inline table split what it held
+		// again, so a value nested n deep was read n times: 640 KB of braces
+		// took 56 seconds. A catalogue's value is read two tables deep
+		// (gradleCatalogueDepth), which is all its grammar has.
+		{name: "catalogue: a value nested without end", read: "build.gradle", files: func(n int) map[string]string {
+			return map[string]string{"build.gradle": "dependencies { implementation libs.x }\n",
+				"gradle/libs.versions.toml": "[versions]\nk = " + rep("{a=", n/4) + "\"1.0\"" + rep("}", n/4) + "\n"}
 		}},
 		{name: "catalogue: many libraries", read: "build.gradle", files: func(n int) map[string]string {
 			var b strings.Builder
@@ -460,7 +489,6 @@ func scalingShapes() []scalingShape {
 					}
 					return files
 				})
-			s.gradleWalkFactor = gradleWorkFactor
 			return s
 		}(),
 		// R4-M3: directories whose build files apply one script that
@@ -515,9 +543,6 @@ func scalingCost(t *testing.T, s scalingShape, n int) (alloc, retained uint64, b
 		done := make(chan *Walk, 1)
 		go func() {
 			w := NewWalk(root, nil)
-			if s.gradleWalkFactor != 0 {
-				w.gradle.walkFactor = s.gradleWalkFactor
-			}
 			for _, rel := range rels {
 				w.Read(filepath.Join(root, filepath.FromSlash(rel)), Options{})
 			}
@@ -526,8 +551,9 @@ func scalingCost(t *testing.T, s scalingShape, n int) (alloc, retained uint64, b
 		var w *Walk
 		select {
 		case w = <-done:
-		case <-time.After(2 * time.Minute):
-			t.Fatalf("%s at %d bytes did not finish in two minutes", s.name, n)
+		case <-time.After(scalingTimeout):
+			t.Errorf("%s at %d bytes did not finish in %s", s.name, n, scalingTimeout)
+			return 0, 0, -1
 		}
 		took := time.Since(start)
 		runtime.ReadMemStats(&after)
@@ -552,16 +578,57 @@ func scalingCost(t *testing.T, s scalingShape, n int) (alloc, retained uint64, b
 	return alloc, retained, best
 }
 
+// scalingNotLinear are the shapes this test does NOT hold to linear cost,
+// each with why. Until 0.29.212 each ended at an allowance counted in the
+// readers (units of work per byte read); the allowances are gone
+// (pom_tree.go, "What bounds the reading of a build tree"), and a repository
+// of one of these shapes now has its analysis stopped at the limit on the
+// CPU time or the heap of the process that reads its manifests
+// (collection.manifest_read_cpu_seconds, collection.manifest_read_memory_mb),
+// and reported so. They stay in the list so that making one linear is a
+// one-line change here, and so that the count of shapes found is not lost.
+var scalingNotLinear = map[string]string{
+	// Each is a product the build itself states, and needs megabytes of
+	// files written for the purpose to reach the default CPU limit (120 s).
+	// Times are of this reader on an Apple M-series core, 0.29.213.
+	"gradle: many dependencies against many platforms of the clone":                             "every dependency no platform manages is asked of every platform: 0.5 s for 358 KB (1,500 platforms), 5 s for 1.2 MB; the limit at about 6 MB. An honest build has a handful of platforms",
+	"tree: project directories under a root that shares as many repositories and platforms":     "the platforms the root shares are applied to every project: 0.4 s for 177 KB (1,900 files), 3.2 s for 609 KB; the limit at about 3.7 MB. An honest root shares one or two",
+	"tree: projects that apply one script, each with its own value for what it reads":           "the script is read again for each project that gives it another answer, projects times its size: 17 s for 972 KB (15,000 projects); the limit at about 2.6 MB. An honest publishing build of 1,000 modules and a 60 KB script takes under a second",
+	"tree: modules under a parent with as many reference-keyed BOM imports of long coordinates": "each module's imports are other coordinates, each interpolated (2,600 bytes) and asked for: 0.4 s for 155 KB, 4.9 s for 525 KB; the limit at about 2.6 MB. An honest parent has a few such imports",
+}
+
+// scalingTimeout is how long one reading of a shape may take before the
+// shape is failed and passed over.
+var scalingTimeout = 2 * time.Minute
+
 func TestBuildFileReadersScaleLinearly(t *testing.T) {
 	shapes := scalingShapes()
 	// The count is stated where a reader looks for it (the ledger once said
 	// 28 for 26): change it with the list.
-	if want := 37; len(shapes) != want {
+	if want := 42; len(shapes) != want {
 		t.Errorf("%d shapes; this test's comment and the ledger say %d", len(shapes), want)
 	}
+	known := map[string]bool{}
 	for _, s := range shapes {
+		known[s.name] = true
+	}
+	for name := range scalingNotLinear {
+		if !known[name] {
+			t.Errorf("scalingNotLinear names %q, which is no shape", name)
+		}
+	}
+	for _, s := range shapes {
+		if scalingNotLinear[s.name] != "" {
+			continue
+		}
 		smallAlloc, smallKept, smallTime := scalingCost(t, s, scalingN)
+		if smallTime < 0 {
+			continue
+		}
 		bigAlloc, bigKept, bigTime := scalingCost(t, s, 4*scalingN)
+		if bigTime < 0 {
+			continue
+		}
 		allocRatio := float64(bigAlloc) / float64(smallAlloc+1)
 		keptRatio := float64(bigKept) / float64(smallKept+1)
 		t.Logf("%-78s alloc %6.1f -> %7.1f MB (x%.1f)  kept %5.1f -> %5.1f MB (x%.1f)  time %8s -> %8s", s.name,
@@ -623,178 +690,5 @@ func TestAPomsPluginSpansAreSearchedByHalving(t *testing.T) {
 	// question: sixteen million.
 	if steps := int(pomSpanSteps.Load()); steps < k || steps > k*40 {
 		t.Errorf("%d span steps for %d dependencies against %d plugins; want at least one per dependency and no more than forty", steps, k, k)
-	}
-}
-
-// The one thing left that is not linear is counted: every version-less
-// dependency may look through every BOM its chain imports. A pom that asks
-// for more looks than the poms read allow (pomWorkFactor) is a manifest
-// that could not be read, by name, and the reading ends there.
-func TestAPomPastItsWorkBoundIsAReadFailure(t *testing.T) {
-	// The allowance and the refusal, on the counter itself.
-	tree := newPomTree(t.TempDir(), nil)
-	tree.allow(100)
-	bud := tree.budget(100)
-	if !bud.spend(pomWorkFactor*101) || bud.spend(1) || !bud.tripped {
-		t.Errorf("a file of 100 bytes: used %d of %d, tripped %v; want exactly the allowance spent and the next look refused", bud.used, bud.limit, bud.tripped)
-	}
-	if only := tree.treeOnly(); only.work != tree.work {
-		t.Error("the tree without its remote source has a work counter of its own")
-	}
-	// A file's allowance grows with each pom its questions reach, once.
-	reached := &pomModel{size: 50}
-	bud = tree.budget(10)
-	bud.reach(reached, reached)
-	if bud.limit != pomWorkFactor*(11+51) {
-		t.Errorf("a file of 10 bytes that reaches a pom of 50: allowance %d, want %d", bud.limit, pomWorkFactor*(11+51))
-	}
-	// And the walk's allowance bounds every file's: here it is used up.
-	if bud.spend(1) || !bud.tripped {
-		t.Error("a look was allowed past the walk's allowance")
-	}
-
-	// End to end: k version-less dependencies that no BOM manages, and k
-	// BOMs of the clone, each a real pom: k squared looks.
-	const k = 600
-	files := map[string]string{}
-	var imports, deps strings.Builder
-	for i := 0; i < k; i++ {
-		files[fmt.Sprintf("b/%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>b</groupId><artifactId>b%d</artifactId><version>1</version></project>", i)
-		fmt.Fprintf(&imports, "<dependency><groupId>b</groupId><artifactId>b%d</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>", i)
-		fmt.Fprintf(&deps, "<dependency><groupId>x</groupId><artifactId>d%d</artifactId></dependency>", i)
-	}
-	files["pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies>")
-	root := writeTree(t, files)
-	start := time.Now()
-	got := NewWalk(root, nil).Read(filepath.Join(root, "pom.xml"), Options{})
-	t.Logf("%d dependencies against %d BOMs: %s", k, k, time.Since(start).Round(time.Millisecond))
-	if got.Failure == nil || !strings.Contains(got.Failure.Error(), "pomWorkFactor") || len(got.Deps) != 0 {
-		t.Errorf("%d dependencies, failure %v; want none and the work bound's failure", len(got.Deps), got.Failure)
-	}
-	// The same for a Gradle build: every dependency asks every platform.
-	var gradle strings.Builder
-	gradle.WriteString("dependencies {\n")
-	for i := 0; i < k; i++ {
-		fmt.Fprintf(&gradle, " implementation platform('b:b%d:1')\n implementation 'x:d%d'\n", i, i)
-	}
-	files["app/build.gradle"] = gradle.String() + "}\n"
-	delete(files, "pom.xml")
-	rootG := writeTree(t, files)
-	gotG := NewWalk(rootG, nil).Read(filepath.Join(rootG, "app", "build.gradle"), Options{})
-	if gotG.Failure == nil || !strings.Contains(gotG.Failure.Error(), "pomWorkFactor") || len(gotG.Deps) != 0 {
-		t.Errorf("a Gradle build of %d dependencies and %d platforms: %d dependencies, failure %v; want none and the work bound's failure", k, k, len(gotG.Deps), gotG.Failure)
-	}
-}
-
-// One pathological pom costs itself and not its neighbours (review round
-// 3). The allowance was one counter for the tree: a fixture pom with 600
-// imports and 600 dependencies nothing manages used all of it, and every
-// pom read after it on the same walk, however ordinary, was refused. Work
-// is charged to the file being read.
-func TestAGreedyPomDoesNotStarveItsNeighbours(t *testing.T) {
-	const k = 600
-	files := map[string]string{}
-	var imports, deps strings.Builder
-	for i := 0; i < k; i++ {
-		files[fmt.Sprintf("b/%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>b</groupId><artifactId>b%d</artifactId><version>1</version></project>", i)
-		fmt.Fprintf(&imports, "<dependency><groupId>b</groupId><artifactId>b%d</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>", i)
-		fmt.Fprintf(&deps, "<dependency><groupId>x</groupId><artifactId>d%d</artifactId></dependency>", i)
-	}
-	files["fixture/pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies>")
-	files["bom/pom.xml"] = `<project><groupId>n</groupId><artifactId>bom</artifactId><version>1</version><dependencyManagement><dependencies><dependency><groupId>x</groupId><artifactId>y</artifactId><version>2.0</version></dependency></dependencies></dependencyManagement></project>`
-	const neighbours = 5
-	for i := 0; i < neighbours; i++ {
-		files[fmt.Sprintf("m%d/pom.xml", i)] = fmt.Sprintf(`<project><groupId>n</groupId><artifactId>m%d</artifactId><version>1</version><dependencyManagement><dependencies><dependency><groupId>n</groupId><artifactId>bom</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement><dependencies><dependency><groupId>x</groupId><artifactId>y</artifactId></dependency></dependencies></project>`, i)
-	}
-	files["app/build.gradle"] = "dependencies {\n implementation platform('n:bom:1')\n implementation 'x:y'\n}\n"
-	root := writeTree(t, files)
-	w := NewWalk(root, nil) // ONE walk for all of them
-	if got := w.Read(filepath.Join(root, "fixture", "pom.xml"), Options{}); got.Failure == nil || len(got.Deps) != 0 {
-		t.Fatalf("the fixture pom: %d dependencies, failure %v; want its own work bound's failure (the premise)", len(got.Deps), got.Failure)
-	}
-	check := func(rel string) {
-		got := w.Read(filepath.Join(root, filepath.FromSlash(rel)), Options{})
-		version := ""
-		for _, d := range got.Deps {
-			if d.Name == "x:y" && !d.ManagedEntry {
-				version = d.Version
-			}
-		}
-		if got.Failure != nil || version != "2.0" {
-			t.Errorf("%s, read after the fixture on the same walk: x:y at %q, failure %v; want 2.0 and none", rel, version, got.Failure)
-		}
-	}
-	for i := 0; i < neighbours; i++ {
-		check(fmt.Sprintf("m%d/pom.xml", i))
-	}
-	check("app/build.gradle")
-}
-
-// A build shaped like a large real one is far inside the pom work bound:
-// 300 version-less dependencies that nothing manages (the worst case: each
-// looks through every BOM) and forty BOMs of 200 managed entries each.
-func TestARealShapedMavenBuildIsFarFromTheWorkBound(t *testing.T) {
-	files := map[string]string{}
-	var imports, deps strings.Builder
-	for b := 0; b < 40; b++ {
-		var managed strings.Builder
-		for e := 0; e < 200; e++ {
-			fmt.Fprintf(&managed, "<dependency><groupId>org.example.b%d</groupId><artifactId>artifact-%d</artifactId><version>1.%d.0</version></dependency>", b, e, e)
-		}
-		files[fmt.Sprintf("boms/%d/pom.xml", b)] = fmt.Sprintf("<project><groupId>org.example</groupId><artifactId>bom-%d</artifactId><version>1</version><packaging>pom</packaging><dependencyManagement><dependencies>%s</dependencies></dependencyManagement></project>", b, managed.String())
-		fmt.Fprintf(&imports, "<dependency><groupId>org.example</groupId><artifactId>bom-%d</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>", b)
-	}
-	// Fifty imports that lead nowhere (no such pom in the clone, and no
-	// repository to ask): each is looked for once, not once for every
-	// dependency, so they do not eat the allowance of a real build.
-	const nowhere = 50
-	for b := 0; b < nowhere; b++ {
-		fmt.Fprintf(&imports, "<dependency><groupId>org.elsewhere</groupId><artifactId>bom-%d</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>", b)
-	}
-	for i := 0; i < 300; i++ {
-		fmt.Fprintf(&deps, "<dependency><groupId>org.unmanaged</groupId><artifactId>dep-%d</artifactId></dependency>", i)
-	}
-	deps.WriteString("<dependency><groupId>org.example.b39</groupId><artifactId>artifact-7</artifactId></dependency>")
-	files["pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies>")
-	root := writeTree(t, files)
-	w := NewWalk(root, nil)
-	got := w.Read(filepath.Join(root, "pom.xml"), Options{})
-	if got.Failure != nil {
-		t.Fatalf("a real-shaped build was refused: %v", got.Failure)
-	}
-	last := ""
-	for _, d := range got.Deps {
-		if d.Name == "org.example.b39:artifact-7" {
-			last = d.Version
-		}
-	}
-	if last != "1.7.0" {
-		t.Errorf("the dependency the last BOM manages has version %q, want 1.7.0", last)
-	}
-	used, limit := w.pom.work.used, w.pom.work.limit
-	t.Logf("looks %d of %d allowed", used, limit)
-	if used < 300*40 {
-		t.Errorf("only %d looks counted; 300 unmanaged dependencies against 40 BOMs are 12,000: the counter is not counting", used)
-	}
-	// And the one pass that drops the dead imports from the list, charged
-	// at pomCompactPerUnit entries a unit.
-	// (The looks alone: the units also hold the bytes of the keys those
-	// looks built and hashed, a unit for every pomLookBytes of them, which
-	// for coordinates of twenty-odd bytes is a few percent more.)
-	if most := 301*40 + nowhere + (40+nowhere)/pomCompactPerUnit; w.pom.looks > most {
-		t.Errorf("%d looks counted; 301 dependencies against 40 BOMs and %d imports that lead nowhere, each looked for once, are at most %d", w.pom.looks, nowhere, most)
-	}
-	if used > w.pom.looks*11/10 {
-		t.Errorf("%d units for %d looks: short coordinates cost more than a tenth of their looks in bytes", used, w.pom.looks)
-	}
-	// And once found to lead nowhere they are not even passed over: they
-	// leave the pom's list of imports. (Passing them costs too little for
-	// a clock to show; it is the dependencies times the dead imports all
-	// the same.)
-	if most := 301*40 + nowhere; w.pom.importSteps > most {
-		t.Errorf("%d imports passed over or looked at; with the %d dead ones dropped after the first question it is at most %d", w.pom.importSteps, nowhere, most)
-	}
-	if used*pomHonestMargin > limit {
-		t.Errorf("a real-shaped build used %d of %d looks; the bound has no %d-fold margin", used, limit, pomHonestMargin)
 	}
 }

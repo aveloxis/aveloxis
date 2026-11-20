@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.27.71 — version hygiene. The 2026-08-01 zephyr incident: pip's
@@ -113,11 +115,8 @@ func TestScanVulnerabilitiesGatesWirePurls(t *testing.T) {
 // The choke point must actually be wired into the analysis walk —
 // a normalizer nobody calls protects nothing.
 func TestAnalysisWalkAppliesNormalizer(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "manifest.NormalizeParsedVersion(allDeps[i].Manager, allDeps[i].Version)") {
+	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func readManifestDeclarations("))
+	if !strings.Contains(src, "manifest.NormalizeParsedVersion(out.Deps[i].Manager, out.Deps[i].Version)") {
 		t.Error("the analysis manifest walk must pass every parsed dep through " +
 			"normalizeParsedVersion before resolution/storage — the central " +
 			"hygiene layer of the v0.27.71 malformed-version fix")

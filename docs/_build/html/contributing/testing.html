@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.212 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.213 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
+      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -297,6 +297,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -748,6 +749,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1015,6 +1017,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -2095,24 +2098,49 @@ Phase 3 write-policy matchers classify. <code class="docutils literal notranslat
 the assignments that belong to a write of <code class="docutils literal notranslate"><span class="pre">table</span></code>: one statement can write
 two tables (a data-modifying CTE and the statement proper). A column written
 by its quoted name (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">&quot;col&quot;</span> <span class="pre">=</span> <span class="pre">…</span></code>) is that column.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.StrictArguments(root,</span> <span class="pre">files,</span> <span class="pre">env)</span></code> (v0.29.212) — every SQL argument
-of a package, found by type (a call of a database-library function that runs
-SQL, by object) and classified. There is no evaluator of Go: an argument is
-read only as a compiler constant; a listed pure function (<code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code>,
-<code class="docutils literal notranslate"><span class="pre">strings.Join/Repeat/Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix</span></code>,
-<code class="docutils literal notranslate"><span class="pre">+</span></code>) on compiler constants, by calling it; text built by one of the store’s
-own functions on constants, by running that function (<code class="docutils literal notranslate"><span class="pre">Env</span></code>); fixed text
-with an integer in it, made with the real <code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code> for several numbers;
-fixed text whose gaps are a helper’s parameters, filled with the constants
-every caller passes; or a helper’s parameter handed on untouched, read at
-its callers. Anything else is a hole.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.StrictArguments(root,</span> <span class="pre">files,</span> <span class="pre">env)</span></code> (v0.29.212; shrunk in v0.29.213)
+— every SQL argument of a package, found by type (a call of a
+database-library function that runs SQL, by object) and classified. There is
+no evaluator of Go: an argument is read only as a compiler constant; a listed
+pure function on compiler constants, by calling it (<code class="docutils literal notranslate"><span class="pre">strings.Join/Repeat/</span> <span class="pre">Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix</span></code>, <code class="docutils literal notranslate"><span class="pre">+</span></code>, and <code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code>
+with <code class="docutils literal notranslate"><span class="pre">%s</span></code>, <code class="docutils literal notranslate"><span class="pre">%d</span></code> and <code class="docutils literal notranslate"><span class="pre">%%</span></code> only); text built by one of the store’s own
+functions on constants, by running that function (<code class="docutils literal notranslate"><span class="pre">Env</span></code>); or a helper’s
+parameter handed on untouched, read at its callers. Text with a gap in it (a
+number, a parameter) is NOT read: it is a hole.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.CheckSites(args,</span> <span class="pre">sites,</span> <span class="pre">pins,</span> <span class="pre">tests)</span></code> — every hole must be
-registered. An EXECUTED registration names the store’s builder function and
-its inputs, and the check runs the real builder for each input; a finite
-domain names the test showing an input outside it gives no statement, and
-an open one may put what varies into the text only through
-<code class="docutils literal notranslate"><span class="pre">pgx.Identifier</span></code> or a registered quoting helper. Nothing is registered on
-a person’s reading alone: a frozen registration fails the test.</p></li>
+registered, which means run. A registration names the store’s builder
+function and its inputs, and the check runs the real builder for each input:
+the whole of a finite domain (with the test showing an input outside it gives
+no statement), or, for an open one, representative inputs, where what varies
+may reach the text only through <code class="docutils literal notranslate"><span class="pre">pgx.Identifier{...}.Sanitize()</span></code>, a
+registered quoting function, or (a number) <code class="docutils literal notranslate"><span class="pre">%d</span></code> and base-ten <code class="docutils literal notranslate"><span class="pre">strconv</span></code>.
+Nothing is registered on a person’s reading alone.</p></li>
+<li><p><strong>The run-time judge</strong> (<code class="docutils literal notranslate"><span class="pre">internal/testdb/writejudge</span></code>, v0.29.213) decides.
+It is a pgx tracer that <code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code> installs for EVERY DB-tier package,
+on every pool the store builds (the seam is <code class="docutils literal notranslate"><span class="pre">internal/db/stmttrace.Wrap</span></code>,
+nil in every binary): every statement PRODUCTION code sends (the first frame
+of the stack in this module is a non-test file) is parsed and judged by the
+same <code class="docutils literal notranslate"><span class="pre">CheckIn</span></code>, policies and Exceptions, in the test database’s own catalog,
+and a violation fails the package after its tests. A statement a test sends
+itself is a fixture and is not judged. A statement sent with a
+<code class="docutils literal notranslate"><span class="pre">pgx.QueryRewriter</span></code> among its arguments (<code class="docutils literal notranslate"><span class="pre">pgx.NamedArgs</span></code> included; nothing in
+the module uses one) is held against production, because the tracer sees the
+text before the rewriter runs. The policy registry and the Exceptions live in
+that package too (<code class="docutils literal notranslate"><span class="pre">writejudge.Policies</span></code>, <code class="docutils literal notranslate"><span class="pre">writejudge.Exceptions</span></code>): one
+registry for the judge and for the store’s static check.</p></li>
+<li><p><strong>The coverage requirement.</strong> The judge sees only what runs, so every call in
+<code class="docutils literal notranslate"><span class="pre">internal/db</span></code> of a library function that takes SQL (<code class="docutils literal notranslate"><span class="pre">sqlscan.RunnerCalls</span></code>)
+must have a statement sent through it by some DB-tier package’s tests, or
+stand on <code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unexecuted_statement_sites.txt</span></code>, which only
+shrinks. Each package records what it reached when
+<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_DIR</span></code> is set; <code class="docutils literal notranslate"><span class="pre">scripts/skip-census.sh</span></code> (the closing
+suite) sets it and then checks the union
+(<code class="docutils literal notranslate"><span class="pre">TestTheSuiteReachesEveryStatementSite</span></code>). A new store function that runs SQL
+therefore needs a DB-tier test, in any package, that reaches it. An ordinary
+<code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./internal/db/</span></code> judges but does not check coverage: one package
+cannot know what the others reach. To see what a whole run did not reach,
+set <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_OUT=file</span></code> with <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_CHECK</span></code>
+pointing at the folder of records.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.ParseWrites(sql)</span></code> — the writes of a statement, read from the
 parse tree PostgreSQL’s own parser gives (<code class="docutils literal notranslate"><span class="pre">pgread.go</span></code>; the parser is
 <code class="docutils literal notranslate"><span class="pre">github.com/wasilibs/go-pgquery</span></code>, the server’s grammar compiled to
@@ -2123,12 +2151,14 @@ through a view over a registered table are violations.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.StrictReferences(root,</span> <span class="pre">files)</span></code> — references to something that runs
 SQL which no reading of arguments covers (a runner taken as a value, rows
 written with no text, a library type that carries SQL arriving from or
-leaving to other code).</p></li>
+leaving to other code, a query rewriter among a call’s arguments, the several
+results of one call as a runner’s arguments, a returned SQL-running function
+that is held, a helper method of a generic type).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stmt.WhereGuardsEmpty(col)</span></code> — recognizes the guarded fill-empty shape
 (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">col</span> <span class="pre">=</span> <span class="pre">$N</span> <span class="pre">...</span> <span class="pre">WHERE</span> <span class="pre">COALESCE(col,</span> <span class="pre">'')</span> <span class="pre">=</span> <span class="pre">''</span></code> / <code class="docutils literal notranslate"><span class="pre">col</span> <span class="pre">IS</span> <span class="pre">NULL</span></code>).</p></li>
 </ul>
-<p>What the write-policy check guarantees, and what it does not, is stated in
-<code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan/doc.go</span></code>. The text matchers above (<code class="docutils literal notranslate"><span class="pre">Statements</span></code>,
+<p>What the two checks are for, and what is out of scope (Go written to get
+around them), is stated in <code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan/doc.go</span></code>. The text matchers above (<code class="docutils literal notranslate"><span class="pre">Statements</span></code>,
 <code class="docutils literal notranslate"><span class="pre">FindWrites</span></code>, <code class="docutils literal notranslate"><span class="pre">WritesColumn</span></code>, <code class="docutils literal notranslate"><span class="pre">SetExprs</span></code>) remain for the other source
 tripwires, whose flagship consumer is
 <code class="docutils literal notranslate"><span class="pre">internal/db/column_writer_tripwire_test.go</span></code>; port verified behavior-identical
@@ -2155,8 +2185,9 @@ that function to <code class="docutils literal notranslate"><span class="pre">co
 <code class="docutils literal notranslate"><span class="pre">columnWriteBuilders</span></code> with its inputs: the index of each member of a fixed
 list (<code class="docutils literal notranslate"><span class="pre">indexedBuilders</span></code>), every key of a map it looks its input up in
 (<code class="docutils literal notranslate"><span class="pre">keyedBuilders</span></code>), every combination of its bools (<code class="docutils literal notranslate"><span class="pre">boolBuilders</span></code>), or the
-constants its callers pass | last, and only with the maintainer’s decision, a
-frozen registration with its reason. Source pins elsewhere in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code>
+constants its callers pass. A registration with nothing run fails the test,
+and an Exception names the file AND the function its statement stands in.
+Source pins elsewhere in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code>
 hold some statements’ text in place (the page-cache writer registry, the
 shutdown and dedup pins): moving such text into a builder means re-anchoring
 that pin in the same change.

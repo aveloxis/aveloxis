@@ -24,10 +24,10 @@ func TestSupplyChainViewsAreAveloxisOwned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(SupplyChainViewNames) != 2 {
-		t.Fatalf("SupplyChainViewNames = %v, want the exposure and advisory views", SupplyChainViewNames)
+	if len(supplyChainViewNames) != 2 {
+		t.Fatalf("supplyChainViewNames = %v, want the exposure and advisory views", supplyChainViewNames)
 	}
-	for _, v := range SupplyChainViewNames {
+	for _, v := range supplyChainViewNames {
 		if strings.Contains(string(src), v) {
 			t.Errorf("matviews.sql mentions %s — the supply-chain views are Go-owned; a copy in the 8Knot batch is a second definition (SR-17) and ties the pair to the hours-long rebuild", v)
 		}
@@ -55,7 +55,7 @@ func TestSupplyChainViewsBuildRefreshAndProbe(t *testing.T) {
 
 	eightKnot := func() int {
 		var n int
-		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname <> ALL($1)`, SupplyChainViewNames).Scan(&n); err != nil {
+		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname <> ALL($1)`, supplyChainViewNames).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -81,7 +81,7 @@ func TestSupplyChainViewsBuildRefreshAndProbe(t *testing.T) {
 	}
 
 	// The unique index is what lets REFRESH run CONCURRENTLY.
-	for _, v := range SupplyChainViewNames {
+	for _, v := range supplyChainViewNames {
 		var idx int
 		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = 'aveloxis_data' AND tablename = $1 AND indexdef LIKE 'CREATE UNIQUE INDEX%'`, v).Scan(&idx); err != nil {
 			t.Fatal(err)
@@ -97,7 +97,7 @@ func TestSupplyChainViewsBuildRefreshAndProbe(t *testing.T) {
 	// One member dropped by hand: the next IfMissing rebuilds THAT one —
 	// and reports built=false, because the other member is pre-existing
 	// and still owed the startup refresh (round 2 finding 3).
-	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+SupplyChainViewNames[1])
+	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+supplyChainViewNames[1])
 	built, err = CreateSupplyChainViewsIfMissing(ctx, store, logger)
 	if err != nil || built {
 		t.Errorf("completing a partial pair must not claim the whole pair was built: built=%v err=%v", built, err)
@@ -154,7 +154,7 @@ func TestMigrateBuildsTheSupplyChainPairByItsOwnMode(t *testing.T) {
 		}
 	}
 	// serve's fast path (a current stamp) still completes a missing member.
-	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+SupplyChainViewNames[0])
+	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+supplyChainViewNames[0])
 	store.SetMigrateFastPath(true)
 	store.SetSupplyChainViewMode(MatviewsIfMissing)
 	if err := RunMigrations(ctx, store, logger); err != nil {
@@ -231,7 +231,7 @@ func TestServeSkipsTheStartupRefreshItJustBuilt(t *testing.T) {
 	}
 	// A partial pair: the pre-existing member aged through the downtime,
 	// so the startup refresh must still run (round 2 finding 3).
-	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+SupplyChainViewNames[1])
+	mustExecRetry(ctx, t, store, `DROP MATERIALIZED VIEW aveloxis_data.`+supplyChainViewNames[1])
 	if err := RunMigrations(ctx, store, logger); err != nil {
 		t.Fatal(err)
 	}
@@ -295,11 +295,11 @@ func mustPresent(t *testing.T, store *PostgresStore) int {
 
 func dropSupplyChainViews(t *testing.T, store *PostgresStore) {
 	t.Helper()
-	for _, v := range SupplyChainViewNames {
+	for _, v := range supplyChainViewNames {
 		mustExecRetry(context.Background(), t, store, `DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.`+v)
 	}
 	t.Cleanup(func() {
-		for _, v := range SupplyChainViewNames {
+		for _, v := range supplyChainViewNames {
 			cleanupExecRetry(context.Background(), store, `DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.`+v)
 		}
 	})

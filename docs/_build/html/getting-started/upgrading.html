@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.212 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.213 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
+      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -297,6 +297,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -748,6 +749,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1015,6 +1017,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1996,12 +1999,23 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
-<p><strong>0.29.212 is the fixes from the fifth review; no schema change and no configuration change.</strong> What changes on a fleet:</p>
+<p><strong>0.29.213 is the fixes from the sixth review. No schema change; two new settings, both with defaults.</strong> What changes on a fleet:</p>
+<ul class="simple">
+<li><p><strong>A repository’s manifests and lockfiles are read by a child process</strong> (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code>, the same binary; about 10 ms to start, one per analysis). It holds no database connection and no credentials, and ends itself past either of two limits: <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> (default 120) and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> (default 1024). <code class="docutils literal notranslate"><span class="pre">ps</span></code> shows these children under <code class="docutils literal notranslate"><span class="pre">serve</span></code>. How it works is in <a class="reference internal" href="../architecture/analysis.html"><span class="std std-doc">the analysis architecture page</span></a>; what to do when a repository is stopped is in <a class="reference internal" href="../guide/troubleshooting.html"><span class="std std-doc">troubleshooting</span></a>.</p></li>
+<li><p><strong>Stop <code class="docutils literal notranslate"><span class="pre">serve</span></code> before replacing the binary,</strong> as the ladder does. The child is started from the file on disk and refuses a request from another version. Until <code class="docutils literal notranslate"><span class="pre">serve</span></code> is restarted no manifests or lockfiles are read, and the log says so once, at ERROR.</p></li>
+<li><p><strong>A reading stopped at a limit stores nothing partial.</strong> Stopped while reading manifests: the previous inventory stands, and the coverage record’s last attempt is <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code> or <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>. Stopped while reading lockfiles: the inventory is replaced, the previous lockfile rows stand, and an ERROR in the log names the setting to raise.</p></li>
+<li><p><strong>Memory.</strong> A <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> needs about fifteen times its size, so the default reads one of about 65 MB; a <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> or <code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code> of 200 MB fits. With <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> the children together can hold N times the memory setting.</p></li>
+<li><p><strong>The bounds 0.29.212 counted inside the Maven and Gradle readers are removed</strong> (memory, remote requests, time, the wall-clock backstop). They refused an honest build of 3,000 Gradle projects. The two limits above replace them.</p></li>
+<li><p><strong>Some Maven and Gradle dependencies lose their version.</strong> When a parent or BOM that would be consulted first could not be obtained (the lookup failed, its repository is refused, or it was not asked), a version that a later BOM would give is withheld, with the reason. Expect some findings to move to “version not determined” at the first analysis after the deploy.</p></li>
+<li><p><strong>A lockfile written with a YAML alias or merge key is refused on purpose</strong> (no package manager writes one); its previous rows are kept.</p></li>
+<li><p><strong>Lockfile entries</strong> of <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code> and <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> version 1 are stored in the file’s order. The rows are the same.</p></li>
+</ul>
+<p><strong>0.29.212 is the fixes from the fifth review; no schema change and no configuration change.</strong> (0.29.213 removes the bounds described in the first two points below.) What changes on a fleet:</p>
 <ul class="simple">
 <li><p><strong>Reading a Maven or Gradle build tree is bounded</strong> in memory (16 times the bytes read), in requests for remote poms (one for every 64 bytes read) and in time. Work is counted per byte touched: about 1 to 3 minutes per 8 MiB of Gradle files, and seconds for Maven. A repository past a bound has the affected files reported unreadable, or its tree reported not whole, by name. Nothing is silently partial.</p></li>
 <li><p><strong>A wall-clock backstop should never fire.</strong> It is one minute plus ten times the stated bound (about 28 minutes per 8 MiB read). If the log shows a WARN saying a build-tree path was NOT ACCOUNTED FOR, report it: that is a defect, and the files after it were reported unreadable.</p></li>
 <li><p><strong>More manifest forms are read:</strong> in a Gemfile, a one-line <code class="docutils literal notranslate"><span class="pre">case</span> <span class="pre">...</span> <span class="pre">when</span> <span class="pre">...</span> <span class="pre">then</span> <span class="pre">gem</span></code>, <code class="docutils literal notranslate"><span class="pre">do;</span></code>, a brace block, a block closed by <code class="docutils literal notranslate"><span class="pre">end</span> <span class="pre">if</span> <span class="pre">...</span></code>, and a gem written on the line that opens a block; a gem after such a block no longer inherits its group. In <code class="docutils literal notranslate"><span class="pre">mix.exs</span></code>, a dependency list written with leading commas; an interpolated version (<code class="docutils literal notranslate"><span class="pre">#{...}</span></code>) is no version. In <code class="docutils literal notranslate"><span class="pre">pubspec.yaml</span></code>, a <code class="docutils literal notranslate"><span class="pre">version:</span></code> whose value is on the next line.</p></li>
-<li><p><strong>The migrate</strong> quotes three names it did not quote before (an invalid index dropped before its rebuild, the <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code> after an expression index, savepoint counters). They are the same statements for every name the migrate uses.</p></li>
+<li><p><strong>The migrate</strong> quotes the schema and name in one statement where it did not before: the <code class="docutils literal notranslate"><span class="pre">DROP</span> <span class="pre">INDEX</span></code> of an invalid index before its rebuild. It is the same statement for every index the migrate names.</p></li>
 <li><p><strong>Building from source:</strong> <code class="docutils literal notranslate"><span class="pre">go.mod</span></code> gains a test-only dependency, PostgreSQL’s parser compiled to WebAssembly (<code class="docutils literal notranslate"><span class="pre">github.com/wasilibs/go-pgquery</span></code>). The binaries do not link it.</p></li>
 </ul>
 <p><strong>0.29.211 is the fixes from the fourth review; no schema change and no configuration change.</strong> What changes on a fleet:</p>

@@ -2014,6 +2014,29 @@ Note the boundary: DDL (tables, columns, indexes, views) is never
 ledgered. A hand-dropped index or view still heals on the next
 explicit `aveloxis migrate` with no ledger surgery needed.
 
+## A repository's dependency analysis is stopped at a limit (`manifest_read_cpu_limit`, `manifest_read_memory_limit`)
+
+Since 0.29.213 a repository's manifests and lockfiles are read by a child process with a processor-time limit and a memory limit ([how it works](../architecture/analysis.md)). When the reading passes one, the analysis logs it with the repository and the limit's value, and nothing partial is stored.
+
+**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"). In the database, `aveloxis_data.repo_dependency_coverage.last_attempt_result` holds `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out` or `manifest_read_failed`.
+
+**Which repositories.**
+
+```sql
+SELECT repo_id, last_attempt_result, last_attempt_at
+  FROM aveloxis_data.repo_dependency_coverage
+ WHERE last_attempt_result LIKE 'manifest_read_%'
+ ORDER BY last_attempt_at DESC;
+```
+
+**What to do.**
+
+- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A `pnpm-lock.yaml` needs about fifteen times its size. Raise `collection.manifest_read_memory_mb` and restart `serve`; with `--workers N` the readers together can hold N times the value. When only the lockfiles could not be read, the log line is an ERROR that names this setting, the inventory is still replaced, and the previous lockfile rows are kept.
+- *Processor time.* The largest honest builds measured use under a second of the 120. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
+- *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. The commonest cause is a binary replaced on disk while `serve` was running: the child is started from the file on disk, refuses a request from another version, and the log says once, at ERROR, "the aveloxis binary on disk (path) is version X, this process is version Y: restart serve". No manifests or lockfiles are read until the restart, so stop `serve` before replacing the binary, as the deploy ladder does.
+
+The reading is tried again at the repository's next collection. A repository that is stopped every time costs at most the two limits once per collection.
+
 ## Next steps
 
 - [Monitoring](monitoring.md) -- use the dashboard for real-time status

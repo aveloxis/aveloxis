@@ -23,7 +23,9 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -128,8 +130,16 @@ var lockfileKinds = map[string]lockfileSpec{
 	"packages.lock.json": {ecosystem: "nuget", parse: parseDotnetPackagesLock},
 	"gradle.lockfile":    {ecosystem: "maven", parse: parseGradleLockfile},
 	"stack.yaml.lock":    {ecosystem: "hackage", parse: parseStackYamlLock},
-	"renv.lock":          {ecosystem: "cran", parse: parseRenvLock},
+	renvLockKind:         {ecosystem: "cran", parse: parseRenvLock},
 }
+
+// renvLockKind is the one lockfile whose entries may be of another ecosystem
+// than the lockfile's (LockfileEntry.Ecosystem). lockfileScopeDev is the one
+// scope a parser gives an entry.
+const (
+	renvLockKind     = "renv.lock"
+	lockfileScopeDev = "dev"
+)
 
 // ParseLockfile dispatches on the roster filename. Unknown kinds are
 // an error (the walk should never call it with one — this is the
@@ -305,7 +315,7 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 			}
 			scope := ""
 			if pkg.Dev {
-				scope = "dev"
+				scope = lockfileScopeDev
 			}
 			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name], Scope: scope})
 			// v0.27.133 C2: the per-entry dependency maps were decoded
@@ -326,33 +336,203 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 	// C2: the parent is in scope at each recursion level — record the
 	// edge (constraint unknown in the v1 nested shape; the child value
 	// IS the resolution).
+	//
+	// 0.29.213: the tree is read once (npmV1Tree). It was decoded level by
+	// level, each node's text again from the level above, which costs the
+	// depth times the size: 190 KB of one nested chain took 1.5 seconds.
 	seen := map[string]bool{}
 	var out parsedLockfileData
-	var walk func(parentName, parentVersion string, deps map[string]json.RawMessage)
-	walk = func(parentName, parentVersion string, deps map[string]json.RawMessage) {
-		for name, raw := range deps {
-			var node struct {
-				Version      string                     `json:"version"`
-				Dependencies map[string]json.RawMessage `json:"dependencies"`
+	var walk func(parentName, parentVersion string, deps []npmV1Dep)
+	walk = func(parentName, parentVersion string, deps []npmV1Dep) {
+		for _, dep := range deps {
+			name, node := dep.name, dep.node
+			if node == nil {
+				continue // not a dependency's object: left out, as it was
 			}
-			if err := json.Unmarshal(raw, &node); err != nil {
-				continue
-			}
-			node.Version = npmLockVersion(name, node.Version)
-			if node.Version != "" && !seen[name+"@"+node.Version] {
-				seen[name+"@"+node.Version] = true
-				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.Version})
+			node.version = npmLockVersion(name, node.version)
+			if node.version != "" && !seen[name+"@"+node.version] {
+				seen[name+"@"+node.version] = true
+				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.version})
 			}
 			if parentName != "" {
 				out.Edges = append(out.Edges, LockfileEdge{ParentName: parentName, ParentVersion: parentVersion, ChildName: name})
 			}
-			if len(node.Dependencies) > 0 {
-				walk(name, node.Version, node.Dependencies)
+			if len(node.dependencies) > 0 {
+				walk(name, node.version, node.dependencies)
 			}
 		}
 	}
-	walk("", "", doc.Dependencies)
+	walk("", "", npmV1Tree(data))
 	return out, nil
+}
+
+// npmV1Node is a dependency's object in a package-lock.json v1: its version
+// and the dependencies nested in it.
+type npmV1Node struct {
+	version      string
+	dependencies []npmV1Dep
+}
+
+// npmV1Dep is one name of a "dependencies" object. node is nil when its
+// value is not a dependency's object (a string, a number, an object whose
+// version is not a string or whose dependencies are not an object): such a
+// name was always left out, with everything under it.
+type npmV1Dep struct {
+	name string
+	node *npmV1Node
+}
+
+// npmV1Tree reads the top-level "dependencies" of a document that
+// encoding/json has already accepted, in one pass over its tokens. It reads
+// as encoding/json read the same text into structs: a field's name matches
+// without regard to case, a null leaves a field as it was, a name given
+// twice in one object keeps its last value, and a "dependencies" given twice
+// adds to the first.
+func npmV1Tree(data []byte) []npmV1Dep {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var deps []npmV1Dep
+	index := map[string]int{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return deps
+		}
+		if name, _ := key.(string); strings.EqualFold(name, "dependencies") {
+			var ok bool
+			if deps, ok = npmV1Deps(dec, deps, index); !ok {
+				return deps
+			}
+			continue
+		}
+		if !jsonSkipValue(dec) {
+			return deps
+		}
+	}
+	return deps
+}
+
+// npmV1Deps reads a "dependencies" value into deps: an object's names, each
+// with its node; a null adds nothing. wellFormed is false when the value is
+// anything else (it has been read past all the same), and when the text
+// ended.
+func npmV1Deps(dec *json.Decoder, deps []npmV1Dep, index map[string]int) (_ []npmV1Dep, wellFormed bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return deps, false
+	}
+	if tok == nil {
+		return deps, true
+	}
+	if tok != json.Delim('{') {
+		jsonSkipRest(dec, tok)
+		return deps, false
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return deps, false
+		}
+		name, _ := key.(string)
+		node, ok := npmV1NodeOf(dec)
+		if !ok {
+			return deps, false
+		}
+		if at, again := index[name]; again {
+			deps[at].node = node
+			continue
+		}
+		index[name] = len(deps)
+		deps = append(deps, npmV1Dep{name, node})
+	}
+	_, err = dec.Token() // the closing brace
+	return deps, err == nil
+}
+
+// npmV1NodeOf reads one dependency's value. The node is nil when the value
+// is not a dependency's object; read is false only when the text ended.
+func npmV1NodeOf(dec *json.Decoder) (node *npmV1Node, read bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if tok == nil {
+		return &npmV1Node{}, true // a null: an object with nothing in it
+	}
+	if tok != json.Delim('{') {
+		return nil, jsonSkipRest(dec, tok)
+	}
+	node = &npmV1Node{}
+	good := true
+	index := map[string]int{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		switch name, _ := key.(string); {
+		case strings.EqualFold(name, "version"):
+			tok, err := dec.Token()
+			if err != nil {
+				return nil, false
+			}
+			switch v := tok.(type) {
+			case string:
+				node.version = v
+			case nil:
+			default:
+				good = false
+				if !jsonSkipRest(dec, tok) {
+					return nil, false
+				}
+			}
+		case strings.EqualFold(name, "dependencies"):
+			deps, wellFormed := npmV1Deps(dec, node.dependencies, index)
+			node.dependencies = deps
+			if !wellFormed {
+				good = false
+			}
+		default:
+			if !jsonSkipValue(dec) {
+				return nil, false
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, false
+	}
+	if !good {
+		return nil, true
+	}
+	return node, true
+}
+
+// jsonSkipValue reads past the next value; jsonSkipRest, past the rest of a
+// value whose first token is tok. False: the text ended.
+func jsonSkipValue(dec *json.Decoder) bool {
+	tok, err := dec.Token()
+	return err == nil && jsonSkipRest(dec, tok)
+}
+
+func jsonSkipRest(dec *json.Decoder, tok json.Token) bool {
+	if d, ok := tok.(json.Delim); !ok || d == '}' || d == ']' {
+		return true
+	}
+	for depth := 1; depth > 0; {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+	}
+	return true
 }
 
 // parseYarnLock dispatches between yarn's classic v1 text format and
@@ -512,40 +692,46 @@ func yarnDepLine(trimmed, sep string) (name, constraint string, ok bool) {
 // from the "importers" section (or the legacy top-level
 // dependencies/devDependencies on very old lockfiles).
 func parsePnpmLock(data []byte) (parsedLockfileData, error) {
-	type pnpmPkg struct {
-		Dependencies         map[string]string `yaml:"dependencies"`
-		OptionalDependencies map[string]string `yaml:"optionalDependencies"`
+	// Read through the node walk of lockfile_yaml.go, not yaml.Unmarshal
+	// into maps, which is quadratic in a mapping's keys.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	var doc struct {
-		Packages  map[string]pnpmPkg `yaml:"packages"`
-		Snapshots map[string]pnpmPkg `yaml:"snapshots"` // v9: edges moved here
-		Importers map[string]struct {
-			Dependencies    map[string]yaml.Node `yaml:"dependencies"`
-			DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
-		} `yaml:"importers"`
-		Dependencies    map[string]yaml.Node `yaml:"dependencies"`
-		DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
+	directNames := map[string]bool{}
+	// The names of a dependencies mapping; its values (a version, or a
+	// specifier and a version) are not read.
+	collectDirect := func(n *yaml.Node) error {
+		deps, err := yamlPairs(n)
+		for _, d := range deps {
+			directNames[d.key] = true
+		}
+		return err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	importers, err := yamlPairs(yamlField(root, "importers"))
+	if err != nil {
+		return parsedLockfileData{}, err
+	}
+	for _, imp := range importers {
+		fields, err := yamlPairs(imp.val)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		if err := errors.Join(collectDirect(yamlField(fields, "dependencies")), collectDirect(yamlField(fields, "devDependencies"))); err != nil {
+			return parsedLockfileData{}, err
+		}
+	}
+	if err := errors.Join(collectDirect(yamlField(root, "dependencies")), collectDirect(yamlField(root, "devDependencies"))); err != nil {
 		return parsedLockfileData{}, err
 	}
 
-	directNames := map[string]bool{}
-	collectDirect := func(deps map[string]yaml.Node) {
-		for name := range deps {
-			directNames[name] = true
-		}
+	packages, err := yamlPairs(yamlField(root, "packages"))
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	for _, imp := range doc.Importers {
-		collectDirect(imp.Dependencies)
-		collectDirect(imp.DevDependencies)
-	}
-	collectDirect(doc.Dependencies)
-	collectDirect(doc.DevDependencies)
-
 	var out parsedLockfileData
-	for key := range doc.Packages {
-		name, version := splitPnpmPackageKey(key)
+	for _, pkg := range packages {
+		name, version := splitPnpmPackageKey(pkg.key)
 		if name == "" || version == "" {
 			continue
 		}
@@ -554,22 +740,35 @@ func parsePnpmLock(data []byte) (parsedLockfileData, error) {
 	// v0.27.133 C2: edges. v5/v6 carry per-package dependencies inside
 	// `packages`; v9 moved them to the parallel `snapshots` section
 	// (values there are RESOLVED versions).
-	collectEdges := func(m map[string]pnpmPkg) {
-		for key, pkg := range m {
-			pName, pVersion := splitPnpmPackageKey(key)
-			if pName == "" {
-				continue
+	collectEdges := func(m []yamlPair) error {
+		for _, pkg := range m {
+			fields, err := yamlPairs(pkg.val)
+			if err != nil {
+				return err
 			}
-			for child, constraint := range pkg.Dependencies {
-				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
-			}
-			for child, constraint := range pkg.OptionalDependencies {
-				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
+			pName, pVersion := splitPnpmPackageKey(pkg.key)
+			for _, section := range []string{"dependencies", "optionalDependencies"} {
+				children, constraints, err := yamlStringMap(yamlField(fields, section))
+				if err != nil {
+					return err
+				}
+				if pName == "" {
+					continue // read, as it always was, and not a package's edges
+				}
+				for i, child := range children {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child.key, Constraint: constraints[i]})
+				}
 			}
 		}
+		return nil
 	}
-	collectEdges(doc.Packages)
-	collectEdges(doc.Snapshots)
+	snapshots, err := yamlPairs(yamlField(root, "snapshots"))
+	if err != nil {
+		return parsedLockfileData{}, err
+	}
+	if err := errors.Join(collectEdges(packages), collectEdges(snapshots)); err != nil {
+		return parsedLockfileData{}, err
+	}
 	out.DirectKnown = true
 	return out, nil
 }

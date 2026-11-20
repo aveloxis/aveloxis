@@ -136,7 +136,23 @@ const (
 	InventoryAttemptRootUnreadable = "root_unreadable"
 	// InventoryAttemptReplaceFailed: the replace transaction failed.
 	InventoryAttemptReplaceFailed = "replace_failed"
+	// The manifests were not read (0.29.213): the process that reads them
+	// used more CPU time than collection.manifest_read_cpu_seconds allows;
+	// held more memory than collection.manifest_read_memory_mb allows; ran
+	// too long by the clock and was stopped by the analysis; or failed (it
+	// could not be started, crashed, or sent something that was refused).
+	InventoryAttemptReadCPULimit    = "manifest_read_cpu_limit"
+	InventoryAttemptReadMemoryLimit = "manifest_read_memory_limit"
+	InventoryAttemptReadTimedOut    = "manifest_read_timed_out"
+	InventoryAttemptReadFailed      = "manifest_read_failed"
 )
+
+// InventoryAttemptResults are every value the coverage record's attempt
+// result takes: the list the store accepts and a reader explains.
+func InventoryAttemptResults() []string {
+	return []string{InventoryAttemptCloneUnavailable, InventoryAttemptRootUnreadable, InventoryAttemptReplaceFailed,
+		InventoryAttemptReadCPULimit, InventoryAttemptReadMemoryLimit, InventoryAttemptReadTimedOut, InventoryAttemptReadFailed}
+}
 
 // DependencyCoverage is a repository's stored coverage record.
 type DependencyCoverage struct {

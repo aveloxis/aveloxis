@@ -18,7 +18,7 @@ import (
 func TestStoredValueNamedInFull(t *testing.T) {
 	registry := []Registered{{Table: "aveloxis_data.m", Column: "u", Policy: GreatestNonNull, Reason: "r"}}
 	ok := Stmt{File: "f.go", SQL: "INSERT INTO aveloxis_data.m (id, u) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET u = GREATEST(COALESCE(EXCLUDED.u, aveloxis_data.m.u), COALESCE(aveloxis_data.m.u, EXCLUDED.u))"}
-	if r := Check([]Stmt{ok}, registry, nil); len(r.Violations) != 0 {
+	if r := fixtureCheck([]Stmt{ok}, registry, nil); len(r.Violations) != 0 {
 		t.Errorf("the full name of the stored value was not recognised: %+v", r.Violations)
 	}
 	// Another table's column of that name is not the stored value, and
@@ -28,7 +28,7 @@ func TestStoredValueNamedInFull(t *testing.T) {
 		"GREATEST(COALESCE(EXCLUDED.u, a.b.c.u), COALESCE(a.b.c.u, EXCLUDED.u))",
 	} {
 		s := Stmt{File: "f.go", SQL: "INSERT INTO aveloxis_data.m (id, u) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET u = " + bad}
-		if r := Check([]Stmt{s}, registry, nil); len(r.Violations) != 1 {
+		if r := fixtureCheck([]Stmt{s}, registry, nil); len(r.Violations) != 1 {
 			t.Errorf("%s: %d violations, want 1", bad, len(r.Violations))
 		}
 	}
@@ -52,7 +52,7 @@ func TestAnAssignmentBelongsToItsOwnWrite(t *testing.T) {
 		t.Errorf("the queue's updated_at: %q, want NOW()", got)
 	}
 	registry := []Registered{{Table: "aveloxis_data.repos", Column: "updated_at", Policy: GreatestNonNull, Reason: "r"}}
-	if r := Check([]Stmt{s}, registry, nil); len(r.Violations) != 0 {
+	if r := fixtureCheck([]Stmt{s}, registry, nil); len(r.Violations) != 0 {
 		t.Errorf("the queue's assignment was judged as the repository's: %+v", r.Violations)
 	}
 	// The repository's own assignment is still judged, wherever it stands.
@@ -67,7 +67,7 @@ func TestAnAssignmentBelongsToItsOwnWrite(t *testing.T) {
 		"a table by alias only": "WITH w AS (UPDATE aveloxis_data.repos SET a = 1 RETURNING id) UPDATE r SET updated_at = NOW() FROM w",
 		"MERGE":                 "MERGE INTO aveloxis_data.repos r USING s ON r.id = s.id WHEN MATCHED THEN UPDATE SET updated_at = NOW()",
 	} {
-		if r := Check([]Stmt{{File: "f.go", SQL: sql}}, registry, nil); len(r.Violations) != 1 {
+		if r := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, registry, nil); len(r.Violations) != 1 {
 			t.Errorf("%s: %d violations, want 1", what, len(r.Violations))
 		}
 	}
@@ -90,7 +90,7 @@ func TestAQuotedColumnIsAssigned(t *testing.T) {
 		if got := len(s.SetExprsOf("aveloxis_data.repos", "updated_at")); got != want {
 			t.Errorf("%s: %d assignments read, want %d", sql, got, want)
 		}
-		if r := Check([]Stmt{s}, registry, nil); len(r.Violations) != want {
+		if r := fixtureCheck([]Stmt{s}, registry, nil); len(r.Violations) != want {
 			t.Errorf("%s: %d violations, want %d", sql, len(r.Violations), want)
 		}
 		if want == 1 && !s.WritesColumn("aveloxis_data.repos", "updated_at") {
@@ -99,14 +99,14 @@ func TestAQuotedColumnIsAssigned(t *testing.T) {
 	}
 }
 
-// An exception that names no file is for ONE statement, whole: its Match
-// is the statement's entire text (whitespace aside), not a needle in it. A
+// An exception that gives a Statement is for ONE statement, whole: the
+// statement's entire text (as the parser reads it), not a needle in it. A
 // change to the statement (its guard removed, say) ends the exception.
 func TestAnExceptionWithNoFileMatchesTheWholeStatement(t *testing.T) {
 	registry := []Registered{{Table: "aveloxis_data.repos", Column: "a", Policy: FillEmptyOnly, Reason: "r"}}
 	const guarded = `UPDATE aveloxis_data.repos SET "a" = NULL WHERE "a" IS NOT NULL AND EXTRACT(YEAR FROM "a") < 1970`
-	ex := []Exception{{Table: "aveloxis_data.repos", Column: "a", Match: guarded, Reason: "garbage only"}}
-	if r := Check([]Stmt{{File: "f.go", SQL: "UPDATE aveloxis_data.repos\n\tSET \"a\" = NULL WHERE \"a\" IS NOT NULL AND EXTRACT(YEAR FROM \"a\") < 1970"}}, registry, ex); len(r.Violations) != 0 || len(r.StaleExceptions) != 0 {
+	ex := []Exception{{Table: "aveloxis_data.repos", Column: "a", Kind: KindAssign, Fragment: "NULL", Statement: guarded, Reason: "garbage only"}}
+	if r := fixtureCheck([]Stmt{{File: "f.go", SQL: "UPDATE aveloxis_data.repos\n\tSET \"a\" = NULL WHERE \"a\" IS NOT NULL AND EXTRACT(YEAR FROM \"a\") < 1970"}}, registry, ex); len(r.Violations) != 0 || len(r.StaleExceptions) != 0 {
 		t.Errorf("the statement itself: %+v, stale %+v", r.Violations, r.StaleExceptions)
 	}
 	for what, sql := range map[string]string{
@@ -114,7 +114,7 @@ func TestAnExceptionWithNoFileMatchesTheWholeStatement(t *testing.T) {
 		"a longer statement": guarded + ` OR TRUE`,
 		"a prefix":           `UPDATE aveloxis_data.repos SET "a" = NULL`,
 	} {
-		if r := Check([]Stmt{{File: "f.go", SQL: sql}}, registry, ex); len(r.Violations) != 1 || len(r.StaleExceptions) != 1 {
+		if r := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, registry, ex); len(r.Violations) != 1 || len(r.StaleExceptions) != 1 {
 			t.Errorf("%s: %d violations, %d stale; want the violation, and the exception stale", what, len(r.Violations), len(r.StaleExceptions))
 		}
 	}

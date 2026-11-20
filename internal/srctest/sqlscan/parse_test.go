@@ -64,7 +64,7 @@ func TestAForbiddenWriteIsAViolationHoweverItIsSpelled(t *testing.T) {
 		"COPY FROM, every column":          `COPY aveloxis_data.repos FROM STDIN`,
 		"through a view":                   `CREATE VIEW aveloxis_augur_data.repo AS SELECT repo_id, repo_git FROM aveloxis_data.repos; UPDATE aveloxis_augur_data.repo SET repo_git = 'x'`,
 	} {
-		rep := Check([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
+		rep := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
 		if len(rep.Violations) == 0 && len(rep.Unparsed) == 0 {
 			t.Errorf("%s: passed\n  %s", name, sql)
 		}
@@ -89,7 +89,7 @@ func TestTextThatIsNotReadToItsEndIsReported(t *testing.T) {
 		if _, err := ParseWrites(sql); err == nil {
 			t.Errorf("%s: read without complaint\n  %s", name, sql)
 		}
-		if rep := Check([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil); len(rep.Unparsed) != 1 {
+		if rep := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil); len(rep.Unparsed) != 1 {
 			t.Errorf("%s: Check reported %d unparsed statements, want 1", name, len(rep.Unparsed))
 		}
 	}
@@ -112,7 +112,7 @@ func TestAConformingWriteAndAReadPass(t *testing.T) {
 		"a row lock":                      `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 FOR NO KEY UPDATE`,
 		"FOR UPDATE OF":                   `SELECT 1 FROM aveloxis_data.repos r FOR UPDATE OF r SKIP LOCKED`,
 		"a foreign key's action":          `ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (g) REFERENCES aveloxis_data.g (id) ON UPDATE CASCADE ON DELETE SET NULL`,
-		"a trigger's events":              `CREATE TRIGGER tr BEFORE INSERT OR UPDATE OR DELETE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION t()`,
+		"a trigger on another table":      `CREATE TRIGGER tr BEFORE INSERT OR UPDATE OR DELETE ON aveloxis_data.other FOR EACH ROW EXECUTE FUNCTION t()`,
 		"a grant":                         `GRANT SELECT, INSERT, UPDATE, DELETE ON aveloxis_data.repos TO r`,
 		"an insert":                       `INSERT INTO aveloxis_data.repos (repo_id, repo_git) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		"a delete":                        `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`,
@@ -121,9 +121,9 @@ func TestAConformingWriteAndAReadPass(t *testing.T) {
 		"COPY TO":                         `COPY aveloxis_data.repos (repo_git) TO STDOUT`,
 		"IS DISTINCT FROM in a value":     `UPDATE aveloxis_data.repos SET repo_name = $1, changed = (repo_name IS DISTINCT FROM $1) WHERE repo_id = $2`,
 		"CASE in a conflict's value":      `INSERT INTO aveloxis_data.m (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET b = CASE WHEN m.a IS NULL THEN 1 ELSE 2 END, c = 3`,
-		"a quoted name with capitals":     `UPDATE aveloxis_data."Repos" SET repo_git = 'x'`,
-		"an unqualified other column":     `UPDATE tmp_pairs SET keep = TRUE`,
-		"a view over another table":       `CREATE VIEW aveloxis_augur_data.v AS SELECT * FROM aveloxis_data.other; UPDATE aveloxis_augur_data.v SET repo_git = 'x'`,
+		"a temporary table the text made": `CREATE TEMP TABLE tmp_pairs (keep bool); UPDATE tmp_pairs SET keep = TRUE; DELETE FROM tmp_pairs`,
+		"a temporary table named repos":   `CREATE TEMPORARY TABLE repos (repo_git text) ON COMMIT DROP; UPDATE repos SET repo_git = 'x'`,
+		"a view that is only defined":     `CREATE VIEW aveloxis_augur_data.v AS SELECT * FROM aveloxis_data.repos`,
 		"a materialized view is no door":  `CREATE MATERIALIZED VIEW aveloxis_data.mv AS SELECT * FROM aveloxis_data.repos`,
 		"a body that only reads":          `DO $$ BEGIN PERFORM 1 FROM aveloxis_data.repos; END $$`,
 		"a Unicode-escaped other column":  `UPDATE aveloxis_data.repos SET U&"repo\005fname" = 'x'`,
@@ -131,7 +131,7 @@ func TestAConformingWriteAndAReadPass(t *testing.T) {
 		"operators next to a comment":     "SELECT 1 +-- UPDATE\n 2",
 		"a parameter and a dollar string": `SELECT $1, $$a$$, $t$ b $t$`,
 	} {
-		rep := Check([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
+		rep := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
 		if len(rep.Violations) != 0 || len(rep.Unparsed) != 0 {
 			t.Errorf("%s: %+v %+v\n  %s", name, rep.Violations, rep.Unparsed, sql)
 		}

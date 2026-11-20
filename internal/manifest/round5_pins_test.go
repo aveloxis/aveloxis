@@ -109,7 +109,8 @@ func TestAKeptRunIsNotUsedPastTheApplyDepth(t *testing.T) {
 // next file that applies it must be refused too, by name, and not read as a
 // whole build with that script's assignments missing.
 func TestARunWithAnUnreadScriptInsideIsNotKept(t *testing.T) {
-	hostile := strings.Repeat("} a (", 50_000) + strings.Repeat(")", 50_000)
+	// A script that is not read: larger than a build file is.
+	hostile := "ext.v = '9.9'\n" + strings.Repeat("// padding\n", int(MaxBuildFileBytes)/11+1)
 	build := "apply from: \"$rootDir/gradle/a.gradle\"\ndependencies {\n  implementation 'g:d:1.0'\n}\n"
 	root := writeTree(t, map[string]string{
 		"settings.gradle": "rootProject.name='r'\n",
@@ -153,78 +154,12 @@ func TestARunKeepsTheNamesItsSecondReadingRead(t *testing.T) {
 	}
 }
 
-// G2. A file cut short by the WALK's allowance is not marked as past its
-// own bound: the allowance grows with every file read, and the file is read
-// when there is room.
-func TestAFileCutShortByTheWalksAllowanceIsReadWhenThereIsRoom(t *testing.T) {
-	root := writeTree(t, map[string]string{"build.gradle": "dependencies {\n  implementation 'g:d:1.0'\n}\n"})
-	tree := NewWalk(root, nil).gradle
-	path := filepath.Join(root, "build.gradle")
-	content, ok := tree.content(path)
-	if !ok {
-		t.Fatal("the file was not read")
-	}
-	tree.work.limit = tree.work.used // no room at all
-	if b := tree.scanFile(path, content, nil, nil); !b.overBound || !b.walkBound {
-		t.Fatalf("with no allowance left: overBound %v walkBound %v (the premise)", b.overBound, b.walkBound)
-	}
-	if tree.pastBound[path] {
-		t.Error("a file the walk's allowance cut short is marked as past its own bound: it will never be read on this walk")
-	}
-	tree.work.limit = tree.work.used + gradleWorkFactor*(len(content)+1)
-	if b := tree.scanFile(path, content, nil, nil); b.overBound || len(b.decls) != 1 {
-		t.Errorf("with room again: overBound %v, %d declarations; want it read", b.overBound, len(b.decls))
-	}
-}
-
-// G14, G15. Finding that a kept run stands for this scope is work, and so is
-// looking through the runs a file has applied: both are charged.
-func TestStandingInForARunIsCharged(t *testing.T) {
-	const inside = 40
-	files := map[string]string{}
-	var all strings.Builder
-	for i := 0; i < inside; i++ {
-		fmt.Fprintf(&all, "apply from: 's%d.gradle'\n", i)
-		files[fmt.Sprintf("gradle/s%d.gradle", i)] = fmt.Sprintf("ext.k%d = '%d'\n", i, i)
-	}
-	files["gradle/all.gradle"] = all.String()
-	root := writeTree(t, files)
-	tree := NewWalk(root, nil).gradle
-	path := filepath.Join(root, "gradle", "all.gradle")
-	first := tree.applyOne(path, nil, 0, newGradleSeen("x"), nil)
-	if len(tree.bundles[path]) != 1 {
-		t.Fatalf("%d runs kept for the script, want 1 (the premise)", len(tree.bundles[path]))
-	}
-	readings, used := tree.fullReads, tree.work.used
-	second := tree.applyOne(path, nil, 0, newGradleSeen("y"), nil)
-	if tree.fullReads != readings {
-		t.Fatalf("the second application read %d files; want the kept run", tree.fullReads-readings)
-	}
-	if v, ok, _ := second.get("k7"); !ok || v != "7" || first == nil {
-		t.Fatalf("the kept run does not give k7: %q %v", v, ok)
-	}
-	// The scripts of the run, each checked against what the file has
-	// applied (nothing yet): one unit each. The run read nothing outside.
-	if spent := tree.work.used - used; spent != inside+1 {
-		t.Errorf("standing in for a run of %d scripts cost %d units, want %d", inside+1, spent, inside+1)
-	}
-	seen := newGradleSeen("z")
-	seen.runs = append(seen.runs, tree.bundles[path][0], tree.bundles[path][0], tree.bundles[path][0])
-	used = tree.work.used
-	if seen.has("nowhere", tree.work) {
-		t.Fatal("a path no run holds was found")
-	}
-	if spent := tree.work.used - used; spent != 3 {
-		t.Errorf("looking through 3 runs cost %d units, want 3", spent)
-	}
-}
-
 // G17, G18. What a kept run counts against the memo's allowance is its
 // links and every assignment they hold, not its names alone.
 func TestAKeptRunCountsItsLinksAndTheirAssignments(t *testing.T) {
 	w := NewWalk(t.TempDir(), nil)
 	tree := w.gradle
-	tree.memoLimit, w.acct.read = 1<<20, 1<<20
+	tree.memoLimit = 1 << 20
 	var vars *gradleVars
 	text := 0
 	const links = 5
@@ -284,9 +219,13 @@ func TestTheReasonsOfImportsPassedBeforeAnAnswerAreKept(t *testing.T) {
 			}
 			switch d.Name {
 			case "g:inbom", "g:inbomB":
+				// Round 6 (M6-3): the BOM that manages it comes AFTER an
+				// import that could not be looked up, which might manage it
+				// too and would win. Its version is not determined, and the
+				// reason is the one of the import passed.
 				seen++
-				if d.Version == "" || d.VersionSource != SourceManaged {
-					t.Errorf("read order %v: %s of %s has version %q from %q; want the BOM's", order, d.Name, target, d.Version, d.VersionSource)
+				if d.Version != "" || d.VersionSource != "" || d.VersionReason != model.VersionReasonInheritedLookupFailed {
+					t.Errorf("read order %v: %s of %s has version %q from %q, reason %q; want no version and %q", order, d.Name, target, d.Version, d.VersionSource, d.VersionReason, model.VersionReasonInheritedLookupFailed)
 				}
 			case "g:own":
 				seen++
@@ -331,37 +270,9 @@ func TestAQuestionWithAColonComparesEveryReferenceKeyedEntry(t *testing.T) {
 	}
 	c := tree.context(m)
 	for _, q := range []struct{ group, artifact, want string }{{"g", "a:b", "3"}, {"g:a", "b", "3"}, {"g", "b:c", "4"}, {"g:b", "c", "4"}} {
-		bud := tree.budget(0)
-		if v, found, _, _ := c.managed(bud, q.group, q.artifact); !found || v != q.want {
+		if v, found, _, _, _ := c.managed(&pomReading{}, q.group, q.artifact); !found || v != q.want {
 			t.Errorf("%q : %q is managed at %q (found %v), want %q", q.group, q.artifact, v, found, q.want)
 		}
-	}
-}
-
-// P14. In the pass over the whole tree an import whose coordinates could
-// not be interpolated within the walk's allowance is not looked for under
-// the text as written: the pass stops there and the tree is not whole.
-func TestAnImportThatCouldNotBeInterpolatedIsNotLookedFor(t *testing.T) {
-	root := writeTree(t, map[string]string{
-		"pom.xml": "<project><groupId>t</groupId><artifactId>p</artifactId><version>1</version><properties><L>" + strings.Repeat("L", 2600) +
-			"</L></properties><dependencyManagement><dependencies>" + r4import("${L}", "bom", "1") + "</dependencies></dependencyManagement></project>",
-	})
-	tree := NewWalk(root, nil).pom
-	m := tree.model(filepath.Join(root, "pom.xml"))
-	if m == nil {
-		t.Fatal("the pom was not read")
-	}
-	c := tree.context(m)
-	work := tree.walkWork()
-	// Room for the look, and not for the interpolation (2,604 bytes read and
-	// written: two units at once).
-	work.carry, work.limit = 0, work.used+1
-	if _, _, _, ok := importCoordinates(tree.walkBudget(), c, m.managed[0]); ok {
-		t.Error("an import whose interpolation the allowance did not cover was handed on as a coordinate")
-	}
-	work.carry, work.limit = 0, work.used+1000
-	if g, a, v, ok := importCoordinates(tree.walkBudget(), c, m.managed[0]); !ok || len(g) != 2600 || a != "bom" || v != "1" {
-		t.Errorf("with room: ok %v, a group of %d bytes, %q, %q", ok, len(g), a, v)
 	}
 }
 
@@ -391,12 +302,12 @@ func TestWhetherANameWasKnownIsPartOfWhatARunRead(t *testing.T) {
 // G22, shown equivalent. A run is kept only when nothing inside it was left
 // unread, and applyOne says so three ways; the count of files noted unread
 // since the run began is the third, and no path reaches it alone: a script
-// that is not read, or is past its bound at its first reading, ends the run
-// before it is kept (and marks the run it is part of); one past its bound
-// at its second reading is the term beside it. These are those paths, each
+// that is not read ends the run before it is kept (and marks the run it is
+// part of). These are those paths, each
 // applied twice: the second application must be refused as the first was.
 func TestEveryWayAScriptIsLeftUnreadKeepsItsRunFromBeingKept(t *testing.T) {
-	hostile := strings.Repeat("} a (", 50_000) + strings.Repeat(")", 50_000)
+	// A script that is not read: larger than a build file is.
+	hostile := "ext.v = '9.9'\n" + strings.Repeat("// padding\n", int(MaxBuildFileBytes)/11+1)
 	build := func(script string) string {
 		return "apply from: \"$rootDir/gradle/" + script + "\"\ndependencies {\n  implementation 'g:d:1.0'\n}\n"
 	}

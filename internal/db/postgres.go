@@ -18,6 +18,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/db/stmttrace"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5"
@@ -205,6 +206,12 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// See utf8_tracer.go for the full rationale + production-
 	// incident history.
 	cfg.ConnConfig.Tracer = utf8ScrubTracer{}
+	// The one test seam on what the store sends (stmttrace): nil in every
+	// binary; the DB-tier test harness sets it, to hand each statement to
+	// the write-policy judge.
+	if stmttrace.Wrap != nil {
+		cfg.ConnConfig.Tracer = stmttrace.Wrap(cfg.ConnConfig.Tracer)
+	}
 
 	store := &PostgresStore{logger: logger}
 	cfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
@@ -2110,6 +2117,20 @@ const renameRecoveryUpdateSQL = `
 	    data_collection_date = NOW()
 	WHERE cntrb_id = $1::uuid`
 
+// The savepoint statements of the contributor batch: one savepoint per
+// contributor (cntrb_sp_N) and one per identity row (ident_sp_N), N the
+// batch's running counter. A number is all that varies, written with %d.
+func cntrbSavepointSQL(n uint) string { return fmt.Sprintf("SAVEPOINT cntrb_sp_%d", n) }
+func cntrbSavepointRollbackSQL(n uint) string {
+	return fmt.Sprintf("ROLLBACK TO SAVEPOINT cntrb_sp_%d", n)
+}
+func cntrbSavepointReleaseSQL(n uint) string { return fmt.Sprintf("RELEASE SAVEPOINT cntrb_sp_%d", n) }
+func identSavepointSQL(n uint) string        { return fmt.Sprintf("SAVEPOINT ident_sp_%d", n) }
+func identSavepointRollbackSQL(n uint) string {
+	return fmt.Sprintf("ROLLBACK TO SAVEPOINT ident_sp_%d", n)
+}
+func identSavepointReleaseSQL(n uint) string { return fmt.Sprintf("RELEASE SAVEPOINT ident_sp_%d", n) }
+
 // ============================================================
 // upsertOneContributor performs the full per-contributor unit of the
 // batch upsert — savepoint-bracketed row INSERT with the v0.22.13
@@ -2165,8 +2186,8 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// ~419 innocent contributors after a single rename
 	// collision on the head of the batch.
 	*spCounter++
-	cntrbSP := fmt.Sprintf("cntrb_sp_%d", uint(*spCounter))
-	if _, spErr := tx.Exec(ctx, "SAVEPOINT "+cntrbSP); spErr != nil {
+	cntrbSP := uint(*spCounter)
+	if _, spErr := tx.Exec(ctx, cntrbSavepointSQL(cntrbSP)); spErr != nil {
 		return spErr
 	}
 
@@ -2203,7 +2224,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				// anything else falls through to the ordinary path: the
 				// INSERT will trip contributors_pkey and the 23505
 				// backstop reports it with full context.
-				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+				if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_preprobe_update", login, updErr)
@@ -2211,7 +2232,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 					return updErr // the batch rolls back and withRetry retries it
 				}
 			} else {
-				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+				if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 					return relErr
 				}
 				s.logger.Info("contributor rename recovered in batch upsert",
@@ -2261,7 +2282,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		// aborted-tx state — required before any further
 		// statement in this tx (including the recovery
 		// UPDATE) can run.
-		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+		if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 			return rbErr
 		}
 
@@ -2290,14 +2311,14 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				// violation on this row). Roll back and capture;
 				// a deadlock returns for the batch retry, anything
 				// else skips this contributor.
-				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+				if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_update", login, updErr)
 				if isRetryableTxError(updErr) {
 					return updErr // the batch rolls back and withRetry retries it
 				}
-				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+				if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 					return relErr
 				}
 				return nil
@@ -2322,7 +2343,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			if isRetryableTxError(err) {
 				return err // the batch rolls back and withRetry retries it
 			}
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 				return relErr
 			}
 			return nil
@@ -2333,7 +2354,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// upserted via ON CONFLICT (cntrb_login match), or
 	// rename-recovered via UPDATE. Release the outer
 	// savepoint before processing identities.
-	if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+	if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 		return relErr
 	}
 
@@ -2362,8 +2383,8 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 	// contributor AND every later contributor in the batch.
 	for _, ident := range idents {
 		*spCounter++
-		identSP := fmt.Sprintf("ident_sp_%d", uint(*spCounter))
-		if _, spErr := tx.Exec(ctx, "SAVEPOINT "+identSP); spErr != nil {
+		identSP := uint(*spCounter)
+		if _, spErr := tx.Exec(ctx, identSavepointSQL(identSP)); spErr != nil {
 			return spErr
 		}
 
@@ -2382,14 +2403,14 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			ident.Email, ident.AvatarURL, ident.URL, ident.NodeID, ident.Type, ident.IsAdmin,
 		)
 		if identErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("contributor_identities_insert", login, identErr)
 			if isRetryableTxError(identErr) {
 				return identErr // the batch rolls back and withRetry retries it
 			}
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			// Try the next identity — savepoint isolation
@@ -2408,7 +2429,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			historySource = LoginSourceRenameRecovery
 		}
 		if histErr := recordLoginObservation(ctx, tx, cntrb_id, int16(ident.Platform), ident.Login, historySource); histErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("contributor_login_history_insert", login, histErr)
@@ -2419,7 +2440,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			// locks, the history row is re-recorded the next time this
 			// identity is observed, and retrying the whole batch would redo
 			// every contributor in it for one derived row. captureErr logs it.
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			continue
@@ -2432,14 +2453,14 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 		// errors are contained in this identity's savepoint below.
 		backfillErr := backfillDenormalizedIdentity(ctx, tx, cntrb_id, ident)
 		if backfillErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("identity_denorm_backfill", login, backfillErr)
 			// Not escaped on a retryable failure either, for the same reason as the
 			// login-history write above: the mirror columns are rewritten
 			// from the identity on every later upsert of this contributor.
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			continue
@@ -2449,7 +2470,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 		// gh_*/gl_* backfill (still under the same savepoint
 		// scope so any unforeseen failure in the backfill
 		// UPDATE is also contained).
-		if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+		if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 			return relErr
 		}
 	}

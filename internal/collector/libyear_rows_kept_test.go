@@ -171,7 +171,7 @@ func TestDependenciesTheRegistryCannotAnswerForKeepTheirRows(t *testing.T) {
 	good := uniq(t, "kept-good")
 	f.manifest(t, map[string]string{good: "1.0.0", missing: "2.0.0", failing: "3.0.0", "local-tool": "file:../tool"})
 	res := &AnalysisResult{}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, res); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, res); err != nil {
 		t.Fatal(err)
 	}
 	type stored struct {
@@ -272,7 +272,7 @@ func TestDependenciesWithoutARowAreRecordedAsNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := &AnalysisResult{}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, res); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, res); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.inventory(t); len(got) != 1 || !strings.HasPrefix(got[0], good) {

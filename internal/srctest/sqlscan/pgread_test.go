@@ -120,9 +120,44 @@ func TestWritesTheParseTreeShows(t *testing.T) {
 		"EXCLUDED in quotes is a table":   `INSERT INTO aveloxis_data.repos (repo_id) VALUES ($1) ON CONFLICT (repo_id) DO UPDATE SET repo_git = COALESCE(NULLIF(repos.repo_git, ''), "EXCLUDED".repo_git)`,
 		"COALESCE of three":               `UPDATE aveloxis_data.repos SET repo_git = COALESCE(NULLIF(repo_git, ''), $1, repo_name)`,
 		"the stored value in a subquery":  `UPDATE aveloxis_data.repos SET repo_git = COALESCE(NULLIF(repo_git, ''), (SELECT max(o.repo_git) FROM aveloxis_data.repos o))`,
-		"a grammar newer than the parser": `UPDATE aveloxis_data.repos SET repo_git = 'x' RETURNING old.repo_git, new.repo_git WITH (OLD AS o)`,
+		// Valid on PostgreSQL 18 and not on 17, whose grammar the parser has
+		// (round 6: the fixture this replaced was a syntax error on 18 too).
+		"a grammar newer than the parser": `UPDATE aveloxis_data.repos SET repo_name = 'x' RETURNING WITH (OLD AS o) o.repo_name`,
+		// Round 6: the target must be a base table the catalog knows.
+		"a quoted name with capitals":     `UPDATE aveloxis_data."Repos" SET repo_git = 'x'`,
+		"an unqualified target":           `UPDATE tmp_pairs SET keep = TRUE`,
+		"an unqualified insert":           `INSERT INTO repos (repo_git) VALUES ($1)`,
+		"an unqualified DROP":             `DROP TABLE aveloxis_data.other, tmp_pairs`,
+		"a temp table of ANOTHER text":    `UPDATE tmp_made_elsewhere SET keep = TRUE`,
+		"a temporary VIEW the text made":  `CREATE TEMP VIEW v AS SELECT * FROM aveloxis_data.repos; UPDATE v SET repo_git = 'x'`,
+		"a view over another table":       `CREATE VIEW aveloxis_augur_data.v AS SELECT * FROM aveloxis_data.other; UPDATE aveloxis_augur_data.v SET repo_git = 'x'`,
+		"a view over a view over it":      `CREATE VIEW s.v1 AS SELECT * FROM aveloxis_data.repos; CREATE VIEW s.v2 AS SELECT repo_git AS z FROM s.v1; UPDATE s.v2 SET z = 'x'`,
+		"a relation nobody defined":       `UPDATE aveloxis_data.nobody SET repo_git = 'x'`,
+		"a materialized view as a target": `CREATE MATERIALIZED VIEW aveloxis_data.mv AS SELECT 1 AS a; DELETE FROM aveloxis_data.mv`,
+		"a foreign table as a target":     `CREATE FOREIGN TABLE s.ft (repo_git text OPTIONS (column_name 'repo_git')) SERVER x; UPDATE s.ft SET repo_git = 'x'`,
+		"a table made a view by a rule":   `CREATE TABLE s.t (repo_git text); CREATE RULE "_RETURN" AS ON SELECT TO s.t DO INSTEAD SELECT * FROM aveloxis_data.repos; UPDATE s.t SET repo_git = 'x'`,
+		"a view under a new name":         `CREATE VIEW s.v AS SELECT * FROM aveloxis_data.repos; ALTER VIEW s.v RENAME TO v2; UPDATE s.v2 SET repo_git = 'x'`,
+		"pg_temp, by name":                `CREATE TEMP TABLE repos (repo_git text); UPDATE pg_temp.repos SET repo_git = 'x'`,
+		// Round 6: what changes the table itself.
+		"a trigger, with any function": `CREATE TRIGGER tr BEFORE INSERT OR UPDATE OR DELETE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION t()`,
+		"a trigger with a built-in":    `CREATE TRIGGER tg BEFORE INSERT OR UPDATE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION tsvector_update_trigger(repo_git, 'pg_catalog.english', x)`,
+		"a rule on the table":          `CREATE RULE r AS ON UPDATE TO aveloxis_data.repos DO INSTEAD NOTHING`,
+		"DETACH PARTITION":             `ALTER TABLE aveloxis_data.repos DETACH PARTITION aveloxis_data.p`,
+		"RENAME TO":                    `ALTER TABLE aveloxis_data.repos RENAME TO r2`,
+		"the renamed table written":    `ALTER TABLE aveloxis_data.other RENAME TO r2; UPDATE aveloxis_data.r2 SET repo_git = 'x'; ALTER TABLE aveloxis_data.repos RENAME TO r3; UPDATE aveloxis_data.r3 SET repo_git = 'x'`,
+		"SET SCHEMA":                   `ALTER TABLE aveloxis_data.repos SET SCHEMA other`,
+		"PARTITION OF":                 `CREATE TABLE s.p PARTITION OF aveloxis_data.repos DEFAULT`,
+		"INHERITS":                     `CREATE TABLE s.c () INHERITS (aveloxis_data.repos)`,
+		"a write of a child":           `CREATE TABLE s.c () INHERITS (aveloxis_data.repos); UPDATE s.c SET repo_git = 'x'`,
+		"DROP SCHEMA":                  `DROP SCHEMA aveloxis_data CASCADE`,
+		"TRUNCATE":                     `TRUNCATE aveloxis_data.other, aveloxis_data.repos`,
+		"a foreign key that cascades":  `ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (repo_git) REFERENCES s.o (id) ON UPDATE CASCADE`,
+		"a foreign key that sets NULL": `ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (x) REFERENCES s.o (id) ON DELETE SET NULL (repo_git)`,
+		"a column's own foreign key":   `CREATE TABLE aveloxis_data.repos (repo_git text REFERENCES s.o (id) ON DELETE SET DEFAULT)`,
+		"two texts as an SQL body":     `CREATE FUNCTION f() RETURNS void LANGUAGE sql AS 'SELECT 1', 'UPDATE aveloxis_data.repos SET repo_git = 1'`,
+		"a NUL in the text":            "SELECT 1 --\x00\n; UPDATE aveloxis_data.repos SET repo_git = 'x'",
 	} {
-		rep := Check([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
+		rep := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
 		if len(rep.Violations) == 0 && len(rep.Unparsed) == 0 {
 			t.Errorf("%s: passed\n  %s", name, sql)
 		}
@@ -141,11 +176,10 @@ func TestReadsAndConformingWritesTheParseTreeShows(t *testing.T) {
 		"a body with every kind of step":     `DO $$ DECLARE n int := 0; r record; c CURSOR FOR SELECT 1; BEGIN FOR i IN 1..3 LOOP n := n + i; END LOOP; WHILE n > 0 LOOP n := n - 1; EXIT WHEN n = 1; END LOOP; FOR r IN SELECT repo_git FROM aveloxis_data.repos LOOP RAISE NOTICE '%', r.repo_git; END LOOP; GET DIAGNOSTICS n = ROW_COUNT; PERFORM pg_sleep(0); CASE n WHEN 1 THEN NULL; ELSE NULL; END CASE; EXECUTE 'SELECT 1'; RETURN; END $$`,
 		"an SQL function that reads":         `CREATE OR REPLACE FUNCTION f() RETURNS text LANGUAGE sql AS 'SELECT repo_git FROM aveloxis_data.repos LIMIT 1'`,
 		"a function with a RETURN body":      `CREATE FUNCTION f(a int) RETURNS int LANGUAGE sql RETURN a + 1`,
-		"DROP TABLE of another":              `DROP TABLE aveloxis_data.other, tmp_pairs`,
+		"DROP TABLE of another":              `DROP TABLE aveloxis_data.other`,
 		"DROP INDEX":                         `DROP INDEX IF EXISTS "aveloxis_data"."repos"`,
 		"RENAME of the table's constraint":   `ALTER TABLE aveloxis_data.repos RENAME CONSTRAINT a TO b`,
 		"ALTER of another column's type":     `ALTER TABLE aveloxis_data.repos ALTER COLUMN repo_name TYPE text`,
-		"DETACH PARTITION":                   `ALTER TABLE aveloxis_data.repos DETACH PARTITION aveloxis_data.p`,
 		"a prepared statement run by name":   `EXECUTE p(1, 2)`,
 		"a call":                             `CALL aveloxis_data.proc($1)`,
 		"LOCK and SET":                       `LOCK TABLE aveloxis_data.repos IN SHARE MODE; SET LOCAL lock_timeout = '5s'; RESET ALL`,
@@ -155,7 +189,7 @@ func TestReadsAndConformingWritesTheParseTreeShows(t *testing.T) {
 		"a refresh":                          `REFRESH MATERIALIZED VIEW CONCURRENTLY aveloxis_data.mv`,
 		"INSERT ... SELECT with ON CONFLICT": `INSERT INTO aveloxis_data.repos SELECT * FROM aveloxis_data.staging ON CONFLICT (repo_id) DO UPDATE SET repo_name = EXCLUDED.repo_name`,
 	} {
-		rep := Check([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
+		rep := fixtureCheck([]Stmt{{File: "f.go", SQL: sql}}, repoGit, nil)
 		if len(rep.Violations) != 0 || len(rep.Unparsed) != 0 {
 			t.Errorf("%s: %+v %+v\n  %s", name, rep.Violations, rep.Unparsed, sql)
 		}
@@ -178,57 +212,16 @@ func TestAColumnWithNoWriterIsReported(t *testing.T) {
 		"assigned, conforming":  {"UPDATE aveloxis_data.repos /* c */ SET repo_git = COALESCE(NULLIF(repo_git, ''), $1)", true},
 		"another table":         {`INSERT INTO aveloxis_data.other (repo_git) VALUES ($1)`, false},
 		"only read":             {`SELECT repo_git FROM aveloxis_data.repos WHERE repo_git = 'INSERT INTO aveloxis_data.repos (repo_git)'`, false},
-		"no schema":             {`INSERT INTO repos (repo_git) VALUES ($1)`, false},
 		"deleted, never set":    {`DELETE FROM aveloxis_data.repos WHERE repo_git = $1`, false},
 		"a conflict's other":    {`INSERT INTO aveloxis_data.repos (repo_id) VALUES ($1) ON CONFLICT (repo_id) DO UPDATE SET repo_name = $2`, false},
 		"a conflict's this one": {`INSERT INTO aveloxis_data.repos (repo_id) VALUES ($1) ON CONFLICT (repo_id) DO UPDATE SET repo_git = COALESCE(NULLIF(repos.repo_git, ''), $2)`, true},
 	} {
-		rep := Check([]Stmt{{File: "f.go", SQL: tc.sql}}, repoGit, nil)
+		rep := fixtureCheck([]Stmt{{File: "f.go", SQL: tc.sql}}, repoGit, nil)
 		if len(rep.Violations) != 0 || len(rep.Unparsed) != 0 {
 			t.Errorf("%s: %+v %+v", name, rep.Violations, rep.Unparsed)
 		}
 		if got := len(rep.Unwritten) == 0; got != tc.written {
 			t.Errorf("%s: written = %v, want %v\n  %s", name, got, tc.written, tc.sql)
-		}
-	}
-}
-
-// Two texts are one statement but for their digits when PostgreSQL's
-// parser gives them one tree but for the digits (the numbered reading of
-// strict.go stands on this).
-func TestTreeShapeIsTheStatementWithoutItsDigits(t *testing.T) {
-	shape := func(sql string) string {
-		s, ok := treeShape(sql)
-		if !ok {
-			return "refused"
-		}
-		return s
-	}
-	for _, same := range [][2]string{
-		{`SAVEPOINT sp_1`, `SAVEPOINT sp_99999`},
-		{`SELECT a FROM t LIMIT 1`, `SELECT a FROM t LIMIT 123456789012345678901234567890`},
-		{`SELECT a FROM t LIMIT 0`, `SELECT a FROM t LIMIT 7`},
-		{`SELECT $1, 'row 3'`, `SELECT $12, 'row 44'`},
-		{`SELECT 1 -- 5`, `SELECT 2 /* 66 */`},
-		{`SELECT -1`, `SELECT -22`},
-	} {
-		if a, b := shape(same[0]), shape(same[1]); a != b || a == "refused" {
-			t.Errorf("%q and %q must be one shape:\n  %s\n  %s", same[0], same[1], a, b)
-		}
-	}
-	for _, differ := range [][2]string{
-		{`SELECT a FROM t LIMIT 1`, `SELECT a FROM t LIMIT -1`},
-		{`SELECT x - 1`, `SELECT x --1`},
-		{`SAVEPOINT sp_1`, `SAVEPOINT sp_-1`},
-		{`SELECT 1`, `SELECT 1; DROP TABLE t`},
-		{`SELECT a1`, `SELECT ab`},
-		{`SELECT 1`, `SELECT '1'`},
-		{`SELECT 1 FROM t`, `SELECT 1 FROM u`},
-		{`SELECT 'a' || 1`, `SELECT 'a' | 1`},
-		{`SELECT 1`, `SELECT 1 +`},
-	} {
-		if a, b := shape(differ[0]), shape(differ[1]); a == b {
-			t.Errorf("%q and %q must differ, and both are\n  %s", differ[0], differ[1], a)
 		}
 	}
 }

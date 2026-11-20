@@ -164,12 +164,23 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
-**0.29.212 is the fixes from the fifth review; no schema change and no configuration change.** What changes on a fleet:
+**0.29.213 is the fixes from the sixth review. No schema change; two new settings, both with defaults.** What changes on a fleet:
+
+- **A repository's manifests and lockfiles are read by a child process** (`aveloxis manifest-read`, the same binary; about 10 ms to start, one per analysis). It holds no database connection and no credentials, and ends itself past either of two limits: `collection.manifest_read_cpu_seconds` (default 120) and `collection.manifest_read_memory_mb` (default 1024). `ps` shows these children under `serve`. How it works is in [the analysis architecture page](../architecture/analysis.md); what to do when a repository is stopped is in [troubleshooting](../guide/troubleshooting.md).
+- **Stop `serve` before replacing the binary,** as the ladder does. The child is started from the file on disk and refuses a request from another version. Until `serve` is restarted no manifests or lockfiles are read, and the log says so once, at ERROR.
+- **A reading stopped at a limit stores nothing partial.** Stopped while reading manifests: the previous inventory stands, and the coverage record's last attempt is `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out` or `manifest_read_failed`. Stopped while reading lockfiles: the inventory is replaced, the previous lockfile rows stand, and an ERROR in the log names the setting to raise.
+- **Memory.** A `pnpm-lock.yaml` needs about fifteen times its size, so the default reads one of about 65 MB; a `package-lock.json` or `yarn.lock` of 200 MB fits. With `--workers N` the children together can hold N times the memory setting.
+- **The bounds 0.29.212 counted inside the Maven and Gradle readers are removed** (memory, remote requests, time, the wall-clock backstop). They refused an honest build of 3,000 Gradle projects. The two limits above replace them.
+- **Some Maven and Gradle dependencies lose their version.** When a parent or BOM that would be consulted first could not be obtained (the lookup failed, its repository is refused, or it was not asked), a version that a later BOM would give is withheld, with the reason. Expect some findings to move to "version not determined" at the first analysis after the deploy.
+- **A lockfile written with a YAML alias or merge key is refused on purpose** (no package manager writes one); its previous rows are kept.
+- **Lockfile entries** of `pnpm-lock.yaml`, `pubspec.lock`, `stack.yaml.lock` and `package-lock.json` version 1 are stored in the file's order. The rows are the same.
+
+**0.29.212 is the fixes from the fifth review; no schema change and no configuration change.** (0.29.213 removes the bounds described in the first two points below.) What changes on a fleet:
 
 - **Reading a Maven or Gradle build tree is bounded** in memory (16 times the bytes read), in requests for remote poms (one for every 64 bytes read) and in time. Work is counted per byte touched: about 1 to 3 minutes per 8 MiB of Gradle files, and seconds for Maven. A repository past a bound has the affected files reported unreadable, or its tree reported not whole, by name. Nothing is silently partial.
 - **A wall-clock backstop should never fire.** It is one minute plus ten times the stated bound (about 28 minutes per 8 MiB read). If the log shows a WARN saying a build-tree path was NOT ACCOUNTED FOR, report it: that is a defect, and the files after it were reported unreadable.
 - **More manifest forms are read:** in a Gemfile, a one-line `case ... when ... then gem`, `do;`, a brace block, a block closed by `end if ...`, and a gem written on the line that opens a block; a gem after such a block no longer inherits its group. In `mix.exs`, a dependency list written with leading commas; an interpolated version (`#{...}`) is no version. In `pubspec.yaml`, a `version:` whose value is on the next line.
-- **The migrate** quotes three names it did not quote before (an invalid index dropped before its rebuild, the `ANALYZE` after an expression index, savepoint counters). They are the same statements for every name the migrate uses.
+- **The migrate** quotes the schema and name in one statement where it did not before: the `DROP INDEX` of an invalid index before its rebuild. It is the same statement for every index the migrate names.
 - **Building from source:** `go.mod` gains a test-only dependency, PostgreSQL's parser compiled to WebAssembly (`github.com/wasilibs/go-pgquery`). The binaries do not link it.
 
 **0.29.211 is the fixes from the fourth review; no schema change and no configuration change.** What changes on a fleet:

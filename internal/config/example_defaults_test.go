@@ -131,6 +131,8 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"PackageKeyFillRows":                          func(c *CollectionConfig) any { return c.PackageKeyFillRowsOrDefault() },
 	"RepositoryHostRegistrationCheck":             func(c *CollectionConfig) any { return c.RepositoryHostRegistrationCheckValue() },
 	"RepositoryHostThreatListURL":                 func(c *CollectionConfig) any { return c.RepositoryHostThreatListURLValue() },
+	"ManifestReadCPUSeconds":                      func(c *CollectionConfig) any { return c.ManifestReadCPULimit() },
+	"ManifestReadMemoryMB":                        func(c *CollectionConfig) any { return c.ManifestReadMemoryLimit() },
 	"RepositoryHostCheckHours": func(c *CollectionConfig) any {
 		d, _ := c.RepositoryHostCheckInterval()
 		return int(d / time.Hour)

@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,170 +38,16 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
 	"github.com/aveloxis/aveloxis/internal/srctest/sqlscan"
+	"github.com/aveloxis/aveloxis/internal/testdb/writejudge"
 )
 
-// columnWritePolicies — the registry. Reasons are REQUIRED and cite the
-// release that established the policy.
-var columnWritePolicies = []sqlscan.Registered{
-	{Table: "aveloxis_data.repos", Column: "platform_repo_id", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the forge numeric ID never changes for a repo; an overwrite would erase the delete-and-recreate mismatch signal (v0.27.116/117)"},
-	{Table: "aveloxis_data.repos", Column: "created_at", Policy: sqlscan.FillEmptyOnly,
-		Reason: "a repository's creation date is an immutable fact (v0.27.104)"},
-	{Table: "aveloxis_data.repos", Column: "updated_at", Policy: sqlscan.GreatestNonNull,
-		Reason: "the forge's last-update time only increases; out-of-order refreshes must not regress it (v0.27.122)"},
-	{Table: "aveloxis_data.repos", Column: "added_at", Policy: sqlscan.InsertOnly,
-		Reason: "fleet-entry timestamp — INSERT-only so it can never degrade into last-touched (v0.27.60)"},
-	{Table: "aveloxis_data.repos", Column: "forked_from", Policy: sqlscan.PreferNonemptyIncoming,
-		Reason: "an id-less re-upsert must not wipe captured lineage; empty incoming preserves stored (v0.27.78)"},
-	// v0.29.68 (worklist follow-up 8, review rounds 1-2): the three
-	// collection-side metadata columns are INSERT-only for the identity
-	// writer. UpsertRepo's conflict arm wrote them from its callers' zero
-	// values (no caller carries them from the forge), blanking a collected
-	// repository on every re-add; Phase 0's UpdateRepoMetadata is the
-	// collection writer and the lifecycle writers (SidelineRepo, the
-	// v0.27.50 migrate step) set repo_archived — each an Exception.
-	{Table: "aveloxis_data.repos", Column: "repo_description", Policy: sqlscan.InsertOnly,
-		Reason: "collected by Phase 0 (UpdateRepoMetadata) every cycle; the identity upsert never carries it, so its conflict arm must not touch it (v0.29.68, follow-up 8)"},
-	{Table: "aveloxis_data.repos", Column: "primary_language", Policy: sqlscan.InsertOnly,
-		Reason: "same as repo_description (v0.29.68, follow-up 8)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", Policy: sqlscan.InsertOnly,
-		Reason: "collected by Phase 0 every cycle, both directions; set by the lifecycle writers on their own paths; the identity upsert never carries it (v0.29.68, follow-up 8)"},
-	{Table: "aveloxis_data.repo_deps_vulnerabilities", Column: "first_detected_at", Policy: sqlscan.EarliestOfStoredAndIncoming,
-		Reason: "v0.29.166: a finding's first detection never moves forward; a successor is handed its predecessor's date (summary/70, 4.3), and a plain re-observation offers NOW(), which is never earlier"},
-	{Table: "aveloxis_data.repo_deps_vulnerabilities", Column: "entered_exposure_at", Policy: sqlscan.KeepCarryOrNow,
-		Reason: "v0.29.166: a write may keep the stored time, take a predecessor's carried one, or stamp now, by the finding upsert's class-transition CASE; WHEN each applies is pinned by TestEnteredExposureIsSetWhenTheClassBecomesExposure and TestEnteredExposureIsCarried"},
-	{Table: "aveloxis_data.repo_deps_libyear", Column: "package_key", Policy: sqlscan.FillEmptyOnly,
-		Reason: "v0.29.173: written on insert (0.29.172) and never changed; the fill's UPDATE is guarded on the key being empty, so it cannot overwrite a key or race the insert"},
-	{Table: "aveloxis_data.repo_lockfile_packages", Column: "package_key", Policy: sqlscan.FillEmptyOnly,
-		Reason: "v0.29.173: as repo_deps_libyear.package_key"},
-	{Table: "aveloxis_data.repos", Column: "vuln_scan_last_run", Policy: sqlscan.AlwaysRefresh,
-		Reason: "completed-scan stamp — every completed vulnerability scan re-stamps NOW(); never written on error paths (v0.28.1 A4)"},
-	{Table: "aveloxis_data.messages", Column: "msg_text_clean", Policy: sqlscan.AlwaysRefresh,
-		Reason: "quote-stripped body — recomputed from the incoming raw body on every email upsert (Part B); a stale clean beside a refreshed raw would silently serve old text through the COALESCE read path"},
-	{Table: "aveloxis_data.messages", Column: "msg_text_clean_rule", Policy: sqlscan.AlwaysRefresh,
-		Reason: "the pattern-library version that produced msg_text_clean — travels with it on every write so --rule-rerun can find stale-rule rows"},
-	{Table: "aveloxis_data.messages", Column: "msg_updated", Policy: sqlscan.GreatestNonNull,
-		Reason: "the provider's comment edit time only increases; a stale replayed envelope must not regress it — it is the comparator the msg_text freshness guard reads (round 14)"},
-	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.FillEmptyOnly,
-		Reason: "R2 audit trail — the login as FIRST observed, so an established value never changes. " +
-			"Tightened from PreferNonemptyIncoming on 2026-09-11 (F4): the commit-resolver branch that " +
-			"re-wrote it was the sole source of all 555 idx_contributors_login violations in the " +
-			"2026-09-06..09-11 production log and is gone, and the two remaining writers — the " +
-			"ON CONFLICT (cntrb_id) race arms in commit_resolver_store.go and contributors.go — now " +
-			"preserve the stored login and fill only an empty one, which also makes them structurally " +
-			"unable to trip the partial unique index (v0.18.29 Fix 3, v0.22.0)"},
-	{Table: "aveloxis_data.contributor_identities", Column: "node_id", Policy: sqlscan.PreferNonemptyIncoming,
-		Reason: "pre-v0.27.103 GraphQL-rail rows carry empty node_id; a non-empty observation heals them, empty never clobbers (v0.27.103)"},
-	{Table: "aveloxis_data.contributor_identities", Column: "user_type", Policy: sqlscan.PreferNonemptyIncoming,
-		Reason: "same healing contract as node_id (v0.27.103)"},
-	// v0.29.118 GitHub traffic (aveloxis/aveloxis#234): the latest read
-	// wins. GitHub can still revise the newest day of a read, so a day,
-	// a 14-day window or a week read again takes the later read's
-	// figures and the later collection date.
-	{Table: "aveloxis_data.repo_clones", Column: "total_clones", Policy: sqlscan.AlwaysRefresh,
-		Reason: "latest read of the day wins: GitHub revises the newest day after the first read (v0.29.118)"},
-	{Table: "aveloxis_data.repo_clones", Column: "unique_clones", Policy: sqlscan.AlwaysRefresh,
-		Reason: "as total_clones; a read without a distinct count (NULL, never 0) replaces a stored number too, since the later read is the one that counts (v0.29.118)"},
-	{Table: "aveloxis_data.repo_clones", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
-		Reason: "the day's figures are those of the read made at this date (v0.29.118)"},
-	{Table: "aveloxis_data.repo_views", Column: "total_views", Policy: sqlscan.AlwaysRefresh,
-		Reason: "latest read of the day wins, as repo_clones (v0.29.118)"},
-	{Table: "aveloxis_data.repo_views", Column: "unique_views", Policy: sqlscan.AlwaysRefresh,
-		Reason: "as total_views (v0.29.118)"},
-	{Table: "aveloxis_data.repo_views", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
-		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_windows", Column: "uniques", Policy: sqlscan.AlwaysRefresh,
-		Reason: "a window read again takes the later read's distinct count (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_windows", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
-		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_weeks", Column: "uniques", Policy: sqlscan.AlwaysRefresh,
-		Reason: "a complete week lies in the window of 7 to 8 daily reads; the later read's distinct count wins (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_weeks", Column: "data_collection_date", Policy: sqlscan.AlwaysRefresh,
-		Reason: "as repo_clones.data_collection_date (v0.29.118)"},
-	// The path and referrer snapshot of a date is replaced as a whole
-	// (delete the date's rows, then insert the read's), never edited in
-	// place: an UPDATE would keep an entry that dropped out of the top
-	// 10 between two reads of one day (v0.29.118).
-	{Table: "aveloxis_data.repo_traffic_paths", Column: "title", Policy: sqlscan.InsertOnly,
-		Reason: "snapshot row: replaced with its date's snapshot, never updated in place (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_paths", Column: "total_views", Policy: sqlscan.InsertOnly,
-		Reason: "as title (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_paths", Column: "unique_views", Policy: sqlscan.InsertOnly,
-		Reason: "as title (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_referrers", Column: "total_views", Policy: sqlscan.InsertOnly,
-		Reason: "snapshot row, as repo_traffic_paths (v0.29.118)"},
-	{Table: "aveloxis_data.repo_traffic_referrers", Column: "unique_views", Policy: sqlscan.InsertOnly,
-		Reason: "as total_views (v0.29.118)"},
-}
-
-// columnWriteExceptions — deliberate, reviewed deviations. An entry
-// that suppresses nothing fails the run as STALE. These five are the
-// FIRST-RUN findings (v0.27.126), each triaged as a deliberate
-// deviation rather than a bug or a wrong policy:
-var columnWriteExceptions = []sqlscan.Exception{
-	{Table: "aveloxis_data.repos", Column: "platform_repo_id", File: "internal/db/repo_forge_id_changes.go",
-		Match:  "UPDATE aveloxis_data.repos SET platform_repo_id = $3",
-		Reason: "v0.29.62 AdoptForgeID — the operator's explicit adoption of a re-created upstream (2026-09-23 decision), guarded WHERE platform_repo_id = the expected old ID in the same transaction that records the change in repo_forge_id_changes; the mismatch signal the fill-empty policy protects is preserved there, not erased"},
-	{Table: "aveloxis_data.repos", Column: "added_at", File: "internal/db/migrate.go",
-		Match:  "SET added_at = COALESCE(data_collection_date, created_at, NOW())",
-		Reason: "the v0.27.60 one-shot backfill for pre-column rows — WHERE added_at IS NULL makes it self-disabling, so it can never degrade a real stamp"},
-	// v0.29.68 (follow-up 8): the three collection-side columns are
-	// InsertOnly for the identity upsert; these are their real writers.
-	{Table: "aveloxis_data.repos", Column: "repo_description", File: "internal/db/repo_metadata.go",
-		Match:  "SET repo_description = $2",
-		Reason: "Phase 0's UpdateRepoMetadata is the collection writer: the forge's current description every cycle, an emptied one included (v0.29.68, follow-up 8)"},
-	{Table: "aveloxis_data.repos", Column: "primary_language", File: "internal/db/repo_metadata.go",
-		Match:  "primary_language = $3",
-		Reason: "Phase 0's UpdateRepoMetadata, as repo_description (v0.29.68, follow-up 8)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_metadata.go",
-		Match:  "repo_archived    = $5",
-		Reason: "Phase 0's UpdateRepoMetadata propagates the forge's archived status both directions (v0.27.50)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_gone.go",
-		Match:  "SET repo_archived = TRUE, repo_gone_at = NOW()",
-		Reason: "SidelineRepo — the gone lifecycle sets the flag with the gone stamp (v0.29.68, follow-up 8: a lifecycle writer)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/repo_gone.go",
-		Match:  "repo_archived = COALESCE((SELECT ri.status = 'Archived'",
-		Reason: "clearGoneCTE — every clearer of the gone stamp puts the flag back to the forge's latest snapshot (0.29.140, Copilot PR #252 eighth review: it stayed TRUE after a recovery)"},
-	{Table: "aveloxis_data.repos", Column: "repo_archived", File: "internal/db/migrate.go",
-		Match:  "SET repo_archived = (latest.status = 'Archived')",
-		Reason: "the v0.27.50 one-shot backfill from repo_info.status for rows collected before Phase 0 propagated the flag"},
-	{Table: "aveloxis_data.repos", Column: "forked_from", File: "internal/db/repo_metadata.go",
-		Match:  "forked_from = $6",
-		Reason: "Phase 0's FetchRepoInfo is AUTHORITATIVE for fork lineage — a repo detaching from its upstream honestly clears the column (v0.27.78); the prefer-nonempty policy protects the id-less org-scan re-upsert path only"},
-	// RETIRED (2026-09-11, F4): the cntrb_login exception on
-	// commit_resolver_store.go's row-exists-by-deterministic-ID branch
-	// is gone because the WRITE is gone. Its reason argued the
-	// freshly-resolved login "IS the truth" for a cntrb_id-keyed row —
-	// true about the person, but cntrb_login is not the person's
-	// current name, it is the first-observed one (R2), and gh_login
-	// already carries the current name. Production settled the
-	// argument: that statement produced all 555 idx_contributors_login
-	// unique violations in the 2026-09-06..09-11 log, and its recovery
-	// dropped the gh_login update too, so every affected rename was
-	// lost outright. Deliberately NOT re-added as a differently-worded
-	// exception — the code now agrees with the doc.
-	{Table: "aveloxis_data.contributor_identities", Column: "node_id", File: "internal/db/contributors.go",
-		Match:  "SET node_id = COALESCE(NULLIF(node_id, ''), $3)",
-		Reason: "the v0.27.112 step-2 IN-PLACE heal deliberately fills empties only — node_id never changes for a platform user, so fill-empty is a strictly more conservative shape than the registered prefer-nonempty (which governs the full upserts)"},
-	{Table: "aveloxis_data.contributor_identities", Column: "user_type", File: "internal/db/contributors.go",
-		Match:  "user_type = COALESCE(NULLIF(user_type, ''), $4)",
-		Reason: "same in-place-heal rationale as node_id (v0.27.112)"},
-	// Operator decision, 2026-11-19 (option 1 of three): the pre-1970 repair
-	// (cleanupBadTimestamps, a ledgered migrate step) clears a stored
-	// created_at / updated_at, which each column's policy forbids. It was
-	// first read by this check in 0.29.203 (its column is written quoted,
-	// and its table comes from a list). Each Match is the WHOLE statement:
-	// the exception holds only while the statement's own condition limits
-	// it to a year before 1970, which no forge date has (the value is Go's
-	// zero time, written by an old bug). The next collection then stores
-	// the real date, which both policies allow over an empty value.
-	{Table: "aveloxis_data.repos", Column: "created_at",
-		Match:  `UPDATE aveloxis_data.repos SET "created_at" = NULL WHERE "created_at" IS NOT NULL AND EXTRACT(YEAR FROM "created_at") < 1970`,
-		Reason: "one-time repair of a value that is not a date (year before 1970); the condition is in the statement and the whole statement is matched"},
-	{Table: "aveloxis_data.repos", Column: "updated_at",
-		Match:  `UPDATE aveloxis_data.repos SET "updated_at" = NULL WHERE "updated_at" IS NOT NULL AND EXTRACT(YEAR FROM "updated_at") < 1970`,
-		Reason: "one-time repair of a value that is not a date (year before 1970); the condition is in the statement and the whole statement is matched"},
-}
+// columnWritePolicies and columnWriteExceptions are the one registry, which
+// the run-time judge of every DB-tier package judges by too
+// (internal/testdb/writejudge, 0.29.213).
+var (
+	columnWritePolicies   = writejudge.Policies
+	columnWriteExceptions = writejudge.Exceptions
+)
 
 // packageKeyFillTablesChecked are the tables the package-key fill walks.
 var packageKeyFillTablesChecked = []PackageKeyFillTable{PackageKeyFillInventory, PackageKeyFillLockfile}
@@ -514,6 +361,11 @@ func TestColumnWritePolicies(t *testing.T) {
 		if ex.Reason == "" {
 			t.Errorf("exception %s.%s: exceptions REQUIRE a reason", ex.Table, ex.Column)
 		}
+		// Round 6: an exception excuses ONE function's statement, not
+		// every statement of its file.
+		if ex.File == "" || ex.Decl == "" {
+			t.Errorf("exception %s.%s (%q): exceptions name the file AND the declaration the statement stands in", ex.Table, ex.Column, ex.Fragment)
+		}
 	}
 }
 
@@ -522,18 +374,26 @@ func TestColumnWritePolicies(t *testing.T) {
 // through, so that a kind of failure dropped here is dropped in neither
 // without the canary saying so.
 func columnWriteFailures(stmts []sqlscan.Stmt) []string {
-	rep := sqlscan.Check(stmts, columnWritePolicies, columnWriteExceptions)
+	// The catalog is what these statements themselves define: the schema's
+	// tables and views are among them (schema.sql and every migrate step).
+	rep := sqlscan.CheckIn(sqlscan.CatalogOf(stmts), stmts, columnWritePolicies, columnWriteExceptions)
 	var out []string
+	out = append(out, rep.BadExceptions...)
 	for _, u := range rep.Unparsed {
 		out = append(out, fmt.Sprintf("%s: a statement the policy check did not read to its end (%s), so nothing was checked on it:\n  %.300s", u.File, u.Detail, strings.Join(strings.Fields(u.SQL), " ")))
 	}
 	for _, v := range rep.Violations {
-		out = append(out, fmt.Sprintf("%s.%s in %s violates %s:\n  expr: %s\n  %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason",
-			v.Table, v.Column, v.File, v.Want, v.Expr, v.Detail))
+		if v.Column == "" {
+			out = append(out, fmt.Sprintf("%s in %s (%s):\n  %s\n  %s\n  TRIAGE: fix the SQL | add an Exception of this kind WITH a reason, its Statement the statement whole",
+				v.Table, v.File, v.Kind, v.Expr, v.Detail))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s.%s in %s violates %s (%s):\n  expr: %s\n  %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason",
+			v.Table, v.Column, v.File, v.Want, v.Kind, v.Expr, v.Detail))
 	}
 	for _, ex := range rep.StaleExceptions {
-		out = append(out, fmt.Sprintf("stale exception %s.%s (%s: %q): it suppressed nothing this run; delete it (reason was: %s)",
-			ex.Table, ex.Column, ex.File, ex.Match, ex.Reason))
+		out = append(out, fmt.Sprintf("stale exception %s.%s (%s, %s: %q %q): it suppressed nothing this run; delete it (reason was: %s)",
+			ex.Table, ex.Column, ex.Kind, ex.File, ex.Fragment, ex.Statement, ex.Reason))
 	}
 	for _, u := range rep.Unwritten {
 		out = append(out, fmt.Sprintf("registered column %s.%s has NO writer statement: registry rot (renamed column?) or a dark column (the column-writer tripwire's territory)",
@@ -674,8 +534,8 @@ func TestNoProtectedWriteGoesUnread(t *testing.T) {
 	if rep.Raw != 1 {
 		t.Errorf("%d builder parameters reach a statement's text unquoted by design; the store has ONE (contentWherePassingSQL's where, an operator's predicate): another needs the operator's decision", rep.Raw)
 	}
-	t.Logf("SQL arguments of internal/db: %d constants, %d pure calls on constants, %d built by running the store's own text, %d fixed text with a number in it, %d fixed text filled with its callers' constants, %d queued statements read back, %d parameters read at their callers; registered: %d executed, %d open, %d frozen",
-		rep.Constant, rep.Pure, rep.Built, rep.Numbered, rep.FromCallers, rep.Queued, rep.Parameter, rep.Executed, rep.Open, rep.Frozen)
+	t.Logf("SQL arguments of internal/db: %d constants, %d pure calls on constants, %d built by running the store's own text, %d queued statements read back, %d parameters read at their callers, %d registered and executed, %d registered open, %d frozen",
+		rep.Constant, rep.Pure, rep.Built, rep.Queued, rep.Parameter, rep.Executed, rep.Open, rep.Frozen)
 }
 
 // columnWriteFrozen holds the digest of the source the two libyear
@@ -760,6 +620,7 @@ func TestNoSQLReachesTheLibraryUnseen(t *testing.T) {
 func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 	root := srctest.Root(t)
 	dirs := map[string]map[string]string{}
+	untyped := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -776,13 +637,19 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
 			return nil
 		}
-		// The files this platform builds, as the compiler chooses them.
-		if ok, err := build.Default.MatchFile(filepath.Dir(path), d.Name()); err != nil || !ok {
-			return err
-		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
+		}
+		// The files this platform builds, as the compiler chooses them,
+		// are read by type. A file it leaves out (another platform's, or
+		// one behind a build tag) cannot be type-checked beside them, and
+		// is read as text instead (round 6: it was not read at all).
+		if ok, err := build.Default.MatchFile(filepath.Dir(path), d.Name()); err != nil {
+			return err
+		} else if !ok {
+			untyped[rel] = string(b)
+			return nil
 		}
 		dir := filepath.ToSlash(filepath.Dir(rel))
 		if dirs[dir] == nil {
@@ -799,6 +666,38 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 		bare[r.Table[strings.LastIndex(r.Table, ".")+1:]] = r.Table
 	}
 	writeWords := map[string]bool{"update": true, "insert": true, "delete": true, "merge": true, "copy": true, "truncate": true, "alter": true}
+	catalog := sqlscan.CatalogOf(columnWriteReading(t).Statements)
+	// A file outside the default build: no string constant in it may both
+	// write and name a registered table.
+	for rel, src := range untyped {
+		af, err := parser.ParseFile(token.NewFileSet(), rel, src, 0)
+		if err != nil {
+			t.Errorf("%s: %v", rel, err)
+			continue
+		}
+		ast.Inspect(af, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			writes, table := false, ""
+			for _, w := range sqlscan.FragmentWords(text) {
+				writes = writes || writeWords[w]
+				if full, ok := bare[w]; ok {
+					table = full
+				}
+			}
+			if writes && table != "" {
+				t.Errorf("%s: a file outside the default build (a build tag, or another platform) holds text that writes and names %s. It is not type-checked, so it may hold no such statement: move it into the store", rel, table)
+			}
+			return true
+		})
+	}
+	unreadBy := map[string]int{}
 	read, packages, arguments, unread := 0, 0, 0, 0
 	for dir, files := range dirs {
 		args, err := sqlscan.StrictArguments(root, files, sqlscan.Env{})
@@ -819,6 +718,7 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 				stmts = append(stmts, sqlscan.Stmt{File: a.File, SQL: a.Text})
 			case sqlscan.StrictHole:
 				unread++
+				unreadBy[a.File+" "+a.Decl]++
 				writes, table := false, ""
 				for _, f := range a.Fragments {
 					for _, w := range sqlscan.FragmentWords(f) {
@@ -834,7 +734,11 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 				}
 			}
 		}
-		rep := sqlscan.Check(stmts, columnWritePolicies, nil)
+		// Judged against the STORE's catalog: a view of the schema is a
+		// view here too (round 6: each package was judged knowing only
+		// what its own statements define, so a write through
+		// aveloxis_augur_data.repo passed).
+		rep := sqlscan.CheckIn(catalog, stmts, columnWritePolicies, nil)
 		for _, v := range rep.Violations {
 			t.Errorf("%s: a statement outside internal/db writes %s.%s against its policy (%s):\n  expr: %s\n  %s\n  Move the write into the store.", v.File, v.Table, v.Column, v.Want, v.Expr, v.Detail)
 		}
@@ -845,7 +749,51 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 	if packages == 0 || arguments == 0 {
 		t.Fatalf("no SQL argument was found outside internal/db (%d packages read): the scheduler alone runs several", read)
 	}
+	// Round 6: an SQL argument outside the store that is not read whole is
+	// a failure unless its declaration is on the reviewed list below, with
+	// exactly this many. The list only shrinks.
+	for at, n := range unreadBy {
+		if want, ok := unreadOutsideTheStore[at]; !ok {
+			t.Errorf("%s: %d SQL argument(s) outside internal/db are not read whole (not a constant). Make the statement a constant, or move it into the store, where it is registered and run", at, n)
+		} else if n != want.n {
+			t.Errorf("%s: %d SQL arguments not read whole; the reviewed list says %d. The list only shrinks: correct the count when one goes, review the function when one is added", at, n, want.n)
+		}
+	}
+	for at, want := range unreadOutsideTheStore {
+		if unreadBy[at] == 0 {
+			t.Errorf("unreadOutsideTheStore lists %s, which has no unread SQL argument now: delete the entry", at)
+		}
+		if want.what == "" {
+			t.Errorf("unreadOutsideTheStore: %s says nothing of what the statements are", at)
+		}
+	}
 	t.Logf("outside internal/db: %d packages read by type, %d of them run SQL, at %d SQL arguments; %d of those are not read (none holds a write word and a registered table's name)", read, packages, arguments, unread)
+}
+
+// unreadOutsideTheStore are the declarations outside internal/db that hold
+// SQL arguments the reading does not read whole: how many, and what the
+// fixed text of each shows it to be. None holds a word that writes beside
+// a registered table's name (the test above fails on that whatever this
+// list says). Every one is test tooling or the data-test and shadow-diff
+// commands, which work on databases they are pointed at; no collection or
+// serving code is here. THE LIST ONLY SHRINKS.
+var unreadOutsideTheStore = map[string]struct {
+	n    int
+	what string
+}{
+	"internal/testdb/testdb.go createOnce":                         {4, "CREATE DATABASE and DROP DATABASE of the per-package test database, by its quoted name"},
+	"internal/testdb/testdb.go Database.Drop":                      {1, "DROP DATABASE of the per-package test database, by its quoted name"},
+	"internal/testdb/testdb.go sweep":                              {1, "DROP DATABASE of a per-package test database whose owner is gone"},
+	"cmd/aveloxis/data_test_cmd.go provisionScratchDB":             {2, "DROP DATABASE and CREATE DATABASE of data-test's scratch database"},
+	"cmd/aveloxis/data_test_cmd.go cleanupScratchDBs":              {1, "DROP DATABASE of data-test's scratch databases"},
+	"cmd/aveloxis/data_test_perf.go snapshotRun.runProbe":          {1, "EXPLAIN (ANALYZE, BUFFERS) of a probe statement from data-test's probes file"},
+	"cmd/aveloxis/data_test_seed.go snapshotRun.buildSeedTemplate": {1, "the seed script data-test builds for its seed template database"},
+	"cmd/aveloxis/data_test_snapshot.go snapshotRun.clone":         {3, "DROP, CREATE ... TEMPLATE and ALTER DATABASE ... SET of a data-test snapshot database"},
+	"cmd/aveloxis/data_test_snapshot.go runSnapshot":               {2, "the seed template's rewind statement, and DROP DATABASE of a snapshot database"},
+	"cmd/aveloxis/shadow_diff.go countRows":                        {1, "SELECT COUNT(*) of a table shadow-diff compares"},
+	"cmd/aveloxis/shadow_diff.go fetchPKs":                         {1, "SELECT of a compared table's key columns"},
+	"cmd/aveloxis/shadow_diff.go diffContent":                      {2, "SELECT of a compared table's rows"},
+	"cmd/aveloxis/shadow_diff.go buildResolvers":                   {1, "SELECT of the identifiers shadow-diff resolves keys through"},
 }
 
 // The denominator, without a number to keep. "No violation" proves nothing
@@ -965,6 +913,9 @@ type sqlBuilder struct {
 	// Raw: parameters that reach the text unquoted by design, each with
 	// what confines it (sqlscan.Site.Raw).
 	Raw map[string]string
+	// Func is the function Run calls: TestEveryBuilderIsRegisteredUnderItsOwnName
+	// compares its name with the key it is registered under.
+	Func any
 }
 
 // runSQLBuilder runs f, one of the store's builders, with inputs written as
@@ -995,6 +946,12 @@ func runSQLBuilder(f any) func(result int, args []string) (string, error) {
 					return "", err
 				}
 				p.SetInt(n)
+			case reflect.Uint, reflect.Uint64, reflect.Uint32:
+				n, err := strconv.ParseUint(a, 10, 64)
+				if err != nil {
+					return "", err
+				}
+				p.SetUint(n)
 			case reflect.Slice:
 				if p.Type().Elem().Kind() != reflect.String {
 					return "", fmt.Errorf("parameter %d: a list of %s is not run from text", i+1, p.Type().Elem())
@@ -1052,8 +1009,8 @@ func indexedBuilders() map[string]struct {
 		"healAutomationPhantomStepSQL":      {len(healAutomationPhantomSteps), healAutomationPhantomStepSQL},
 		"matviewRefreshConcurrentlySQL":     {len(matviewNames), matviewRefreshConcurrentlySQL},
 		"matviewRefreshSQL":                 {len(matviewNames), matviewRefreshSQL},
-		"supplyChainRefreshConcurrentlySQL": {len(SupplyChainViewNames), supplyChainRefreshConcurrentlySQL},
-		"supplyChainRefreshSQL":             {len(SupplyChainViewNames), supplyChainRefreshSQL},
+		"supplyChainRefreshConcurrentlySQL": {len(supplyChainViewNames), supplyChainRefreshConcurrentlySQL},
+		"supplyChainRefreshSQL":             {len(supplyChainViewNames), supplyChainRefreshSQL},
 		"supplyChainViewDropSQL":            {len(supplyChainViewDefs()), supplyChainViewDropSQL},
 		"supplyChainViewCreateSQL":          {len(supplyChainViewDefs()), supplyChainViewCreateSQL},
 		"supplyChainViewIndexSQL":           {len(supplyChainViewDefs()), supplyChainViewIndexSQL},
@@ -1268,7 +1225,7 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 		for i := 0; i < b.n; i++ {
 			tuples = append(tuples, []string{strconv.Itoa(i)})
 		}
-		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(b.f), Domain: "the index of each member of the builder's fixed list",
+		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(b.f), Func: b.f, Domain: "the index of each member of the builder's fixed list",
 			RefusalTest: "TestAnIndexedStatementBuilderRefusesAnIndexOutsideItsList", Reason: "one statement per member of a fixed list of the store"}
 	}
 	for name, f := range boolBuilders() {
@@ -1281,7 +1238,7 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 			}
 			tuples = append(tuples, row)
 		}
-		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(f), Domain: "every combination of the builder's bools",
+		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(f), Func: f, Domain: "every combination of the builder's bools",
 			Reason: "a statement chosen among fixed texts by conditions"}
 	}
 	// Builders keyed by a value of a fixed map of the store: run for every
@@ -1300,25 +1257,25 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 				}
 			}
 		}
-		out[name] = sqlBuilder{Tuples: tuples, FromCallers: k.callerCols > 0, Run: runSQLBuilder(k.f), Domain: "every input the builder accepts: the keys of the map, or the cases of the switch, it looks each up in",
+		out[name] = sqlBuilder{Tuples: tuples, FromCallers: k.callerCols > 0, Run: runSQLBuilder(k.f), Func: k.f, Domain: "every input the builder accepts: the keys of the map, or the cases of the switch, it looks each up in",
 			RefusalTest: "TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave", Reason: "a read whose column, unit, source or order is chosen by a request value"}
 	}
 	// Open builders whose every text parameter reaches the statement only
 	// as a quoted name (the reading checks that, by object) and whose other
 	// parameters are numbers.
 	for name, o := range openBuilders() {
-		out[name] = sqlBuilder{Tuples: o.inputs, Run: runSQLBuilder(o.f), Domain: o.domain, Open: o.varies, Reason: o.reason}
+		out[name] = sqlBuilder{Tuples: o.inputs, Run: runSQLBuilder(o.f), Func: o.f, Domain: o.domain, Open: o.varies, Reason: o.reason}
 	}
 	// THE ONE DELIBERATE EXCEPTION: an operator's predicate, from the
 	// data-test rules file, is put into this statement as written.
 	out["contentWherePassingSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_id", "t.repo_archived IS NOT TRUE"}, {"s", `odd "t`, "a\x00b", "TRUE"}},
-		Run: runSQLBuilder(contentWherePassingSQL), Domain: "any table with its key, and any predicate a rule gives",
+		Run: runSQLBuilder(contentWherePassingSQL), Func: contentWherePassingSQL, Domain: "any table with its key, and any predicate a rule gives",
 		Open:   "the table and its key, quoted; and the rule's predicate, which is NOT quoted (Raw)",
 		Raw:    map[string]string{"where": "the statement runs only inside contentQuery's transaction, begun READ ONLY (pgx.TxOptions{AccessMode: pgx.ReadOnly}), and as one parameterised statement, so a second statement cannot ride on it; PostgreSQL refuses a write to a table in such a transaction. Nothing checks the predicate's text"},
 		Reason: "the rows of a table a data-test rule's predicate holds for"}
 	const identifiers = "names of the tables and columns being compared, from the catalog or an operator's rules file; each goes through pgx.Identifier"
-	out["contentCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(contentCountSQL), Domain: "any table", Open: identifiers, Reason: "a count"}
-	out["contentNotNullCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_git"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(contentNotNullCountSQL),
+	out["contentCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(contentCountSQL), Func: contentCountSQL, Domain: "any table", Open: identifiers, Reason: "a count"}
+	out["contentNotNullCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_git"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(contentNotNullCountSQL), Func: contentNotNullCountSQL,
 		Domain: "any table and column", Open: identifiers, Reason: "a count"}
 	// The gone-clear statements: run for every goneClear written in the
 	// store's source (goneClearsInSource reads the literals and gives each
@@ -1346,32 +1303,44 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 		keyTables = append(keyTables, []string{string(tbl)})
 	}
 	for name, f := range map[string]any{"packageKeyFillSQL": packageKeyFillSQL, "packageKeyFillMarkerSQL": packageKeyFillMarkerSQL} {
-		out[name] = sqlBuilder{Tuples: keyTables, Run: runSQLBuilder(f), Domain: "the two tables the fill walks", RefusalTest: "TestPackageKeyFillTablesAreTheFilledOnes",
+		out[name] = sqlBuilder{Tuples: keyTables, Run: runSQLBuilder(f), Func: f, Domain: "the two tables the fill walks", RefusalTest: "TestPackageKeyFillTablesAreTheFilledOnes",
 			Reason: "the package-key fill's statements for one table"}
 	}
 	// Builders whose inputs are the constants their callers pass (the
 	// reading finds them), builders that take nothing, and open builders.
 	for name, f := range map[string]any{"addColumnSQL": addColumnSQL, "addQualifiedColumnSQL": addQualifiedColumnSQL, "dropSupersededIndexSQL": dropSupersededIndexSQL,
-		"catalogPickSQL": catalogPickSQL} {
-		out[name] = sqlBuilder{FromCallers: true, Run: runSQLBuilder(f), Domain: "the constants every caller passes", Reason: "text whose varying parts are written at its callers"}
+		"catalogPickSQL": catalogPickSQL,
+		// Round 6: the seven texts the removed "from callers" reading
+		// filled in place are builders, run for what their callers write.
+		"catalogTwinSQL": catalogTwinSQL, "historyBackfillClaimSQL": historyBackfillClaimSQL, "historyRotateInsertSQL": historyRotateInsertSQL,
+		"historyRotateDeleteSQL": historyRotateDeleteSQL, "loadKeysSQL": loadKeysSQL, "newReposArmStatement": newReposArmStatement,
+		"showSettingSQL": showSettingSQL} {
+		out[name] = sqlBuilder{FromCallers: true, Run: runSQLBuilder(f), Func: f, Domain: "the constants every caller passes", Reason: "text whose varying parts are written at its callers"}
 	}
 	for name, f := range map[string]any{"loginHistoryFromIdentitiesSQL": loginHistoryFromIdentitiesSQL, "loginHistoryFromContributorsSQL": loginHistoryFromContributorsSQL,
 		"seedAPITokenSettingsSQL": seedAPITokenSettingsSQL} {
-		out[name] = sqlBuilder{Tuples: [][]string{{}}, Run: runSQLBuilder(f), Domain: "no input", Reason: "fixed text with the running version or the shipped limits in it"}
+		out[name] = sqlBuilder{Tuples: [][]string{{}}, Run: runSQLBuilder(f), Func: f, Domain: "no input", Reason: "fixed text with the running version or the shipped limits in it"}
 	}
 	const catalog = "names the database's catalog gives at run time; each reaches the text only through a quoting helper or pgx.Identifier, so it can be nothing but a name"
-	out["reposTrgmIndexSQL"] = sqlBuilder{Tuples: [][]string{{"public"}, {`odd "schema`}}, Run: runSQLBuilder(reposTrgmIndexSQL), Domain: "the schema pg_trgm is installed in", Open: catalog, Reason: "CREATE INDEX"}
-	out["toolVersionDefaultSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(toolVersionDefaultSQL),
+	out["reposTrgmIndexSQL"] = sqlBuilder{Tuples: [][]string{{"public"}, {`odd "schema`}}, Run: runSQLBuilder(reposTrgmIndexSQL), Func: reposTrgmIndexSQL, Domain: "the schema pg_trgm is installed in", Open: catalog, Reason: "CREATE INDEX"}
+	out["toolVersionDefaultSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(toolVersionDefaultSQL), Func: toolVersionDefaultSQL,
 		Domain: "every table with a tool_version column", Open: catalog, Reason: "SET DEFAULT: not a write of stored rows"}
-	out["fkDeferrableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "issues", "fk_x"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(fkDeferrableSQL),
+	out["fkDeferrableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "issues", "fk_x"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(fkDeferrableSQL), Func: fkDeferrableSQL,
 		Domain: "every foreign key of the aveloxis schemas that is not yet deferrable", Open: catalog, Reason: "ALTER CONSTRAINT"}
 	const rows = "the number of rows in the chunk: a number, which makes placeholders ($1, $2, ...) and nothing else"
 	for name, f := range map[string]any{"commitBatchInsertSQL": commitBatchInsertSQL, "commitMessageBatchUpsertSQL": commitMessageBatchUpsertSQL} {
-		out[name] = sqlBuilder{Tuples: [][]string{{"1"}, {"2"}, {"500"}}, Run: runSQLBuilder(f), Domain: "any chunk size", Open: rows, Reason: "a batch upsert"}
+		out[name] = sqlBuilder{Tuples: [][]string{{"1"}, {"2"}, {"500"}}, Run: runSQLBuilder(f), Func: f, Domain: "any chunk size", Open: rows, Reason: "a batch upsert"}
 	}
-	out["analyzeTableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(analyzeTableSQL),
+	// Round 6: the savepoint statements of the contributor batch, which
+	// the removed "numbered" reading read in place.
+	const counter = "the batch's running counter: an unsigned number, written with %d into a name, which digits cannot end"
+	for name, f := range map[string]any{"cntrbSavepointSQL": cntrbSavepointSQL, "cntrbSavepointRollbackSQL": cntrbSavepointRollbackSQL, "cntrbSavepointReleaseSQL": cntrbSavepointReleaseSQL,
+		"identSavepointSQL": identSavepointSQL, "identSavepointRollbackSQL": identSavepointRollbackSQL, "identSavepointReleaseSQL": identSavepointReleaseSQL} {
+		out[name] = sqlBuilder{Tuples: [][]string{{"0"}, {"1"}, {"18446744073709551615"}}, Run: runSQLBuilder(f), Func: f, Domain: "any count of rows in a batch", Open: counter, Reason: "a savepoint statement: writes no row"}
+	}
+	out["analyzeTableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(analyzeTableSQL), Func: analyzeTableSQL,
 		Domain: "the table of an expression index just built", Open: catalog, Reason: "ANALYZE: writes no row of any table"}
-	out["dropInvalidIndexSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "idx_x"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(dropInvalidIndexSQL),
+	out["dropInvalidIndexSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "idx_x"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(dropInvalidIndexSQL), Func: dropInvalidIndexSQL,
 		Domain: "the index a caller is about to build", Open: "the index's schema and name, from its caller's list; both go through pgx.Identifier", Reason: "DROP INDEX"}
 	return out
 }
@@ -1431,33 +1400,78 @@ func TestEveryIndexHelperCallNamesAPlainSchemaAndIndex(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ast.Inspect(af, func(n ast.Node) bool {
-			c, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+		for _, decl := range af.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
 			}
-			if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "execCreateIndexConcurrently" {
-				return true
-			}
-			calls++
-			if len(c.Args) != 7 {
-				t.Errorf("%s: execCreateIndexConcurrently called with %d arguments", fset.Position(c.Pos()), len(c.Args))
-				return true
-			}
-			for i, what := range map[int]string{4: "schema", 5: "index name"} {
-				switch a := c.Args[i].(type) {
-				case *ast.BasicLit:
-					if v, err := strconv.Unquote(a.Value); err != nil || !plain.MatchString(v) {
-						t.Errorf("%s: the %s %s is not a plain lower-case name", fset.Position(a.Pos()), what, a.Value)
+			// What each local of this function is given: a name used as a
+			// schema or an index must be given plain literals and nothing
+			// else (a parameter is given nothing here, and is refused).
+			given := map[string][]ast.Expr{}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == len(as.Rhs) {
+					for i, l := range as.Lhs {
+						if id, ok := l.(*ast.Ident); ok {
+							given[id.Name] = append(given[id.Name], as.Rhs[i])
+						}
 					}
-				case *ast.SelectorExpr, *ast.Ident:
-					fromLists++ // a member of one of the lists below, or a local chosen between two literals
-				default:
-					t.Errorf("%s: the %s is neither a literal nor a list member's field: it could be a qualified or quoted string", fset.Position(c.Args[i].Pos()), what)
 				}
+				return true
+			})
+			plainLit := func(e ast.Expr) bool {
+				lit, ok := e.(*ast.BasicLit)
+				if !ok {
+					return false
+				}
+				v, err := strconv.Unquote(lit.Value)
+				return err == nil && plain.MatchString(v)
 			}
-			return true
-		})
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "execCreateIndexConcurrently" {
+					return true
+				}
+				calls++
+				if len(c.Args) != 7 {
+					t.Errorf("%s: execCreateIndexConcurrently called with %d arguments", fset.Position(c.Pos()), len(c.Args))
+					return true
+				}
+				for i, what := range map[int]string{4: "schema", 5: "index name"} {
+					at := fset.Position(c.Args[i].Pos())
+					switch a := c.Args[i].(type) {
+					case *ast.BasicLit:
+						if !plainLit(a) {
+							t.Errorf("%s: the %s %s is not a plain lower-case name", at, what, a.Value)
+						}
+					case *ast.SelectorExpr:
+						// The name field of a member of one of the five lists
+						// whose values are checked below (round 6: any
+						// selector or identifier was accepted).
+						if a.Sel.Name != "indexName" && a.Sel.Name != "name" {
+							t.Errorf("%s: the %s is the field %s, not a list member's index name", at, what, a.Sel.Name)
+						}
+						fromLists++
+					case *ast.Ident:
+						rhs := given[a.Name]
+						if len(rhs) == 0 {
+							t.Errorf("%s: the %s is %s, which this function is handed and does not choose: it could be a qualified or quoted string", at, what, a.Name)
+						}
+						for _, e := range rhs {
+							if !plainLit(e) {
+								t.Errorf("%s: the %s is %s, which is given something other than a plain lower-case literal at %s", at, what, a.Name, fset.Position(e.Pos()))
+							}
+						}
+					default:
+						t.Errorf("%s: the %s is neither a literal nor a list member's field: it could be a qualified or quoted string", at, what)
+					}
+				}
+				return true
+			})
+		}
 	}
 	if calls < 20 || fromLists == 0 {
 		t.Fatalf("%d calls of execCreateIndexConcurrently read (%d naming their index from a list): the store has more", calls, fromLists)
@@ -1482,5 +1496,216 @@ func TestEveryIndexHelperCallNamesAPlainSchemaAndIndex(t *testing.T) {
 		if !plain.MatchString(n) {
 			t.Errorf("the index name %q, from a list, is not a plain lower-case name", n)
 		}
+	}
+}
+
+// Each builder is registered under its own name (round 6: the maps pair a
+// name with a function by hand, and a slip would have judged one builder's
+// statements for another's call site).
+func TestEveryBuilderIsRegisteredUnderItsOwnName(t *testing.T) {
+	builders := columnWriteBuilders(t)
+	checked := 0
+	for name, b := range builders {
+		if b.Func == nil {
+			// The two gone-clear builders are run through a closure over
+			// the clears read from the source.
+			if name != "goneClearSQL" && name != "goneClearLockSQL" {
+				t.Errorf("%s is registered with no function to compare its name with", name)
+			}
+			continue
+		}
+		full := runtime.FuncForPC(reflect.ValueOf(b.Func).Pointer()).Name()
+		if got := full[strings.LastIndex(full, ".")+1:]; got != name {
+			t.Errorf("the builder registered as %q runs %s", name, full)
+		}
+		checked++
+	}
+	if checked != len(builders)-2 || checked < 90 {
+		t.Errorf("%d of %d builders compared with their names: all but the two gone-clear ones are", checked, len(builders))
+	}
+}
+
+// The list a registered indexed builder reads is fixed: an unexported
+// package variable that nothing in the store's non-test code assigns,
+// appends to, changes a member of, or takes the address of (round 6: the
+// write-policy check runs each builder once, in the test process; a list
+// changed at run time would make the statement run another one).
+func TestTheListsOfIndexedBuildersAreNeverChanged(t *testing.T) {
+	fset := token.NewFileSet()
+	var files []*ast.File
+	packageVars := map[string]bool{}
+	funcs := map[string]*ast.FuncDecl{}
+	for name, src := range srctest.PackageFiles(t, "internal/db", 30) {
+		af, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, af)
+		for _, d := range af.Decls {
+			switch x := d.(type) {
+			case *ast.GenDecl:
+				if x.Tok == token.VAR {
+					for _, sp := range x.Specs {
+						for _, id := range sp.(*ast.ValueSpec).Names {
+							packageVars[id.Name] = true
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if x.Recv == nil {
+					funcs[x.Name.Name] = x
+				}
+			}
+		}
+	}
+	// The package variables each indexed builder reads, itself or through
+	// one function of the package it calls.
+	lists := map[string]string{}
+	var reads func(fd *ast.FuncDecl, builder string, depth int)
+	reads = func(fd *ast.FuncDecl, builder string, depth int) {
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if packageVars[id.Name] {
+				lists[id.Name] = builder
+			} else if callee := funcs[id.Name]; callee != nil && depth < 2 && callee != fd {
+				reads(callee, builder, depth+1)
+			}
+			return true
+		})
+	}
+	for name := range indexedBuilders() {
+		fd := funcs[name]
+		if fd == nil {
+			t.Errorf("the indexed builder %s is not a function of the store", name)
+			continue
+		}
+		reads(fd, name, 0)
+	}
+	if len(lists) < 15 {
+		t.Fatalf("%d lists found behind the indexed builders: there are more", len(lists))
+	}
+	for list, builder := range lists {
+		if ast.IsExported(list) {
+			t.Errorf("%s, which %s reads, is exported: another package can change it", list, builder)
+		}
+	}
+	for _, af := range files {
+		for list := range lists {
+			for _, w := range packageVarWrites(af, list) {
+				t.Errorf("%s: %s, the list the registered builder %s reads, is %s. The write-policy check ran the builder over the list as it is written", fset.Position(w.pos), list, lists[list], w.what)
+			}
+		}
+	}
+}
+
+// varWrite is one place a variable is changed, and how.
+type varWrite struct {
+	pos  token.Pos
+	what string
+}
+
+// packageVarWrites are the places a file changes the named variable or
+// something in it: an assignment to it, to a member or a field of a member
+// (x[i].f = v), an increment, its address taken, a range that assigns into
+// it. The one declaration with its value is not one.
+func packageVarWrites(af *ast.File, name string) []varWrite {
+	var out []varWrite
+	root := func(e ast.Expr) bool {
+		for {
+			switch x := e.(type) {
+			case *ast.ParenExpr:
+				e = x.X
+			case *ast.IndexExpr:
+				e = x.X
+			case *ast.SelectorExpr:
+				e = x.X
+			case *ast.StarExpr:
+				e = x.X
+			case *ast.SliceExpr:
+				e = x.X
+			case *ast.Ident:
+				return x.Name == name
+			default:
+				return false
+			}
+		}
+	}
+	ast.Inspect(af, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				if root(l) {
+					out = append(out, varWrite{l.Pos(), "assigned, or a member of it is"})
+				}
+			}
+		case *ast.IncDecStmt:
+			if root(x.X) {
+				out = append(out, varWrite{x.Pos(), "changed"})
+			}
+		case *ast.UnaryExpr:
+			if x.Op == token.AND && root(x.X) {
+				out = append(out, varWrite{x.Pos(), "addressed (a member of it, or itself): what holds the address can change it"})
+			}
+		case *ast.RangeStmt:
+			for _, e := range []ast.Expr{x.Key, x.Value} {
+				if e != nil && x.Tok == token.ASSIGN && root(e) {
+					out = append(out, varWrite{e.Pos(), "ranged into"})
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func TestPackageVarWritesSeesEveryWayToChangeAList(t *testing.T) {
+	const src = `package p
+var steps = []struct{ sql string }{{"a"}}
+func a() { steps[0].sql = "x" }
+func b() { steps = append(steps, struct{ sql string }{"y"}) }
+func c() { p := &steps[0]; p.sql = "z" }
+func d() { q := &steps; _ = q }
+func e() { for _, s := range steps { _ = s.sql }; _ = len(steps); _ = steps[0].sql }
+`
+	af, err := parser.ParseFile(token.NewFileSet(), "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := packageVarWrites(af, "steps"); len(got) != 4 {
+		t.Errorf("%d writes found, want 4 (a member's field, an append, a member's address, its own address); reads are none: %+v", len(got), got)
+	}
+}
+
+// Every goneClear the store makes is one of the literals the fill reads,
+// found BY TYPE (round 6: the literals were found by searching the text
+// for "goneClear{", so one written through an alias of the type, or made
+// by converting a struct of the same shape, was run and never judged).
+func TestEveryGoneClearIsWrittenAsItsLiteral(t *testing.T) {
+	uses, err := sqlscan.TypeUses(srctest.Root(t), srctest.PackageFiles(t, "internal/db", 30), "goneClear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := goneClearsInSource(t)
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	inFill := map[string]bool{}
+	for lit := range known {
+		inFill[flat(lit)] = true
+	}
+	literals := 0
+	for _, u := range uses {
+		if u.Kind != "literal" {
+			t.Errorf("%s:%d: a goneClear is made by a %s (%s): the fill reads only literals written as goneClear{...}, so this one is run and not judged", u.File, u.Line, u.Kind, u.Src)
+			continue
+		}
+		literals++
+		if !inFill[flat(srctest.StripGoComments(u.Src))] {
+			t.Errorf("%s:%d: the goneClear %s is not one the fill read from the source", u.File, u.Line, u.Src)
+		}
+	}
+	if literals < len(known) || literals < 2 {
+		t.Errorf("%d goneClear literals found by type, the fill reads %d distinct ones", literals, len(known))
 	}
 }

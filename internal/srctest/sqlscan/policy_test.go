@@ -112,7 +112,7 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: InsertOnly, Reason: "fleet-entry stamp"}}
 
 	// Without an exception: the migrate backfill is a violation.
-	rep := Check(stmts, reg, nil)
+	rep := fixtureCheck(stmts, reg, nil)
 	if len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
 		t.Fatalf("want 1 InsertOnly violation attributed to migrate.go, got %#v", rep.Violations)
 	}
@@ -121,9 +121,9 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	}
 
 	// With the exception: suppressed, and the exception is not stale.
-	exc := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", File: "migrate.go",
-		Match: "SET added_at = COALESCE(data_collection_date", Reason: "one-shot backfill"}}
-	rep = Check(stmts, reg, exc)
+	exc := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "migrate.go",
+		Fragment: "COALESCE(data_collection_date, created_at, NOW())", Reason: "one-shot backfill"}}
+	rep = fixtureCheck(stmts, reg, exc)
 	if len(rep.Violations) != 0 {
 		t.Fatalf("exception must suppress the violation, got %#v", rep.Violations)
 	}
@@ -132,9 +132,9 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	}
 
 	// A never-matching exception is STALE (allowlist-rot reverse check).
-	exc = append(exc, Exception{Table: "aveloxis_data.repos", Column: "added_at", File: "gone.go",
-		Match: "nonexistent needle", Reason: "rotted"})
-	rep = Check(stmts, reg, exc)
+	exc = append(exc, Exception{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "gone.go",
+		Fragment: "nonexistent_needle", Reason: "rotted"})
+	rep = fixtureCheck(stmts, reg, exc)
 	if len(rep.StaleExceptions) != 1 || rep.StaleExceptions[0].File != "gone.go" {
 		t.Fatalf("the never-matching exception must be reported stale, got %#v", rep.StaleExceptions)
 	}
@@ -149,7 +149,7 @@ func TestCheckUnwrittenAndViolationDetail(t *testing.T) {
 		{Table: "aveloxis_data.repos", Column: "platform_repo_id", Policy: FillEmptyOnly, Reason: "forge ID never changes"},
 		{Table: "aveloxis_data.repos", Column: "ghost_col", Policy: FillEmptyOnly, Reason: "registry rot probe"},
 	}
-	rep := Check(stmts, reg, nil)
+	rep := fixtureCheck(stmts, reg, nil)
 	if len(rep.Violations) != 1 {
 		t.Fatalf("the shipped-bug shape must violate FillEmptyOnly, got %#v", rep.Violations)
 	}
@@ -176,12 +176,12 @@ func TestCheckFailsClosedOnAMultipleColumnAssignment(t *testing.T) {
 	}
 	for _, pol := range []Policy{InsertOnly, AlwaysRefresh, FillEmptyOnly} {
 		reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: pol, Reason: "r"}}
-		rep := Check(stmts, reg, nil)
+		rep := fixtureCheck(stmts, reg, nil)
 		if len(rep.Violations) != 1 || rep.Violations[0].File != "b.go" || !strings.Contains(rep.Violations[0].Detail, "multiple-column") {
 			t.Errorf("%v: want one multiple-column violation in b.go (c.go only reads the column), got %#v", pol, rep.Violations)
 		}
-		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", File: "b.go", Match: "SET (added_at", Reason: "reviewed"}}
-		if rep := Check(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
+		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "b.go", Fragment: "(NOW(), $1)", Reason: "reviewed"}}
+		if rep := fixtureCheck(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
 			t.Errorf("%v: a reviewed exception must take it: %#v / stale %#v", pol, rep.Violations, rep.StaleExceptions)
 		}
 	}
@@ -205,7 +205,7 @@ func TestCheckFailsClosedOnEveryListSpelling(t *testing.T) {
 		`UPDATE aveloxis_data.repos SET (repo_name, "ADDED_AT") = ($1, NOW())`:                                                                            0,
 		`UPDATE aveloxis_data.repos SET (a, b) = (added_at, $1)`:                                                                                          0,
 	} {
-		if rep := Check([]Stmt{{File: "x.go", SQL: sql}}, reg, nil); len(rep.Violations) != want {
+		if rep := fixtureCheck([]Stmt{{File: "x.go", SQL: sql}}, reg, nil); len(rep.Violations) != want {
 			t.Errorf("%s: want %d fail-closed violations, got %#v", sql, want, rep.Violations)
 		}
 	}
@@ -220,7 +220,7 @@ func TestCheckFailsClosedOnAListInADoBlock(t *testing.T) {
 		{File: "a.go", SQL: `UPDATE aveloxis_data.repos SET repo_git = $1 WHERE repo_id = $2`},
 		{File: "migrate.go", SQL: `DO $$ BEGIN UPDATE aveloxis_data.repos SET (a, repo_git) = (1, repos.repo_git) WHERE x = 1; END $$`},
 	}
-	if rep := Check(stmts, reg, nil); len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
+	if rep := fixtureCheck(stmts, reg, nil); len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
 		t.Errorf("want one fail-closed violation in migrate.go's DO block, got %#v", rep.Violations)
 	}
 }

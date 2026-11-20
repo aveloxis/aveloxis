@@ -82,13 +82,19 @@ func (e *ReadError) Unwrap() error { return e.Err }
 // Walk is the state one pass over one clone shares between files: every
 // Cargo.toml of a workspace inherits from the same root, which is read once
 // and never above the clone.
+//
+// A Walk is for ONE goroutine: its trees are caches with no lock. Two walks
+// share nothing and may run at once.
+//
+// Nothing in this package bounds the time or memory a walk takes for a
+// hostile clone. The collector runs the pass in a child process whose CPU
+// time and heap the operating system's accounting limits (0.29.213;
+// internal/collector/manifest_child.go); a caller that reads untrusted
+// clones in its own process has no such bound.
 type Walk struct {
 	cargo  *cargoWorkspaceIndex
 	pom    *pomTree
 	gradle *gradleTree
-	// acct is the walk's one account of what its build-tree readers keep,
-	// ask and take (walkAccount); the two trees hold the same one.
-	acct *walkAccount
 }
 
 // NewWalk starts a pass over the clone rooted at root. A nil logger is
@@ -96,9 +102,6 @@ type Walk struct {
 func NewWalk(root string, logger *slog.Logger) *Walk {
 	w := &Walk{cargo: newCargoWorkspaceIndex(root, logger), pom: newPomTree(root, logger), gradle: newGradleTree(root, logger)}
 	w.gradle.pom = w.pom
-	w.acct = newWalkAccount(logger)
-	w.pom.acct, w.gradle.acct = w.acct, w.acct
-	w.gradle.withAccount()
 	return w
 }
 
@@ -106,6 +109,18 @@ func NewWalk(root string, logger *slog.Logger) *Walk {
 // is obtained from (0.29.181). Without one, nothing outside the clone is
 // asked.
 func (w *Walk) SetPomSource(src PomSource) { w.pom.remote = src }
+
+// SetRemotePomLimit sets how many parent and BOM coordinates this walk may
+// ask its PomSource for (0.29.213). Past it a pom that is wanted is not
+// asked for, and what depends on it is reported as not obtained. The walk
+// keeps one answer per coordinate asked, so this is also the bound on what
+// it keeps of them. 0, the default, is no limit: for a caller whose source
+// answers from memory.
+func (w *Walk) SetRemotePomLimit(n int) { w.pom.remoteLimit = n }
+
+// RemotePomsNotAsked is how many questions were not put to the PomSource
+// because the walk's limit had been reached.
+func (w *Walk) RemotePomsNotAsked() int { return w.pom.notAsked }
 
 // DeclaredRepositories lists the repositories the Maven poms read so far
 // declare (0.29.184), each classified.
@@ -209,7 +224,7 @@ var roster = []Kind{
 			if err != nil {
 				return nil, nil // Read has already recorded an unreadable file
 			}
-			return w.pom.settleBounded(path, ParsePomXMLVersions(string(content)))
+			return w.pom.settle(path, ParsePomXMLVersions(string(content))), nil
 		}},
 	{Name: "build.gradle", Language: "Java", Ecosystem: "maven",
 		names: namesOf(parseBuildGradle), declared: gradleDeclared},

@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/testdb/writejudge"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -112,6 +113,10 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 	}
 	originalBase = base
 	ctx := context.Background()
+	// The write-policy judge (0.29.213): on every pool the store builds
+	// from here on, the preparation's included. Every DB-tier package gets
+	// it here, with no code of its own.
+	judge := writejudge.Install()
 	d, err := Create(ctx, base)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testdb: %v\n", err)
@@ -133,6 +138,14 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 	if code == 0 && verify != nil {
 		if err := verify(ctx, d.DSN); err != nil {
 			fmt.Fprintf(os.Stderr, "testdb: the tests passed but left %s failing verification: %v\n", d.Name, err)
+			code = 1
+		}
+	}
+	if code == 0 {
+		// What production code sent while the tests ran, judged against
+		// the column write policies in the database's own catalog.
+		if err := judge.Verdict(ctx, d.DSN); err != nil {
+			fmt.Fprintf(os.Stderr, "testdb: the tests passed, and %v\n", err)
 			code = 1
 		}
 	}

@@ -255,6 +255,12 @@ var analysisAttemptReasonWordings = map[string]string{
 	model.InventoryAttemptCloneUnavailable: "no clone to analyse",
 	model.InventoryAttemptRootUnreadable:   "the clone could not be read",
 	model.InventoryAttemptReplaceFailed:    "the inventory could not be stored",
+	// 0.29.213: the manifests are read by a process of their own, with
+	// limits; these are the four ways it can end without a result.
+	model.InventoryAttemptReadCPULimit:    "reading the manifests took more processor time than allowed",
+	model.InventoryAttemptReadMemoryLimit: "reading the manifests took more memory than allowed",
+	model.InventoryAttemptReadTimedOut:    "reading the manifests took too long",
+	model.InventoryAttemptReadFailed:      "the manifests could not be read",
 }
 
 // AnalysisAttemptReasonWording is the wording of why an analysis did not

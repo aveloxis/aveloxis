@@ -251,7 +251,7 @@ func TestRenamePreProbeRunsInsideTheSavepoint(t *testing.T) {
 	body := srctest.FuncBody(t, srctest.Read(t, "internal/db/postgres.go"),
 		"func (s *PostgresStore) upsertOneContributor(")
 
-	spIdx := strings.Index(body, `tx.Exec(ctx, "SAVEPOINT "+cntrbSP)`)
+	spIdx := strings.Index(body, `tx.Exec(ctx, cntrbSavepointSQL(cntrbSP))`)
 	if spIdx < 0 {
 		t.Fatal("could not find the per-contributor SAVEPOINT in upsertOneContributor")
 	}
@@ -273,7 +273,7 @@ func TestRenamePreProbeRunsInsideTheSavepoint(t *testing.T) {
 	if k := strings.Index(tail, "upsertContributorIdentities"); k > 0 {
 		end = k
 	}
-	if !strings.Contains(tail[:end], "ROLLBACK TO SAVEPOINT "+"\"+cntrbSP") {
+	if !strings.Contains(tail[:end], "tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP))") {
 		t.Error("the pre-probe's failure arm must ROLLBACK TO SAVEPOINT before falling through " +
 			"to the INSERT. Without it the transaction is aborted and the fall-through cannot run.")
 	}

@@ -50,8 +50,9 @@ func inventoryRows(t *testing.T, f *wholeReplaceFixture) map[string]invRow {
 func (f *wholeReplaceFixture) analyse(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	locks := collectLockfiles(f.dir, f.ac.logger)
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.lockfilesInUse(ctx, f.repoID, locks), &AnalysisResult{}); err != nil {
+	read := f.ac.readClone(ctx, f.repoID, f.dir)
+	locks := read.lockfiles()
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks), &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ac.scanLockfiles(ctx, f.repoID, f.dir, locks, &AnalysisResult{}); err != nil {
@@ -157,7 +158,7 @@ func TestTheLockedVersionChangesNoScanTarget(t *testing.T) {
 			// at its declared version, built by the same code with no
 			// lockfile offered, and the same lockfile table.
 			ctx := context.Background()
-			if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+			if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 				t.Fatal(err)
 			}
 			for _, r := range inventoryRows(t, f) {

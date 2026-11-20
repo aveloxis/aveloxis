@@ -466,7 +466,6 @@ func (t *typedPkg) runners(files []*ast.File) {
 	owner := map[*types.Var]param{}
 	through := map[fnode][]types.Object{} // the objects a function is called by
 	returned := map[*types.Func][]*ast.FuncLit{}
-	immediate := map[*ast.FuncLit]bool{}
 	var fns []fnode
 	note := func(n fnode, ft *ast.FuncType) {
 		fns = append(fns, n)
@@ -554,10 +553,6 @@ func (t *typedPkg) runners(files []*ast.File) {
 							}
 						}
 					}
-				}
-			case *ast.CallExpr:
-				if lit, ok := unparen(x.Fun).(*ast.FuncLit); ok {
-					immediate[lit] = true
 				}
 			}
 			return true
@@ -694,6 +689,7 @@ func (t *typedPkg) runners(files []*ast.File) {
 		}
 	}
 	// The calls, and how often each helper is called.
+	calledAtOnce := map[*ast.CallExpr]bool{} // F(...) in F(...)(...)
 	called := map[fnode]int{}
 	callee := map[ast.Expr]bool{}
 	for _, c := range calls {
@@ -702,9 +698,20 @@ func (t *typedPkg) runners(files []*ast.File) {
 		if sel, ok := fun.(*ast.SelectorExpr); ok {
 			callee[sel.Sel] = true
 		}
+		if inner, ok := fun.(*ast.CallExpr); ok {
+			calledAtOnce[inner] = true
+		}
 		got := argsOf(c)
 		if len(got) == 0 {
 			continue
+		}
+		// Round 6: a call whose arguments are ONE call of several results
+		// (run(two())) has its SQL at no argument position: it is not
+		// read, and is reported.
+		if len(c.Args) == 1 {
+			if _, tuple := t.info.Types[c.Args[0]].Type.(*types.Tuple); tuple {
+				t.taken = append(t.taken, takenRef{c.Args[0], "the arguments of a call that runs SQL are the several results of one call: the SQL stands at no argument, and is not read. Take the results into variables and pass them"})
+			}
 		}
 		t.args[c] = got
 		t.calls = append(t.calls, c)
@@ -747,6 +754,52 @@ func (t *typedPkg) runners(files []*ast.File) {
 	for fn := range helper {
 		if fd, ok := fn.(*ast.FuncDecl); ok && ast.IsExported(fd.Name.Name) {
 			t.exported[fd] = true
+		}
+	}
+	// Round 6: forms of a helper this reader does not follow, reported
+	// where they are written. A method of a generic type: a call on an
+	// instantiated type is a call of another object. (A variadic parameter
+	// cannot stand bare at a string position, so what is made from one is
+	// a hole.)
+	for fn, positions := range helper {
+		fd, ok := fn.(*ast.FuncDecl)
+		if !ok || len(positions) == 0 {
+			continue
+		}
+		// (A generic FUNCTION's calls name the one function object, and
+		// are followed like any other: readTrafficRows[T].)
+		generic := false
+		if fd.Recv != nil && len(fd.Recv.List) == 1 {
+			rt := fd.Recv.List[0].Type
+			if star, ok := rt.(*ast.StarExpr); ok {
+				rt = star.X
+			}
+			switch rt.(type) {
+			case *ast.IndexExpr, *ast.IndexListExpr:
+				generic = true
+			}
+		}
+		if generic {
+			t.taken = append(t.taken, takenRef{fd.Name, "a method of a generic type hands a parameter to a call that runs SQL: a call of it on an instantiated type is a call of another object, which this reader does not follow. Write it as a function, or on a type without type parameters"})
+		}
+	}
+	// A function that returns a literal which runs SQL with its parameter:
+	// the literal is read where the result is called at once (F(...)(...)).
+	// A result that is held, passed or returned is called later with SQL
+	// this reader cannot find (round 6).
+	for _, c := range calls {
+		if calledAtOnce[c] {
+			continue
+		}
+		f, ok := objOf(unwrapFun(c.Fun)).(*types.Func)
+		if !ok {
+			continue
+		}
+		for _, lit := range returned[f] {
+			if len(helper[lit]) > 0 {
+				t.taken = append(t.taken, takenRef{c, "the result of " + f.Name() + " is a function that runs SQL with its parameter, and it is held or passed on here: the SQL it is later called with cannot be found. Call the result where it is made"})
+				break
+			}
 		}
 	}
 	// A literal held in an exported variable or field can be called, or

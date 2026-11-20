@@ -16,16 +16,24 @@ package manifest
 // These are the readers the rebuilding replaced, written the slow way, and
 // compared with the real ones over seeded random trees in several read
 // orders: every value, every reason, every settle verdict. The reference
-// has no index, no compaction, no budget, shares nothing and remembers
-// nothing it works out (it keeps each pom as decoded, and that only): a
-// question walks the chain, interpolates every managed entry in the order
-// written, and asks every import in order; a Gradle scope is a map, copied
-// for every reading. What the two share with the real readers is what was
-// not rebuilt: the decoding of one pom, the reading of one build file, the
-// substitution of one string, and the resolving of an apply path.
+// has no index, no compaction, shares nothing and remembers nothing it works
+// out (it keeps each pom as decoded, and that only): a question walks the
+// chain, interpolates every managed entry in the order written, and asks
+// every import in order; a Gradle scope is a map, copied for every reading.
+//
+// Round 6 (M6-10): the Maven reference shares NOTHING with the reader it
+// checks but the text of the poms and the public types of a fetched pom: it
+// decodes a pom, lists its dependencies, substitutes, ranks reasons and
+// bounds a chain with code of its own, below. A mistake in the reader's
+// decodePom, ParsePomXMLVersions, pomSubstitute, worseReason or modelOf is
+// no longer one the reference makes too. The Gradle reference still shares
+// the reading of ONE build file, of gradle.properties and of a catalogue,
+// and the resolving of an apply path: it is a reference for what the tree
+// does with those, not for them.
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"math/rand"
 	"os"
@@ -64,11 +72,14 @@ type oraclePoms struct {
 	// decoded holds each pom as decoded, by path: the one thing the
 	// reference keeps, because decoding XML is not what is compared and is
 	// nearly all of its time. Everything it works out is worked out again.
-	decoded map[string]*pomModel
+	decoded map[string]*oraclePom
+	// undetermined counts the answers withheld because a pom consulted
+	// before the one that manages the dependency could not be obtained.
+	undetermined int
 }
 
 // model is the pom at path, decoded.
-func (o *oraclePoms) model(path string) *pomModel {
+func (o *oraclePoms) model(path string) *oraclePom {
 	path = filepath.Clean(path)
 	if m, ok := o.decoded[path]; ok {
 		return m
@@ -78,7 +89,7 @@ func (o *oraclePoms) model(path string) *pomModel {
 	return m
 }
 
-func (o *oraclePoms) decode(path string) *pomModel {
+func (o *oraclePoms) decode(path string) *oraclePom {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil
@@ -90,14 +101,10 @@ func (o *oraclePoms) decode(path string) *pomModel {
 	if err != nil {
 		return nil
 	}
-	m, err := decodePom(string(data), path)
-	if err != nil {
-		return nil
-	}
-	return m
+	return oracleDecode(string(data), path)
 }
 
-func (o *oraclePoms) remote(g, a, v string) (*pomModel, string) {
+func (o *oraclePoms) remote(g, a, v string) (*oraclePom, string) {
 	if o.src == nil {
 		return nil, ""
 	}
@@ -107,7 +114,7 @@ func (o *oraclePoms) remote(g, a, v string) (*pomModel, string) {
 	pom, outcome := o.src.RemotePom(g, a, v, nil)
 	switch {
 	case outcome == RemoteFound && pom != nil:
-		return pom.modelOf(g + ":" + a + ":" + v), ""
+		return oracleRemoteModel(pom, g+":"+a+":"+v), ""
 	case outcome == RemoteFound, outcome == RemoteFailed:
 		return nil, model.VersionReasonInheritedLookupFailed
 	case outcome == RemoteRefused:
@@ -119,23 +126,23 @@ func (o *oraclePoms) remote(g, a, v string) (*pomModel, string) {
 // oracleCtx is one pom's effective model, built for the question.
 type oracleCtx struct {
 	o                        *oraclePoms
-	chain                    []*pomModel
+	chain                    []*oraclePom
 	group, artifact, version string
 	parentGroup, parentVer   string
 	gap                      string
 	whole                    bool
 }
 
-func (o *oraclePoms) ctx(m *pomModel) *oracleCtx {
-	c := &oracleCtx{o: o, chain: []*pomModel{m}, artifact: m.artifact, group: m.group, version: m.version}
+func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
+	c := &oracleCtx{o: o, chain: []*oraclePom{m}, artifact: m.artifact, group: m.group, version: m.version}
 	seen := map[string]bool{m.path: true}
 	c.whole = true
 	for cur := m; cur.parent != nil; {
-		if len(c.chain) >= pomChainLimit {
+		if len(c.chain) >= oracleChainLimit {
 			c.whole = false
 			break
 		}
-		var p *pomModel
+		var p *oraclePom
 		if cur.parent.inTree {
 			at := filepath.Join(filepath.Dir(cur.path), filepath.FromSlash(cur.parent.relativePath))
 			if info, err := os.Lstat(at); err == nil && info.IsDir() {
@@ -181,7 +188,7 @@ func (o *oraclePoms) ctx(m *pomModel) *oracleCtx {
 }
 
 func (c *oracleCtx) interp(s string) string {
-	return pomSubstitute(s, func(name string) (string, bool) {
+	return oracleSubstitute(s, func(name string) (string, bool) {
 		pick := map[string]string{
 			"project.version": c.version, "pom.version": c.version, "version": c.version,
 			"project.groupId": c.group, "pom.groupId": c.group, "groupId": c.group,
@@ -216,12 +223,12 @@ func (o *oraclePoms) allPoms() []string {
 
 // byCoordinates scans every pom of the clone for the ones with these
 // coordinates, as the clone alone gives them (no source asked).
-func (o *oraclePoms) byCoordinates(g, a, v string) (m *pomModel, ambiguous bool) {
+func (o *oraclePoms) byCoordinates(g, a, v string) (m *oraclePom, ambiguous bool) {
 	if g == "" || a == "" || v == "" || strings.Contains(g+a+v, "${") {
 		return nil, false
 	}
 	treeOnly := &oraclePoms{root: o.root, decoded: o.decoded}
-	var found []*pomModel
+	var found []*oraclePom
 	for _, p := range o.allPoms() {
 		cand := treeOnly.model(p)
 		if cand == nil {
@@ -238,7 +245,7 @@ func (o *oraclePoms) byCoordinates(g, a, v string) (m *pomModel, ambiguous bool)
 	return found[0], false
 }
 
-func oracleHosts(chain []*pomModel, more []string) []string {
+func oracleHosts(chain []*oraclePom, more []string) []string {
 	set := map[string]bool{}
 	for _, m := range chain {
 		if m.servedBy != "" {
@@ -263,6 +270,10 @@ func oracleHosts(chain []*pomModel, more []string) []string {
 type oracleQuestion struct {
 	searched map[string]bool
 	gap      string
+	// before: the worst reason among the poms consulted before where the
+	// question now stands that could not be obtained (Maven's order: a
+	// chain's own entries, the nearest pom first; then the imports).
+	before string
 }
 
 func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int) (version string, found bool, hosts []string) {
@@ -279,7 +290,9 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 			}
 		}
 	}
-	if depth >= pomChainLimit {
+	// The chain's missing end comes before every import.
+	q.before = oracleWorse(q.before, oracleNotKnown(c.gap))
+	if depth >= oracleChainLimit {
 		return "", false, nil
 	}
 	// Then the BOMs the chain imports, in order.
@@ -295,7 +308,8 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 				bom, reason = c.o.remote(bg, ba, bv)
 			}
 			if bom == nil {
-				q.gap = worseReason(q.gap, reason)
+				q.gap = oracleWorse(q.gap, reason)
+				q.before = oracleWorse(q.before, oracleNotKnown(reason))
 				continue
 			}
 			if q.searched[bom.path] {
@@ -303,7 +317,7 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 			}
 			q.searched[bom.path] = true
 			bc := c.o.ctx(bom)
-			q.gap = worseReason(q.gap, bc.gap)
+			q.gap = oracleWorse(q.gap, bc.gap)
 			if v, ok, via := bc.lookup(q, group, artifact, depth+1); ok {
 				return v, true, oracleHosts(bc.chain, via)
 			}
@@ -312,43 +326,272 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 	return "", false, nil
 }
 
-// settle is what the pom at path gives its declared dependencies.
-func (o *oraclePoms) settle(path string) []model.LibyearDep {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
+// oracleAnswer is what a reader says of one declared dependency: the
+// fields the tree decides.
+type oracleAnswer struct {
+	Name, Version, Source, Reason string
+	Hosts                         []string
+}
+
+// oracleAnswersOf are the real reader's answers: its rows that are
+// dependencies (not dependencyManagement entries), in order.
+func oracleAnswersOf(deps []model.LibyearDep) []oracleAnswer {
+	var out []oracleAnswer
+	for _, d := range deps {
+		if d.ManagedEntry {
+			continue
+		}
+		out = append(out, oracleAnswer{d.Name, oracleUnresolved(d.Version), d.VersionSource, d.VersionReason, append([]string{}, d.VersionHosts...)})
 	}
-	deps := ParsePomXMLVersions(string(data))
+	return out
+}
+
+// settle is what the pom at path gives its declared dependencies.
+func (o *oraclePoms) settle(path string) []oracleAnswer {
 	m := o.model(path)
 	if m == nil {
-		return deps
+		return nil
 	}
 	c := o.ctx(m)
 	gap := c.gap
-	for i := range deps {
-		group, artifact, ok := strings.Cut(deps[i].Name, ":")
-		if !ok {
-			continue
-		}
+	var out []oracleAnswer
+	for _, d := range m.deps {
+		a := oracleAnswer{Name: d.group + ":" + d.artifact, Version: d.version, Hosts: []string{}}
 		switch {
-		case strings.Contains(deps[i].Version, "${"):
-			if v := c.interp(deps[i].Version); !strings.Contains(v, "${") {
-				deps[i].Version, deps[i].Requirement = v, deps[i].Name+":"+v
-				deps[i].VersionHosts = oracleHosts(c.chain, nil)
+		case strings.Contains(a.Version, "${"):
+			// What the pom's own text settles came through no repository;
+			// what needs its parents came through the hosts that served
+			// them.
+			own := oracleSubstitute(a.Version, func(name string) (string, bool) {
+				switch name {
+				case "project.version", "pom.version", "version":
+					return m.version, m.version != ""
+				case "project.groupId", "pom.groupId", "groupId":
+					return m.group, m.group != ""
+				case "project.artifactId", "pom.artifactId", "artifactId":
+					return m.artifact, m.artifact != ""
+				}
+				v, ok := m.props[name]
+				return v, ok
+			})
+			if !strings.Contains(own, "${") {
+				a.Version = own
+			} else if v := c.interp(a.Version); !strings.Contains(v, "${") {
+				a.Version, a.Hosts = v, append([]string{}, oracleHosts(c.chain, nil)...)
 			}
-		case deps[i].Version == "":
+		case a.Version == "":
 			q := &oracleQuestion{searched: map[string]bool{}, gap: c.gap}
-			v, found, via := c.lookup(q, group, artifact, 0)
-			gap = worseReason(gap, q.gap)
-			if found {
-				deps[i].Version, deps[i].VersionSource = v, SourceManaged
-				deps[i].VersionHosts = oracleHosts(c.chain, via)
-			} else if gap != "" {
-				deps[i].VersionReason = gap
+			v, found, via := c.lookup(q, d.group, d.artifact, 0)
+			gap = oracleWorse(gap, q.gap)
+			switch {
+			case found && q.before == "":
+				a.Version, a.Source = v, "managed"
+				a.Hosts = append([]string{}, oracleHosts(c.chain, via)...)
+			case found:
+				// A pom consulted before the one that manages it could not
+				// be obtained: not determined.
+				a.Reason = q.before
+				o.undetermined++
+			case gap != "":
+				a.Reason = gap
 			}
+		}
+		a.Version = oracleUnresolved(a.Version)
+		out = append(out, a)
+	}
+	return out
+}
+
+// oracleUnresolved is a version as the comparison takes it: one that still
+// holds a reference is not a version, however much of it was substituted
+// (the analysis stores none for it: NormalizeParsedVersion).
+func oracleUnresolved(v string) string {
+	if strings.Contains(v, "${") {
+		return "(unresolved)"
+	}
+	return v
+}
+
+// What the reference does NOT share with the readers it checks (round 6):
+// its own decoding of a pom, its own model of a fetched one, its own
+// substitution, its own ranking of reasons and its own bound on a chain.
+
+// oraclePom is a pom as the reference decodes it.
+type oraclePom struct {
+	path                     string
+	group, artifact, version string
+	parent                   *oracleParent
+	props                    map[string]string
+	managed                  []oracleManaged
+	deps                     []oracleManaged
+	modules                  []string
+	profileManagement        bool
+	servedBy                 string
+}
+
+type oracleParent struct {
+	group, artifact, version, relativePath string
+	inTree                                 bool
+}
+
+type oracleManaged struct {
+	group, artifact, version string
+	isImport                 bool
+}
+
+// oracleChainLimit is how long a chain of parents, or of BOMs importing
+// BOMs, is followed: Maven itself has no such bound, and the reader's is
+// part of what it documents.
+const oracleChainLimit = 32
+
+type oracleXMLDep struct {
+	G     string `xml:"groupId"`
+	A     string `xml:"artifactId"`
+	V     string `xml:"version"`
+	Type  string `xml:"type"`
+	Scope string `xml:"scope"`
+}
+
+func oracleDecode(content, path string) *oraclePom {
+	var x struct {
+		G      string `xml:"groupId"`
+		A      string `xml:"artifactId"`
+		V      string `xml:"version"`
+		Parent *struct {
+			G   string  `xml:"groupId"`
+			A   string  `xml:"artifactId"`
+			V   string  `xml:"version"`
+			Rel *string `xml:"relativePath"`
+		} `xml:"parent"`
+		Props struct {
+			All []struct {
+				XMLName xml.Name
+				Text    string `xml:",chardata"`
+			} `xml:",any"`
+		} `xml:"properties"`
+		Managed  []oracleXMLDep `xml:"dependencyManagement>dependencies>dependency"`
+		Deps     []oracleXMLDep `xml:"dependencies>dependency"`
+		Modules  []string       `xml:"modules>module"`
+		Profiles []struct {
+			Managed []oracleXMLDep `xml:"dependencyManagement>dependencies>dependency"`
+		} `xml:"profiles>profile"`
+	}
+	if err := xml.Unmarshal([]byte(content), &x); err != nil {
+		return nil
+	}
+	t := strings.TrimSpace
+	m := &oraclePom{path: path, group: t(x.G), artifact: t(x.A), version: t(x.V), props: map[string]string{}}
+	if x.Parent != nil {
+		m.parent = &oracleParent{group: t(x.Parent.G), artifact: t(x.Parent.A), version: t(x.Parent.V), relativePath: "../pom.xml", inTree: true}
+		if x.Parent.Rel != nil {
+			m.parent.relativePath = t(*x.Parent.Rel)
+			m.parent.inTree = m.parent.relativePath != ""
 		}
 	}
-	return deps
+	for _, p := range x.Props.All {
+		m.props[p.XMLName.Local] = t(p.Text)
+	}
+	for _, d := range x.Managed {
+		m.managed = append(m.managed, oracleManaged{t(d.G), t(d.A), t(d.V), t(d.Scope) == "import" && t(d.Type) == "pom"})
+	}
+	for _, d := range x.Deps {
+		m.deps = append(m.deps, oracleManaged{group: t(d.G), artifact: t(d.A), version: t(d.V)})
+	}
+	for _, mod := range x.Modules {
+		if mod = t(mod); mod != "" {
+			m.modules = append(m.modules, mod)
+		}
+	}
+	for _, pr := range x.Profiles {
+		if len(pr.Managed) > 0 {
+			m.profileManagement = true
+		}
+	}
+	return m
+}
+
+func oracleRemoteModel(r *RemotePom, key string) *oraclePom {
+	m := &oraclePom{path: "remote:" + key, group: r.Group, artifact: r.Artifact, version: r.Version, props: map[string]string{}, servedBy: r.ServedBy}
+	for k, v := range r.Properties {
+		m.props[k] = v
+	}
+	if r.Parent != nil {
+		m.parent = &oracleParent{group: r.Parent.Group, artifact: r.Parent.Artifact, version: r.Parent.Version}
+	}
+	for _, e := range r.Managed {
+		m.managed = append(m.managed, oracleManaged{e.Group, e.Artifact, e.Version, e.Import})
+	}
+	return m
+}
+
+// oracleSubstitute replaces ${name} references, pass after pass, while a
+// pass changes something: ten passes at most, and nothing longer than a
+// coordinate may be (then the string is left as it was written).
+func oracleSubstitute(s string, resolve func(string) (string, bool)) string {
+	const limit, passes = 2704, 10 // pkgid.MaxNameBytes; the depth of properties followed
+	if len(s) > limit {
+		return s
+	}
+	original := s
+	for pass := 0; pass < passes && strings.Contains(s, "${"); pass++ {
+		out, changed := "", false
+		for rest := s; rest != ""; {
+			at := strings.Index(rest, "${")
+			if at < 0 {
+				out += rest
+				break
+			}
+			out += rest[:at]
+			rest = rest[at:]
+			end := strings.Index(rest, "}")
+			if end < 0 {
+				out += rest
+				break
+			}
+			name := rest[2:end]
+			if name == "" || strings.ContainsAny(name, "${") {
+				out += "${"
+				rest = rest[2:]
+				continue
+			}
+			ref := rest[:end+1]
+			if v, ok := resolve(name); ok && v != ref {
+				out += v
+				changed = true
+			} else {
+				out += ref
+			}
+			rest = rest[end+1:]
+		}
+		if len(out) > limit {
+			return original
+		}
+		if !changed {
+			break
+		}
+		s = out
+	}
+	return s
+}
+
+// oracleNotKnown is a reason that means a pom's content is not known: its
+// lookup failed, or its repository may not be fetched from. A pom that is
+// on no repository has been answered for.
+func oracleNotKnown(reason string) string {
+	if reason == "inherited_lookup_failed" || reason == "inherited_repository_refused" {
+		return reason
+	}
+	return ""
+}
+
+// oracleWorse is the reason to report of two: a lookup that failed may yet
+// succeed and is said first, then a refusal, then "not found".
+func oracleWorse(a, b string) string {
+	rank := map[string]int{"inherited_lookup_failed": 3, "inherited_repository_refused": 2, "inherited_not_found": 1}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
 }
 
 // managedVerdict is SettleMavenManaged, decided from the poms alone.
@@ -550,7 +793,9 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 		case "extgone":
 			sb.WriteString("<parent><groupId>t</groupId><artifactId>goneparent</artifactId><version>1</version></parent>")
 		default:
-			sb.WriteString("<parent><groupId>t</groupId><artifactId>" + parent + "</artifactId><version>1</version><relativePath>../" + parent + "</relativePath></parent>")
+			// Sometimes a version the pom at that place does not have: it is
+			// then not the parent (SR-6), and the parent is asked for.
+			sb.WriteString("<parent><groupId>t</groupId><artifactId>" + parent + "</artifactId><version>" + pick([]string{"1", "1", "1", "1", "8"}) + "</version><relativePath>../" + parent + "</relativePath></parent>")
 		}
 		if rng.Intn(4) != 0 || parent == "" {
 			sb.WriteString("<groupId>t</groupId>")
@@ -604,12 +849,15 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 		"t:rparent:1": fetched("rparent", rng.Intn(3) == 0), "t:rparent2:1": fetched("rparent2", false),
 	}, outcomes: map[string]RemoteOutcome{}}
 	for _, k := range []string{"t:gone1:1", "t:gone2:1", "t:goneparent:1", "t:rb2:1", "t:rparent2:1", "t:gone1:2", "t:rb1:2", "t:rparent:1"} {
-		switch rng.Intn(6) {
-		case 0:
+		// A lookup that fails and a repository that is refused are what
+		// withholds an answer behind them (round 6): often enough for the
+		// comparison to see it.
+		switch rng.Intn(8) {
+		case 0, 1:
 			src.outcomes[k] = RemoteFailed
-		case 1:
+		case 2, 3:
 			src.outcomes[k] = RemoteRefused
-		case 2:
+		case 4:
 			src.outcomes[k] = RemoteNotFound
 		}
 	}
@@ -671,7 +919,7 @@ func oracleDump(files map[string]string) string {
 func TestThePomTreeAnswersAsTheNaiveReaderDoes(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261120))
 	root := t.TempDir()
-	reads, settles, managedAnswers, reasons, refKeyed := 0, 0, 0, 0, 0
+	reads, settles, managedAnswers, reasons, refKeyed, undetermined := 0, 0, 0, 0, 0, 0
 	for it := 0; it < oraclePomTrees; it++ {
 		files, src := oraclePomTree(rng)
 		oracleWrite(t, root, files)
@@ -680,24 +928,24 @@ func TestThePomTreeAnswersAsTheNaiveReaderDoes(t *testing.T) {
 			rels = append(rels, rel)
 		}
 		sort.Strings(rels)
-		o := &oraclePoms{root: root, decoded: map[string]*pomModel{}}
+		o := &oraclePoms{root: root, decoded: map[string]*oraclePom{}}
 		if src != nil {
 			o.src = src
 		}
 		want := map[string]string{}
 		for _, rel := range rels {
-			deps := notPackages(o.settle(filepath.Join(root, rel)))
-			for i := range deps {
-				deps[i].ManifestPath = rel
-				if deps[i].VersionSource == SourceManaged {
+			answers := o.settle(filepath.Join(root, rel))
+			for _, a := range answers {
+				if a.Source != "" {
 					managedAnswers++
 				}
-				if deps[i].VersionReason != "" {
+				if a.Reason != "" {
 					reasons++
 				}
 			}
-			want[rel] = oracleJSON(deps)
+			want[rel] = oracleJSON(answers)
 		}
+		undetermined += o.undetermined
 		refKeyed += strings.Count(oracleDump(files), "<groupId>${")
 		for order := 0; order < oracleOrders; order++ {
 			seq := append([]string(nil), rels...)
@@ -719,7 +967,7 @@ func TestThePomTreeAnswersAsTheNaiveReaderDoes(t *testing.T) {
 					got.Deps[i].ManifestPath = rel
 				}
 				byRel[rel] = got.Deps
-				if g := oracleJSON(got.Deps); g != want[rel] {
+				if g := oracleJSON(oracleAnswersOf(got.Deps)); g != want[rel] {
 					t.Fatalf("tree %d, read order %v: %s\n the tree reader gives %s\n the naive reader gives %s\n%s", it, seq, rel, g, want[rel], oracleDump(files))
 				}
 			}
@@ -734,9 +982,10 @@ func TestThePomTreeAnswersAsTheNaiveReaderDoes(t *testing.T) {
 		}
 	}
 	t.Logf("%d trees: %d readings and %d settle verdicts compared; the reference gave %d managed versions and %d reasons; %d reference-keyed coordinates", oraclePomTrees, reads, settles, managedAnswers, reasons, refKeyed)
+	t.Logf("%d answers were withheld because a pom consulted before the one that manages the dependency could not be read", undetermined)
 	// The denominator: the trees exercise what the comparison is for.
-	if managedAnswers < oraclePomTrees || reasons < oraclePomTrees || refKeyed < oraclePomTrees {
-		t.Errorf("the random trees gave %d managed versions, %d reasons and %d reference-keyed coordinates over %d trees: too few to compare anything", managedAnswers, reasons, refKeyed, oraclePomTrees)
+	if managedAnswers < oraclePomTrees || reasons < oraclePomTrees || refKeyed < oraclePomTrees || undetermined < oraclePomTrees/10 {
+		t.Errorf("the random trees gave %d managed versions, %d reasons, %d reference-keyed coordinates and %d answers withheld over %d trees: too few to compare anything", managedAnswers, reasons, refKeyed, undetermined, oraclePomTrees)
 	}
 }
 
@@ -797,7 +1046,7 @@ func (o *oracleGradle) read(content string, vars map[string]string, libs map[str
 	if len(libs) > 0 {
 		l = &gradleLibs{own: libs}
 	}
-	return readGradleBuildWith(content, (*gradleVars)(nil).push(oracleWith(vars, nil, nil), nil), l, nil)
+	return readGradleBuildWith(content, (*gradleVars)(nil).push(oracleWith(vars, nil, nil), nil), l)
 }
 
 func (o *oracleGradle) within(path string) bool {

@@ -1,0 +1,268 @@
+@@p01 trigger copy NEW to record, return it
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE r record; BEGIN r := NEW; r.fe := 'x'; RETURN r; END $$
+@@p02 trigger return populated record
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN jsonb_populate_record(NEW, '{"fe":"x"}'); END $$
+@@p03 trigger rowtype var
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE r aveloxis_data.repos%ROWTYPE; BEGIN r := NEW; r.fe := 'x'; RETURN r; END $$
+@@p04 trigger CALL with INOUT NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN CALL setit(NEW.fe); RETURN NEW; END $$
+@@p05 built-in trigger fn writes column
+CREATE TRIGGER tg BEFORE INSERT OR UPDATE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION tsvector_update_trigger(fe, 'pg_catalog.english', x)
+@@p06 trigger alias for NEW
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE n ALIAS FOR NEW; BEGIN n.fe := 'x'; RETURN n; END $$
+@@p07 trigger NEW.fe := 
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.fe := 'x'; RETURN NEW; END $$
+@@p08 trigger RETURNS pg_catalog.trigger
+CREATE FUNCTION t() RETURNS pg_catalog.trigger LANGUAGE plpgsql AS $$ BEGIN NEW.fe := 'x'; RETURN NEW; END $$
+@@p09 trigger RETURNS "trigger" upper lang
+CREATE FUNCTION t() RETURNS "trigger" LANGUAGE PLPGSQL AS $$ BEGIN NEW.fe := 'x'; RETURN NEW; END $$
+@@p10 trigger FETCH INTO NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE c CURSOR FOR SELECT 'x'; BEGIN OPEN c; FETCH c INTO NEW.fe; RETURN NEW; END $$
+@@p11 trigger EXECUTE INTO NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'SELECT 1' INTO NEW.fe; RETURN NEW; END $$
+@@p12 trigger GET DIAGNOSTICS NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN GET DIAGNOSTICS NEW.fe = ROW_COUNT; RETURN NEW; END $$
+@@p13 trigger FOR NEW.fe IN
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN FOR NEW.fe IN SELECT 'x' LOOP NULL; END LOOP; RETURN NEW; END $$
+@@p14 trigger FOREACH NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN FOREACH NEW.fe IN ARRAY ARRAY['x'] LOOP NULL; END LOOP; RETURN NEW; END $$
+@@p15 trigger UPDATE RETURNING INTO NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE s.o SET a = 1 RETURNING a INTO NEW.fe; RETURN NEW; END $$
+@@p16 trigger nested block NEW
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN BEGIN NEW.fe := 'x'; EXCEPTION WHEN OTHERS THEN NEW.fe := 'y'; END; RETURN NEW; END $$
+@@p17 trigger integer for loop var NEW.fe
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN FOR NEW.fe IN 1..3 LOOP NULL; END LOOP; RETURN NEW; END $$
+@@p18 trigger assign to OLD then return OLD
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN OLD.fe := 'x'; RETURN OLD; END $$
+@@p19 trigger subscript on NEW col
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.fe[1] := 'x'; RETURN NEW; END $$
+@@p20 trigger select into strict two targets
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE a int; BEGIN SELECT 1, 'x' INTO STRICT a, NEW.fe; RETURN NEW; END $$
+@@p21 plpgsql plain update
+DO $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END $$
+@@p22 plpgsql execute literal
+DO $$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = ''x'''; END $$
+@@p23 plpgsql execute E-literal
+DO $$ BEGIN EXECUTE E'UPDATE aveloxis_data.repos SET fe = \'x\''; END $$
+@@p24 plpgsql execute dollar literal
+DO $a$ BEGIN EXECUTE $b$UPDATE aveloxis_data.repos SET fe = 'x'$b$; END $a$
+@@p25 plpgsql execute literal using
+DO $$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = $1' USING 'x'; END $$
+@@p26 plpgsql execute format
+DO $$ BEGIN EXECUTE format('UPDATE %I.%I SET fe = %L', 'aveloxis_data', 'repos', 'x'); END $$
+@@p27 plpgsql execute concat
+DO $$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos' || ' SET fe = 1'; END $$
+@@p28 plpgsql execute variable
+DO $$ DECLARE q text := 'UPDATE aveloxis_data.repos SET fe = 1'; BEGIN EXECUTE q; END $$
+@@p29 plpgsql execute literal cast
+DO $$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = 1'::text; END $$
+@@p30 plpgsql execute parenthesised literal
+DO $$ BEGIN EXECUTE ('UPDATE aveloxis_data.repos SET fe = 1'); END $$
+@@p31 plpgsql return query update
+CREATE FUNCTION f() RETURNS SETOF int LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY UPDATE aveloxis_data.repos SET fe = 'x' RETURNING id; END $$
+@@p32 plpgsql return query execute literal
+CREATE FUNCTION f() RETURNS SETOF int LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY EXECUTE 'UPDATE aveloxis_data.repos SET fe = ''x'' RETURNING id'; END $$
+@@p33 plpgsql open for with cte update
+DO $$ DECLARE c refcursor; BEGIN OPEN c FOR WITH u AS (UPDATE aveloxis_data.repos SET fe = 'x' RETURNING 1) SELECT * FROM u; END $$
+@@p34 plpgsql bound cursor decl with update cte
+DO $$ DECLARE c CURSOR FOR WITH u AS (UPDATE aveloxis_data.repos SET fe = 'x' RETURNING 1) SELECT * FROM u; BEGIN OPEN c; END $$
+@@p35 plpgsql for cursor loop
+DO $$ DECLARE c CURSOR FOR SELECT 1; r record; BEGIN FOR r IN c LOOP UPDATE aveloxis_data.repos SET fe = 'x' WHERE CURRENT OF c; END LOOP; END $$
+@@p36 plpgsql case stmt arm
+DO $$ BEGIN CASE WHEN TRUE THEN UPDATE aveloxis_data.repos SET fe = 'x'; ELSE NULL; END CASE; END $$
+@@p37 plpgsql while/loop/exit
+DO $$ BEGIN LOOP WHILE TRUE LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; EXIT; END LOOP; END $$
+@@p38 plpgsql labelled nested block
+DO $$ <<a>> BEGIN <<b>> DECLARE x int; BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END b; END a $$
+@@p39 plpgsql if else
+DO $$ BEGIN IF TRUE THEN NULL; ELSE UPDATE aveloxis_data.repos SET fe = 'x'; END IF; END $$
+@@p40 plpgsql foreach body
+DO $$ DECLARE x int; BEGIN FOREACH x IN ARRAY ARRAY[1] LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; END $$
+@@p41 plpgsql insert on conflict
+DO $$ BEGIN INSERT INTO aveloxis_data.repos (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET fe = 'x'; END $$
+@@p42 plpgsql merge
+DO $$ BEGIN MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = 'x'; END $$
+@@p43 plpgsql into strict update
+DO $$ DECLARE n int; BEGIN UPDATE aveloxis_data.repos SET fe = 'x' RETURNING id INTO STRICT n; END $$
+@@p44 plpgsql perform with fn only (control: should PASS, no write)
+DO $$ BEGIN PERFORM 1; END $$
+@@p45 plpgsql update with rowtype var value
+DO $$ DECLARE r aveloxis_data.repos%ROWTYPE; BEGIN UPDATE aveloxis_data.repos SET fe = r.x; END $$
+@@p46 plpgsql update set row = record
+DO $$ DECLARE r record; BEGIN UPDATE aveloxis_data.repos SET (fe, x) = (SELECT r.a, r.b); END $$
+@@p47 procedure with commit
+CREATE PROCEDURE p() LANGUAGE plpgsql AS $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; COMMIT; END $$
+@@p48 do without language keyword but LANGUAGE sql? (invalid)
+DO LANGUAGE sql $$ UPDATE aveloxis_data.repos SET fe = 'x' $$
+@@p49 function old style quoted body sql
+CREATE FUNCTION f() RETURNS void AS 'UPDATE aveloxis_data.repos SET fe = ''x''' LANGUAGE sql
+@@p50 function begin atomic
+CREATE FUNCTION f() RETURNS void LANGUAGE sql BEGIN ATOMIC UPDATE aveloxis_data.repos SET fe = 'x'; END
+@@p51 function begin atomic no language
+CREATE FUNCTION f() RETURNS void BEGIN ATOMIC SELECT 1; UPDATE aveloxis_data.repos SET fe = 'x'; END
+@@p52 procedure begin atomic
+CREATE PROCEDURE p() BEGIN ATOMIC UPDATE aveloxis_data.repos SET fe = 'x'; END
+@@p53 function RETURN (subquery with cte?) 
+CREATE FUNCTION f() RETURNS int LANGUAGE sql RETURN (WITH u AS (UPDATE aveloxis_data.repos SET fe = 'x' RETURNING 1) SELECT 1)
+@@p54 function no language as string
+CREATE FUNCTION f() RETURNS void AS 'UPDATE aveloxis_data.repos SET fe = 1'
+@@p55 function language "SQL" quoted upper
+CREATE FUNCTION f() RETURNS void LANGUAGE "SQL" AS 'UPDATE aveloxis_data.repos SET fe = 1'
+@@p56 function language 'sql' string
+CREATE FUNCTION f() RETURNS void LANGUAGE 'sql' AS 'UPDATE aveloxis_data.repos SET fe = 1'
+@@p57 function language c
+CREATE FUNCTION f() RETURNS void LANGUAGE c AS 'obj', 'sym'
+@@p58 function language internal
+CREATE FUNCTION f() RETURNS void LANGUAGE internal AS 'pg_sleep'
+@@p59 function two languages last wins
+CREATE FUNCTION f() RETURNS void LANGUAGE sql LANGUAGE plpgsql AS 'BEGIN UPDATE aveloxis_data.repos SET fe = 1; END'
+@@p60 function two languages plpgsql then sql
+CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql LANGUAGE sql AS 'BEGIN UPDATE aveloxis_data.repos SET fe = 1; END'
+@@p61 function two AS
+CREATE FUNCTION f() RETURNS void LANGUAGE sql AS 'SELECT 1' AS 'UPDATE aveloxis_data.repos SET fe = 1'
+@@p62 function two AS reversed
+CREATE FUNCTION f() RETURNS void LANGUAGE sql AS 'UPDATE aveloxis_data.repos SET fe = 1' AS 'SELECT 1'
+@@p63 DO two bodies
+DO 'BEGIN UPDATE aveloxis_data.repos SET fe = 1; END' LANGUAGE plpgsql
+@@p64 function in create schema
+CREATE SCHEMA s CREATE TABLE t (a int) CREATE VIEW v AS SELECT fe AS z FROM aveloxis_data.repos
+@@p65 alter function (no body) control PASS
+ALTER FUNCTION f() SECURITY DEFINER
+@@p66 plpgsql sql function inside execute inside sql fn
+CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ DO $x$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = 1'; END $x$ $$
+@@w01 view schema-qualified renamed col
+CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@w02 view unqualified renamed col
+CREATE VIEW v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE v SET z = 'x'
+@@w03 temp view renamed col
+CREATE TEMP VIEW v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE pg_temp.v SET z = 'x'
+@@w04 view over view
+CREATE VIEW s.v1 AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+CREATE VIEW s.v2 AS SELECT id, z AS y FROM s.v1
+@;
+UPDATE s.v2 SET y = 'x'
+@@w05 view over unqualified source
+CREATE VIEW s.v AS SELECT id, fe AS z FROM repos
+@;
+UPDATE s.v SET z = 'x'
+@@w06 view made in DO/EXECUTE
+DO $$ BEGIN EXECUTE 'CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos'; END $$
+@;
+UPDATE s.v SET z = 'x'
+@@w07 view column list rename
+CREATE OR REPLACE VIEW s.v (a, z) AS SELECT id, fe FROM aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@w08 security barrier view
+CREATE VIEW s.v WITH (security_barrier) AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@w09 view made in create schema element
+CREATE SCHEMA s CREATE VIEW v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@w10 view TABLE form
+CREATE VIEW s.v AS TABLE aveloxis_data.repos
+@;
+UPDATE s.v SET fe = 'x'
+@@w11 view in same text, multiple statements
+CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos; UPDATE s.v SET z = 'x'
+@@w12 view insert on conflict through view
+CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+INSERT INTO s.v (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET z = 'x'
+@@w13 view merge through view
+CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+MERGE INTO s.v t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET z = 'x'
+@@w14 view renamed then written
+CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+ALTER VIEW s.v RENAME TO v9
+@;
+UPDATE s.v9 SET z = 'x'
+@@w15 view with instead-of rule (create rule _RETURN)
+CREATE TABLE s.v (id int, z text)
+@;
+CREATE RULE "_RETURN" AS ON SELECT TO s.v DO INSTEAD SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@w16 view via ONLY source / lateral
+CREATE VIEW s.v AS SELECT r.id, r.fe AS z FROM ONLY aveloxis_data.repos r
+@;
+UPDATE s.v SET z = 'x'
+@@w17 foreign table loopback
+CREATE FOREIGN TABLE s.ft (id int, z text OPTIONS (column_name 'fe')) SERVER loopback OPTIONS (schema_name 'aveloxis_data', table_name 'repos')
+@;
+UPDATE s.ft SET z = 'x'
+@@w18 view quoted schema case
+CREATE VIEW "S".v AS SELECT id, fe AS z FROM aveloxis_data.repos
+@;
+UPDATE "S".v SET z = 'x'
+@@w19 view created in function body sql
+CREATE FUNCTION mk() RETURNS void LANGUAGE sql AS 'CREATE VIEW s.v AS SELECT id, fe AS z FROM aveloxis_data.repos'
+@;
+UPDATE s.v SET z = 'x'
+@@w20 view with source in db-qualified form
+CREATE VIEW s.v AS SELECT id, fe AS z FROM mydb.aveloxis_data.repos
+@;
+UPDATE s.v SET z = 'x'
+@@x01 temp table shadow via search_path (not registered table; control)
+CREATE TEMP TABLE repos (LIKE aveloxis_data.repos); UPDATE pg_temp.repos SET fe = 'x'
+@@x02 look-alike cyrillic e in column (different column; control PASS)
+UPDATE aveloxis_data.repos SET fе = 'x'
+@@x03 update indirection target field
+UPDATE aveloxis_data.repos SET fe.sub = 'x'
+@@x04 update subscript target with conforming-looking value
+UPDATE aveloxis_data.repos SET fe[1] = COALESCE(fe, $1)
+@@x05 qualified target (table.col) set
+UPDATE aveloxis_data.repos SET repos.fe = 'x'
+@@x06 select fn (control PASS)
+SELECT evil()
+@@x07 CALL (control PASS)
+CALL evil()
+@@x08 insert select from update cte returning
+WITH u AS (INSERT INTO aveloxis_data.repos (id) SELECT 1 ON CONFLICT (id) DO UPDATE SET fe = 'x' RETURNING *) SELECT * FROM u
+@@x09 update with returning trick
+UPDATE aveloxis_data.repos SET x = 1, fe = 'x' RETURNING fe AS "COALESCE(fe, $1)"
+@@x10 update where current of
+UPDATE aveloxis_data.repos SET fe = $1 WHERE CURRENT OF c
+@@x11 two statements second bad
+SELECT 1; UPDATE aveloxis_data.repos SET fe = 'x'
+@@x12 fe set from subquery row
+UPDATE aveloxis_data.repos SET fe = (SELECT $1)
+@@x13 fe guarded bare but value literal
+UPDATE aveloxis_data.repos SET fe = 'x' WHERE fe IS NULL
+@@x14 fe guarded by NULL test with excluded.fe in plain update
+UPDATE aveloxis_data.repos SET fe = $1::text WHERE fe IS NULL
+@@x15 fe conflict guard on alias-less table name with alias present
+INSERT INTO aveloxis_data.repos AS t (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET fe = $2 WHERE repos.fe IS NULL
+@@x16 fe guard alias equals other from-table name
+UPDATE aveloxis_data.repos SET fe = $1 FROM s.repos WHERE repos.fe IS NULL
+@@x17 fe guard coalesce nulltest argisrow
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe) IS NULL AND TRUE
+@@x18 fe guard IS UNKNOWN
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe IS NULL) IS UNKNOWN
+@@x19 fe guard coalesce with collate
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') = '' COLLATE "C" OR TRUE
+@@x20 fe guard ANDed inside OR-paren
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe IS NULL AND id = 1) OR id = 2
+@@x21 fe guard double negation
+UPDATE aveloxis_data.repos SET fe = $1 WHERE NOT NOT fe IS NULL
+@@x22 fe guard IS NULL on expression w/ col
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe || 'x') IS NULL
+@@x23 fe guard in conflict-update but plain cte
+WITH g AS (SELECT 1 WHERE fe IS NULL) UPDATE aveloxis_data.repos SET fe = $1
+@@x24 pnn excluded with catalog qualification
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET pnn = COALESCE(a.excluded.pnn, repos.pnn)
+@@x25 pn nullif excluded other column then stored
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET pn = COALESCE(NULLIF(excluded.other, ''), repos.pn)
+@@x26 pn stored is excluded-like table alias
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, ''), "excluded".pn) FROM s.stg AS excluded

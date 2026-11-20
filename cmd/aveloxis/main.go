@@ -115,6 +115,7 @@ func newRootCmd() *cobra.Command {
 		runScorecardCmd(&cfgPath),
 		distributionStatsCmd(&cfgPath),
 		versionCmd(),
+		manifestReadCmd(),
 		healMessagesCmd(&cfgPath),
 		reconcileReposCmd(&cfgPath),
 		dataVerifyCmd(&cfgPath),
@@ -2213,6 +2214,7 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 		logger.Info("maven repositories", "hosts", cfg.Collection.MavenRepositoryHosts())
 		collector.SetDeclaredRepositoryFetch(cfg.Collection.DeclaredRepositoryFetchValue()) // v0.29.184
 		logger.Info("declared repositories", "fetched", cfg.Collection.DeclaredRepositoryFetchValue())
+		installManifestLimits(cfg, logger) // 0.29.213
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
@@ -2226,6 +2228,7 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 		logger.Info("maven repositories", "hosts", cfg.Collection.MavenRepositoryHosts())
 		collector.SetDeclaredRepositoryFetch(cfg.Collection.DeclaredRepositoryFetchValue()) // v0.29.184
 		logger.Info("declared repositories", "fetched", cfg.Collection.DeclaredRepositoryFetchValue())
+		installManifestLimits(cfg, logger) // 0.29.213
 		return cfg
 	}
 	// v0.29.61: a file that EXISTS but does not parse or validate used to

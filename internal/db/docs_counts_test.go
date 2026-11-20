@@ -87,7 +87,7 @@ func TestDocsMatviewCountsMatchSchema(t *testing.T) {
 	// Two sets since v0.29.61: the 8Knot batch in matviews.sql and the
 	// Aveloxis-owned supply-chain pair built from Go. A doc may state
 	// either the 8Knot count or the total; anything else is stale.
-	total := matviews + len(SupplyChainViewNames)
+	total := matviews + len(supplyChainViewNames)
 	valid := map[int]bool{matviews: true, total: true}
 
 	for _, path := range append(allDocsMarkdown(t),

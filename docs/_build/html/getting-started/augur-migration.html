@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Augur Migration &mdash; Aveloxis 0.29.212 documentation</title>
+  <title>Augur Migration &mdash; Aveloxis 0.29.213 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
+      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -297,6 +297,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -748,6 +749,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1015,6 +1017,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>

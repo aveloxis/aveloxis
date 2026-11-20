@@ -3084,7 +3084,9 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 		if err != nil || tableName == "" {
 			return err
 		}
-		table := pgx.Identifier{tableSchema, tableName}.Sanitize()
+		// The name as the log and the error have always shown it (the
+		// statement quotes it; a reader of the log does not need the quotes).
+		table := tableSchema + "." + tableName
 		start := time.Now()
 		if _, err := pg.pool.Exec(ctx, analyzeTableSQL(tableSchema, tableName)); err != nil {
 			return fmt.Errorf("analyze %s: %w", table, err)

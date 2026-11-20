@@ -67,7 +67,10 @@ func TestHistoryClaimContract(t *testing.T) {
 	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
 		body = body[:1+end]
 	}
-	flat := strings.Join(strings.Fields(body), " ")
+	// 0.29.213: the claim's statement is built by historyBackfillClaimSQL;
+	// the needles are looked for in what it BUILDS and in the function
+	// that runs it with its arguments.
+	flat := strings.Join(strings.Fields(body+" "+historyBackfillClaimSQL("")), " ")
 	for _, needle := range []string{
 		"gh_history_backfilled_at IS NULL",
 		"ORDER BY gh_history_backfilled_at ASC NULLS FIRST",
@@ -224,7 +227,10 @@ func TestHistoryClaimExcludesBots(t *testing.T) {
 	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
 		body = body[:1+end]
 	}
-	flat := strings.Join(strings.Fields(body), " ")
+	// 0.29.213: the claim's statement is built by historyBackfillClaimSQL;
+	// the needles are looked for in what it BUILDS and in the function
+	// that runs it with its arguments.
+	flat := strings.Join(strings.Fields(body+" "+historyBackfillClaimSQL("")), " ")
 	for _, needle := range []string{
 		// the v0.27.69 three-marker predicate, applied to gh_login (the
 		// claim's fetch key). v0.28.1: the type test widened to the

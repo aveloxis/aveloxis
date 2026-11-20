@@ -85,6 +85,27 @@ type mavenPomSource struct {
 // section 8); a build past it is named in the log.
 const maxDeclaredRepositoriesAsked = 32
 
+// maxRemotePomCoordinates is how many parent and BOM coordinates ONE
+// analysis asks repositories for (0.29.213). The walk that reads the
+// manifests is given it (manifest.Walk.SetRemotePomLimit) and stops asking
+// there; what it did not ask for is a lookup that failed, never "not found".
+//
+// Why a limit: an import whose coordinates hold a reference each module
+// answers differently is another coordinate for every module, so modules
+// times such imports are all asked for: 194 KB of poms asked 199,651 times
+// (review round 5). Each is a request to a repository, or a row read from
+// the store, and an answer the walk keeps.
+//
+// PROVISIONAL (summary/71, section 8). What an honest build asks for is one
+// request for each distinct parent or BOM in its closure. A build that
+// imports both Spring Boot's and Spring Cloud's BOMs, the widest closure
+// common in the fleet, asks for about a hundred (each imports some thirty
+// BOMs, and each of those has a parent or two); the largest reactor the
+// review built, 2,000 modules, asked for 22. A thousand is ten times the
+// first figure. A build that passes it has what depends on the poms not
+// asked for reported as not obtained, and the log says so with both counts.
+const maxRemotePomCoordinates = 1000
+
 // declaredFetchBudget is how long ONE analysis may spend waiting on the
 // repositories its build files declare. Those hosts, and how many
 // coordinates are asked of them, are chosen by the collected repository,

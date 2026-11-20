@@ -14,6 +14,14 @@
 #
 # TestNoStructuralSkips (scripts/) guards the source side: a skip may only name
 # an environment reason. This census guards the run side: what actually skipped.
+#
+# It also closes the write-policy judge's coverage (0.29.213): every DB-tier
+# package records the store's library calls its tests sent a statement
+# through (AVELOXIS_STATEMENT_SITES_DIR, set here for the run), and after the
+# suite the union must cover every such call of internal/db that is not on
+# the shrink-only baseline internal/db/testdata/unexecuted_statement_sites.txt
+# (internal/db: TestTheSuiteReachesEveryStatementSite). One package's run
+# cannot know what the others reach, so this is where it is checked.
 set -u -o pipefail
 
 if [ -z "${AVELOXIS_TEST_DB:-}" ]; then
@@ -55,6 +63,16 @@ output_text() {
 }
 
 cd "$ROOT" || exit 2
+# Where each DB-tier package writes what it reached. SKIP_CENSUS_SITES: a
+# recorded folder of such records, for this script's own test (no suite ran
+# to write them).
+SITES="$OUT/sites"
+if [ -n "${SKIP_CENSUS_SITES:-}" ]; then
+	SITES="$SKIP_CENSUS_SITES"
+else
+	rm -rf "$SITES"
+	mkdir -p "$SITES" || exit 2
+fi
 if [ -n "${SKIP_CENSUS_SUITE_JSON:-}" ]; then
 	# A recorded suite (the report's own test): no go test run; the suite
 	# "failed" when the recording holds a fail event.
@@ -75,8 +93,18 @@ else
 	# (integration.yml): a closing run without -race read green while every
 	# CI run that executed internal/api under -race raced (0.29.105).
 	# shellcheck disable=SC2086
-	go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} ./... -count=1 -json > "$OUT/suite.json" 2> "$OUT/stderr.txt"
+	AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} ./... -count=1 -json > "$OUT/suite.json" 2> "$OUT/stderr.txt"
 	suite_status=$?
+fi
+
+# The union of what the packages reached, against the store's library calls.
+# Only after a green suite (a failed package wrote no record), and for a
+# recording only when its records are given. The check reads files and
+# source: it runs with no test database and writes no record of its own.
+sites_status=0
+if [ "$suite_status" -eq 0 ] && { [ -z "${SKIP_CENSUS_SUITE_JSON:-}" ] || [ -n "${SKIP_CENSUS_SITES:-}" ]; }; then
+	env -u AVELOXIS_STATEMENT_SITES_DIR AVELOXIS_TEST_DB= AVELOXIS_STATEMENT_SITES_CHECK="$SITES" \
+		go test ./internal/db/ -run '^TestTheSuiteReachesEveryStatementSite$' -count=1 -v > "$OUT/sites-check.txt" 2>&1 || sites_status=1
 fi
 
 # One line per skipped test: "<package> <Test>" (the module path trimmed).
@@ -96,6 +124,9 @@ new="$(comm -23 "$OUT/skipped.txt" "$OUT/baseline.txt")"
 gone="$(comm -13 "$OUT/skipped.txt" "$OUT/required.txt")"
 
 echo "skip-census: $(wc -l < "$OUT/skipped.txt" | tr -d ' ') tests skipped (reviewed $(wc -l < "$OUT/required.txt" | tr -d ' '), host-dependent allowed $(wc -l < "$OUT/allowed.txt" | tr -d ' '))"
+if [ -s "$OUT/sites-check.txt" ] && [ "$sites_status" -eq 0 ]; then
+	grep -o '[0-9]* library calls that take SQL in internal/db; [0-9]* not reached by any DB-tier package' "$OUT/sites-check.txt" | head -1 | sed 's/^/skip-census: statement sites: /'
+fi
 status=0
 if [ -n "$new" ]; then
 	echo "skip-census: FAIL — these tests skipped and are not in the reviewed baseline:"
@@ -153,6 +184,12 @@ if [ "$suite_status" -ne 0 ]; then
 	fi
 	keep_out=1
 	echo "  raw output kept in $OUT (suite.json, stderr.txt)"
+	status=1
+elif [ "$sites_status" -ne 0 ]; then
+	echo "skip-census: FAIL — the write-policy judge's coverage (the store's library calls no DB-tier test sent a statement through):"
+	grep -v '^=== RUN' "$OUT/sites-check.txt" | head -80 | sed 's/^/  /'
+	keep_out=1
+	echo "  raw output kept in $OUT (sites-check.txt, sites/)"
 	status=1
 elif [ -n "$gone" ]; then
 	echo "skip-census: these reviewed entries did not skip this time (they ran, or no test of that name exists any more) — remove them from the baseline (it only shrinks):"

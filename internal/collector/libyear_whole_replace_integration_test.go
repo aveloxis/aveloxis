@@ -148,7 +148,7 @@ func TestLibyearPhaseReplacesTheInventoryWhole(t *testing.T) {
 
 	f.manifest(t, map[string]string{a: "1.0.0", b: "1.0.0"})
 	res := &AnalysisResult{}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, res); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, res); err != nil {
 		t.Fatalf("first analysis: %v", err)
 	}
 	if got := f.inventory(t); len(got) != 2 || res.LibyearDeps != 2 {
@@ -157,7 +157,7 @@ func TestLibyearPhaseReplacesTheInventoryWhole(t *testing.T) {
 
 	f.manifest(t, map[string]string{b: "1.0.0", c: "1.0.0"})
 	res = &AnalysisResult{}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, res); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, res); err != nil {
 		t.Fatalf("second analysis: %v", err)
 	}
 	if got, want := f.inventory(t), []string{b + "@1.0.0", c + "@1.0.0"}; strings.Join(got, ",") != strings.Join(want, ",") {
@@ -187,7 +187,7 @@ func TestAnInterruptedLibyearPhaseKeepsThePreviousInventory(t *testing.T) {
 	})
 	a, b, c := uniq(t, "int-a"), uniq(t, "int-b"), uniq(t, "int-c")
 	f.manifest(t, map[string]string{a: "1.0.0", b: "1.0.0", c: "1.0.0"})
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatalf("the analysis that builds the previous inventory: %v", err)
 	}
 	before := f.inventory(t)
@@ -200,7 +200,7 @@ func TestAnInterruptedLibyearPhaseKeepsThePreviousInventory(t *testing.T) {
 	x, y, z := uniq(t, "int-x"), uniq(t, "int-y"), uniq(t, "int-z")
 	f.manifest(t, map[string]string{x: "1.0.0", y: "1.0.0", z: "1.0.0"})
 	interrupt.Store(true)
-	err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{})
+	err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{})
 	if err == nil {
 		t.Fatal("an interrupted analysis must return an error")
 	}
@@ -222,13 +222,13 @@ func TestALibyearWalkThatFailsAtTheRootKeepsThePreviousInventory(t *testing.T) {
 	f := newWholeReplaceFixture(t, "rootfail", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, npmAnswer) })
 	a := uniq(t, "root-a")
 	f.manifest(t, map[string]string{a: "1.0.0"})
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	before := f.inventory(t)
 
 	gone := filepath.Join(f.dir, "no-such-clone")
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, gone, nil, &AnalysisResult{}); err == nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, gone, f.ac.readClone(context.Background(), f.repoID, gone), nil, &AnalysisResult{}); err == nil {
 		t.Fatal("a walk that fails at the root must fail the phase")
 	}
 	if after := f.inventory(t); len(before) != 1 || strings.Join(after, ",") != strings.Join(before, ",") {
@@ -244,13 +244,13 @@ func TestALibyearWalkThatFailsAtTheRootKeepsThePreviousInventory(t *testing.T) {
 func TestALibyearWalkThatFindsNothingEmptiesTheInventory(t *testing.T) {
 	f := newWholeReplaceFixture(t, "nothing", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, npmAnswer) })
 	f.manifest(t, map[string]string{uniq(t, "none-a"): "1.0.0"})
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(f.dir, "package.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatalf("an empty clone is not a failure: %v", err)
 	}
 	if got := f.inventory(t); len(got) != 0 {
@@ -275,7 +275,7 @@ func TestARegistryAnswerWithANulDoesNotBlockTheReplace(t *testing.T) {
 	})
 	good := uniq(t, "nul-good")
 	f.manifest(t, map[string]string{bad: "1.0.0", good: "1.0.0"})
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatalf("a NUL in a registry answer must not fail the replace: %v", err)
 	}
 	if got := f.inventory(t); len(got) != 2 {
@@ -325,7 +325,7 @@ func TestAnUnreadableCloneKeepsThePreviousDependencyNames(t *testing.T) {
 	})
 	f.manifest(t, map[string]string{"left-pad": "1.0.0", "express": "4.0.0"})
 	res := &AnalysisResult{}
-	if err := f.ac.scanDependencies(context.Background(), f.repoID, f.dir, res); err != nil {
+	if err := f.ac.scanDependencies(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), res); err != nil {
 		t.Fatal(err)
 	}
 	before := f.dependencyNames(t)
@@ -333,7 +333,7 @@ func TestAnUnreadableCloneKeepsThePreviousDependencyNames(t *testing.T) {
 		t.Fatalf("first walk: names %v, counted %d", before, res.Dependencies)
 	}
 
-	if err := f.ac.scanDependencies(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone"), &AnalysisResult{}); err == nil {
+	if err := f.ac.scanDependencies(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone"), f.ac.readClone(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone")), &AnalysisResult{}); err == nil {
 		t.Fatal("a walk that fails at the root must fail the step")
 	}
 	if after := f.dependencyNames(t); strings.Join(after, ",") != strings.Join(before, ",") {
@@ -342,7 +342,7 @@ func TestAnUnreadableCloneKeepsThePreviousDependencyNames(t *testing.T) {
 
 	// A readable clone that now declares one dependency replaces the snapshot.
 	f.manifest(t, map[string]string{"express": "4.0.0"})
-	if err := f.ac.scanDependencies(context.Background(), f.repoID, f.dir, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanDependencies(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.dependencyNames(t); strings.Join(got, ",") != "JavaScript/express" {
@@ -392,7 +392,7 @@ func TestLibyearPhaseWritesTheCoverageHalf(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	cov, found := f.coverage(t)
@@ -442,7 +442,7 @@ func TestAnUnreadableManifestIsRecorded(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
 
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatalf("one unreadable manifest must not fail the phase: %v", err)
 	}
 	cov, _ := f.coverage(t)
@@ -458,12 +458,12 @@ func TestAnUnreadableManifestIsRecorded(t *testing.T) {
 func TestAFailedWalkRecordsTheAttempt(t *testing.T) {
 	f := newWholeReplaceFixture(t, "attempt", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, npmAnswer) })
 	f.manifest(t, map[string]string{uniq(t, "att-a"): "1.0.0"})
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := f.coverage(t)
 
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone"), nil, &AnalysisResult{}); err == nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone"), f.ac.readClone(context.Background(), f.repoID, filepath.Join(f.dir, "no-such-clone")), nil, &AnalysisResult{}); err == nil {
 		t.Fatal("the walk must fail")
 	}
 	after, _ := f.coverage(t)
@@ -481,7 +481,7 @@ func TestAShutdownRecordsNoAttempt(t *testing.T) {
 	defer cancel()
 	f := newWholeReplaceFixture(t, "shutdown", func(http.ResponseWriter, *http.Request) { cancel() })
 	f.manifest(t, map[string]string{uniq(t, "shut-a"): "1.0.0"})
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err == nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err == nil {
 		t.Fatal("a cancelled analysis must return an error")
 	}
 	if _, found := f.coverage(t); found {
@@ -490,7 +490,7 @@ func TestAShutdownRecordsNoAttempt(t *testing.T) {
 	// And when the failure that WOULD be recorded happens during a shutdown
 	// (the walk fails at the root with the context already cancelled), it is
 	// still not recorded.
-	if err := f.ac.scanLibyear(ctx, f.repoID, filepath.Join(f.dir, "no-such-clone"), nil, &AnalysisResult{}); err == nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, filepath.Join(f.dir, "no-such-clone"), f.ac.readClone(ctx, f.repoID, filepath.Join(f.dir, "no-such-clone")), nil, &AnalysisResult{}); err == nil {
 		t.Fatal("the walk must fail")
 	}
 	if _, found := f.coverage(t); found {
@@ -546,7 +546,7 @@ func TestACorruptedManifestKeepsItsDependencies(t *testing.T) {
 	if err := os.WriteFile(svc, []byte(fmt.Sprintf(`{"dependencies":{%q:"1.0.0"}}`, c)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	before := f.inventory(t)
@@ -560,7 +560,7 @@ func TestACorruptedManifestKeepsItsDependencies(t *testing.T) {
 	}
 	for cycle := 1; cycle <= 2; cycle++ {
 		res := &AnalysisResult{}
-		if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, res); err != nil {
+		if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, res); err != nil {
 			t.Fatalf("cycle %d: a manifest that fails must not fail the phase: %v", cycle, err)
 		}
 		if after := f.inventory(t); strings.Join(after, ",") != strings.Join(before, ",") {
@@ -582,7 +582,7 @@ func TestACorruptedManifestKeepsItsDependencies(t *testing.T) {
 	if err := os.Remove(filepath.Join(f.dir, "package.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.inventory(t); len(got) != 1 || !strings.HasPrefix(got[0], c) {
@@ -604,7 +604,7 @@ func TestInventoryRowsNameTheirManifest(t *testing.T) {
 	// The same names again, so the second analysis is answered from the
 	// registry cache: a cached answer must carry THIS dependency's path.
 	for range 2 {
-		if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+		if err := f.ac.scanLibyear(context.Background(), f.repoID, f.dir, f.ac.readClone(context.Background(), f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 			t.Fatal(err)
 		}
 		rows, err := f.store.Pool().Query(context.Background(),

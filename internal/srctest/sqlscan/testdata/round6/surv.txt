@@ -1,0 +1,44 @@
+@@R12 drop foreign table
+DROP FOREIGN TABLE aveloxis_data.repos
+@@R13 drop 3-part
+DROP TABLE mydb.aveloxis_data.repos
+@@R15 object file
+CREATE FUNCTION f() RETURNS void LANGUAGE c AS 'obj', 'sym'
+@@R21 get diagnostics
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN GET DIAGNOSTICS NEW.fe = ROW_COUNT; RETURN NEW; END $$
+@@R29 guard rexpr
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') = 'x'
+@@R33 nested in-place
+(WITH u AS (UPDATE aveloxis_data.repos SET fe = 'x' RETURNING 1) SELECT * FROM u) UNION ALL SELECT 1
+@@R35a guard int const
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, 0) = 0
+@@R35b nullif null
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, 0), $1)
+@@R35c execute int
+DO $$ BEGIN EXECUTE 1; END $$
+@@R37 row is null
+UPDATE aveloxis_data.repos SET fe = $1 WHERE ROW(fe) IS NULL
+@@P08 unknown mark
+UPDATE aveloxis_data.repos SET ar = ‹?›
+@@P08b unknown mark in string
+UPDATE aveloxis_data.repos SET ar = '‹?›'
+@@P11 nullable incoming holds stored
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, fe || $1)
+@@P12 nullif incoming
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF($1, ''), $2)
+@@P14 pn nullif other col
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(repo_name, ''), pn)
+@@P15 pn fallback const
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, ''), 'x')
+@@P16 pnn first other
+UPDATE aveloxis_data.repos SET pnn = COALESCE(repo_name, pnn)
+@@P21 k clock_timestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE clock_timestamp() END
+@@P25 3-part excluded
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET pnn = COALESCE(a.excluded.pnn, repos.pnn)
+@@P31 3-part nullif
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(a.b.c, ''), $1)
+@@P32 now over
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE now() OVER () END
+@@P34 schema now
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE evil.now() END

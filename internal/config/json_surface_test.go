@@ -30,6 +30,8 @@ var frozenCollectionKeys = []string{
 	"osv_pages_per_query",
 	"package_key_fill_rows",
 	"repository_host_check_hours",
+	"manifest_read_cpu_seconds",
+	"manifest_read_memory_mb",
 	"repository_host_registration_check",
 	"repository_host_threat_list_url",
 	"maven_repositories",

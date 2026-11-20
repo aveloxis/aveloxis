@@ -30,10 +30,15 @@
 // through PostgreSQL's own parser (pgread.go); doc.go states what that
 // check guarantees. What remains here serves the other source
 // tripwires (which tables a literal writes, which columns have a writer):
-// Statements, FindWrites, WritesColumn and SetExprs read single backtick
-// literals with patterns, and their known limits are those of patterns:
-// only anonymous $$ blocks are tracked when splitting, a MERGE's INSERT
-// arm is not seen, and SQL comments must be stripped first.
+// Statements splits single backtick literals with patterns; FindWrites and
+// WritesColumn ask the parse tree of every piece the parser reads, and a
+// pattern as well (0.29.213), so a piece that is a whole statement is read
+// as PostgreSQL reads it. What stays a pattern's: a piece that is no whole
+// statement (a fragment, a format with gaps); SQL in a double-quoted Go
+// string or split over two literals, which Statements does not extract;
+// SetExprs. A write through a VIEW of the table is not a write of the
+// table here; in the store the write-policy check refuses any write whose
+// target is not a base table.
 package sqlscan
 
 import (
@@ -48,6 +53,13 @@ import (
 // source file whose backtick literal carried it.
 type Stmt struct {
 	File string
+	// Decl is the top-level declaration the statement was read in, or was
+	// sent from ("PostgresStore.UpsertRepo"); "" where the source of the
+	// statement has none (a fixture, a text read whole from a file).
+	Decl string
+	// Line is the line of the SQL argument the statement was read at (0
+	// where it was not read from an argument).
+	Line int
 	SQL  string
 	// write is the one write of the statement a policy is being judged
 	// on (Check sets it); nil elsewhere.
@@ -140,12 +152,38 @@ func splitStatements(sql string) []string {
 // internal/db helper this engine serves aveloxis_ops tables too). The
 // ONLY and MERGE spellings were added in v0.29.94 (L10 round 2 F2): a
 // writer spelled that way escaped every write-policy pin.
+//
+// A statement PostgreSQL's parser reads is ALSO asked of its parse tree
+// (0.29.213): a target written `schema . table`, `ONLY (schema.table)`,
+// quoted or with a U& escape, and a COPY ... FROM, are writes of the table
+// the pattern does not see. The pattern still answers for a literal that is
+// no whole statement (a fragment, a format with gaps).
 func FindWrites(stmts []Stmt, table string) []Stmt {
 	re := regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE(?:\s+ONLY)?|MERGE\s+INTO)\s+` + regexp.QuoteMeta(table) + `\b`)
 	var out []Stmt
 	for _, s := range stmts {
-		if re.MatchString(s.SQL) {
+		if re.MatchString(s.SQL) || len(treeWrites(s.SQL, table)) > 0 {
 			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// treeWrites are the writes of rows of table (INSERT, UPDATE, MERGE, COPY
+// ... FROM, and the updates of ON CONFLICT and MERGE) that the parse tree
+// of sql shows; none when the parser does not read the text.
+func treeWrites(sql, table string) []Write {
+	ws, err := ParseWrites(sql)
+	if err != nil {
+		return nil
+	}
+	var out []Write
+	for _, w := range ws {
+		switch w.Kind {
+		case "insert", "update", "merge", "conflict-update", "merge-update", "copy":
+			if w.Qualified() == table {
+				out = append(out, w)
+			}
 		}
 	}
 	return out
@@ -172,7 +210,23 @@ func FindWrites(stmts []Stmt, table string) []Stmt {
 // Moved wholesale from internal/db's sqlStatementWritesColumn
 // (v0.27.116) with its fixture table; the one contract change is that
 // `table` is schema-qualified instead of assuming aveloxis_data.
+//
+// A statement the parser reads is also asked of its parse tree (0.29.213):
+// an INSERT that lists no column (and so writes every one), a MERGE's
+// INSERT arm, a COPY's column list, and a target or a column spelled in a
+// way the patterns do not match, all count.
 func (s Stmt) WritesColumn(table, col string) bool {
+	for _, w := range treeWrites(s.SQL, table) {
+		if (w.InsertAll && (w.Kind == "insert" || w.Kind == "merge")) || containsString(w.InsertColumns, col) ||
+			(w.Kind == "copy" && (w.CopyAll || containsString(w.CopyColumns, col))) {
+			return true
+		}
+		for _, it := range w.Sets {
+			if it.Column == col && !it.fieldName {
+				return true
+			}
+		}
+	}
 	insertListRe := regexp.MustCompile(`(?is)INSERT\s+INTO\s+` + regexp.QuoteMeta(table) + `\s*\(([^)]*)\)`)
 	wordRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(col) + `\b`)
 	for _, m := range insertListRe.FindAllStringSubmatch(s.SQL, -1) {
@@ -185,6 +239,15 @@ func (s Stmt) WritesColumn(table, col string) bool {
 	}
 	_, ok := setListMember(s.SQL, col)
 	return ok
+}
+
+func containsString(list []string, s string) bool {
+	for _, e := range list {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }
 
 func setLHSRe(col string) *regexp.Regexp {

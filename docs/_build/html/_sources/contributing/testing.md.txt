@@ -261,24 +261,50 @@ instead of ad-hoc regexes:
   the assignments that belong to a write of `table`: one statement can write
   two tables (a data-modifying CTE and the statement proper). A column written
   by its quoted name (`SET "col" = …`) is that column.
-- `sqlscan.StrictArguments(root, files, env)` (v0.29.212) — every SQL argument
-  of a package, found by type (a call of a database-library function that runs
-  SQL, by object) and classified. There is no evaluator of Go: an argument is
-  read only as a compiler constant; a listed pure function (`fmt.Sprintf`,
-  `strings.Join/Repeat/Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix`,
-  `+`) on compiler constants, by calling it; text built by one of the store's
-  own functions on constants, by running that function (`Env`); fixed text
-  with an integer in it, made with the real `fmt.Sprintf` for several numbers;
-  fixed text whose gaps are a helper's parameters, filled with the constants
-  every caller passes; or a helper's parameter handed on untouched, read at
-  its callers. Anything else is a hole.
+- `sqlscan.StrictArguments(root, files, env)` (v0.29.212; shrunk in v0.29.213)
+  — every SQL argument of a package, found by type (a call of a
+  database-library function that runs SQL, by object) and classified. There is
+  no evaluator of Go: an argument is read only as a compiler constant; a listed
+  pure function on compiler constants, by calling it (`strings.Join/Repeat/
+  Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix`, `+`, and `fmt.Sprintf`
+  with `%s`, `%d` and `%%` only); text built by one of the store's own
+  functions on constants, by running that function (`Env`); or a helper's
+  parameter handed on untouched, read at its callers. Text with a gap in it (a
+  number, a parameter) is NOT read: it is a hole.
 - `sqlscan.CheckSites(args, sites, pins, tests)` — every hole must be
-  registered. An EXECUTED registration names the store's builder function and
-  its inputs, and the check runs the real builder for each input; a finite
-  domain names the test showing an input outside it gives no statement, and
-  an open one may put what varies into the text only through
-  `pgx.Identifier` or a registered quoting helper. Nothing is registered on
-  a person's reading alone: a frozen registration fails the test.
+  registered, which means run. A registration names the store's builder
+  function and its inputs, and the check runs the real builder for each input:
+  the whole of a finite domain (with the test showing an input outside it gives
+  no statement), or, for an open one, representative inputs, where what varies
+  may reach the text only through `pgx.Identifier{...}.Sanitize()`, a
+  registered quoting function, or (a number) `%d` and base-ten `strconv`.
+  Nothing is registered on a person's reading alone.
+- **The run-time judge** (`internal/testdb/writejudge`, v0.29.213) decides.
+  It is a pgx tracer that `testdb.Main` installs for EVERY DB-tier package,
+  on every pool the store builds (the seam is `internal/db/stmttrace.Wrap`,
+  nil in every binary): every statement PRODUCTION code sends (the first frame
+  of the stack in this module is a non-test file) is parsed and judged by the
+  same `CheckIn`, policies and Exceptions, in the test database's own catalog,
+  and a violation fails the package after its tests. A statement a test sends
+  itself is a fixture and is not judged. A statement sent with a
+  `pgx.QueryRewriter` among its arguments (`pgx.NamedArgs` included; nothing in
+  the module uses one) is held against production, because the tracer sees the
+  text before the rewriter runs. The policy registry and the Exceptions live in
+  that package too (`writejudge.Policies`, `writejudge.Exceptions`): one
+  registry for the judge and for the store's static check.
+- **The coverage requirement.** The judge sees only what runs, so every call in
+  `internal/db` of a library function that takes SQL (`sqlscan.RunnerCalls`)
+  must have a statement sent through it by some DB-tier package's tests, or
+  stand on `internal/db/testdata/unexecuted_statement_sites.txt`, which only
+  shrinks. Each package records what it reached when
+  `AVELOXIS_STATEMENT_SITES_DIR` is set; `scripts/skip-census.sh` (the closing
+  suite) sets it and then checks the union
+  (`TestTheSuiteReachesEveryStatementSite`). A new store function that runs SQL
+  therefore needs a DB-tier test, in any package, that reaches it. An ordinary
+  `go test ./internal/db/` judges but does not check coverage: one package
+  cannot know what the others reach. To see what a whole run did not reach,
+  set `AVELOXIS_STATEMENT_SITES_OUT=file` with `AVELOXIS_STATEMENT_SITES_CHECK`
+  pointing at the folder of records.
 - `sqlscan.ParseWrites(sql)` — the writes of a statement, read from the
   parse tree PostgreSQL's own parser gives (`pgread.go`; the parser is
   `github.com/wasilibs/go-pgquery`, the server's grammar compiled to
@@ -289,12 +315,14 @@ instead of ad-hoc regexes:
 - `sqlscan.StrictReferences(root, files)` — references to something that runs
   SQL which no reading of arguments covers (a runner taken as a value, rows
   written with no text, a library type that carries SQL arriving from or
-  leaving to other code).
+  leaving to other code, a query rewriter among a call's arguments, the several
+  results of one call as a runner's arguments, a returned SQL-running function
+  that is held, a helper method of a generic type).
 - `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
   (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
 
-What the write-policy check guarantees, and what it does not, is stated in
-`internal/srctest/sqlscan/doc.go`. The text matchers above (`Statements`,
+What the two checks are for, and what is out of scope (Go written to get
+around them), is stated in `internal/srctest/sqlscan/doc.go`. The text matchers above (`Statements`,
 `FindWrites`, `WritesColumn`, `SetExprs`) remain for the other source
 tripwires, whose flagship consumer is
 `internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
@@ -321,8 +349,9 @@ that function to `columnWriteEnv` | register the function in
 `columnWriteBuilders` with its inputs: the index of each member of a fixed
 list (`indexedBuilders`), every key of a map it looks its input up in
 (`keyedBuilders`), every combination of its bools (`boolBuilders`), or the
-constants its callers pass | last, and only with the maintainer's decision, a
-frozen registration with its reason. Source pins elsewhere in `internal/db`
+constants its callers pass. A registration with nothing run fails the test,
+and an Exception names the file AND the function its statement stands in.
+Source pins elsewhere in `internal/db`
 hold some statements' text in place (the page-cache writer registry, the
 shutdown and dedup pins): moving such text into a builder means re-anchoring
 that pin in the same change.

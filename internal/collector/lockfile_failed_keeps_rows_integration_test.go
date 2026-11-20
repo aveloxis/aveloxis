@@ -72,7 +72,8 @@ func (f *wholeReplaceFixture) write(t *testing.T, rel, body string) {
 
 func (f *wholeReplaceFixture) lockPhase(t *testing.T) error {
 	t.Helper()
-	return f.ac.scanLockfiles(context.Background(), f.repoID, f.dir, collectLockfiles(f.dir, f.ac.logger), &AnalysisResult{})
+	ctx := context.Background()
+	return f.ac.scanLockfiles(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir).lockfiles(), &AnalysisResult{})
 }
 
 const (

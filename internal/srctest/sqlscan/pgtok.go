@@ -4,7 +4,6 @@
 package sqlscan
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -188,86 +187,4 @@ func FragmentWords(piece string) []string {
 
 func wordStart(c byte) bool {
 	return c == '_' || c >= 0x80 || (c|0x20 >= 'a' && c|0x20 <= 'z')
-}
-
-// treeShape is a statement's parse tree with every number in it replaced
-// by a mark (a negative one by another), every run of digits in a name or
-// a string by one mark, and the places of its tokens left out: two texts
-// with one shape are one statement but for their digits. false when the
-// parser refuses the text.
-func treeShape(sql string) (string, bool) {
-	p := parseSQL(sql)
-	if p.err != nil {
-		return "", false
-	}
-	var mask func(v any) any
-	number := func(s string) string {
-		if strings.HasPrefix(strings.TrimSpace(s), "-") {
-			return "-#"
-		}
-		return "#"
-	}
-	mask = func(v any) any {
-		switch t := v.(type) {
-		case []any:
-			out := make([]any, len(t))
-			for i, e := range t {
-				out[i] = mask(e)
-			}
-			return out
-		case jnode:
-			// A numeric constant, whichever of the parser's forms its
-			// size gave it (an integer, or digits kept as text).
-			if kind, b := wrapped(t); kind == "A_Const" || kind == "Integer" || kind == "Float" {
-				for _, k := range []string{"ival", "fval"} {
-					c, ok := b[k]
-					if !ok {
-						continue
-					}
-					if inner, ok := c.(jnode); ok {
-						c = inner[k]
-					}
-					s := "0"
-					switch n := c.(type) {
-					case json.Number:
-						s = n.String()
-					case string:
-						s = n
-					}
-					return jnode{"number": number(s)}
-				}
-			}
-			out := jnode{}
-			for k, e := range t {
-				if k == "stmt_len" || strings.HasSuffix(strings.ToLower(k), "location") {
-					continue
-				}
-				out[k] = mask(e)
-			}
-			return out
-		case json.Number:
-			return number(t.String())
-		case string:
-			var b strings.Builder
-			digits := false
-			for _, c := range t {
-				if c >= '0' && c <= '9' {
-					if !digits {
-						b.WriteByte('#')
-					}
-					digits = true
-					continue
-				}
-				digits = false
-				b.WriteRune(c)
-			}
-			return b.String()
-		}
-		return v
-	}
-	out, err := json.Marshal(mask(p.stmts))
-	if err != nil {
-		return "", false
-	}
-	return string(out), true
 }

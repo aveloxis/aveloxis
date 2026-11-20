@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 
@@ -32,13 +33,21 @@ type parsedLockfile struct {
 	Result *LockfileResult
 }
 
-// collectLockfiles walks workDir for roster lockfiles and parses each.
+// walkLockfiles walks workDir for roster lockfiles and parses each.
 // Best-effort throughout: an unreadable or malformed lockfile logs a
 // WARN and is skipped — the walk itself never fails. Same traversal
-// rules as the manifest walks in analysis.go: symlinks rejected,
+// rules as the manifest walks in manifest_pass.go: symlinks rejected,
 // vendor/node_modules/.git skipped.
-func collectLockfiles(workDir string, logger *slog.Logger) lockfileSet {
-	var out []parsedLockfile
+//
+// It is the lockfile pass, and an analysis runs it in the child process that
+// reads its clone (0.29.213, manifest_child.go), not in the worker: a
+// lockfile is read whole, there is no largest honest one, and what it holds
+// is the repository owner's. The child's memory and CPU limits are its
+// bound.
+//
+// Each lockfile that parses is handed to parsed as it is read, so that the
+// child, which passes it on, holds one lockfile at a time.
+func walkLockfiles(workDir string, logger *slog.Logger, parsed func(parsedLockfile)) ([]model.ManifestFailure, error) {
 	var failed []model.ManifestFailure
 	// v0.27.36: a root-stat failure means zero lockfiles with no signal.
 	walkErr := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
@@ -74,7 +83,7 @@ func collectLockfiles(workDir string, logger *slog.Logger) lockfileSet {
 			// bun.lockb: binary — DETECT for the inventory (kind
 			// marker, zero entries), never parse.
 			res, _ := ParseLockfile(base, nil)
-			out = append(out, parsedLockfile{Path: rel, Result: res})
+			parsed(parsedLockfile{Path: rel, Result: res})
 			return nil
 		}
 		// Through manifest.ReadManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
@@ -91,13 +100,13 @@ func collectLockfiles(workDir string, logger *slog.Logger) lockfileSet {
 			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedParse})
 			return nil
 		}
-		out = append(out, parsedLockfile{Path: rel, Result: res})
+		parsed(parsedLockfile{Path: rel, Result: res})
 		return nil
 	})
 	if walkErr != nil {
 		logger.Warn("lockfile walk failed — the stored lockfile snapshot is left as it is", "dir", workDir, "error", walkErr)
 	}
-	return lockfileSet{Parsed: out, Failed: failed, WalkErr: walkErr}
+	return failed, walkErr
 }
 
 // lockfileSet is what one walk of a clone found: the lockfiles that parsed,
@@ -124,6 +133,20 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	if locks.WalkErr != nil {
 		// Nothing is known about the lockfiles: the snapshot is not
 		// replaced (SR-5: an unreadable clone is not "no lockfiles").
+		var child *errManifestChild
+		if errors.As(locks.WalkErr, &child) {
+			// The reader was stopped at a limit, or failed, before it had
+			// read the lockfiles (0.29.213). Every lockfile row stands as
+			// it is and the scan goes on targeting the versions they hold.
+			// It is logged, with what to change, and NOT recorded as an
+			// inventory attempt: that record means the inventory was not
+			// replaced, and here it may just have been (when the
+			// declarations were not read either, scanLibyear has recorded
+			// the attempt, with this same reason).
+			ac.logger.Log(ctx, manifestFailureLevel(locks.WalkErr, slog.LevelError), "the lockfiles were not read — the stored lockfile rows are kept, and are now older than this analysis",
+				append([]any{"repo_id", repoID, "result", child.Attempt, "to_do", lockfilesUnreadAdvice(child.Attempt), "error", locks.WalkErr},
+					manifestLimits().effective().logLimits()...)...)
+		}
 		return fmt.Errorf("lockfile walk failed (snapshot NOT replaced): %w", locks.WalkErr)
 	}
 	parsed := locks.Parsed
@@ -380,6 +403,16 @@ func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, l
 			add(pl.Path, pl.Result.Ecosystem, e.Name, e.Version)
 		}
 	}
+	if locks.WalkErr != nil {
+		// The lockfiles were not read at all this cycle (0.29.213: the
+		// reader was stopped before it had read them), and every lockfile
+		// row stands. The inventory, if it is replaced, goes on reporting
+		// the versions those rows lock: without this every row fell back to
+		// its declared version for as long as the lockfiles went unread.
+		for _, p := range ac.storedLockfileRows(ctx, repoID) {
+			add(p.LockfilePath, p.Ecosystem, p.PackageName, p.ResolvedVersion)
+		}
+	}
 	if len(locks.Failed) > 0 {
 		paths := make([]string, len(locks.Failed))
 		for i, f := range locks.Failed {
@@ -404,4 +437,52 @@ func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, l
 		out = append(out, *byPath[p])
 	}
 	return out
+}
+
+// storedLockfileRows are the rows the stored snapshot holds for the
+// repository's lockfiles: the direct and the transitive ones, of files the
+// lockfile roster names (the Go build list's rows are stored beside them and
+// are not a lockfile's), less a renv.lock's Bioconductor packages, as for a
+// lockfile read this cycle. If they cannot be read none are offered, and the
+// dependencies report the declared version this cycle.
+func (ac *AnalysisCollector) storedLockfileRows(ctx context.Context, repoID int64) []model.RepoLockfilePackage {
+	direct, err := ac.store.GetRepoLockedVersions(ctx, repoID)
+	var transitive []model.RepoLockfilePackage
+	if err == nil {
+		transitive, err = ac.store.GetRepoTransitivePackagesWithPaths(ctx, repoID)
+	}
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			ac.logger.Warn("the stored lockfile rows could not be read while the lockfiles went unread — dependencies report the declared version this cycle",
+				"repo_id", repoID, "error", err)
+		}
+		return nil
+	}
+	var out []model.RepoLockfilePackage
+	for _, p := range append(direct, transitive...) {
+		if storedRowLocksADependency(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// storedRowLocksADependency reports whether a stored lockfile row is one a
+// lockfile read this cycle would have offered the inventory: a row of a file
+// the lockfile roster names, of the lockfile's own ecosystem.
+func storedRowLocksADependency(p model.RepoLockfilePackage) bool {
+	_, isLockfile := lockfileKinds[path.Base(p.LockfilePath)]
+	return isLockfile && p.Ecosystem != bioconductorEcosystem
+}
+
+// lockfilesUnreadAdvice is what an operator does about lockfiles that went
+// unread, by the reason the reader gave.
+func lockfilesUnreadAdvice(attempt string) string {
+	switch attempt {
+	case model.InventoryAttemptReadMemoryLimit:
+		return "raise collection.manifest_read_memory_mb: a lockfile is read whole, and a pnpm-lock.yaml takes about fifteen times its size"
+	case model.InventoryAttemptReadCPULimit, model.InventoryAttemptReadTimedOut:
+		return "raise collection.manifest_read_cpu_seconds, or look at this repository's build files and lockfiles: one of them takes this long to read"
+	}
+	return "the reader failed and did not say a limit: see the error, and the reader's own output in it"
 }

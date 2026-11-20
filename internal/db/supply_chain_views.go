@@ -32,17 +32,17 @@ import (
 //     (RefreshSupplyChainViews) and by `aveloxis refresh-views` (--set
 //     supply-chain or all), never by the weekly 8Knot rebuild.
 
-// SupplyChainViewNames are the two Aveloxis-owned materialized views, bare
+// supplyChainViewNames are the two Aveloxis-owned materialized views, bare
 // (schema aveloxis_data). The ONE list: the builder, the probe, the refresh,
 // the deploy checklist's count query (SupplyChainViewNamesSQLList) and the
 // tests that keep matviews.sql and matviewNames free of them all read it.
-var SupplyChainViewNames = []string{"explorer_package_exposure", "explorer_package_advisory"}
+var supplyChainViewNames = []string{"explorer_package_exposure", "explorer_package_advisory"}
 
 // SupplyChainViewNamesSQLList renders the pair for an SQL IN list:
 // 'explorer_package_exposure', 'explorer_package_advisory'.
 func SupplyChainViewNamesSQLList() string {
-	quoted := make([]string, 0, len(SupplyChainViewNames))
-	for _, n := range SupplyChainViewNames {
+	quoted := make([]string, 0, len(supplyChainViewNames))
+	for _, n := range supplyChainViewNames {
 		quoted = append(quoted, "'"+n+"'")
 	}
 	return strings.Join(quoted, ", ")
@@ -56,8 +56,8 @@ type supplyChainView struct {
 
 func supplyChainViewDefs() []supplyChainView {
 	return []supplyChainView{
-		{SupplyChainViewNames[0], PackageExposureMatviewSQL(), "(ecosystem, package_name)"},
-		{SupplyChainViewNames[1], PackageAdvisoryMatviewSQL(), "(ecosystem, package_name, vuln_id)"},
+		{supplyChainViewNames[0], PackageExposureMatviewSQL(), "(ecosystem, package_name)"},
+		{supplyChainViewNames[1], PackageAdvisoryMatviewSQL(), "(ecosystem, package_name, vuln_id)"},
 	}
 }
 
@@ -79,14 +79,14 @@ func supplyChainViewIndexSQL(i int) string {
 	return fmt.Sprintf("CREATE UNIQUE INDEX idx_%s_pkg ON aveloxis_data.%s %s", v.name, v.name, v.index)
 }
 
-// The two refresh statements for the i-th of SupplyChainViewNames.
+// The two refresh statements for the i-th of supplyChainViewNames.
 func supplyChainRefreshConcurrentlySQL(i int) string {
-	name := "aveloxis_data." + SupplyChainViewNames[i]
+	name := "aveloxis_data." + supplyChainViewNames[i]
 	return fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name)
 }
 
 func supplyChainRefreshSQL(i int) string {
-	name := "aveloxis_data." + SupplyChainViewNames[i]
+	name := "aveloxis_data." + supplyChainViewNames[i]
 	return fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name)
 }
 
@@ -189,13 +189,13 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 		logger.Info("supply-chain views already exist, left alone at startup (their data refreshes on collection.supply_chain_refresh_hours; a changed definition lands on the next `aveloxis migrate`)",
 			"views", len(present))
 	}
-	return builtCount == len(SupplyChainViewNames), errors.Join(failed...)
+	return builtCount == len(supplyChainViewNames), errors.Join(failed...)
 }
 
 // supplyChainViewsPresentSet names the members of the pair that exist.
 func supplyChainViewsPresentSet(ctx context.Context, pg *PostgresStore) (map[string]bool, error) {
 	rows, err := pg.pool.Query(ctx,
-		`SELECT matviewname FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, SupplyChainViewNames)
+		`SELECT matviewname FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, supplyChainViewNames)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func RefreshSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slo
 		return nil
 	}
 	var failed []error
-	for i, name := range SupplyChainViewNames {
+	for i, name := range supplyChainViewNames {
 		if !present[name] {
 			continue
 		}

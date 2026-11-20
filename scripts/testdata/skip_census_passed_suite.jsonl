@@ -1,0 +1,4 @@
+{"Time":"2026-11-20T00:00:00Z","Action":"start","Package":"github.com/aveloxis/aveloxis/internal/goodpkg"}
+{"Time":"2026-11-20T00:00:00Z","Action":"run","Package":"github.com/aveloxis/aveloxis/internal/goodpkg","Test":"TestFine"}
+{"Time":"2026-11-20T00:00:01Z","Action":"pass","Package":"github.com/aveloxis/aveloxis/internal/goodpkg","Test":"TestFine","Elapsed":0.01}
+{"Time":"2026-11-20T00:00:01Z","Action":"pass","Package":"github.com/aveloxis/aveloxis/internal/goodpkg","Elapsed":0.02}

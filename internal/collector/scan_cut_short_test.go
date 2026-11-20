@@ -88,7 +88,7 @@ func TestAScanStoppedWhileItMarksReturnsTheCancellation(t *testing.T) {
 			if withDeps {
 				f.manifest(t, map[string]string{uniq(t, "cut-a"): "1.0.0"})
 			}
-			if err := f.ac.scanLibyear(bg, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+			if err := f.ac.scanLibyear(bg, f.repoID, f.dir, f.ac.readClone(bg, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 				t.Fatal(err)
 			}
 			var logged bytes.Buffer

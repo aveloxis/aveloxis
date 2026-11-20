@@ -383,7 +383,6 @@ internal/collector/staged_events_single_pass_test.go internal/collector/staged.g
 internal/collector/staged_events_single_pass_test.go internal/platform/github/client.go
 internal/collector/staged_events_single_pass_test.go internal/platform/gitlab/client.go
 internal/collector/staged_events_single_pass_test.go internal/platform/platform.go
-internal/collector/symlink_test.go internal/collector/analysis.go
 internal/collector/threading_mode_test.go internal/collector/staged.go
 internal/collector/threading_mode_test.go internal/config/config.go
 internal/collector/threading_mode_test.go internal/scheduler/scheduler.go
@@ -392,7 +391,6 @@ internal/collector/tools_ensure_current_test.go cmd/aveloxis/upgrade_tools_cmd.g
 internal/collector/tools_ensure_current_test.go internal/collector/tools.go
 internal/collector/tools_gobin_test.go internal/collector/tools.go
 internal/collector/tools_libmagic_test.go internal/collector/tools.go
-internal/collector/version_hygiene_test.go internal/collector/analysis.go
 internal/collector/version_hygiene_test.go internal/collector/vulnerability.go
 internal/collector/vuln_targets_test.go internal/collector/analysis.go
 internal/collector/vuln_targets_test.go internal/collector/vulnerability.go
@@ -470,11 +468,7 @@ internal/db/cntrb_id_fk_indexes_test.go internal/db/migrate.go
 internal/db/code_review_round_2026_09_06_test.go internal/db/commit_resolver_store.go
 internal/db/code_review_round_2026_09_06_test.go internal/db/mailinglist_sender_resolve_store.go
 internal/db/collections_store_test.go internal/db/collections_store.go
-internal/db/column_write_policy_test.go internal/db/contributors.go
-internal/db/column_write_policy_test.go internal/db/migrate.go
-internal/db/column_write_policy_test.go internal/db/repo_forge_id_changes.go
 internal/db/column_write_policy_test.go internal/db/repo_gone.go
-internal/db/column_write_policy_test.go internal/db/repo_metadata.go
 internal/db/columnfill_diff_test.go cmd/aveloxis/data_test_cmd.go
 internal/db/commit_batch_test.go internal/db/commit_batch.go
 internal/db/commit_bounds_db_test.go internal/db/analytics_store.go

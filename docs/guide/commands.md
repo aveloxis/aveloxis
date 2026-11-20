@@ -2132,6 +2132,14 @@ aveloxis version
 
 ---
 
+## `aveloxis manifest-read`
+
+Not a command to run by hand, and not listed by `--help`. Each analysis starts it once, to read one repository's clone in a process of its own: the dependency names, then the declarations and their versions, then the lockfiles. It takes its request on standard input and answers on standard output. It reads no configuration file, opens no database connection and makes no network request; when a Maven build needs a parent pom or a BOM that is not in the clone, it asks the analysis that started it, which answers from the configured repositories as before.
+
+It exists so that what a repository's files say cannot hold a collection worker, or the host's memory, past two limits: `collection.manifest_read_cpu_seconds` (default 120) and `collection.manifest_read_memory_mb` (default 1024). The process watches its own processor time and memory and ends itself when it passes either; the analysis also stops it if it runs too long by the clock, and it ends itself if the analysis that started it is gone. What a stopped reading leaves behind is described in [the analysis architecture page](../architecture/analysis.md) and, for an operator, in [troubleshooting](troubleshooting.md).
+
+---
+
 ## Global behavior
 
 ### Config file

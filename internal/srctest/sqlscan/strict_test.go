@@ -76,7 +76,8 @@ func TestAnArgumentIsReadOnlyWhenTheCompilerCallsItAConstant(t *testing.T) {
 // one (a verb counted, a flag skipped) would differ from it.
 func TestAPureCallOnConstantsIsRun(t *testing.T) {
 	for src, want := range map[string]string{
-		`fmt.Sprintf("SELECT %s, %[1]q, %5.2f, %-4d|%v%%", "a", 1.5, 7, true)`: fmt.Sprintf("SELECT %s, %[1]q, %5.2f, %-4d|%v%%", "a", 1.5, 7, true),
+		`fmt.Sprintf("SELECT %s, %[1]s, %d|%[2]d%%", "a", 7)`:               "SELECT a, a, 7|7%",
+		`fmt.Sprintf("LIMIT %d", uint8(200))`:                               "LIMIT 200",
 		`strings.Repeat("?, ", 3)`:                                          strings.Repeat("?, ", 3),
 		`strings.ReplaceAll("a.b.c", ".", "_")`:                             strings.ReplaceAll("a.b.c", ".", "_"),
 		`strings.Replace("a.b.c", ".", "_", 2-1)`:                           strings.Replace("a.b.c", ".", "_", 1),
@@ -95,6 +96,12 @@ func TestAPureCallOnConstantsIsRun(t *testing.T) {
 	// One argument that is not a compiler constant of a basic type, and
 	// the whole call is not read; so is a call fmt itself complains of.
 	for _, src := range []string{
+		// Round 6: only %s, %d and %% are read, each with a constant of its
+		// own kind: every other verb's output depends on the Go type the
+		// value has in the program, which the reading does not hand it.
+		`fmt.Sprintf("UPDATE aveloxis_data.repos SET %.1Tpdated_at = NULL", uint(1))`, `fmt.Sprintf("SELECT %v", 1)`, `fmt.Sprintf("SELECT %q", "a")`, `fmt.Sprintf("SELECT %5d", 1)`,
+		`fmt.Sprintf("SELECT %c", 59)`, `fmt.Sprintf("SELECT %x", 255)`, `fmt.Sprintf("SELECT %s", 1)`, `fmt.Sprintf("SELECT %d", 1.5)`, `fmt.Sprintf("SELECT %t", true)`,
+		`fmt.Sprintf("SELECT %[3]s", "a")`, `fmt.Sprintf("SELECT %[x]s", "a")`, `fmt.Sprintf("SELECT %", "a")`, `fmt.Sprintf("SELECT %s %s", "a")`, `fmt.Sprintf("SELECT %s", "a", "b")`,
 		`fmt.Sprintf("SELECT %s", os.Getenv("X"))`, `fmt.Sprintf(os.Getenv("F"), "a")`, `fmt.Sprintf("SELECT %d", "a")`, `fmt.Sprintf("SELECT %s")`,
 		`fmt.Sprintf("SELECT %s", []any{"a"}...)`, `strings.Repeat("?", len(os.Args))`, `strings.Join([]string{"a", os.Getenv("X")}, ",")`, `strings.Join([]string{"a"}, os.Getenv("S"))`,
 		`strings.Join(os.Args, ",")`, `strings.Join([]string{2: "c", 0: "a"}, ",")`, `strings.Join(append([]string{"a"}, "b"), ",")`, `strings.ToUpper("select 1")`, `fmt.Sprint("SELECT 1")`,
@@ -461,6 +468,27 @@ func f(ctx context.Context, tx pool) { Run(ctx, tx, "SELECT 1") }`,
 		"a call by reflection":      `func f(p *pgxpool.Pool) { reflect.ValueOf(p).MethodByName("Exec") }`,
 		"rows written with no text": `func f(ctx context.Context, p *pgxpool.Pool) { p.CopyFrom(ctx, pgx.Identifier{"t"}, []string{"a"}, nil) }`,
 		"a batch-taking literal whose variable has its address taken": `func f(ctx context.Context, p *pgxpool.Pool) { h := func(b *pgx.Batch) { p.SendBatch(ctx, b) }; g := &h; (*g)(&pgx.Batch{}) }`,
+		// Round 6.
+		"the several results of one call as a runner's arguments": `func two() (context.Context, string) { return context.Background(), "UPDATE aveloxis_data.repos SET repo_git = 'x'" }
+func f(p *pgxpool.Pool) { p.Exec(two()) }`,
+		"the several results of one call as a helper's arguments": `func run(ctx context.Context, tx pool, q string) { tx.Exec(ctx, q) }
+func three(tx pool) (context.Context, pool, string) { return context.Background(), tx, "UPDATE aveloxis_data.repos SET repo_git = 'x'" }
+func f(ctx context.Context, tx pool) { run(ctx, tx, "SELECT 1"); run(three(tx)) }`,
+		"a query rewriter among a runner's arguments": `type rw struct{}
+func (rw) RewriteQuery(ctx context.Context, c *pgx.Conn, sql string, a []any) (string, []any, error) { return "UPDATE aveloxis_data.repos SET repo_git = 'x'", nil, nil }
+func f(ctx context.Context, p *pgxpool.Pool) { p.Exec(ctx, "SELECT 1", rw{}) }`,
+		"the library's own rewriter":   `func f(ctx context.Context, p *pgxpool.Pool) { p.Exec(ctx, "SELECT @a", pgx.NamedArgs{"a": 1}) }`,
+		"a rewriter queued on a batch": `func f(b *pgx.Batch) { b.Queue("SELECT @a", pgx.NamedArgs{"a": 1}) }`,
+		"a returned SQL-running function held": `func mk(tx pool) func(context.Context, string) { return func(ctx context.Context, q string) { tx.Exec(ctx, q) } }
+func f(ctx context.Context, tx pool) { mk(tx)(ctx, "SELECT 1"); g := mk(tx); g(ctx, "UPDATE aveloxis_data.repos SET repo_git = 'x'") }`,
+		"a returned SQL-running function passed on": `func mk(tx pool) func(context.Context, string) { return func(ctx context.Context, q string) { tx.Exec(ctx, q) } }
+func use(g func(context.Context, string)) { g(context.Background(), "UPDATE aveloxis_data.repos SET repo_git = 'x'") }
+func f(ctx context.Context, tx pool) { mk(tx)(ctx, "SELECT 1"); use(mk(tx)) }`,
+		"a helper method of a generic type": `type G[T any] struct{ tx pool }
+func (g G[T]) run(ctx context.Context, q string) { g.tx.Exec(ctx, q) }
+type r interface{ run(context.Context, string) }
+func ok(ctx context.Context, x r) { x.run(ctx, "SELECT 1") }
+func f(ctx context.Context, tx pool) { G[int]{tx}.run(ctx, "UPDATE aveloxis_data.repos SET repo_git = 'x'") }`,
 	} {
 		refs, err := StrictReferences(typedRoot, typedFiles(src))
 		if err != nil {
@@ -478,6 +506,24 @@ func send(ctx context.Context, p *pgxpool.Pool, b *pgx.Batch) { p.SendBatch(ctx,
 func f(ctx context.Context, tx pool, p *pgxpool.Pool) { run(ctx, tx, "SELECT 1"); b := &pgx.Batch{}; b.Queue("SELECT 1"); send(ctx, p, b) }`))
 	if err != nil || len(refs) != 0 {
 		t.Errorf("ordinary helpers were reported: %v %+v", err, refs)
+	}
+	// Nor are a generic FUNCTION (its calls name the one object, and are
+	// read), a returned function called where it is made, and arguments
+	// that are no rewriter.
+	refs, err = StrictReferences(typedRoot, typedFiles(`func read[T any](ctx context.Context, tx pool, q string, args ...any) { tx.Exec(ctx, q, args...) }
+func mk(tx pool) func(context.Context, string) { return func(ctx context.Context, q string) { tx.Exec(ctx, q) } }
+func f(ctx context.Context, tx pool, id int64) { read[int](ctx, tx, "SELECT 1", id, "x"); mk(tx)(ctx, "SELECT 2") }`))
+	if err != nil || len(refs) != 0 {
+		t.Errorf("forms the reading follows were reported: %v %+v", err, refs)
+	}
+	args := strictOf(t, `func read[T any](ctx context.Context, tx pool, q string) { tx.Exec(ctx, q) }
+func f(ctx context.Context, tx pool) { read[int](ctx, tx, "`+forbidden+`") }`, Env{})
+	seen := false
+	for _, a := range args {
+		seen = seen || (a.Kind == StrictConstant && a.Text == forbidden)
+	}
+	if !seen {
+		t.Errorf("the SQL handed to a generic function was not read at its call: %+v", args)
 	}
 }
 
@@ -559,6 +605,37 @@ func TestAnOpenBuilderMayOnlyQuoteWhatVaries(t *testing.T) {
 			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
 		"copied to a local first": {`func b(t string) string { u := t; return "SELECT 1 FROM " + pgx.Identifier{u}.Sanitize() }`, `os.Getenv("A")`,
 			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
+		// Round 6: the ways what varies reached the text unquoted.
+		"an Identifier indexed, not sanitized": {`func b(t string) string { return "SELECT 1 FROM " + pgx.Identifier{t}[0] }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
+		"an Identifier joined, not sanitized": {`func b(t string) string { return "SELECT 1 FROM " + strings.Join(pgx.Identifier{t}, ".") }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
+		"a converted list indexed, not sanitized": {`func b(parts []string) string { return "SELECT 1 FROM " + pgx.Identifier(parts)[0] }`, `os.Args`,
+			Site{Tuples: [][]string{{"s.t"}}, Open: "the table"}, false},
+		"a string ranged over, character by character": {`func b(t string) string { var sb strings.Builder; for _, r := range t { sb.WriteRune(r) }; return "SELECT 1 FROM " + sb.String() }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
+		"a list ranged into a variable declared elsewhere": {`func b(cols []string) string { out := "SELECT 1"; var c string; for _, c = range cols { out += ", " + c }; return out }`, `os.Args`,
+			Site{Tuples: [][]string{{"a"}}, Open: "the columns"}, false},
+		"a method named like a registered quoter": {`type T struct{}; func (T) quote(s string) string { return s }; func b(t string) string { return "SELECT 1 FROM " + T{}.quote(t) }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"t"}}, Open: "the table", Quoters: map[string]string{"quote": "TestQuote"}}, false},
+		"a number copied, then written as a character": {`func b(n int) string { m := n; return "SELECT 1 " + string(rune(m)) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number in a list of bytes": {`func b(n int) string { return "SELECT 1 " + string([]byte{byte(n)}) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number written in base 36": {`func b(n int) string { return "SELECT 1 " + strconv.FormatInt(int64(n), 36) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number written as a quoted character": {`func b(n int) string { return "SELECT 1 " + strconv.QuoteRune(rune(n)) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number written in base ten": {`func b(n int) string { return "SELECT 1 LIMIT " + strconv.FormatInt(int64(n), 10) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, true},
+		"a number that bounds a loop of placeholders": {`func b(n int) string { out := "SELECT 1"; for i := 0; i < n; i++ { out += fmt.Sprintf(", $%d", i+1) }; return out }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"2"}}, Open: "the row count"}, true},
+		"a number of a declared type": {`type level uint; func (level) String() string { return "; DROP TABLE x" }; func b(n level) string { return fmt.Sprintf("SELECT 1 LIMIT %v", n) }`, `level(len(os.Args))`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"bools, the same combination twice": {`func b(x bool) string { if x { return "UPDATE aveloxis_data.repos SET repo_git = 'x'" }; return "SELECT 2" }`, `len(os.Args) > 1`,
+			Site{Tuples: [][]string{{"false"}, {"false"}}}, false},
+		"bools, an input that is no bool": {`func b(x bool) string { if x { return "SELECT 1" }; return "SELECT 2" }`, `len(os.Args) > 1`,
+			Site{Tuples: [][]string{{"false"}, {"yes"}}}, false},
 		"bools, every combination": {`func b(x, y bool) string { if x && y { return "SELECT 1" }; return "SELECT 2" }`, `len(os.Args) > 1, len(os.Args) > 2`,
 			Site{Tuples: [][]string{{"false", "false"}, {"false", "true"}, {"true", "false"}, {"true", "true"}}}, true},
 		"bools, one combination missing": {`func b(x, y bool) string { if x && y { return "SELECT 1" }; return "SELECT 2" }`, `len(os.Args) > 1, len(os.Args) > 2`,
@@ -599,6 +676,18 @@ func stmt(tbl, col string, n int) string { return tbl + col }
 func (T) helper(ctx context.Context, tx pool, tbl, col string) { q := stmt(tbl, col, 7); tx.Exec(ctx, q) }
 func f(ctx context.Context, tx pool, r runs) { T{}.helper(ctx, tx, "s.t", "a"); r.helper(ctx, tx, os.Getenv("T"), "b") }`,
 		"nothing calls it": base,
+		// Round 6: a variadic parameter holds every further argument of a
+		// call; its first is not the builder's input.
+		"the parameter is variadic": `func stmt(cols []string) string { return fmt.Sprint(cols) }
+func helper(ctx context.Context, tx pool, cols ...string) { tx.Exec(ctx, stmt(cols)) }
+func f(ctx context.Context, tx pool) { helper(ctx, tx, "a", "b") }`,
+		"the parameter is variadic and spread": `func stmt(cols ...string) string { return fmt.Sprint(cols) }
+func helper(ctx context.Context, tx pool, cols ...string) { tx.Exec(ctx, stmt(cols...)) }
+func f(ctx context.Context, tx pool) { helper(ctx, tx, "a", "b") }`,
+		"a variadic parameter handed on as one value": `func stmt(c string) string { return "SELECT " + c }
+func pick(cols ...string) string { return cols[len(cols)-1] }
+func helper(ctx context.Context, tx pool, cols ...string) { c := pick(cols...); tx.Exec(ctx, stmt(c)) }
+func f(ctx context.Context, tx pool) { helper(ctx, tx, "a", "b") }`,
 	} {
 		args, err := StrictArguments(typedRoot, typedFiles(src), Env{})
 		if err != nil {
@@ -661,84 +750,28 @@ func f(ctx context.Context, tx pool, p page) { helper(ctx, tx, "SELECT a FROM s.
 	}
 }
 
-// Fixed text with a number in it is read by making it, with the real
-// fmt.Sprintf, for several numbers, and only when the number never changes
-// the statement's parse tree.
-func TestFixedTextWithANumberInItIsReadByMakingIt(t *testing.T) {
-	for name, c := range map[string]struct {
-		body string
-		want string // the statement for the first probe, 1; "" when it must not be read
-	}{
-		"a savepoint named by a counter": {`sp := fmt.Sprintf("cntrb_sp_%d", *n); tx.Exec(ctx, "SAVEPOINT "+sp)`, "SAVEPOINT cntrb_sp_1"},
-		"a limit":                        {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d OFFSET %d", *n, 10))`, "SELECT a FROM s.t LIMIT 1 OFFSET 10"},
-		"a number in a string":           {`tx.Exec(ctx, fmt.Sprintf("SELECT 'v%d' FROM s.t", *n))`, "SELECT 'v1' FROM s.t"},
-		"a width":                        {`tx.Exec(ctx, fmt.Sprintf("SELECT %05d", *n))`, "SELECT 00001"},
-		"written in hexadecimal (letters or digits, by the number)": {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %x", *n))`, ""},
-		"a declared integer type (it may print through a method)":   {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d", level(*n)))`, ""},
-		"a signed number where a sign is a token":                   {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d", *s))`, ""},
-		"a signed number as a name's digits":                        {`sp := fmt.Sprintf("cntrb_sp_%d", *s); tx.Exec(ctx, "SAVEPOINT "+sp)`, ""},
-		"a signed number that could begin a comment":                {`tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a -%d WHERE b IS NULL", *s))`, ""},
-		"a signed number converted to an unsigned one":              {`sp := fmt.Sprintf("cntrb_sp_%d", uint(*s)); tx.Exec(ctx, "SAVEPOINT "+sp)`, "SAVEPOINT cntrb_sp_1"},
-		"written as a character":                                    {`tx.Exec(ctx, fmt.Sprintf("SELECT 1 %c UPDATE aveloxis_data.repos SET repo_git = 'x'", *n))`, ""},
-		"a verb that does not take it":                              {`tx.Exec(ctx, fmt.Sprintf("SELECT %s", *n))`, ""},
-		"an unsigned number behind a minus (it cannot be negative)": {`tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a -%d WHERE b IS NULL", *n))`, "UPDATE s.t SET a = a -1 WHERE b IS NULL"},
-		"text under a verb that takes anything":                     {`tx.Exec(ctx, fmt.Sprintf("SELECT %v", os.Getenv("T")))`, ""},
-		"text, not a number":                                        {`tx.Exec(ctx, fmt.Sprintf("SELECT %d FROM %s", *n, os.Getenv("T")))`, ""},
-		"text joined on":                                            {`tx.Exec(ctx, fmt.Sprintf("SELECT %d", *n)+os.Getenv("T"))`, ""},
-		"a local given twice":                                       {`sp := fmt.Sprintf("sp_%d", *n); sp = os.Getenv("T"); tx.Exec(ctx, "SAVEPOINT "+sp)`, ""},
-		"no number at all":                                          {`tx.Exec(ctx, os.Getenv("T"))`, ""},
+// Round 6: text with a gap in it is NOT read, whatever fills the gap: a
+// number (the reading that made the statement for sample numbers passed a
+// %c in a comment and a %T anywhere), or a parameter (the reading that
+// filled it with what the callers pass took a variadic parameter's first
+// argument for all of them, and an `any` for its text). Each is a hole,
+// and a hole is registered: a builder of the store, run.
+func TestTextWithAGapInItIsAHole(t *testing.T) {
+	for name, body := range map[string]string{
+		"a savepoint named by a counter":        `sp := fmt.Sprintf("cntrb_sp_%d", *n); tx.Exec(ctx, "SAVEPOINT "+sp)`,
+		"a limit":                               `tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d OFFSET %d", *n, 10))`,
+		"a number in a string":                  `tx.Exec(ctx, fmt.Sprintf("SELECT 'v%d' FROM s.t", *n))`,
+		"a number written as its type":          `tx.Exec(ctx, fmt.Sprintf("UPDATE aveloxis_data.repos SET %.1Tpdated_at = NULL", *n))`,
+		"a number as a character, in a comment": `tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a --%c, repo_git = 'x'", *n))`,
+		"a parameter":                           `tx.Exec(ctx, "DELETE FROM "+table+" WHERE id = $1")`,
+		"a parameter under a verb":              `tx.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = $1", table))`,
+		"every further argument of a call":      `tx.Exec(ctx, fmt.Sprintf("SELECT 1 -- %s", rest))`,
+		"anything at all":                       `tx.Exec(ctx, fmt.Sprintf("SELECT %q", v))`,
 	} {
-		a := one(t, `type level uint
-func (level) Format(f fmt.State, _ rune) { fmt.Fprint(f, "1; UPDATE aveloxis_data.repos SET repo_git = 'x'") }
-func f(ctx context.Context, tx pool, n *uint, s *int) { _ = s; `+c.body+` }`, Env{})
-		switch {
-		case c.want == "" && a.Kind != StrictHole:
-			t.Errorf("%s: read as %s %q", name, a.Kind, a.Texts)
-		case c.want != "" && (a.Kind != StrictNumbered || len(a.Texts) == 0 || a.Texts[0] != c.want):
-			t.Errorf("%s: %s %q, want numbered, first %q", name, a.Kind, a.Texts, c.want)
-		}
-	}
-	// Every statement made is handed to the policy check.
-	rep := siteProbe(t, `func f(ctx context.Context, tx pool, n *uint) { tx.Exec(ctx, fmt.Sprintf("UPDATE aveloxis_data.repos SET repo_git = 'r%d'", *n)) }`, nil, nil)
-	if len(rep.Problems) != 0 || rep.Numbered != 1 || len(Check(rep.Statements, repoGit, nil).Violations) != len(rep.Statements) || len(rep.Statements) < 2 {
-		t.Errorf("a numbered forbidden write: problems %v, %d numbered, %d statements", rep.Problems, rep.Numbered, len(rep.Statements))
-	}
-}
-
-// Fixed text whose gaps are a helper's own parameters is read at the
-// helper's callers: made by the real fmt.Sprintf with what each passes,
-// when every one passes text the reading reads.
-func TestFixedTextFilledByItsCallersConstants(t *testing.T) {
-	const helper = `func rotate(ctx context.Context, tx pool, table, history string, id int64) {
-	tx.Exec(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE id = $1", history, table), id)
-	stmt := "DELETE FROM " + table + " WHERE id = $1"
-	tx.Exec(ctx, stmt, id)
-}
-`
-	args := strictOf(t, helper+`func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.a_history", 1); rotate(ctx, tx, "s.b", "s.b_history", 2) }`, Env{})
-	if len(args) != 2 || args[0].Kind != StrictFromCallers || args[1].Kind != StrictFromCallers {
-		t.Fatalf("kinds: %+v", args)
-	}
-	got := strings.Join(append(append([]string{}, args[0].Texts...), args[1].Texts...), " | ")
-	want := "INSERT INTO s.a_history SELECT * FROM s.a WHERE id = $1 | INSERT INTO s.b_history SELECT * FROM s.b WHERE id = $1 | DELETE FROM s.a WHERE id = $1 | DELETE FROM s.b WHERE id = $1"
-	if got != want {
-		t.Errorf("got  %s\nwant %s", got, want)
-	}
-	for name, src := range map[string]string{
-		"a caller passes a variable":                                           helper + `func f(ctx context.Context, tx pool, x string) { rotate(ctx, tx, x, "h", 1) }`,
-		"the helper is exported":                                               strings.Replace(helper, "func rotate(", "func Rotate(", 1) + `func f(ctx context.Context, tx pool) { Rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"a gap is not a parameter":                                             strings.Replace(helper, "history, table), id)", "history, os.Getenv(\"T\")), id)", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"the parameter is changed":                                             strings.Replace(helper, "\tstmt :=", "\ttable = os.Getenv(\"T\")\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"the parameter is changed by a closure that captures it":               strings.Replace(helper, "\tstmt :=", "\tfunc() { table = os.Getenv(\"T\") }()\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"the parameter's address is taken":                                     strings.Replace(helper, "\tstmt :=", "\tp := &table\n\t_ = p\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"a caller reached through a function value":                            helper + `func f(ctx context.Context, tx pool) { r := rotate; r(ctx, tx, "s.a", "s.h", 1) }`,
-		"a caller through a method value":                                      strings.Replace(helper, "func rotate(", "type T struct{}\n\nfunc (T) rotate(", 1) + `func f(ctx context.Context, tx pool) { r := T{}.rotate; r(ctx, tx, "s.a", "s.h", 1) }`,
-		"a caller that is the helper itself (the constants are never reached)": strings.Replace(helper, "\tstmt :=", "\tif id > 0 {\n\t\trotate(ctx, tx, table, history, id-1)\n\t}\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"no caller in the files read (a _test file's call is not read)":        helper,
-	} {
-		for _, a := range strictOf(t, src, Env{}) {
-			if a.Kind == StrictFromCallers && !(name == "a gap is not a parameter" && strings.HasPrefix(a.Texts[0], "DELETE")) {
-				t.Errorf("%s: read from callers: %q", name, a.Texts)
+		for _, a := range strictOf(t, `func helper(ctx context.Context, tx pool, n *uint, table string, v any, rest ...string) { `+body+` }
+func f(ctx context.Context, tx pool, n *uint) { helper(ctx, tx, n, "s.t", 39, "safe", "\n, repo_git = 'x' --") }`, Env{}) {
+			if a.Kind != StrictHole {
+				t.Errorf("%s: read as %s %q", name, a.Kind, a.Text)
 			}
 		}
 	}

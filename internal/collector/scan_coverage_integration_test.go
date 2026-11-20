@@ -124,7 +124,7 @@ func TestAKnownEmptyInventoryClosesStaleFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An analysis of a clone with no manifest.
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ScanVulnerabilities(ctx, f.store, f.repoID, logger, nil, true); err != nil {
@@ -150,7 +150,7 @@ func TestAFirstScanIsRecordedOnce(t *testing.T) {
 	queries := stubOSV(t, nil)
 	ctx := context.Background()
 	f.manifest(t, map[string]string{uniq(t, "scan-a"): "1.0.0", uniq(t, "scan-b"): "1.0.0"})
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ScanVulnerabilities(ctx, f.store, f.repoID, logger, nil, true); err != nil {
@@ -181,7 +181,7 @@ func TestAFailedScanIsRecordedAndAShutdownIsNot(t *testing.T) {
 	stubOSV(t, &fail)
 	ctx := context.Background()
 	f.manifest(t, map[string]string{uniq(t, "fail-a"): "1.0.0"})
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, nil, &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, f.ac.readClone(ctx, f.repoID, f.dir), nil, &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ScanVulnerabilities(ctx, f.store, f.repoID, logger, nil, true); err == nil {

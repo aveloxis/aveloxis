@@ -318,7 +318,12 @@ func TestCoverageLines(t *testing.T) {
 	if CoverageAbsenceClause(&failed) != "scan failed" || CoverageAbsenceClause(nil) != CoverageNotKnownWording {
 		t.Errorf("clauses: %q, %q", CoverageAbsenceClause(&failed), CoverageAbsenceClause(nil))
 	}
-	for _, r := range []string{model.InventoryAttemptCloneUnavailable, model.InventoryAttemptRootUnreadable, model.InventoryAttemptReplaceFailed} {
+	// Every result the store accepts (model's list), so that a new one
+	// cannot be recorded and then shown as its raw value.
+	if len(model.InventoryAttemptResults()) < 7 {
+		t.Fatalf("model lists %d attempt results", len(model.InventoryAttemptResults()))
+	}
+	for _, r := range model.InventoryAttemptResults() {
 		if AnalysisAttemptReasonWording(r) == "" || AnalysisAttemptReasonWording(r) == r {
 			t.Errorf("attempt reason %q has no wording", r)
 		}

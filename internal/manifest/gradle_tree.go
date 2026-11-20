@@ -48,34 +48,23 @@ type gradleTree struct {
 	// pointers into shared chains, never a copy of what is above it.
 	dirs   map[string]*gradleKnown
 	belows map[string]*gradleKnown
-	// unreadParts are the files that could not be read within the reader's
-	// bounds, in the order they were met (noteUnread); unreadWarned the
-	// ones already said in the log.
+	// unreadParts are the files that are larger than a build file is
+	// (MaxBuildFileBytes) and were not read, in the order they were met
+	// (noteUnread); unreadWarned the ones already said in the log.
 	unreadParts  []string
 	unreadWarned map[string]bool
-	// work is the walk's work counter (gradleWalkWork); counted the files
-	// whose bytes are in its allowance.
-	work    *gradleWalkWork
+	// counted are the files whose bytes are in the memo's allowance.
 	counted map[string]bool
 	// memo holds, for each applied script, what reading it gave, with what
 	// it took from outside (gradleMemo). memoBytes is what the memo holds
-	// and memoLimit what it may: the bytes of Gradle files read.
+	// and memoLimit what it may: the bytes of Gradle files read. A reading
+	// there is no room to remember is made again.
 	memo                 map[string][]*gradleMemo
 	memoBytes, memoLimit int
-	// readCost is what the last whole reading of each applied script cost.
-	readCost map[string]int
 	// bundles holds, for each applied script, what applying it left behind
 	// (gradleBundle): the script's own layer and those of every script it
 	// applies, as one shared run.
 	bundles map[string][]*gradleBundle
-	// pastBound are the files found past their own work bound. One is read
-	// once: reached again (as the build file above another directory, after
-	// being read as a build file of its own) it is not read, and costs
-	// nothing.
-	pastBound map[string]bool
-	// walkFactor is the walk's allowance in units per byte of Gradle file
-	// read: gradleWalkFactor, set otherwise by tests.
-	walkFactor int
 	// roots caches rootOf.
 	roots map[string]string
 	// fullReads counts the files read in full (tokenised and walked) and
@@ -84,13 +73,11 @@ type gradleTree struct {
 	opens     int
 	// scanned counts the bytes tokenised, for tests.
 	scanned int
-	// toks are the tokens of the files read, kept while the walk's account
-	// has room (scan).
-	toks map[string]gradleKeptTokens
+	// toks are the tokens of the applied scripts read, with their index
+	// (scan).
+	toks map[string]*gradleIndex
 	// applying is the applied script being read (readApplied), "" otherwise.
 	applying string
-	// acct is the walk's account (walkAccount), the Maven tree's too.
-	acct *walkAccount
 }
 
 // gradleKnown is what is known at one directory of the tree. Every field is
@@ -109,8 +96,8 @@ type gradleKnown struct {
 	shared *gradleList[string]
 	// unread names a file this directory's build depends on (a settings
 	// file, a build file above, an applied script, a buildSrc source, a
-	// catalogue) that could not be read within the reader's bounds; "" when
-	// all were. A build file under it is then not read: see declared.
+	// catalogue) that is too large to be read; "" when none is. A build file
+	// under it is then not read: see declared.
 	unread string
 }
 
@@ -160,19 +147,17 @@ func (l *gradleList[T]) flat() []T {
 // (reads), and what it gave. A script applied by many projects is read once
 // for all whose scope answers the same for the names it looked up.
 type gradleMemo struct {
-	reads     map[string]gradleRead
-	own       map[string]string
-	gone      map[string]bool
-	applies   []string
-	overBound bool
+	reads   map[string]gradleRead
+	own     map[string]string
+	gone    map[string]bool
+	applies []string
 }
 
-// errGradleBuildPartUnread: a file the build file depends on is too large
-// or passed the work bound.
-var errGradleBuildPartUnread = errors.New("a file this build file depends on could not be read within the reader's bounds (too large, or past gradleWorkFactor); nothing was taken from the build file")
+// errGradleBuildPartUnread: a file the build file depends on is too large.
+var errGradleBuildPartUnread = errors.New("a file this build file depends on is larger than a build file is (MaxBuildFileBytes) and was not read; nothing was taken from the build file")
 
-// noteUnread records that a file of the build could not be read within the
-// reader's bounds, and says so in the log by name, once per file and walk.
+// noteUnread records that a file of the build was not read because it is
+// too large, and says so in the log by name, once per file and walk.
 func (t *gradleTree) noteUnread(path, why string) {
 	t.unreadParts = append(t.unreadParts, path)
 	if t.unreadWarned[path] {
@@ -183,84 +168,30 @@ func (t *gradleTree) noteUnread(path, why string) {
 	}
 	t.unreadWarned[path] = true
 	if t.logger != nil {
-		t.logger.Warn("a file of the Gradle build could not be read within the reader's bounds; the build files that depend on it are not read",
+		t.logger.Warn("a file of the Gradle build was not read; the build files that depend on it are not read",
 			"path", path, "why", why)
 	}
 }
 
-// whyUnread says which bound ended a read.
-func whyUnread(b *gradleBuild) string {
-	if b.walkBound && b.shared != nil && b.shared.acct != nil && b.shared.acct.fired {
-		return "the walk's wall-clock backstop ended the build-tree readers (a path of theirs was not accounted for)"
-	}
-	if b.walkBound {
-		return "past the walk's work allowance (gradleWorkFactor times the Gradle files read)"
-	}
-	return "past the work bound (gradleWorkFactor)"
-}
-
-// scan reads content with the walk's counter, noting nothing: for a read
-// whose only use is the list of files the content applies.
+// scan reads content, noting nothing.
 //
-// A file's tokens are made once for the walk and kept, while the walk's
-// account has room for them (a token is gradleTokBytes, and a file of line
-// ends is one for every byte: such a file is tokenised again for each
-// reading, and each is charged its bytes).
+// The tokens of an applied script are made once for the walk and kept: it is
+// the file read again and again (a build file is read for itself, and once
+// more for the directories below it).
 func (t *gradleTree) scan(path, content string, outer *gradleVars, libs *gradleLibs) *gradleBuild {
 	t.fullReads++
-	kt, kept := t.toks[path]
+	idx, kept := t.toks[path]
 	if !kept {
 		t.scanned += len(content)
-		kt = gradleKeptTokens{toks: gradleTokens(content), size: len(content)}
-		// Kept for a script that is applied, which is the file read again
-		// and again (a build file is read for itself, and once more for the
-		// directories below it). The tokens hold the file's text (their
-		// strings are parts of it).
-		if path == t.applying && t.acct.keep(walkSliceHeader+walkWord+gradleTokBytes*cap(kt.toks)+memString(content)+memString(path)+walkMapSlot) {
+		idx = newGradleIndex(gradleTokens(content))
+		if path == t.applying {
 			if t.toks == nil {
-				t.toks = map[string]gradleKeptTokens{}
+				t.toks = map[string]*gradleIndex{}
 			}
-			t.toks[path] = kt
+			t.toks[path] = idx
 		}
 	}
-	return readGradleTokens(kt.toks, kt.size, !kept, outer, libs, t.work)
-}
-
-// gradleKeptTokens are a file's tokens and its size in bytes.
-type gradleKeptTokens struct {
-	toks []gradleTok
-	size int
-}
-
-// gradleTokBytes is what one token keeps: its kind and flag (a word, with
-// padding) and its text's header.
-const gradleTokBytes = 2*walkWord + walkStringHeader
-
-// scanFile is scan for the file at path, which is read once if it is past
-// its own bound: found so, it is not read again on this walk (the work
-// bound is a fact about the file's text). The walk is charged a file's
-// bound for one reading of it and is allowed it once; read again for each
-// directory below it, a file past its bound took what it cost out of the
-// allowance of files that had nothing to do with it (round 4).
-func (t *gradleTree) scanFile(path, content string, outer *gradleVars, libs *gradleLibs) *gradleBuild {
-	if t.pastBound[path] {
-		return &gradleBuild{overBound: true}
-	}
-	b := t.scan(path, content, outer, libs)
-	if b.overBound && !b.walkBound {
-		t.pastBound[path] = true
-	}
-	return b
-}
-
-// read is scanFile for a file the tree reads on a build file's behalf: one
-// that passes a bound is noted.
-func (t *gradleTree) read(path, content string, outer *gradleVars, libs *gradleLibs) *gradleBuild {
-	b := t.scanFile(path, content, outer, libs)
-	if b.overBound {
-		t.noteUnread(path, whyUnread(b))
-	}
-	return b
+	return readGradleIndexed(idx, outer, libs)
 }
 
 // readApplied is what reading the applied script at path gives with outer
@@ -271,27 +202,12 @@ func (t *gradleTree) readApplied(path string, outer *gradleVars) (*gradleMemo, b
 next:
 	for _, e := range t.memo[path] {
 		for name, r := range e.reads {
-			v, ok, layers := outer.get(name)
-			if !t.work.spend(layers) {
-				break next // the walk's allowance is used up: read, and be told so
-			}
+			v, ok, _ := outer.get(name)
 			if ok != r.ok || v != r.value {
 				continue next
 			}
 		}
-		if e.overBound {
-			t.noteUnread(path, "past the work bound (gradleWorkFactor)")
-		}
 		return e, true
-	}
-	// A script that has been read before is not opened again when what is
-	// left of the walk's allowance is less than reading it cost: it is not
-	// read, and that is noted. Each project brings a little allowance of
-	// its own, never enough for a large script; opened and split into
-	// tokens for each all the same, the script cost its size per project.
-	if cost, read := t.readCost[path]; read && t.work.limit-t.work.used < cost {
-		t.noteUnread(path, "past the walk's work allowance (gradleWorkFactor times the Gradle files read)")
-		return &gradleMemo{overBound: true}, true
 	}
 	// A script whose tokens are kept is not opened again: it is read from
 	// them.
@@ -303,22 +219,13 @@ next:
 		}
 	}
 	t.applying = path
-	b := t.read(path, content, outer, nil)
+	b := t.scan(path, content, outer, nil)
 	t.applying = ""
-	if !b.walkBound {
-		if t.readCost == nil {
-			t.readCost = map[string]int{}
-		}
-		t.readCost[path] = min(b.work, b.workLimit)
-	}
-	e := &gradleMemo{reads: b.reads, applies: b.applies, overBound: b.overBound}
+	e := &gradleMemo{reads: b.reads, applies: b.applies}
 	e.own, e.gone = b.result()
-	if b.walkBound {
-		return e, true // the walk's allowance ran out: not a fact about the script, not kept
-	}
 	// What the entry holds, as text: the names and values. An entry's text
 	// is no more than its script's, so the first reading of a script is
-	// always kept, and the map overhead on top is a constant factor.
+	// always kept.
 	size := 0
 	for k, r := range e.reads {
 		size += len(k) + len(r.value)
@@ -334,11 +241,7 @@ next:
 	}
 	// Kept while the memo is no larger than the files read: many scripts
 	// each read with many different scopes are read again, not remembered.
-	// (What the walk's account registers is the entry as it is held: its
-	// text and its maps' tables.)
-	held := gradleMemoEntryBytes + memMap(len(e.reads), 2*walkStringHeader+walkWord) + memMap(len(e.own), 2*walkStringHeader) +
-		memMap(len(e.gone), walkStringHeader+walkWord) + walkStringHeader*len(e.applies)
-	if t.memoBytes+size <= t.memoLimit && t.acct.keep(size+held) {
+	if t.memoBytes+size <= t.memoLimit {
 		if t.memo == nil {
 			t.memo = map[string][]*gradleMemo{}
 		}
@@ -358,14 +261,7 @@ func (t *gradleTree) firstUnread(mark int, earlier string) string {
 }
 
 func newGradleTree(root string, logger *slog.Logger) *gradleTree {
-	return (&gradleTree{root: filepath.Clean(root), logger: logger, dirs: map[string]*gradleKnown{}, belows: map[string]*gradleKnown{},
-		work: &gradleWalkWork{}, counted: map[string]bool{}, pastBound: map[string]bool{}, walkFactor: gradleWalkFactor, acct: newWalkAccount(logger)}).withAccount()
-}
-
-// withAccount gives the tree's work counter the tree's account.
-func (t *gradleTree) withAccount() *gradleTree {
-	t.work.acct = t.acct
-	return t
+	return &gradleTree{root: filepath.Clean(root), logger: logger, dirs: map[string]*gradleKnown{}, belows: map[string]*gradleKnown{}, counted: map[string]bool{}}
 }
 
 // gradleDeclared is the roster's reader for build.gradle and
@@ -397,34 +293,18 @@ func (t *gradleTree) content(path string) (string, bool) {
 		return "", false
 	}
 	t.opens++
-	// What the walk may spend, and what its memo may hold, grow with each
-	// file read, once.
+	// What the memo may hold grows with each file read, once.
 	if !t.counted[path] {
 		t.counted[path] = true
-		t.acct.readFile(path, len(data))
-		t.work.limit += t.walkFactor * (len(data) + 1)
 		t.memoLimit += len(data) + gradleMemoPerFile
 	}
 	return string(data), true
 }
 
 // declared reads the build file at path with what its tree knows. An
-// error: the file is larger than a build file is, or reading it passed the
-// reader's work bound; nothing is taken from such a file.
+// error: the file, or a file it depends on, is larger than a build file is;
+// nothing is taken from such a file.
 func (t *gradleTree) declared(path string) ([]model.LibyearDep, error) {
-	t.acct.enter()
-	defer t.acct.leave()
-	if t.acct.fired {
-		return nil, errWalkBackstop
-	}
-	deps, err := t.declaredIn(path)
-	if t.acct.fired {
-		return nil, errWalkBackstop
-	}
-	return deps, err
-}
-
-func (t *gradleTree) declaredIn(path string) ([]model.LibyearDep, error) {
 	path = filepath.Clean(path)
 	content, ok := t.content(path)
 	if !ok {
@@ -436,17 +316,16 @@ func (t *gradleTree) declaredIn(path string) ([]model.LibyearDep, error) {
 	dir := filepath.Dir(path)
 	known := t.at(dir)
 	mark := len(t.unreadParts)
-	// Read once for the files it applies. A file that passes its bound here
-	// would pass it again below, and is not read twice.
-	pre := t.scanFile(path, content, known.vars, nil)
+	// Read once for the files it applies.
+	pre := t.scan(path, content, known.vars, nil)
 	vars := t.applied(pre.applies, dir, known.vars, 0, newGradleSeen(path), nil)
-	// A file this one depends on could not be read within the bounds: a
-	// settings file, a build file above, a script it applies, a buildSrc
-	// source, a catalogue. What it would have assigned (a version, a
-	// platform, a repository) is not known, and a build read without it
-	// reads as a whole one with other versions. So nothing is taken from
-	// this file, and it is reported as a manifest that could not be read,
-	// naming the file (0.29.209; such a file was dropped without a word).
+	// A file this one depends on was not read: a settings file, a build
+	// file above, a script it applies, a buildSrc source, a catalogue. What
+	// it would have assigned (a version, a platform, a repository) is not
+	// known, and a build read without it reads as a whole one with other
+	// versions. So nothing is taken from this file, and it is reported as a
+	// manifest that could not be read, naming the file (0.29.209; such a
+	// file was dropped without a word).
 	if part := t.firstUnread(mark, known.unread); part != "" {
 		rel, err := filepath.Rel(t.root, part)
 		if err != nil {
@@ -454,47 +333,21 @@ func (t *gradleTree) declaredIn(path string) ([]model.LibyearDep, error) {
 		}
 		return nil, fmt.Errorf("%w: %s", errGradleBuildPartUnread, filepath.ToSlash(rel))
 	}
-	b := pre
-	if !pre.overBound {
-		b = t.scanFile(path, content, vars, known.libs)
-	}
-	if b.overBound {
-		if t.logger != nil {
-			t.logger.Warn("a Gradle build file could not be read within the reader's bound; nothing was taken from it",
-				"path", path, "bytes", len(content), "work_factor", gradleWorkFactor, "why", whyUnread(b))
-		}
-		return nil, errGradleWorkBound
-	}
+	b := t.scan(path, content, vars, known.libs)
 	t.noteRepositories(path, b)
 	if t.pom == nil {
 		return b.libyearDeps(), nil
 	}
-	// The platforms are poms: looking through them is the pom tree's work,
-	// which this file's size allows as a pom's does, for the walk and for
-	// the file (its own bytes, and those of each BOM it reaches).
-	t.pom.allow(len(content))
-	bud := t.pom.budget(len(content))
 	own := b.platformDecls()
 	if len(own)+known.platforms.len() > 0 {
-		// Writing out the lists the directories above share is work in
-		// proportion to their length, for every file that has a platform.
-		if bud.spend(known.platforms.len() + known.shared.len()) {
-			// The repositories a BOM of this file may be asked of: the
-			// file's own, then the ones shared from above.
-			var repos []string
-			for _, r := range b.repos {
-				repos = append(repos, r.fetchable()...)
-			}
-			t.applyPlatforms(b, append(append([]gradleDecl{}, own...), known.platforms.flat()...),
-				uniqueStrings(append(repos, known.shared.flat()...)), bud)
+		// The repositories a BOM of this file may be asked of: the file's
+		// own, then the ones shared from above.
+		var repos []string
+		for _, r := range b.repos {
+			repos = append(repos, r.fetchable()...)
 		}
-	}
-	if bud.tripped {
-		if t.logger != nil {
-			t.logger.Warn("a Gradle build file's platforms could not be looked through within the reader's bound; nothing was taken from it",
-				"path", path, "work_factor", pomWorkFactor)
-		}
-		return nil, errPomWorkBound
+		t.applyPlatforms(b, append(append([]gradleDecl{}, own...), known.platforms.flat()...),
+			uniqueStrings(append(repos, known.shared.flat()...)))
 	}
 	return b.libyearDeps(), nil
 }
@@ -522,11 +375,7 @@ func (t *gradleTree) at(dir string) *gradleKnown {
 		return k
 	}
 	mark := len(t.unreadParts)
-	base := *k
-	defer func() {
-		t.keepKnown(dir, k, &base)
-		k.unread = t.firstUnread(mark, k.unread)
-	}()
+	defer func() { k.unread = t.firstUnread(mark, k.unread) }()
 	t.buildSrc(k, filepath.Join(dir, "buildSrc"))
 	if content, ok := t.content(filepath.Join(dir, "gradle.properties")); ok {
 		k.vars = k.vars.push(gradleProperties(content), nil)
@@ -534,13 +383,9 @@ func (t *gradleTree) at(dir string) *gradleKnown {
 	for _, name := range []string{"settings.gradle", "settings.gradle.kts"} {
 		p := filepath.Join(dir, name)
 		if content, ok := t.content(p); ok {
-			pre := t.scanFile(p, content, k.vars, nil)
-			if pre.overBound {
-				t.noteUnread(p, whyUnread(pre)) // and not read a second time
-				continue
-			}
+			pre := t.scan(p, content, k.vars, nil)
 			vars := t.applied(pre.applies, dir, k.vars, 0, newGradleSeen(p), nil)
-			b := t.read(p, content, vars, nil)
+			b := t.scan(p, content, vars, nil)
 			k.vars = vars.push(b.result())
 			t.noteRepositories(p, b)
 			// A settings file's repositories are the whole build's.
@@ -570,13 +415,9 @@ func (t *gradleTree) below(up string) *gradleKnown {
 	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
 		p := filepath.Join(up, name)
 		if content, ok := t.content(p); ok {
-			pre := t.scanFile(p, content, k.vars, nil)
-			if pre.overBound {
-				t.noteUnread(p, whyUnread(pre)) // and not read a second time
-				continue
-			}
+			pre := t.scan(p, content, k.vars, nil)
 			vars := t.applied(pre.applies, up, k.vars, 0, newGradleSeen(p), nil)
-			b := t.read(p, content, vars, above.libs)
+			b := t.scan(p, content, vars, above.libs)
 			k.vars = vars.push(b.result())
 			t.noteRepositories(p, b)
 			var nearer []string
@@ -595,68 +436,10 @@ func (t *gradleTree) below(up string) *gradleKnown {
 			k.platforms = k.platforms.with(nil, platforms)
 		}
 	}
-	t.keepKnown(up, k, above)
 	k.unread = t.firstUnread(mark, k.unread)
 	t.belows[up] = k
 	return k
 }
-
-// gradleKnownBytes is the fixed part of what is kept for a directory: the
-// struct and its place in a map of the tree, with the directory's path.
-const gradleKnownBytes = 5*walkWord + walkStringHeader + walkMapSlot
-
-// keepKnown registers what k, known at or below dir, holds beyond base (what
-// was known before this directory's own files were read): the layers,
-// catalogue accessors and list links those files added. Everything else in
-// k is shared with base, by reference.
-//
-// When the walk's account has no room, what the files added is NOT kept: k
-// is left with what base knows, and the directory is noted as one that
-// could not be read within the bounds, so every build file at or below it
-// is refused by name (declared), exactly as when one of the directory's
-// files is past its work bound. What stays is the struct itself, a
-// tombstone: one for a directory on the path of a file that was read.
-func (t *gradleTree) keepKnown(dir string, k, base *gradleKnown) {
-	if k.vars == base.vars && k.libs == base.libs && k.platforms == base.platforms && k.shared == base.shared {
-		return // nothing of its own: the struct alone, as a tombstone is
-	}
-	n := gradleKnownBytes + len(dir)
-	for v := k.vars; v != nil && v != base.vars; v = v.parent {
-		n += 4*walkWord + memStringMap(v.own) + memStringSet(v.gone)
-	}
-	for l := k.libs; l != nil && l != base.libs; l = l.parent {
-		n += 2 * walkWord
-		for name, decls := range l.own {
-			n += memString(name) + walkSliceHeader + walkMapSlot
-			for _, d := range decls {
-				n += gradleDeclBytes + len(d.group) + len(d.artifact) + len(d.version) + len(d.written)
-			}
-		}
-	}
-	for l := k.platforms; l != nil && l != base.platforms; l = l.parent {
-		n += 2*walkSliceHeader + 2*walkWord
-		for _, d := range append(append([]gradleDecl(nil), l.before...), l.after...) {
-			n += gradleDeclBytes + len(d.group) + len(d.artifact) + len(d.version) + len(d.written)
-		}
-	}
-	for l := k.shared; l != nil && l != base.shared; l = l.parent {
-		n += 2*walkSliceHeader + 2*walkWord + memStrings(l.before) + memStrings(l.after)
-	}
-	if t.acct.keep(n) {
-		return
-	}
-	k.vars, k.libs, k.platforms, k.shared = base.vars, base.libs, base.platforms, base.shared
-	t.noteUnread(dir, "what its build files assign is past the walk's memory allowance (walkMemFactor)")
-}
-
-// gradleDeclBytes and gradleRepoBytes are the fixed parts of one declaration
-// and one repository entry kept: their structs (seven string headers, a slice
-// header and four flags; four string headers and a flag).
-// TestTheAccountsSizesAreTheStructs holds them to the structs.
-const (
-	gradleDeclBytes = 7*walkStringHeader + walkSliceHeader + 2*walkWord
-	gradleRepoBytes = 4*walkStringHeader + walkWord
-)
 
 // gradleBundle is what applying one script left behind, under one outer
 // scope: the layers of every script applied inside it and its own, as ONE
@@ -696,14 +479,10 @@ func newGradleSeen(self string) *gradleSeen {
 	return &gradleSeen{paths: map[string]bool{self: true}}
 }
 
-// has reports whether p was applied already. Each run looked into is a
-// unit of work, charged when work is given.
-func (s *gradleSeen) has(p string, work *gradleWalkWork) bool {
+// has reports whether p was applied already.
+func (s *gradleSeen) has(p string) bool {
 	if s.paths[p] {
 		return true
-	}
-	if work != nil {
-		work.spend(len(s.runs))
 	}
 	for _, r := range s.runs {
 		if r.has[p] {
@@ -756,7 +535,7 @@ func (t *gradleTree) applied(applies []string, dir string, outer *gradleVars, de
 		if p == "" {
 			continue
 		}
-		if seen.has(p, t.work) {
+		if seen.has(p) {
 			// Applied already by the file being read. Inside the bundle
 			// being built that is its own doing, and the same every time;
 			// before it, it is this file's, and the bundle is not kept.
@@ -777,22 +556,15 @@ next:
 		if depth+bd.nest >= gradleApplyDepth {
 			continue
 		}
-		// The check is work: a unit for each script of the run (none may
-		// have been applied already by this file), and the layers each
-		// name is looked for through.
-		if !t.work.spend(len(bd.scripts) * (1 + len(seen.runs))) {
-			break
-		}
+		// None of the run's scripts may have been applied already by this
+		// file.
 		for _, s := range bd.scripts[1:] {
-			if seen.has(s, nil) {
+			if seen.has(s) {
 				continue next
 			}
 		}
 		for name, r := range bd.reads {
-			v, ok, layers := vars.get(name)
-			if !t.work.spend(layers) {
-				break next // the walk's allowance is used up: read, and be told so
-			}
+			v, ok, _ := vars.get(name)
 			if ok != r.ok || v != r.value {
 				continue next
 			}
@@ -817,8 +589,8 @@ next:
 	// what it assigns. With none of its own the second reading is the
 	// first.
 	first, ok := t.readApplied(p, vars)
-	if !ok || first.overBound {
-		// Not read (and noted): a second reading would cost its bound again.
+	if !ok {
+		// Not read (and noted).
 		t.bundled(into, bb, true)
 		return vars
 	}
@@ -834,7 +606,7 @@ next:
 		bb.note(e.reads)
 	}
 	vars = vars.push(e.own, e.gone)
-	partial := bb.partial || len(t.unreadParts) != mark || e.overBound
+	partial := bb.partial || len(t.unreadParts) != mark
 	t.bundled(into, bb, partial)
 	if !partial {
 		t.keepBundle(p, bb, start, vars)
@@ -868,10 +640,7 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 	}
 	size := 0
 	for name := range bb.reads {
-		v, ok, layers := start.get(name)
-		if !t.work.spend(layers) {
-			return
-		}
+		v, ok, _ := start.get(name)
 		bd.reads[name] = gradleRead{value: v, ok: ok}
 		size += len(name) + len(v)
 	}
@@ -882,7 +651,6 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 	// chain of its own. The maps (and the runs of the scripts inside) are
 	// shared, not copied.
 	var links []*gradleVars
-	held := 0
 	for n := vars; n != start && n != nil; n = n.parent {
 		links = append(links, n)
 	}
@@ -898,13 +666,9 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 		for k := range links[i].gone {
 			size += len(k)
 		}
-		held += memMap(len(links[i].own), 2*walkStringHeader) + memMap(len(links[i].gone), walkStringHeader+walkWord)
 	}
 	size += gradleBundleLinkBytes * len(links)
-	// (What the walk's account registers is the run as it is held: its
-	// text, and the tables of its maps and of its layers' maps.)
-	held += gradleMemoEntryBytes + memMap(len(bd.reads), 2*walkStringHeader+walkWord) + memMap(len(bd.has), walkStringHeader+walkWord)
-	if t.memoBytes+size > t.memoLimit || !t.acct.keep(size+held) {
+	if t.memoBytes+size > t.memoLimit {
 		return
 	}
 	if t.bundles == nil {
@@ -924,10 +688,6 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 // The memo is still bounded by what was read: by its bytes and the number
 // of its files.
 const (
-	// gradleMemoEntryBytes is the fixed part of one kept reading or run:
-	// its struct (three map headers, a slice or two) and its place in the
-	// list of its script.
-	gradleMemoEntryBytes  = 128
 	gradleBundleLinkBytes = 64
 	gradleMemoRefBytes    = 16
 	gradleMemoPerFile     = gradleApplyDepth * (gradleBundleLinkBytes + 2*gradleMemoRefBytes)
@@ -1032,20 +792,10 @@ func (t *gradleTree) buildSrc(k *gradleKnown, dir string) {
 		return nil
 	})
 	sort.Strings(files)
-	over := map[string]bool{}
 	for round := 0; round < 2; round++ {
 		for _, p := range files {
-			if over[p] {
-				continue // past its bound in the first round: not read again
-			}
 			if content, ok := t.content(p); ok {
-				if round == 0 {
-					b := t.read(p, content, k.vars, nil)
-					over[p] = b.overBound
-					k.vars = k.vars.push(b.result())
-				} else {
-					k.vars = k.vars.push(t.scan(p, content, k.vars, nil).result()) // noted in the first round
-				}
+				k.vars = k.vars.push(t.scan(p, content, k.vars, nil).result())
 			}
 		}
 	}
@@ -1090,7 +840,7 @@ func readGradleCatalogue(name, content string) (vars map[string]string, libs map
 	sections := gradleTOMLSections(content)
 	versions := map[string]string{} // by alias as written
 	for alias, raw := range sections["versions"] {
-		v := gradleCatalogueVersion(gradleTOMLValue(raw))
+		v := gradleCatalogueVersion(gradleTOMLValue(raw, gradleCatalogueDepth))
 		versions[alias] = v
 		if v != "" {
 			vars[name+".versions."+gradleAccessor(alias)] = v
@@ -1098,7 +848,7 @@ func readGradleCatalogue(name, content string) (vars map[string]string, libs map
 	}
 	byAlias := map[string]gradleDecl{}
 	for alias, raw := range sections["libraries"] {
-		f := gradleTOMLValue(raw)
+		f := gradleTOMLValue(raw, gradleCatalogueDepth)
 		var d gradleDecl
 		if coord, plain := f[""]; plain { // alias = "g:a:v"
 			parts := strings.Split(coord, ":")
@@ -1305,18 +1055,28 @@ func gradleTOMLString(s string) (string, bool) {
 	return "", false
 }
 
+// gradleCatalogueDepth is how deep a catalogue's value is read: the deepest
+// value the grammar has is a library whose version is a table of its own
+// (lib = { module = "g:a", version = { strictly = "1" } }), two tables. A
+// table inside those names no field this reader looks at, and is not read.
+//
+// It is also what makes the reading linear (review round 6): every level
+// splits what it holds, so a value nested n deep was read n times over, 56
+// seconds for 640 KB of braces.
+const gradleCatalogueDepth = 2
+
 // gradleTOMLValue reads a value into its fields: a string is the field "";
 // an inline table's keys are fields, a nested table's keys joined with a
 // dot (version = { ref = "x" } and version.ref = "x" are both
-// "version.ref").
-func gradleTOMLValue(raw string) map[string]string {
+// "version.ref"). depth is how many levels of table may still be opened.
+func gradleTOMLValue(raw string, depth int) map[string]string {
 	out := map[string]string{}
 	raw = strings.TrimSpace(raw)
 	if s, ok := gradleTOMLString(raw); ok {
 		out[""] = s
 		return out
 	}
-	if len(raw) < 2 || raw[0] != '{' || raw[len(raw)-1] != '}' {
+	if depth <= 0 || len(raw) < 2 || raw[0] != '{' || raw[len(raw)-1] != '}' {
 		return out
 	}
 	for _, field := range gradleTOMLSplit(raw[1 : len(raw)-1]) {
@@ -1325,7 +1085,7 @@ func gradleTOMLValue(raw string) map[string]string {
 			continue
 		}
 		key := strings.Trim(strings.TrimSpace(field[:eq]), `"'`)
-		for sub, v := range gradleTOMLValue(field[eq+1:]) {
+		for sub, v := range gradleTOMLValue(field[eq+1:], depth-1) {
 			if sub == "" {
 				out[key] = v
 			} else {
@@ -1363,30 +1123,32 @@ func gradleTOMLArray(raw string) []string {
 // marked a managed entry: its versions are applied, and it leaves the
 // inventory with a note, as a pom's BOM import does. One that was not
 // stays a row.
-func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, declared []string, bud *pomBudget) {
+func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, declared []string) {
 	if t.pom == nil || len(platforms) == 0 {
 		return
 	}
+	// applied is one platform in the order they are consulted: the BOM, or,
+	// for one that could not be obtained, why.
 	type applied struct {
-		ctx  *pomContext
-		decl gradleDecl
+		ctx     *pomContext
+		missing string
 	}
 	var boms []applied
+	rd := &pomReading{}
 	gap := ""
 	whole := map[string]bool{} // "g:a:v" of each platform obtained whole
 	for _, p := range platforms {
 		if p.version == "" {
 			continue
 		}
-		// Finding one platform is a look.
-		if !bud.spend(1) {
-			return
-		}
-		bom, ambiguous := t.pom.byCoordinates(bud, p.group, p.artifact, p.version)
+		bom, ambiguous := t.pom.byCoordinates(p.group, p.artifact, p.version)
 		if bom == nil && !ambiguous {
 			var reason string
-			bom, reason = t.pom.remotePom(bud, p.group, p.artifact, p.version, func() ([]string, int) { return declared, 0 })
+			bom, reason = t.pom.remotePom(p.group, p.artifact, p.version, func() []string { return declared })
 			gap = worseReason(gap, reason)
+			if bom == nil && unknownAnswer(reason) != "" {
+				boms = append(boms, applied{missing: reason})
+			}
 		}
 		if bom == nil {
 			continue
@@ -1395,8 +1157,8 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 		// Walk the BOM's own imports now, so that whether it was read whole
 		// is known before anything is decided from it (a lookup of a
 		// coordinate nothing manages visits every import).
-		_, _, _, bomGap := c.managed(bud, "\x00", "\x00")
-		boms = append(boms, applied{ctx: c, decl: p})
+		_, _, _, bomGap, _ := c.managed(rd, "\x00", "\x00")
+		boms = append(boms, applied{ctx: c})
 		if bomGap == "" {
 			whole[p.group+":"+p.artifact+":"+p.version] = true
 		} else {
@@ -1412,22 +1174,34 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 		if d.version != "" || d.versionWritten {
 			continue
 		}
+		// before is why an answer may not be the answer: a platform
+		// consulted before the one that manages the dependency could not be
+		// obtained, or not whole (pomContext.managed; review round 6).
+		before, undetermined := "", false
 		for _, bom := range boms {
-			// One platform asked about one dependency is one look of the
-			// pom tree's work: n dependencies against n platforms end at
-			// its bound (declared reports it).
-			if !bud.spend(1) {
-				return
+			if bom.ctx == nil {
+				before = worseReason(before, bom.missing)
+				continue
 			}
-			v, found, via, g := bom.ctx.managed(bud, d.group, d.artifact)
+			v, found, via, g, passed := bom.ctx.managed(rd, d.group, d.artifact)
 			gap = worseReason(gap, g)
 			if found && gradleIsVersion(v) {
+				if before = worseReason(before, passed); before != "" {
+					undetermined = true
+					break
+				}
 				d.version, d.source = v, SourceManaged
 				d.hosts = mergeHosts(chainHosts(bom.ctx.chain), via)
 				break
 			}
+			// It did not answer: whatever of it is not known comes before
+			// the next platform.
+			before = worseReason(before, passed)
 		}
-		if d.version == "" {
+		switch {
+		case undetermined:
+			d.reason = before
+		case d.version == "":
 			d.reason = gap
 		}
 	}
@@ -1458,18 +1232,6 @@ func uniqueStrings(in []string) []string {
 func (t *gradleTree) noteRepositories(path string, b *gradleBuild) {
 	rel, err := filepath.Rel(t.root, path)
 	if err != nil || len(b.repos) == 0 {
-		return
-	}
-	n := memString(rel) + walkSliceHeader + walkMapSlot
-	for _, r := range b.repos {
-		n += gradleRepoBytes + len(r.URL)
-	}
-	if !t.acct.keep(n) {
-		// Not kept, and said: the file's dependencies are read all the
-		// same, and its repositories are missing from the record of them.
-		if t.logger != nil {
-			t.logger.Warn("the repositories a Gradle file declares were not recorded: the walk's memory allowance (walkMemFactor) has no room for them", "path", path, "repositories", len(b.repos))
-		}
 		return
 	}
 	if t.repos == nil {

@@ -358,6 +358,31 @@ seen may be the user of an entry, so that tree's entries stay inventoried and
 `repo_dependency_coverage.maven_trees_not_whole` names the tree with the reason. Other
 trees of the repository are unaffected: a broken fixture pom is its own tree.
 
+## The clone is read by a process of its own (0.29.213)
+
+Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So the readers do not run in the collection worker. Each analysis starts one child process (`aveloxis manifest-read`, the same binary) and the child reads the clone.
+
+**What the child does.** Three readings, each ending with its own completion message: the dependency names, the declarations with their versions (the walk that the sections above describe, with Maven's and Gradle's trees), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.
+
+**What the child has.** The clone directory and the options, and nothing else: an empty environment, no configuration file, no database connection, no network. A Maven parent or BOM that is not in the clone is asked of the analysis over the same pipe; the analysis answers from the configured repositories under the rules it always applied, and counts the coordinates asked (at most 1,000 an analysis; one more is a failed lookup).
+
+**What the analysis trusts.** Nothing the child says. Every path must be inside the clone, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept.
+
+**The two limits.** The child watches its own processor time and memory against `collection.manifest_read_cpu_seconds` and `collection.manifest_read_memory_mb` and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.
+
+**What a stopped reading means.** Nothing partial is ever stored.
+
+| Stopped during | Stored inventory | Stored lockfile rows | Recorded |
+|---|---|---|---|
+| the names or the declarations | stays as it was | stay as they were | `last_attempt_result` is `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out` or `manifest_read_failed` |
+| the lockfiles | replaced, each dependency keeping the locked version the stored lockfile rows give it | stay as they were | an ERROR in the log naming the limit; `last_attempt_result` is untouched, because the inventory was replaced |
+
+The reading is tried again at the repository's next collection, not sooner.
+
+**No budgets inside the readers.** 0.29.210 to 0.29.212 counted work, memory and remote requests inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file's correctness needs: the largest build file read (8 MiB), the length of a parent chain, the size of an interpolated value.
+
+**An earlier pom that could not be obtained.** When a parent or an imported BOM that Maven would consult first could not be obtained (the lookup failed, its repository is refused, or it was not asked), a version that a later one would give is withheld: the dependency has no version and the reason says why. A pom that every repository answered "not found" for does not withhold: that is an answer.
+
 ## Code complexity via scc
 
 If [scc](https://github.com/boyter/scc) (Sloc Cloc and Code) is installed, Aveloxis runs it against the full checkout to get per-file code metrics.

@@ -5,16 +5,13 @@ package manifest
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
@@ -37,25 +34,6 @@ func gradleWithin(t *testing.T, name, content string, limit time.Duration) Decla
 	case <-time.After(limit):
 		t.Fatalf("%s (%d bytes) was not read within %s", name, len(content), limit)
 		return Declarations{}
-	}
-}
-
-func TestHostileGradleShapesAreReadInBoundedTime(t *testing.T) {
-	const n = 150_000
-	for name, content := range map[string]string{
-		"an opening brace and an unclosed call, repeated": strings.Repeat("{y(", n),
-		"a closing brace and an unclosed call, repeated":  strings.Repeat("}y(", n),
-		"lines that each end in a comma":                  strings.Repeat("a,\n", n),
-		"lines that each continue a concatenation":        strings.Repeat("a = 'x' +\n", n/2),
-		"calls nested inside closing braces":              strings.Repeat("} a (", n) + strings.Repeat(")", n),
-		"blocks nested without end":                       strings.Repeat("x {\n", n),
-		"conditions nested inside a dependencies block":   "dependencies {\n" + strings.Repeat("if ( {\n", n),
-		"allprojects nested without end":                  strings.Repeat("allprojects {\n", n/3) + "dependencies { implementation 'a:b:1' }\n",
-		"one string with a long dotted reference":         `def v = "$` + strings.Repeat("a.", 1300) + `a"` + "\n" + strings.Repeat(`def w = "$`+strings.Repeat("a.", 1300)+`a"`+"\n", 200),
-	} {
-		t.Run(name, func(t *testing.T) {
-			gradleWithin(t, "build.gradle", content, 20*time.Second)
-		})
 	}
 }
 
@@ -87,62 +65,6 @@ func TestGradleInterpolationIsBoundedInSize(t *testing.T) {
 		t.Errorf("com.example:fine = %q, want 1.2.3", got["com.example:fine"])
 	}
 }
-
-// A build whose reading passes the bound is reported as a manifest that
-// could not be parsed: said, never a silent partial inventory.
-func TestAGradleBuildPastItsWorkBoundIsAReadFailure(t *testing.T) {
-	d := gradleWithin(t, "build.gradle", "dependencies { implementation 'a:b:1' }\n"+strings.Repeat("} a (", 50_000)+strings.Repeat(")", 50_000), 20*time.Second)
-	if d.Failure == nil || d.Failure.Reason != model.ManifestFailedParse || !errors.Is(d.Failure.Err, errGradleWorkBound) {
-		t.Fatalf("failure = %+v, want a parse failure for the work bound", d.Failure)
-	}
-	if len(d.Deps) != 0 {
-		t.Errorf("a build that was not read whole reported %d dependencies; a partial list reads as a whole one", len(d.Deps))
-	}
-}
-
-// Real builds use a small part of the bound: the factor is not a limit any
-// of them is near. The corpus's build files and a large generated one.
-func TestRealGradleBuildsAreFarFromTheWorkBound(t *testing.T) {
-	builds := map[string]string{}
-	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
-		if data, err := os.ReadFile(filepath.Join(corpusDir, name)); err == nil {
-			builds[name] = string(data)
-		}
-	}
-	if len(builds) == 0 {
-		t.Fatal("the corpus has no Gradle build file: the test would examine nothing")
-	}
-	// A large multi-project root: nested blocks, a long ext map, many
-	// declarations, continuation lines.
-	var big strings.Builder
-	big.WriteString("ext {\n  versions = [\n")
-	for i := 0; i < 400; i++ {
-		fmt.Fprintf(&big, "    lib%d: '1.%d.0',\n", i, i)
-	}
-	big.WriteString("  ]\n}\nallprojects {\n  repositories { mavenCentral() }\n  subprojects {\n    configurations.all {\n      resolutionStrategy {\n        eachDependency { details ->\n          if (details.requested.group == 'x') { details.useVersion '1' }\n        }\n      }\n    }\n    dependencies {\n")
-	for i := 0; i < 400; i++ {
-		fmt.Fprintf(&big, "      implementation group: 'com.example',\n                     name: 'lib%d',\n                     version: \"${versions.lib%d}\"\n", i, i)
-		fmt.Fprintf(&big, "      testImplementation(\"com.example:t%d:${versions.lib%d}\") {\n        exclude group: 'junit'\n      }\n", i, i)
-	}
-	big.WriteString("    }\n  }\n}\n")
-	builds["generated"] = big.String()
-	for name, content := range builds {
-		b := readGradleBuild(content, nil)
-		if b.overBound {
-			t.Fatalf("%s passed the work bound", name)
-		}
-		if b.work*gradleWorkHeadroom > b.workLimit {
-			t.Errorf("%s used %d of its bound of %d: more than one part in %d", name, b.work, b.workLimit, gradleWorkHeadroom)
-		}
-		t.Logf("%s: %d bytes, work %d, bound %d", name, len(content), b.work, b.workLimit)
-	}
-	if b := readGradleBuild(builds["generated"], nil); len(b.decls) != 800 {
-		t.Errorf("the generated build has %d declarations read, want 800", len(b.decls))
-	}
-}
-
-// gradleWorkHeadroom is the margin the test above asks for.
-const gradleWorkHeadroom = 4
 
 // A build file larger than a build file is, is not read.
 func TestAnOversizedBuildFileIsNotRead(t *testing.T) {
@@ -191,55 +113,21 @@ func TestPomPropertiesIsLinear(t *testing.T) {
 	}
 }
 
-// A build file that was not read whole gives nothing to the files that
-// build on it: a variable it assigned before the reader stopped is not a
-// variable of the build. And those files are then not read either
-// (0.29.209): a project read without the file that gives it its versions,
-// platforms and repositories reads as a whole build with other versions.
-// The project is reported as a manifest that could not be read, and both
-// the report and the log name the file that was at fault.
-func TestAnOverBoundBuildGivesNothingToTheProjectsBelow(t *testing.T) {
-	hostile := "ext.v = '9.9'\nsubprojects { repositories { maven { url 'https://half.example/m2' } } }\n" + strings.Repeat("} a (", 50_000) + strings.Repeat(")", 50_000)
-	root := writeTree(t, map[string]string{
-		"build.gradle":     hostile,
-		"app/build.gradle": "dependencies {\n  implementation \"a:b:${v}\"\n  implementation 'c:d:1'\n}\n",
-	})
-	var log bytes.Buffer
-	w := NewWalk(root, slog.New(slog.NewTextHandler(&log, nil)))
-	got := w.Read(filepath.Join(root, "app", "build.gradle"), Options{})
-	if len(got.Deps) != 0 || got.Failure == nil || !strings.Contains(got.Failure.Error(), "build.gradle") {
-		t.Errorf("the project below: %d dependencies, failure %v; want none, and a failure that names the root build file", len(got.Deps), got.Failure)
-	}
-	if !strings.Contains(log.String(), "level=WARN") || !strings.Contains(log.String(), filepath.Join(root, "build.gradle")) {
-		t.Errorf("the log does not name the file that could not be read:\n%s", log.String())
-	}
-	for _, r := range w.DeclaredRepositories() {
-		if strings.Contains(r.URL, "half.example") {
-			t.Errorf("a repository from a build file that was not read whole was recorded: %+v", r)
-		}
-	}
-}
-
 // The same for every other file a build file is read with: the settings
-// file, a script it applies, a buildSrc source and a catalogue, over the
-// work bound or over the size bound. Each is named in the log, and the
+// file, a script it applies and a catalogue, over the size bound. Each is
+// named in the log, and the
 // build file that depends on it is a read failure that names it. A build
 // file beside them that depends on none of them is read as before.
 func TestAFileOfTheBuildThatCannotBeReadFailsWhatDependsOnIt(t *testing.T) {
-	hostile := strings.Repeat("} a (", 50_000) + strings.Repeat(")", 50_000)
 	tooBig := "ext.v = '9.9'\n" + strings.Repeat("// padding\n", int(MaxBuildFileBytes)/11+1)
 	app := "dependencies {\n  implementation 'c:d:1'\n}\n"
 	for what, c := range map[string]struct {
 		files map[string]string
 		part  string
 	}{
-		"a settings file past the work bound": {map[string]string{"settings.gradle": hostile, "app/build.gradle": app}, "settings.gradle"},
 		"a settings file over the size bound": {map[string]string{"settings.gradle.kts": tooBig, "app/build.gradle": app}, "settings.gradle.kts"},
-		"an applied script past the work bound": {map[string]string{"gradle/versions.gradle": hostile,
-			"app/build.gradle": "apply from: '../gradle/versions.gradle'\n" + app}, "gradle/versions.gradle"},
 		"an applied script over the size bound": {map[string]string{"big.gradle": tooBig,
 			"app/build.gradle": "apply from: '../big.gradle'\n" + app}, "big.gradle"},
-		"a buildSrc source past the work bound": {map[string]string{"buildSrc/src/main/kotlin/V.kt": hostile, "app/build.gradle": app}, "buildSrc/src/main/kotlin/V.kt"},
 		"a catalogue over the size bound": {map[string]string{"gradle/libs.versions.toml": "[versions]\n" + strings.Repeat("# padding\n", int(MaxBuildFileBytes)/10+1),
 			"app/build.gradle": app}, "gradle/libs.versions.toml"},
 	} {

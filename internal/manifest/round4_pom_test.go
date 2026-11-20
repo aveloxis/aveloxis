@@ -5,7 +5,6 @@ package manifest
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -148,11 +147,11 @@ func r4Reactor(modules, deps, sibling, plain int) map[string]string {
 	return files
 }
 
-// R4-M4. An honest reactor is read, with room to spare: 600 modules, each
+// R4-M4. An honest reactor is read: 600 modules, each
 // with 30 version-less dependencies, under a parent with 300 entries keyed
 // by `${project.groupId}` and 2,200 plain ones. Round 3 compared every
 // reference-keyed entry for every question and refused 570 of the 600.
-func TestAnHonestReactorIsFarInsideTheWorkBound(t *testing.T) {
+func TestAnHonestReactorIsRead(t *testing.T) {
 	const modules, deps, sibling, plain = 600, 30, 300, 2200
 	root := writeTree(t, r4Reactor(modules, deps, sibling, plain))
 	w := NewWalk(root, nil)
@@ -175,16 +174,7 @@ func TestAnHonestReactorIsFarInsideTheWorkBound(t *testing.T) {
 	if want := modules * deps * 2 / 3; managed != want {
 		t.Errorf("%d dependencies took a managed version, want %d (the sibling modules and the libraries)", managed, want)
 	}
-	work := w.pom.walkWork()
-	if work.used*pomHonestMargin > work.limit {
-		t.Errorf("the reactor used %d of the walk's %d units: less than a %d-fold margin", work.used, work.limit, pomHonestMargin)
-	}
-	t.Logf("honest reactor: %d units used of %d allowed (%.0f-fold margin)", work.used, work.limit, float64(work.limit)/float64(max(work.used, 1)))
 }
-
-// pomHonestMargin is the room an honest build must have under the work
-// bound: tenfold.
-const pomHonestMargin = 10
 
 // r4LongImports is k modules under a parent that imports k BOMs, each by
 // coordinates that hold a reference to a long property and to the module's
@@ -238,130 +228,5 @@ func TestWhatAWalkKeepsOfReferenceKeyedImportsIsNotAProduct(t *testing.T) {
 	// harness's line between the two.
 	if large > 8<<20 && large > 8*max(small, 1<<20) {
 		t.Errorf("240 modules x 240 reference-keyed imports kept %d MB (60 x 60 kept %d KB): what is kept grows with the pairs", large>>20, small>>10)
-	}
-}
-
-// BenchmarkPomLook measures what a unit of the pom work bound costs in
-// time, parsing included, for the cheapest kind of look and the dearest:
-// looks that pass BOM imports with literal coordinates, and looks that
-// interpolate a managed entry's group through a chain of long properties.
-// The two are the reason interpolation is counted by its bytes
-// (pomLookBytes): the metric is ns/unit, and the bound is a bound on time
-// when the two are of one order.
-func BenchmarkPomLook(b *testing.B) {
-	cheap := map[string]string{}
-	var imports, deps strings.Builder
-	for i := 0; i < 40; i++ {
-		cheap[fmt.Sprintf("boms/%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>org.example</groupId><artifactId>bom-%d</artifactId><version>1</version><packaging>pom</packaging><dependencyManagement><dependencies>%s</dependencies></dependencyManagement></project>", i, r4dep("o", fmt.Sprintf("e%d", i), "1"))
-		imports.WriteString(r4import("org.example", fmt.Sprintf("bom-%d", i), "1"))
-	}
-	for i := 0; i < 3000; i++ {
-		deps.WriteString(r4dep("org.unmanaged", fmt.Sprintf("dep-%d", i), ""))
-	}
-	cheap["pom.xml"] = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version><dependencyManagement><dependencies>" + imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies></project>"
-
-	var managed, asked strings.Builder
-	for i := 0; i < 300; i++ {
-		managed.WriteString(r4dep("${A}"+fmt.Sprint(i), "y", "1"))
-		asked.WriteString(r4dep(fmt.Sprintf("x%d", i), "y", ""))
-	}
-	dear := map[string]string{"pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version><properties><A>${B}</A><B>${C}</B><C>" + strings.Repeat("L", 2600) + "</C></properties><dependencyManagement><dependencies>" + managed.String() + "</dependencies></dependencyManagement><dependencies>" + asked.String() + "</dependencies></project>"}
-
-	for _, c := range []struct {
-		name  string
-		files map[string]string
-	}{{"literal imports", cheap}, {"long interpolation", dear}} {
-		b.Run(c.name, func(b *testing.B) {
-			root := b.TempDir()
-			for rel, content := range c.files {
-				p := filepath.Join(root, filepath.FromSlash(rel))
-				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-					b.Fatal(err)
-				}
-				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-					b.Fatal(err)
-				}
-			}
-			units := 0
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				w := NewWalk(root, nil)
-				w.Read(filepath.Join(root, "pom.xml"), Options{})
-				units += w.pom.work.used
-			}
-			if units == 0 {
-				b.Fatal("no unit of work was counted")
-			}
-			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(units), "ns/unit")
-			b.ReportMetric(float64(units)/float64(b.N), "units/read")
-		})
-	}
-}
-
-// R4-M6 (M20). Passing an import whose coordinates hold a reference is a
-// look like passing any other: a pom of n version-less dependencies and n
-// such imports looks at n squared of them, and ends at its bound. (What the
-// coordinates mean is worked out once for the file; the passing is what is
-// counted here.)
-func TestPassingAReferenceKeyedImportIsALook(t *testing.T) {
-	const n = 800
-	files := map[string]string{}
-	var imports, deps strings.Builder
-	for i := 0; i < n; i++ {
-		files[fmt.Sprintf("boms/%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>t</groupId><artifactId>bom%d</artifactId><version>1</version><packaging>pom</packaging></project>", i)
-		imports.WriteString(r4import("t", fmt.Sprintf("bom%d", i), "${bv}"))
-		deps.WriteString(r4dep("x", fmt.Sprintf("d%d", i), ""))
-	}
-	files["pom.xml"] = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version><properties><bv>1</bv></properties><dependencyManagement><dependencies>" +
-		imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies></project>"
-	root := writeTree(t, files)
-	w := NewWalk(root, nil)
-	got := w.Read(filepath.Join(root, "pom.xml"), Options{})
-	if got.Failure == nil {
-		t.Errorf("%d version-less dependencies against %d reference-keyed imports were read (%d units of %d): the passing of such an import is not counted", n, n, w.pom.work.used, w.pom.work.limit)
-	}
-	// A tenth of it on each side is a hundredth of the looks, and is read.
-	small := map[string]string{}
-	imports.Reset()
-	deps.Reset()
-	for i := 0; i < n/10; i++ {
-		small[fmt.Sprintf("boms/%d/pom.xml", i)] = files[fmt.Sprintf("boms/%d/pom.xml", i)]
-		imports.WriteString(r4import("t", fmt.Sprintf("bom%d", i), "${bv}"))
-		deps.WriteString(r4dep("x", fmt.Sprintf("d%d", i), ""))
-	}
-	small["pom.xml"] = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version><properties><bv>1</bv></properties><dependencyManagement><dependencies>" +
-		imports.String() + "</dependencies></dependencyManagement><dependencies>" + deps.String() + "</dependencies></project>"
-	root = writeTree(t, small)
-	if got := NewWalk(root, nil).Read(filepath.Join(root, "pom.xml"), Options{}); got.Failure != nil {
-		t.Errorf("the same shape at a tenth of the size was refused: %v", got.Failure)
-	}
-}
-
-// R4-M9. Interpolation is counted by its bytes. A pom whose dependencies
-// each compare against managed entries keyed by a long property asks a
-// number of questions its size allows, and copies kilobytes for each: it
-// ends at its bound for the copying.
-func TestLongInterpolationIsCountedByItsBytes(t *testing.T) {
-	build := func(n int) string {
-		var managed, asked strings.Builder
-		for i := 0; i < n; i++ {
-			managed.WriteString(r4dep("${A}"+fmt.Sprint(i), "y", "1"))
-			asked.WriteString(r4dep(fmt.Sprintf("x%d", i), "y", ""))
-		}
-		// Padding: the file's size allows every one of the n*n looks.
-		pad := "<!--" + strings.Repeat("p", 2*n*n) + "-->"
-		return "<project><groupId>g</groupId><artifactId>a</artifactId><version>1</version>" + pad + "<properties><A>${B}</A><B>${C}</B><C>" + strings.Repeat("L", 2600) +
-			"</C></properties><dependencyManagement><dependencies>" + managed.String() + "</dependencies></dependencyManagement><dependencies>" + asked.String() + "</dependencies></project>"
-	}
-	const n = 200
-	root := writeTree(t, map[string]string{"pom.xml": build(n)})
-	w := NewWalk(root, nil)
-	got := w.Read(filepath.Join(root, "pom.xml"), Options{})
-	t.Logf("%d questions against %d entries keyed by a 2,600-byte property: %d units of %d", n, n, w.pom.work.used, w.pom.work.limit)
-	if w.pom.work.limit < n*n {
-		t.Fatalf("the allowance %d does not cover the %d looks: the premise does not hold", w.pom.work.limit, n*n)
-	}
-	if got.Failure == nil {
-		t.Errorf("%d looks of several kilobytes each were inside the bound (%d units of %d): the bytes are not counted", n*n, w.pom.work.used, w.pom.work.limit)
 	}
 }

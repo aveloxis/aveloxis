@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.212 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.213 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
+      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -297,6 +297,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#exit-codes">Exit codes</a></li>
@@ -748,6 +749,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1015,6 +1017,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -4176,6 +4179,12 @@ aveloxis<span class="w"> </span>load-numfocus-orgs
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>aveloxis<span class="w"> </span>version
 </pre></div>
 </div>
+</section>
+<hr class="docutils" />
+<section id="aveloxis-manifest-read">
+<h2><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code><a class="headerlink" href="#aveloxis-manifest-read" title="Link to this heading"></a></h2>
+<p>Not a command to run by hand, and not listed by <code class="docutils literal notranslate"><span class="pre">--help</span></code>. Each analysis starts it once, to read one repository’s clone in a process of its own: the dependency names, then the declarations and their versions, then the lockfiles. It takes its request on standard input and answers on standard output. It reads no configuration file, opens no database connection and makes no network request; when a Maven build needs a parent pom or a BOM that is not in the clone, it asks the analysis that started it, which answers from the configured repositories as before.</p>
+<p>It exists so that what a repository’s files say cannot hold a collection worker, or the host’s memory, past two limits: <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> (default 120) and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> (default 1024). The process watches its own processor time and memory and ends itself when it passes either; the analysis also stops it if it runs too long by the clock, and it ends itself if the analysis that started it is gone. What a stopped reading leaves behind is described in <a class="reference internal" href="../architecture/analysis.html"><span class="std std-doc">the analysis architecture page</span></a> and, for an operator, in <a class="reference internal" href="troubleshooting.html"><span class="std std-doc">troubleshooting</span></a>.</p>
 </section>
 <hr class="docutils" />
 <section id="global-behavior">

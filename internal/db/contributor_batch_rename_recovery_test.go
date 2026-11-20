@@ -42,19 +42,19 @@ import (
 func TestUpsertContributorBatchUsesSavepoint(t *testing.T) {
 	body := extractContributorBatchBodies(t)
 
-	if !strings.Contains(body, "SAVEPOINT") {
+	if !strings.Contains(body, "tx.Exec(ctx, cntrbSavepointSQL(") {
 		t.Error("UpsertContributorBatch must use SAVEPOINT to isolate per-contributor " +
 			"failures from the rest of the batch transaction. Pre-v0.22.13 a single " +
 			"23505 poisoned the entire tx; v0.22.13 adds savepoint isolation so other " +
 			"contributors in the same batch can still commit.")
 	}
-	if !strings.Contains(body, "ROLLBACK TO SAVEPOINT") {
+	if !strings.Contains(body, "tx.Exec(ctx, cntrbSavepointRollbackSQL(") {
 		t.Error("UpsertContributorBatch must call ROLLBACK TO SAVEPOINT on a per-contributor " +
 			"failure to clear the aborted-tx state before continuing to the next contributor. " +
 			"Without this, subsequent statements in the same tx fail with " +
 			"'current transaction is aborted, commands ignored until end of transaction block.'")
 	}
-	if !strings.Contains(body, "RELEASE SAVEPOINT") {
+	if !strings.Contains(body, "tx.Exec(ctx, cntrbSavepointReleaseSQL(") {
 		t.Error("UpsertContributorBatch must call RELEASE SAVEPOINT on the success path. " +
 			"Postgres lazily reclaims savepoint resources but explicit RELEASE keeps the " +
 			"per-tx savepoint stack shallow on large batches (hundreds of contributors).")
@@ -212,12 +212,24 @@ func TestUpsertContributorBatchSavepointsPerIdentity(t *testing.T) {
 	// marker within the slice. The marker name itself doesn't matter
 	// (sp_N counter or any other unique scheme) — only that there is
 	// one.
-	spCount := strings.Count(identRegion, "SAVEPOINT")
-	if spCount < 2 {
+	// 0.29.213: the three savepoint statements are made by builders
+	// (identSavepointSQL and its two companions; what each gives is pinned
+	// by TestTheSavepointBuildersGiveTheStatements), so the bracket is the
+	// three calls. The first must come before the insert, the others after.
+	spCount := 0
+	for _, call := range []string{"identSavepointSQL(", "identSavepointRollbackSQL(", "identSavepointReleaseSQL("} {
+		if strings.Contains(identRegion, call) {
+			spCount++
+		}
+	}
+	if at := strings.Index(body, "identSavepointSQL("); at < 0 || at > identIdx {
+		t.Error("the identity savepoint is not taken before the identity INSERT")
+	}
+	if spCount < 3 {
 		t.Errorf("UpsertContributorBatch's per-identity loop must bracket each identity "+
 			"INSERT/UPDATE in its own SAVEPOINT so a single bad identity row doesn't poison "+
 			"the rest of the batch. Found %d SAVEPOINT mentions in the identity region; "+
-			"expected at least 2 (SAVEPOINT + ROLLBACK TO SAVEPOINT or RELEASE SAVEPOINT).",
+			"expected 3 (the savepoint, its rollback and its release).",
 			spCount)
 	}
 }
@@ -243,4 +255,21 @@ func extractFunctionBody(t *testing.T, filename, funcName string) string {
 		endRel = len(tail)
 	}
 	return code[startIdx : startIdx+1+endRel]
+}
+
+// The savepoint builders give the three statements of a savepoint, for the
+// contributor's and for the identity's (the pins above name the builders).
+func TestTheSavepointBuildersGiveTheStatements(t *testing.T) {
+	for got, want := range map[string]string{
+		cntrbSavepointSQL(7):          "SAVEPOINT cntrb_sp_7",
+		cntrbSavepointRollbackSQL(7):  "ROLLBACK TO SAVEPOINT cntrb_sp_7",
+		cntrbSavepointReleaseSQL(7):   "RELEASE SAVEPOINT cntrb_sp_7",
+		identSavepointSQL(12):         "SAVEPOINT ident_sp_12",
+		identSavepointRollbackSQL(12): "ROLLBACK TO SAVEPOINT ident_sp_12",
+		identSavepointReleaseSQL(12):  "RELEASE SAVEPOINT ident_sp_12",
+	} {
+		if got != want {
+			t.Errorf("a savepoint builder gave %q, want %q", got, want)
+		}
+	}
 }

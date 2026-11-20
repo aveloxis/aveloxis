@@ -198,7 +198,13 @@ func TestIgnoredFilesReadsNestedIgnoreFiles(t *testing.T) {
 	dir := t.TempDir()
 	// Run from a git hook, GIT_DIR and GIT_WORK_TREE point at the
 	// caller's repository and a bare git command here would act on it
-	// (round 5): every git command of this file goes through gitIn.
+	// (round 5): every git command of this file goes through gitIn. The
+	// variables are SET here to a repository that does not exist, so a git
+	// command that still read them would fail (round 6: without this the
+	// isolation could be removed and every test stay green).
+	nowhere := filepath.Join(t.TempDir(), "not-a-repository")
+	t.Setenv("GIT_DIR", filepath.Join(nowhere, ".git"))
+	t.Setenv("GIT_WORK_TREE", nowhere)
 	if out, err := gitIn(dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}

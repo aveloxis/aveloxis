@@ -118,7 +118,7 @@ func logAnalysisPhaseErrors(logger *slog.Logger, repoID int64, errs []error) {
 		if errors.Is(phaseErr, context.Canceled) {
 			continue
 		}
-		logger.Warn("analysis phase failed", "repo_id", repoID, "error", phaseErr)
+		logger.Log(context.Background(), manifestFailureLevel(phaseErr, slog.LevelWarn), "analysis phase failed", "repo_id", repoID, "error", phaseErr)
 	}
 }
 
@@ -175,19 +175,23 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 		return result, fmt.Errorf("local clone failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
 
+	// The clone is read once, by one child process, before any phase
+	// writes (0.29.213, clone_read.go): the dependency names, the
+	// declarations and the lockfiles.
+	read := ac.readClone(ctx, repoID, workDir)
+
 	// Phase 1: Dependency scanning.
-	if err := ac.scanDependencies(ctx, repoID, workDir, result); err != nil {
+	if err := ac.scanDependencies(ctx, repoID, workDir, read, result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("dependencies: %w", err))
 	}
 
-	// v0.29.176 (summary/70, 4.3): the lockfiles are READ here, ahead of
-	// the libyear phase, and stored in phase 2b. Parsing only: nothing is
-	// written, and the libyear phase does not use the result yet. The order
-	// is what lets a later release give an inventory row its locked version.
-	locks := collectLockfiles(workDir, ac.logger)
+	// v0.29.176 (summary/70, 4.3): the lockfiles are READ ahead of the
+	// libyear phase, and stored in phase 2b. The order is what gives an
+	// inventory row its locked version (0.29.177).
+	locks := read.lockfiles()
 
 	// Phase 2: Libyear (dependency age).
-	if err := ac.scanLibyear(ctx, repoID, workDir, ac.lockfilesInUse(ctx, repoID, locks), result); err != nil {
+	if err := ac.scanLibyear(ctx, repoID, workDir, read, ac.lockfilesInUse(ctx, repoID, locks), result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("libyear: %w", err))
 	}
 
@@ -242,60 +246,35 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 // Dependency scanning
 // ============================================================
 
-func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
+func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64, workDir string, read *cloneRead, result *AnalysisResult) error {
 	ac.logger.Info("scanning dependencies", "repo_id", repoID)
 
 	// Walk first, write last (0.29.158). repo_dependencies is a snapshot
 	// table with no history; it is replaced in one transaction once the
 	// whole clone has been walked. Before, the table was cleared and then
 	// the clone walked, so a clone that could not be read emptied it.
-	depCounts := make(map[string]map[string]int) // language -> dep_name -> count
-
-	err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			if path == workDir {
-				// The root itself could not be read: nothing will be
-				// visited. Returned, so the previous snapshot stands.
-				return err
-			}
-			return nil // one unreadable entry: skipped, the rest is walked
-		}
-		// Reject symlinks to prevent traversal attacks. A malicious repo can
-		// symlink requirements.txt -> /etc/passwd and have host file contents
-		// stored as dependency names or sent to package registries.
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if info.IsDir() {
-			base := filepath.Base(path)
-			// Skip vendor/node_modules/.git directories.
-			if base == "vendor" || base == "node_modules" || base == ".git" || base == "__pycache__" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// The roster says which files the name inventory counts and reads
-		// them (manifest.Names): a file no kind claims, and one that cannot
-		// be read or parsed, contribute nothing.
-		lang, deps, matched, err := manifest.Names(path)
-		if !matched || err != nil {
-			return nil
-		}
-
-		if depCounts[lang] == nil {
-			depCounts[lang] = make(map[string]int)
-		}
-		for _, dep := range deps {
-			depCounts[lang][dep]++
-		}
-		return nil
-	})
-	if err != nil {
-		ac.logger.Error("dependency manifest walk failed at the clone's root — the previous dependency names are kept",
-			"repo_id", repoID, "dir", workDir, "error", err)
+	//
+	// The walk ran in the child process that read the clone (0.29.213,
+	// clone_read.go).
+	run := read.run
+	err := run.passErr(manifestPassNames, read.runErr)
+	if errors.Is(err, context.Canceled) {
+		// A `stop serve`, not a defect.
 		return fmt.Errorf("dependency manifest walk: %w", err)
 	}
+	if err != nil {
+		var root *errManifestRoot
+		switch {
+		case errors.As(err, &root):
+			ac.logger.Error("dependency manifest walk failed at the clone's root — the previous dependency names are kept",
+				"repo_id", repoID, "dir", workDir, "error", err)
+		default:
+			ac.logger.Log(ctx, manifestFailureLevel(err, slog.LevelError), "the dependency names were not read — the previous dependency names are kept",
+				append([]any{"repo_id", repoID, "dir", workDir, "error", err}, read.limits.logLimits()...)...)
+		}
+		return fmt.Errorf("dependency manifest walk: %w", err)
+	}
+	depCounts := run.names // language -> dep_name -> count
 
 	// One row PostgreSQL refuses would refuse the whole snapshot, so rows
 	// are made storable here. A name is never repaired: one the sanitizer
@@ -332,7 +311,7 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 // Libyear scanning (dependency age)
 // ============================================================
 
-func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, workDir string, lockfiles []versionuse.Lockfile, result *AnalysisResult) error {
+func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, workDir string, read *cloneRead, lockfiles []versionuse.Lockfile, result *AnalysisResult) error {
 	ac.logger.Info("scanning libyear", "repo_id", repoID)
 	// The registry layer's own conditions (a deep pacing queue) report
 	// through this collection's logger, not slog's default.
@@ -350,13 +329,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	var allDeps []model.LibyearDep
 	// The analysis half of the coverage record, written with the inventory.
 	var cov model.InventoryCoverage
-	// One walk per scan: it holds the Cargo workspace index, so every
-	// Cargo.toml of a workspace inherits from the same root, read once and
-	// never above the clone (v0.29.71).
-	walk := manifest.NewWalk(workDir, ac.logger)
-	// v0.29.182: a Maven parent or BOM that is not in the clone is obtained
-	// from the configured Maven repositories, and stored.
-	poms, err := newMavenPomSource(ctx, ac.store, ac.logger)
+	// v0.29.182: a Maven parent or BOM that is not in the clone was obtained
+	// from the configured Maven repositories, and stored, while the clone
+	// was read (readClone).
+	poms, err := read.poms, read.pomsErr
 	if err != nil {
 		// Which repository hosts may be used is not known. Nothing is
 		// walked; the previous inventory stands.
@@ -366,7 +342,6 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		}
 		return fmt.Errorf("libyear: %w", err)
 	}
-	walk.SetPomSource(poms)
 	defer poms.logSummary(repoID)
 	// The registry lookups below ask the same list.
 	ctx = withDistrustedHosts(ctx, poms.distrusted)
@@ -379,111 +354,58 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		}
 		ac.logger.Info("maven repositories in use (a configured one is distrusted)", "repo_id", repoID, "hosts", hosts)
 	}
-	manifestOptions := manifest.Options{DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps}
 
-	// v0.27.36: a root-stat failure makes Walk return without visiting
-	// anything — silently producing ZERO dependencies for the repo.
-	// Per-entry errors are still skipped inside the callback.
-	if err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			if path == workDir {
-				// The root itself could not be read: nothing will be
-				// visited. Returned, so the phase stops (below) instead of
-				// going on with an inventory of nothing.
-				return err
-			}
-			return nil // one unreadable entry: skipped, the rest is walked
-		}
-		// Reject symlinks to prevent traversal attacks (see scanDependencies).
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if info.IsDir() {
-			base := filepath.Base(path)
-			if base == "vendor" || base == "node_modules" || base == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// The roster is the dispatch (manifest.Walk.Read): every kind that
-		// claims the file reads it, under the two knobs. A file no kind
-		// claims is not a manifest.
-		read := walk.Read(path, manifestOptions)
-		if !read.Claimed {
-			return nil
-		}
-		cov.ManifestsFound++
-		rel := relativeToClone(workDir, path)
-		if textclean.WouldChange(rel) {
-			// The path is what a manifest's rows are carried by, and two
-			// paths the sanitizer would change could become one. Such a
-			// manifest is recorded as unread under its sanitized path and
-			// neither contributes rows nor carries any.
-			cov.ManifestsFailed = append(cov.ManifestsFailed, model.ManifestFailure{
-				Path: textclean.Sanitize(rel), Kind: read.Kind, Reason: model.ManifestFailedRead, NoCarry: true})
-			ac.logger.Warn("manifest path cannot be stored unchanged — not read", "kind", read.Kind, "path", textclean.Sanitize(rel))
-			return nil
-		}
-		if f := read.Failure; f != nil {
-			// Recorded, not silent: a manifest that contributes nothing is
-			// otherwise indistinguishable from a project that dropped its
-			// dependencies. It contributes no declarations this cycle; the
-			// replace carries its previous rows by this path instead.
-			cov.ManifestsFailed = append(cov.ManifestsFailed, model.ManifestFailure{Path: rel, Kind: f.Kind, Reason: f.Reason})
-			if f.Reason == model.ManifestFailedParse {
-				ac.logger.Warn("failed to parse "+f.Kind+" versions", "path", path, "error", f.Err)
-			} else {
-				ac.logger.Warn("failed to read manifest", "kind", f.Kind, "path", path, "error", f.Err)
-			}
-			return nil
-		}
-		cov.ManifestsParsed++
-		for i := range read.Deps {
-			read.Deps[i].ManifestPath = rel
-		}
-		allDeps = append(allDeps, read.Deps...)
-		return nil
-	}); err != nil {
-		// The walk failed at the root itself (per-entry errors are skipped
-		// inside the callback), so nothing was visited. Replacing the
-		// inventory now would replace it with nothing, and every finding
-		// would close as if its dependency were gone. The previous inventory
-		// stands (v0.27.36 logged this and went on with zero dependencies).
-		ac.logger.Error("libyear manifest walk failed at the clone's root — the previous dependency inventory is kept",
-			"repo_id", repoID, "dir", workDir, "error", err)
-		ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptRootUnreadable)
+	// The manifests were read in a child process (0.29.213,
+	// manifest_child.go, clone_read.go): the walk over the clone, every
+	// reader, version hygiene and the settling of Maven's managed entries.
+	// The child asked this process for the poms that are not in the clone,
+	// and poms answered. Nothing it read could hold this worker past the
+	// child's limits.
+	limits := read.limits
+	run := read.run
+	err = run.passErr(manifestPassDeclarations, read.runErr)
+	if errors.Is(err, context.Canceled) {
+		// A `stop serve`, not a failed attempt: nothing is logged or
+		// recorded.
 		return fmt.Errorf("libyear manifest walk: %w", err)
 	}
-
-	// v0.27.71: central version-hygiene choke point. Every parser's
-	// output passes through here before resolution, storage, and purl
-	// construction — a malformed version (line-continuation backslash,
-	// property interpolation, inline-table fragment, monorepo
-	// protocol) becomes "" (the honest 'unpinned' pathway) instead of
-	// silently defeating OSV version matching and registry lookups.
-	// See version_normalize.go for the incident history.
-	for i := range allDeps {
-		allDeps[i].Version = manifest.NormalizeParsedVersion(allDeps[i].Manager, allDeps[i].Version)
+	if err != nil {
+		var root *errManifestRoot
+		var child *errManifestChild
+		switch {
+		case errors.As(err, &root):
+			// The walk failed at the root itself (per-entry errors are
+			// skipped inside it), so nothing was visited. Replacing the
+			// inventory now would replace it with nothing, and every
+			// finding would close as if its dependency were gone. The
+			// previous inventory stands (v0.27.36 logged this and went on
+			// with zero dependencies).
+			ac.logger.Error("libyear manifest walk failed at the clone's root — the previous dependency inventory is kept",
+				"repo_id", repoID, "dir", workDir, "error", err)
+			ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptRootUnreadable)
+		case errors.As(err, &child):
+			// The reader was stopped at a limit, or failed. Nothing it
+			// read is used: a part of an inventory reads as all of it. The
+			// previous inventory stands, and the coverage record says
+			// which limit, with the limits in force here.
+			ac.logger.Log(ctx, manifestFailureLevel(err, slog.LevelError), "libyear: the manifests were not read — the previous dependency inventory is kept",
+				"repo_id", repoID, "dir", workDir, "result", child.Attempt, "error", err,
+				"manifest_read_cpu_seconds", int(limits.CPU/time.Second), "manifest_read_memory_mb", limits.HeapBytes>>20)
+			ac.recordInventoryAttempt(ctx, repoID, child.Attempt)
+		default:
+			ac.logger.Error("libyear: the manifests were not read — the previous dependency inventory is kept",
+				"repo_id", repoID, "dir", workDir, "error", err)
+			ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptReadFailed)
+		}
+		return fmt.Errorf("libyear manifest walk: %w", err)
 	}
-
-	// v0.29.183 (summary/70, 4.5, D9): a Maven dependencyManagement entry is
-	// not a dependency. In a tree read whole it stops being inventoried: an
-	// entry whose version a dependency took is represented by that
-	// dependency; one whose version was applied to nothing, and a BOM
-	// import's own coordinate, becomes a note. A tree that was not read
-	// whole keeps its entries as rows, and is named with the reason.
-	mavenManaged := walk.SettleMavenManaged(allDeps)
-	allDeps = mavenManaged.Kept
-	for _, h := range mavenManaged.TreeHosts {
-		cov.MavenTreeHosts = append(cov.MavenTreeHosts, model.MavenTreeHosts{Root: h.Root, Hosts: h.Hosts})
-	}
-	for _, g := range mavenManaged.NotWhole {
-		cov.MavenTreesNotWhole = append(cov.MavenTreesNotWhole, model.MavenTreeGap{Root: g.Root, Reason: g.Reason})
-	}
-	if len(mavenManaged.Unused)+len(mavenManaged.NotWhole) > 0 {
-		ac.logger.Info("maven: dependencyManagement entries",
-			"repo_id", repoID, "not_inventoried_unused_or_bom_import", len(mavenManaged.Unused),
-			"trees_not_read_whole_entries_kept", len(mavenManaged.NotWhole))
+	decl := run.decl
+	allDeps = decl.Deps
+	cov.ManifestsFound, cov.ManifestsParsed, cov.ManifestsFailed = decl.Found, decl.Parsed, decl.Failed
+	cov.MavenTreeHosts, cov.MavenTreesNotWhole = decl.TreeHosts, decl.NotWhole
+	if decl.RemoteNotAsked > 0 {
+		ac.logger.Warn("libyear: this repository's build asks for more parent and BOM poms than one analysis asks repositories for; the rest were not asked for, and what depends on them is reported as not obtained",
+			"repo_id", repoID, "asked_limit", maxRemotePomCoordinates, "not_asked", decl.RemoteNotAsked)
 	}
 
 	// v0.29.177 (summary/70, 4.3): the version IN USE. Where the nearest
@@ -539,8 +461,8 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		withoutRow[kind]++
 		notes = append(notes, inventoryNote(dep, kind))
 	}
-	cov.DependenciesDeclared = len(allDeps) + len(mavenManaged.Unused)
-	for _, dep := range mavenManaged.Unused {
+	cov.DependenciesDeclared = len(allDeps) + len(decl.Unused)
+	for _, dep := range decl.Unused {
 		noRow(dep, model.NoRowManagedUnused)
 	}
 	swiftPM := func(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
@@ -709,7 +631,7 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	cov.DependenciesWithoutRow = withoutRow
 	// v0.29.184: the package repositories this repository's build files
 	// declare, written by the same replace.
-	for _, d := range walk.DeclaredRepositories() {
+	for _, d := range decl.Repositories {
 		if textclean.WouldChange(d.URL) || textclean.WouldChange(d.ManifestPath) {
 			continue // cannot be stored unchanged; the next analysis reads it again
 		}

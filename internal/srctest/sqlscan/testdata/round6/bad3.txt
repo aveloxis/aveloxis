@@ -1,0 +1,103 @@
+@@b01 fori body
+DO $$ BEGIN FOR i IN 1..2 LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; END $$
+@@b02 fors body
+DO $$ DECLARE r record; BEGIN FOR r IN SELECT 1 LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; END $$
+@@b03 dynfors body
+DO $$ DECLARE r record; BEGIN FOR r IN EXECUTE 'SELECT 1' LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; END $$
+@@b04 case else
+DO $$ BEGIN CASE WHEN FALSE THEN NULL; ELSE UPDATE aveloxis_data.repos SET fe = 'x'; END CASE; END $$
+@@b05 case operand when
+DO $$ BEGIN CASE 1 WHEN 1 THEN UPDATE aveloxis_data.repos SET fe = 'x'; END CASE; END $$
+@@b06 exception in loop in exception
+DO $$ BEGIN BEGIN NULL; EXCEPTION WHEN division_by_zero THEN FOR i IN 1..2 LOOP BEGIN NULL; EXCEPTION WHEN OTHERS THEN UPDATE aveloxis_data.repos SET fe = 'x'; END; END LOOP; END; END $$
+@@b07 execute literal inside return query... dynfors with using
+DO $$ DECLARE r record; BEGIN FOR r IN EXECUTE 'UPDATE aveloxis_data.repos SET fe = $1 RETURNING 1' USING 'x' LOOP NULL; END LOOP; END $$
+@@b08 open for execute literal
+DO $$ DECLARE c refcursor; BEGIN OPEN c FOR EXECUTE 'WITH u AS (UPDATE aveloxis_data.repos SET fe = ''x'' RETURNING 1) SELECT * FROM u'; END $$
+@@b09 execute into
+DO $$ DECLARE n int; BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = ''x'' RETURNING 1' INTO n; END $$
+@@b10 plpgsql function declared default expr calls? (control PASS)
+DO $$ DECLARE n int := (SELECT 1); BEGIN NULL; END $$
+@@b11 plpgsql cursor arg query
+DO $$ DECLARE c CURSOR (k int) FOR SELECT k; BEGIN FOR r IN c(1) LOOP UPDATE aveloxis_data.repos SET fe = 'x'; END LOOP; END $$
+@@b12 execute literal U&
+DO $$ BEGIN EXECUTE U&'UPDATE aveloxis_data.repos SET fe = 1'; END $$
+@@b13 execute adjacent literal continuation
+DO $$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos '
+ 'SET fe = 1'; END $$
+@@b14 execute literal with 9 nestings of DO
+DO $a$ BEGIN EXECUTE 'DO $b$ BEGIN EXECUTE ''UPDATE aveloxis_data.repos SET fe = 1''; END $b$'; END $a$
+@@b15 statement after plpgsql block in same text
+DO $$ BEGIN NULL; END $$; UPDATE aveloxis_data.repos SET fe = 'x'
+@@b16 two DO blocks in one text second bad
+DO $$ BEGIN NULL; END $$; DO $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END $$
+@@b17 two functions in one text; second trigger assigns
+CREATE FUNCTION a() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$; CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.fe := 'x'; RETURN NEW; END $$
+@@b18 multibyte before DO (offset check)
+SELECT 'héllo→'; DO $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END $$
+@@b19 comment before second stmt containing DO text
+SELECT 1; /* DO $$ BEGIN NULL; END $$ */ DO $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END $$
+@@b20 string containing a DO block before real one in same statement?
+DO $x$ BEGIN PERFORM 'DO $$ BEGIN NULL; END $$'; UPDATE aveloxis_data.repos SET fe = 'x'; END $x$
+@@b21 create function with body as dollar tag containing "language sql" text
+CREATE FUNCTION f() RETURNS void AS $$ BEGIN UPDATE aveloxis_data.repos SET fe = 'x'; END $$ LANGUAGE plpgsql
+@@b22 create or replace procedure sql
+CREATE OR REPLACE PROCEDURE p() LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET fe = 'x' $$
+@@b23 trigger function with TG_OP branch assign
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF TG_OP = 'UPDATE' THEN NEW.fe := OLD.fe || 'x'; END IF; RETURN NEW; END $$
+@@b24 trigger assign via := with compound target spacing/case
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "new" . FE := 'x'; RETURN NEW; END $$
+@@b25 trigger declares local named new? (shadow) assign real NEW in outer
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ <<o>> BEGIN o.new.fe := 'x'; RETURN NEW; END $$
+@@b26 trigger select into NEW.fe from update returning in CTE
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN WITH q AS (SELECT 'x' AS v) SELECT v INTO NEW.fe FROM q; RETURN NEW; END $$
+@@b27 trigger RETURN row constructor
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN ROW(NEW.id, 'x'); END $$
+@@b28 trigger RETURN (select modified)
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE r aveloxis_data.repos; BEGIN SELECT * INTO r FROM aveloxis_data.repos LIMIT 1; RETURN r; END $$
+@@g01 PG18 returning old/new plain (control - conforming write PASS expected)
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1) RETURNING old.fe, new.fe
+@@g02 PG18 returning WITH aliases
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1) RETURNING WITH (OLD AS o, NEW AS n) o.fe, n.fe
+@@g03 PG18 virtual generated column
+ALTER TABLE aveloxis_data.repos ADD COLUMN v int GENERATED ALWAYS AS (id * 2) VIRTUAL
+@@g04 PG18 generated default virtual (no keyword)
+ALTER TABLE aveloxis_data.repos ADD COLUMN v int GENERATED ALWAYS AS (id * 2)
+@@g05 PG18 without overlaps
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT pk PRIMARY KEY (id, valid WITHOUT OVERLAPS)
+@@g06 PG18 temporal FK
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (id, PERIOD valid) REFERENCES s.o (id, PERIOD valid)
+@@g07 PG18 not enforced
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT c CHECK (id > 0) NOT ENFORCED
+@@g08 PG18 named not null table constraint
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT nn NOT NULL fe
+@@g09 PG18 not null not valid
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT nn NOT NULL fe NOT VALID
+@@g10 PG18 vacuum only
+VACUUM (ANALYZE) ONLY aveloxis_data.repos
+@@g11 PG18 copy on_error reject_limit (flagged as COPY)
+COPY aveloxis_data.repos FROM STDIN (ON_ERROR ignore, REJECT_LIMIT 5)
+@@g12 PG18 alter constraint not enforced
+ALTER TABLE aveloxis_data.repos ALTER CONSTRAINT c NOT ENFORCED
+@@g13 PG18 alter column set expression on virtual (same syntax)
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe SET EXPRESSION AS (x)
+@@g14 PG18 create foreign table like
+CREATE FOREIGN TABLE s.ft (LIKE aveloxis_data.repos) SERVER x
+@@g15 PG18 update with returning old in cte used to write elsewhere (control)
+WITH u AS (UPDATE aveloxis_data.repos SET ar = $1 RETURNING old.ar AS was) INSERT INTO s.log SELECT was FROM u
+@@g16 PG18 merge returning old
+MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = COALESCE(t.fe, $1) RETURNING old.fe
+@@g17 PG18 insert on conflict returning old
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(repos.fe, EXCLUDED.fe) RETURNING old.fe, new.fe
+@@g18 PG18 create table with virtual col
+CREATE TABLE s.n (a int, b int GENERATED ALWAYS AS (a) VIRTUAL)
+@@g19 PG17 json_table / merge by source (control valid 17)
+SELECT * FROM JSON_TABLE('[]'::jsonb, '$[*]' COLUMNS (a int PATH '$.a')) jt
+@@g20 PG18 uuidv7 (plain fn; control)
+SELECT uuidv7()
+@@g21 PG18 analyze only
+ANALYZE ONLY aveloxis_data.repos
+@@g22 PG18 alter table ... set (not null) inherit
+ALTER TABLE aveloxis_data.repos ALTER CONSTRAINT nn INHERIT
+@@g23 PG18 OLD/NEW in SET value position with alias named old (17 reads as table ref)
+UPDATE aveloxis_data.repos AS old SET fe = COALESCE(old.fe, $1)

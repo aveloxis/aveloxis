@@ -545,6 +545,19 @@ type CollectionConfig struct {
 	// above MaxSupplyChainRefreshHours, is refused at load. Read through
 	// RepositoryHostCheckInterval.
 	RepositoryHostCheckHours *int `json:"repository_host_check_hours,omitempty"`
+	// ManifestReadCPUSeconds and ManifestReadMemoryMB (0.29.213) bound the
+	// child process that reads one repository's dependency manifests and
+	// lockfiles (internal/collector/manifest_child.go): the CPU time it may
+	// use and the heap it may hold, for the whole of one analysis's
+	// reading. A repository that passes either has that reading stopped;
+	// what it had not finished (the dependency inventory, the lockfile
+	// rows) stands as it was, and the coverage record says which limit. nil is the default
+	// (DefaultManifestReadCPUSeconds, DefaultManifestReadMemoryMB). There
+	// is no "unlimited": 0, a negative number, and a number too large to be
+	// a duration or a size are refused at load. Read through
+	// ManifestReadCPULimit and ManifestReadMemoryLimit.
+	ManifestReadCPUSeconds *int `json:"manifest_read_cpu_seconds,omitempty"`
+	ManifestReadMemoryMB   *int `json:"manifest_read_memory_mb,omitempty"`
 	// RepositoryHostRegistrationCheck (0.29.190) is whether the repository
 	// host check also asks each host's domain registry, through the public
 	// registration-data service (RDAP), when the domain was registered: a
@@ -1886,6 +1899,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("collection.repository_host_check_hours is %d — use a number of hours between 1 and %d, 0 for no check, or omit it for the default of %d",
 			*h, MaxSupplyChainRefreshHours, DefaultRepositoryHostCheckHours)
 	}
+	if n := c.Collection.ManifestReadCPUSeconds; n != nil && (*n < 1 || *n > MaxManifestReadCPUSeconds) {
+		return fmt.Errorf("collection.manifest_read_cpu_seconds is %d — use a number of seconds between 1 and %d, or omit it for the default of %d (there is no unlimited: a hostile repository would hold a collection worker for as long as its files asked)",
+			*n, MaxManifestReadCPUSeconds, DefaultManifestReadCPUSeconds)
+	}
+	if n := c.Collection.ManifestReadMemoryMB; n != nil && (*n < 1 || *n > MaxManifestReadMemoryMB) {
+		return fmt.Errorf("collection.manifest_read_memory_mb is %d — use a number of mebibytes between 1 and %d, or omit it for the default of %d (there is no unlimited)",
+			*n, MaxManifestReadMemoryMB, DefaultManifestReadMemoryMB)
+	}
 	if n := c.Collection.PackageKeyFillRows; n != nil && (*n < 0 || *n > MaxPackageKeyFillRows) {
 		return fmt.Errorf("collection.package_key_fill_rows is %d — use a number of rows between 1 and %d, 0 to turn the fill off, or omit it for the default of %d",
 			*n, MaxPackageKeyFillRows, DefaultPackageKeyFillRows)
@@ -2183,6 +2204,68 @@ func validateMavenRepositoryURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// The limits on the process that reads one repository's manifests (0.29.213).
+// PROVISIONAL (summary/71, section 8): the operator sets them.
+//
+// DefaultManifestReadCPUSeconds. What an honest build costs was measured in
+// the child itself, on the largest shapes the review built (an Apple
+// M-series machine): a Maven reactor of 2,000 modules under a fetched parent
+// that manages a thousand artifacts and imports twenty BOMs used half a
+// second of CPU time, and a Gradle build of 3,000 projects under a platform
+// that imports thirty BOMs used 0.7 s (CPU time on every thread, the garbage
+// collector's included). Two minutes is some 170 times the larger, for a
+// machine several times slower and a build many times larger than any
+// measured, and it is what a hostile repository can cost one worker in CPU
+// time per analysis. TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits
+// (internal/collector) reads both under the defaults and holds them to a
+// fiftieth of this.
+//
+// DefaultManifestReadMemoryMB. The same two builds held 31 and 19 MiB at
+// most; a gibibyte is thirty times the larger (the test holds them to a
+// tenth). It is also what a worker's child may take from the host at worst:
+// with forty workers all reading hostile repositories at the same moment,
+// forty gibibytes.
+//
+// The lockfiles are read by the same child and are the larger demand: a
+// lockfile is read whole and has no largest size. Measured in the child, at
+// this default: a package-lock.json of 50 MB (89,000 packages) held 97 MiB
+// and one of 200 MB (352,000 packages) 605 MiB; a yarn.lock of 50 MB 174 MiB
+// and of 200 MB 672 MiB; a pnpm-lock.yaml of 50 MB (177,000 packages) 752
+// MiB, some fifteen times its size, which is what the YAML parser's nodes
+// weigh. So the default reads a pnpm-lock.yaml of about 65 MB and the other
+// formats past 200 MB. The largest lockfile among the 50,000 of the fleet
+// this was sized against holds 6,749 packages, a thirteenth of the smallest
+// of those files. Each took two seconds of CPU time or less.
+//
+// The maxima are what fits the types the limits are used as (a Duration,
+// a count of bytes).
+const (
+	DefaultManifestReadCPUSeconds = 120
+	DefaultManifestReadMemoryMB   = 1024
+	MaxManifestReadCPUSeconds     = int(math.MaxInt64 / int64(time.Second))
+	MaxManifestReadMemoryMB       = int(math.MaxInt64 >> 20)
+)
+
+// ManifestReadCPULimit is the effective CPU time the manifest-reading child
+// may use. The single default layer.
+func (c *CollectionConfig) ManifestReadCPULimit() time.Duration {
+	n := DefaultManifestReadCPUSeconds
+	if c.ManifestReadCPUSeconds != nil {
+		n = *c.ManifestReadCPUSeconds
+	}
+	return time.Duration(n) * time.Second
+}
+
+// ManifestReadMemoryLimit is the effective heap, in bytes, the
+// manifest-reading child may hold. The single default layer.
+func (c *CollectionConfig) ManifestReadMemoryLimit() int64 {
+	n := DefaultManifestReadMemoryMB
+	if c.ManifestReadMemoryMB != nil {
+		n = *c.ManifestReadMemoryMB
+	}
+	return int64(n) << 20
 }
 
 // DefaultPackageKeyFillRows: one step is one round trip of at most this many

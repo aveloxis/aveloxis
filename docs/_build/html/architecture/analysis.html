@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis &mdash; Aveloxis 0.29.212 documentation</title>
+  <title>Analysis &mdash; Aveloxis 0.29.213 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
+      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -297,6 +297,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -748,6 +749,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1015,6 +1017,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#gradle-build-files">Gradle build files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#execution">Execution</a></li>
@@ -2319,6 +2322,39 @@ an imported BOM could not be obtained, a BOM import matches more than one pom, o
 seen may be the user of an entry, so that tree’s entries stay inventoried and
 <code class="docutils literal notranslate"><span class="pre">repo_dependency_coverage.maven_trees_not_whole</span></code> names the tree with the reason. Other
 trees of the repository are unaffected: a broken fixture pom is its own tree.</p>
+</section>
+<section id="the-clone-is-read-by-a-process-of-its-own-0-29-213">
+<h2>The clone is read by a process of its own (0.29.213)<a class="headerlink" href="#the-clone-is-read-by-a-process-of-its-own-0-29-213" title="Link to this heading"></a></h2>
+<p>Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So the readers do not run in the collection worker. Each analysis starts one child process (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code>, the same binary) and the child reads the clone.</p>
+<p><strong>What the child does.</strong> Three readings, each ending with its own completion message: the dependency names, the declarations with their versions (the walk that the sections above describe, with Maven’s and Gradle’s trees), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.</p>
+<p><strong>What the child has.</strong> The clone directory and the options, and nothing else: an empty environment, no configuration file, no database connection, no network. A Maven parent or BOM that is not in the clone is asked of the analysis over the same pipe; the analysis answers from the configured repositories under the rules it always applied, and counts the coordinates asked (at most 1,000 an analysis; one more is a failed lookup).</p>
+<p><strong>What the analysis trusts.</strong> Nothing the child says. Every path must be inside the clone, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept.</p>
+<p><strong>The two limits.</strong> The child watches its own processor time and memory against <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.</p>
+<p><strong>What a stopped reading means.</strong> Nothing partial is ever stored.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Stopped during</p></th>
+<th class="head"><p>Stored inventory</p></th>
+<th class="head"><p>Stored lockfile rows</p></th>
+<th class="head"><p>Recorded</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>the names or the declarations</p></td>
+<td><p>stays as it was</p></td>
+<td><p>stay as they were</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code> or <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>the lockfiles</p></td>
+<td><p>replaced, each dependency keeping the locked version the stored lockfile rows give it</p></td>
+<td><p>stay as they were</p></td>
+<td><p>an ERROR in the log naming the limit; <code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is untouched, because the inventory was replaced</p></td>
+</tr>
+</tbody>
+</table>
+<p>The reading is tried again at the repository’s next collection, not sooner.</p>
+<p><strong>No budgets inside the readers.</strong> 0.29.210 to 0.29.212 counted work, memory and remote requests inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file’s correctness needs: the largest build file read (8 MiB), the length of a parent chain, the size of an interpolated value.</p>
+<p><strong>An earlier pom that could not be obtained.</strong> When a parent or an imported BOM that Maven would consult first could not be obtained (the lookup failed, its repository is refused, or it was not asked), a version that a later one would give is withheld: the dependency has no version and the reason says why. A pom that every repository answered “not found” for does not withhold: that is an answer.</p>
 </section>
 <section id="code-complexity-via-scc">
 <h2>Code complexity via scc<a class="headerlink" href="#code-complexity-via-scc" title="Link to this heading"></a></h2>

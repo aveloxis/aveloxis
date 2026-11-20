@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // TestExecCreateIndexConcurrentlyAnalyzesAnExpressionIndexWithoutStatistics
@@ -153,5 +155,45 @@ func TestExpressionIndexTableWithoutStatistics(t *testing.T) {
 	}
 	if _, got, err := expressionIndexTableWithoutStatistics(ctx, store, scratch, "expr_idx"); err != nil || got != "" {
 		t.Errorf("an analyzed expression index: got (%q, %v), want nothing to do", got, err)
+	}
+
+	// 0.29.212: the drop of an INVALID index names it through
+	// pgx.Identifier (dropInvalidIndexSQL), where it stood unquoted. An
+	// interrupted CONCURRENTLY build is made here (a unique index over
+	// duplicate values fails and leaves the index INVALID), and the helper
+	// must drop it by that quoted name and build the index it was asked
+	// for: for a plain lower-case name, as every caller passes, and for
+	// one that only a quoted name reaches.
+	for _, idx := range []string{"idx_dropinvalid", "Idx Odd"} {
+		table := pgx.Identifier{scratch, "dup"}.Sanitize()
+		name := pgx.Identifier{idx}.Sanitize()
+		for _, stmt := range []string{
+			`DROP TABLE IF EXISTS ` + table,
+			`CREATE TABLE ` + table + ` (a int)`,
+			`INSERT INTO ` + table + ` VALUES (1), (1)`,
+		} {
+			if _, err := store.pool.Exec(ctx, stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+		if _, err := store.pool.Exec(ctx, `CREATE UNIQUE INDEX CONCURRENTLY `+name+` ON `+table+` (a)`); err == nil {
+			t.Fatal("a unique index over duplicate values was built: the fixture makes no invalid index")
+		}
+		valid := func() (v, exists bool) {
+			err := store.pool.QueryRow(ctx, `SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+				JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2`, scratch, idx).Scan(&v)
+			return v, err == nil
+		}
+		if v, exists := valid(); !exists || v {
+			t.Fatalf("%s: the fixture must leave an INVALID index (exists %v, valid %v)", idx, exists, v)
+		}
+		var errs []error
+		execCreateIndexConcurrently(ctx, store, quiet, &errs, scratch, idx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS `+name+` ON `+table+` (a)`)
+		if len(errs) != 0 {
+			t.Fatalf("%s: %v", idx, errs)
+		}
+		if v, exists := valid(); !exists || !v {
+			t.Errorf("%s: after the helper the index must exist and be valid (exists %v, valid %v): the invalid one was not dropped", idx, exists, v)
+		}
 	}
 }

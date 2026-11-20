@@ -1310,8 +1310,22 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 // pins. Behavioral proof: the stale-snapshot fixtures in
 // TestGetGapHealCandidatesEndToEnd (red-proven against the bare join).
 func TestGapHealCandidatesResolveLatestSnapshot(t *testing.T) {
+	// 0.29.212: the statement is built by gapHealCandidatesSQL (so that the
+	// write-policy check runs it for both modes). What is pinned is
+	// unchanged, and read where the text now stands: the reader runs that
+	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
+	if fn := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates("); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
+	}
+	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {
+		gapHealStatementShape(t, body)
+	}
+}
+
+// gapHealStatementShape: the latest-snapshot join of one mode's statement.
+func gapHealStatementShape(t *testing.T, body string) {
+	t.Helper()
 	if !strings.Contains(body, "JOIN LATERAL") ||
 		!strings.Contains(body, "ORDER BY ri0.data_collection_date DESC NULLS LAST, ri0.repo_info_id DESC") {
 		t.Error("GetGapHealCandidates must pick the latest repo_info snapshot per repo (LATERAL, date DESC with repo_info_id tiebreak)")
@@ -1589,9 +1603,26 @@ func TestForgeIDRenameHealNeverCrossesHosts(t *testing.T) {
 // the COALESCE-to-zero predicate. Behavioral: the nosnap fixture in
 // TestGetGapHealCandidatesEndToEnd.
 func TestGapHealCandidatesIncludeSnapshotlessInAll(t *testing.T) {
+	// 0.29.212: the statement is built by gapHealCandidatesSQL (so that the
+	// write-policy check runs it for both modes). What is pinned is
+	// unchanged, and read where the text now stands: the reader runs that
+	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
-	if !strings.Contains(body, "LEFT JOIN LATERAL") {
+	if fn := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates("); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
+	}
+	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {
+		gapHealSnapshotlessShape(t, body)
+	}
+}
+
+// gapHealSnapshotlessShape: the LEFT join and the zero counts of one mode's statement.
+func gapHealSnapshotlessShape(t *testing.T, body string) {
+	t.Helper()
+	// The lateral that reads repo_info, by its own first line: the
+	// statement has another LEFT JOIN LATERAL (the synthetic-issue count),
+	// which satisfied a bare "LEFT JOIN LATERAL" whatever this one was.
+	if !srctest.ContainsNormalized(body, "LEFT JOIN LATERAL ( SELECT ri0.issues_count, ri0.pr_count") {
 		t.Error("repo_info must LEFT-join — an inner join drops snapshotless collected repos from the --all sweep")
 	}
 	if !strings.Contains(body, "COALESCE(ri.issues_count, 0)") {

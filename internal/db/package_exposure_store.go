@@ -419,6 +419,53 @@ type PackageExposurePage struct {
 	Live  bool
 }
 
+// Where ListPackageExposure reads from: the fleet's materialized view, the
+// live computation over a cohort ($1 = its repositories), or the live
+// computation over the fleet (when the view cannot answer).
+const (
+	exposureFromView = iota
+	exposureFromCohort
+	exposureFromLiveFleet
+)
+
+// packageExposureListSQL is ListPackageExposure's two statements, the page
+// and the count: for a source, with or without the ecosystem and the name
+// filters (whose arguments follow the cohort's, in that order), sorted by
+// a key of PackageExposureSorts. Any other source or key is refused here,
+// before a statement exists. The page's LIMIT and OFFSET are its last two
+// arguments.
+func packageExposureListSQL(source int, ecosystem, search bool, sortKey string) (page, count string, err error) {
+	orderBy, ok := PackageExposureSorts[sortKey]
+	if !ok {
+		return "", "", fmt.Errorf("package exposure list: unknown sort %q", sortKey)
+	}
+	n := 0
+	var src string
+	switch source {
+	case exposureFromView:
+		src = "aveloxis_data.explorer_package_exposure x"
+	case exposureFromCohort:
+		src = "(" + packageExposureSQL(cohortFilter) + ") x"
+		n++
+	case exposureFromLiveFleet:
+		src = "(" + packageExposureSQL("") + ") x"
+	default:
+		return "", "", fmt.Errorf("package exposure list: unknown source %d", source)
+	}
+	where := ""
+	if ecosystem {
+		n++
+		where += fmt.Sprintf(" AND x.ecosystem = $%d", n)
+	}
+	if search {
+		n++
+		where += fmt.Sprintf(` AND lower(x.package_name) LIKE $%d ESCAPE '\'`, n)
+	}
+	page = "SELECT " + exposureSelectColumns() + ", COUNT(*) OVER () AS total FROM " + src + " WHERE TRUE" + where +
+		" ORDER BY " + orderBy + fmt.Sprintf(" LIMIT $%d OFFSET $%d", n+1, n+2)
+	return page, "SELECT COUNT(*) FROM " + src + " WHERE TRUE" + where, nil
+}
+
 // ListPackageExposure returns the leaderboard page. A nil RepoIDs reads the
 // materialized view; a cohort aggregates live. One pass: the total rides
 // on every row as COUNT(*) OVER () (the aggregated set is one row per
@@ -426,9 +473,9 @@ type PackageExposurePage struct {
 // the whole aggregate twice per request); a page past the end counts the
 // set once more.
 func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposureQuery) (*PackageExposurePage, error) {
-	orderBy, ok := PackageExposureSorts[q.Sort]
-	if !ok {
-		orderBy = PackageExposureSorts["repos"]
+	sortKey := q.Sort
+	if _, ok := PackageExposureSorts[sortKey]; !ok {
+		sortKey = "repos"
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -440,39 +487,39 @@ func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposu
 	offset := max(q.Offset, 0)
 
 	page := &PackageExposurePage{Live: q.RepoIDs != nil}
-	var source string
+	source := exposureFromView
 	args := []any{}
 	if q.RepoIDs != nil {
-		source = "(" + packageExposureSQL(cohortFilter) + ") x"
+		source = exposureFromCohort
 		args = append(args, q.RepoIDs)
-	} else {
-		source = "aveloxis_data.explorer_package_exposure x"
 	}
-	where := ""
 	if q.Ecosystem != "" {
 		args = append(args, q.Ecosystem)
-		where += fmt.Sprintf(" AND x.ecosystem = $%d", len(args))
 	}
 	if q.Search != "" {
 		// A literal substring (PR #212 review): LIKE's wildcards in the
 		// search text are escaped, so "_" (common in package names) and "%"
 		// match only themselves.
 		args = append(args, "%"+likeLiteral(strings.ToLower(q.Search))+"%")
-		where += fmt.Sprintf(` AND lower(x.package_name) LIKE $%d ESCAPE '\'`, len(args))
 	}
 	pageArgs := append(append([]any{}, args...), limit, offset)
-	pageSQL := func(src string) string {
-		return "SELECT " + exposureSelectColumns() + ", COUNT(*) OVER () AS total FROM " + src + " WHERE TRUE" + where +
-			" ORDER BY " + orderBy + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(pageArgs)-1, len(pageArgs))
+	pageSQL, countSQL, err := packageExposureListSQL(source, q.Ecosystem != "", q.Search != "", sortKey)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, pageSQL(source), pageArgs...)
+	// The same two statements over the live fleet, for when the fleet
+	// view is not built, or is an earlier definition.
+	livePageSQL, liveCountSQL, err := packageExposureListSQL(exposureFromLiveFleet, q.Ecosystem != "", q.Search != "", sortKey)
+	if err != nil {
+		return nil, err
+	}
+	fellBack := false
+	rows, err := s.pool.Query(ctx, pageSQL, pageArgs...)
 	if err != nil && q.RepoIDs == nil && fleetViewCannotAnswer(err) {
 		s.noteFleetViewFallback(fleetExposureView, err)
-		// The fleet view is not built, or is an earlier definition:
-		// aggregate live over the whole table.
-		source = "(" + packageExposureSQL("") + ") x"
+		fellBack = true
 		page.Live = true
-		rows, err = s.pool.Query(ctx, pageSQL(source), pageArgs...)
+		rows, err = s.pool.Query(ctx, livePageSQL, pageArgs...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("package exposure list: %w", err)
@@ -491,7 +538,13 @@ func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposu
 	}
 	if len(page.Rows) == 0 && offset > 0 {
 		// A page past the end carries no window count; count the set once.
-		if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+source+" WHERE TRUE"+where, args...).Scan(&page.Total); err != nil {
+		var err error
+		if fellBack {
+			err = s.pool.QueryRow(ctx, liveCountSQL, args...).Scan(&page.Total)
+		} else {
+			err = s.pool.QueryRow(ctx, countSQL, args...).Scan(&page.Total)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("package exposure count: %w", err)
 		}
 	}
@@ -574,22 +627,30 @@ func (s *PostgresStore) GetPackageAdvisories(ctx context.Context, ecosystem, nam
 	return out, rows.Err()
 }
 
+// packageVersionsInUseSQL is GetPackageVersionsInUse's statement, for the fleet or (cohort) for the
+// repositories its last argument lists.
+func packageVersionsInUseSQL(cohort bool) string {
+	filter := ""
+	if cohort {
+		filter = " AND v.repo_id = ANY($3)"
+	}
+	return `
+		SELECT ` + purlVersionSQL + ` AS ver, COUNT(DISTINCT v.repo_id)
+		  FROM aveloxis_data.repo_deps_vulnerabilities v
+		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL` + notSelfFindingSQL + filter + `
+		 GROUP BY 1 HAVING ` + purlVersionSQL + ` IS NOT NULL
+		 ORDER BY 2 DESC, 1`
+}
+
 // GetPackageVersionsInUse is the version-agreement panel: each scanned
 // version among CURRENT exposures and how many repositories run it. Live
 // in both scopes (indexed by (ecosystem, package_name)).
 func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, name string, repoIDs []int64) ([]PackageVersionUse, error) {
-	filter := ""
 	args := []any{ecosystem, name}
 	if repoIDs != nil {
-		filter = " AND v.repo_id = ANY($3)"
 		args = append(args, repoIDs)
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+purlVersionSQL+` AS ver, COUNT(DISTINCT v.repo_id)
-		  FROM aveloxis_data.repo_deps_vulnerabilities v
-		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
-		 GROUP BY 1 HAVING `+purlVersionSQL+` IS NOT NULL
-		 ORDER BY 2 DESC, 1`, args...)
+	rows, err := s.pool.Query(ctx, packageVersionsInUseSQL(repoIDs != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("package versions %s/%s: %w", ecosystem, name, err)
 	}
@@ -605,30 +666,18 @@ func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, 
 	return out, rows.Err()
 }
 
-// GetPackageExposedRepos lists the repositories currently exposed to one
-// package, most findings first, each with its per-version detail.
-func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, name string, repoIDs []int64, limit int) ([]PackageExposedRepo, error) {
-	if limit <= 0 {
-		limit = packageExposureDefaultLimit
-	}
-	if limit > packageExposureMaxLimit {
-		limit = packageExposureMaxLimit // the leaderboard's clamp (review round 2)
-	}
+// packageExposedReposSQL is GetPackageExposedRepos' statement, for the fleet or (cohort) for the
+// repositories its last argument lists.
+func packageExposedReposSQL(cohort bool) string {
 	filter := ""
-	args := []any{ecosystem, name, limit}
-	if repoIDs != nil {
+	if cohort {
 		filter = " AND v.repo_id = ANY($4)"
-		args = append(args, repoIDs)
 	}
-	// f is one row per CURRENT finding with its scanned version; per_ver
-	// weighs each (repository, version). The versions array keeps its
-	// original text order; the per-version arrays ride in the same order
-	// and are re-sorted in Go (CompareVersionish is not SQL).
-	rows, err := s.pool.Query(ctx, `
+	return `
 		WITH f AS (
-		    SELECT v.repo_id, v.dependency_kind, `+purlVersionSQL+` AS ver
+		    SELECT v.repo_id, v.dependency_kind, ` + purlVersionSQL + ` AS ver
 		      FROM aveloxis_data.repo_deps_vulnerabilities v
-		     WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
+		     WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL` + notSelfFindingSQL + filter + `
 		),
 		per_repo AS (
 		    SELECT repo_id, COUNT(*) AS findings_unresolved,
@@ -647,7 +696,27 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 		  LEFT JOIN per_ver pv USING (repo_id)
 		 GROUP BY p.repo_id, r.repo_owner, r.repo_name, p.findings_unresolved, p.transitive
 		 ORDER BY p.findings_unresolved DESC, r.repo_owner, r.repo_name
-		 LIMIT $3`, args...)
+		 LIMIT $3`
+}
+
+// GetPackageExposedRepos lists the repositories currently exposed to one
+// package, most findings first, each with its per-version detail.
+func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, name string, repoIDs []int64, limit int) ([]PackageExposedRepo, error) {
+	if limit <= 0 {
+		limit = packageExposureDefaultLimit
+	}
+	if limit > packageExposureMaxLimit {
+		limit = packageExposureMaxLimit // the leaderboard's clamp (review round 2)
+	}
+	args := []any{ecosystem, name, limit}
+	if repoIDs != nil {
+		args = append(args, repoIDs)
+	}
+	// f is one row per CURRENT finding with its scanned version; per_ver
+	// weighs each (repository, version). The versions array keeps its
+	// original text order; the per-version arrays ride in the same order
+	// and are re-sorted in Go (CompareVersionish is not SQL).
+	rows, err := s.pool.Query(ctx, packageExposedReposSQL(repoIDs != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("package repos %s/%s: %w", ecosystem, name, err)
 	}

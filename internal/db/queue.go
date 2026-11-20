@@ -455,53 +455,33 @@ func QueueSortValid(key string) bool {
 	return ok
 }
 
-// ListQueuePage returns a paginated slice of the queue for the monitor
-// dashboard. If search is non-empty, filters to repos whose owner/name
-// contains the term. With an allowlisted sortKey the requested ORDER
-// BY wins; otherwise (and by default) rows order collecting-first,
-// then queued, then priority and due_at — always with the v0.18.7
-// q.repo_id tiebreaker so Prev/Next pagination stays stable.
-func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search, sortKey, sortDir string) ([]QueueJob, int, error) {
-	// Build WHERE clause for search.
+// queuePageSQL is ListQueuePage's two statements, the count and the page:
+// with or without the search ($1 is then its pattern), in the default
+// order (sortKey "") or by a key of queueSorts, ascending or descending.
+// Any other key is refused here, before a statement exists. The page's
+// LIMIT and OFFSET are its last two arguments.
+func queuePageSQL(searching bool, sortKey string, descending bool) (count, data string, err error) {
 	whereClause := ""
-	args := []interface{}{}
 	argIdx := 1
-
-	if search != "" {
-		// v0.18.30: filter on the concatenated `(repo_owner || '/' ||
-		// repo_name)` expression so the GIN trigram index
-		// idx_repos_owner_name_trgm (created by migrate.go) can serve
-		// the lookup. The pre-fix per-column ILIKE pattern couldn't
-		// use the trigram index even when it existed.
+	if searching {
 		whereClause = fmt.Sprintf(` WHERE q.repo_id IN (
 			SELECT repo_id FROM aveloxis_data.repos
 			WHERE (repo_owner || '/' || repo_name) ILIKE $%d ESCAPE '\')`, argIdx)
-		args = append(args, LikeContains(search)) // % and _ in the term are literal (stage 1b)
 		argIdx++
 	}
-
-	// Get total count for pagination.
-	var total int
-	countQuery := `SELECT COUNT(*) FROM aveloxis_ops.collection_queue q` + whereClause
-	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	// Sort resolution (v0.29.0): allowlisted keys order server-side;
-	// anything else keeps the historical composite. The repo-name sort
-	// joins repos (PK hash join); the meta_* sorts join the LATEST
-	// repo_info snapshot per repo via one set-based DISTINCT ON scan —
-	// deliberately never a per-row LATERAL, which would probe
-	// repo_info once per queue row fleet-wide before the LIMIT.
-	// The v0.18.7 repo_id tiebreaker survives on every branch.
+	count = `SELECT COUNT(*) FROM aveloxis_ops.collection_queue q` + whereClause
 	dir := "ASC"
-	if strings.EqualFold(sortDir, "desc") {
+	if descending {
 		dir = "DESC"
 	}
 	orderBy := `CASE q.status WHEN 'collecting' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
 			q.priority, q.due_at, q.repo_id`
 	joins := ""
-	if tmpl, ok := queueSorts[sortKey]; ok {
+	if sortKey != "" {
+		tmpl, ok := queueSorts[sortKey]
+		if !ok {
+			return "", "", fmt.Errorf("queue page: unknown sort %q", sortKey)
+		}
 		orderBy = strings.ReplaceAll(tmpl, "%s", dir) + ", q.repo_id"
 		if sortKey == "repo" {
 			joins = ` JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id`
@@ -514,8 +494,7 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 			) ri ON ri.repo_id = q.repo_id`
 		}
 	}
-
-	dataQuery := fmt.Sprintf(`
+	data = fmt.Sprintf(`
 		SELECT q.repo_id, q.priority, q.status, q.due_at, q.locked_by, q.locked_at,
 			   q.last_collected, q.last_error,
 			   q.last_issues, q.last_prs, q.last_messages, q.last_events,
@@ -526,8 +505,34 @@ func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, se
 		%s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d`, joins, whereClause, orderBy, argIdx, argIdx+1)
-	args = append(args, limit, offset)
+	return count, data, nil
+}
 
+// ListQueuePage returns a paginated slice of the queue for the monitor
+// dashboard. If search is non-empty, filters to repos whose owner/name
+// contains the term. With an allowlisted sortKey the requested ORDER
+// BY wins; otherwise (and by default) rows order collecting-first,
+// then queued, then priority and due_at — always with the v0.18.7
+// q.repo_id tiebreaker so Prev/Next pagination stays stable.
+func (s *PostgresStore) ListQueuePage(ctx context.Context, limit, offset int, search, sortKey, sortDir string) ([]QueueJob, int, error) {
+	// Build WHERE clause for search.
+	args := []interface{}{}
+	if search != "" {
+		args = append(args, LikeContains(search)) // % and _ in the term are literal (stage 1b)
+	}
+	// A sort key that is not one of queueSorts is the default order.
+	if _, ok := queueSorts[sortKey]; !ok {
+		sortKey = ""
+	}
+	countQuery, dataQuery, err := queuePageSQL(search != "", sortKey, strings.EqualFold(sortDir, "desc"))
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx, dataQuery, args...)
 	if err != nil {
 		return nil, 0, err

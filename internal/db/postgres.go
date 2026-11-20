@@ -2165,7 +2165,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// ~419 innocent contributors after a single rename
 	// collision on the head of the batch.
 	*spCounter++
-	cntrbSP := fmt.Sprintf("cntrb_sp_%d", *spCounter)
+	cntrbSP := fmt.Sprintf("cntrb_sp_%d", uint(*spCounter))
 	if _, spErr := tx.Exec(ctx, "SAVEPOINT "+cntrbSP); spErr != nil {
 		return spErr
 	}
@@ -2362,7 +2362,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 	// contributor AND every later contributor in the batch.
 	for _, ident := range idents {
 		*spCounter++
-		identSP := fmt.Sprintf("ident_sp_%d", *spCounter)
+		identSP := fmt.Sprintf("ident_sp_%d", uint(*spCounter))
 		if _, spErr := tx.Exec(ctx, "SAVEPOINT "+identSP); spErr != nil {
 			return spErr
 		}

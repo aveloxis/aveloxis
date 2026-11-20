@@ -17,7 +17,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// KindRegisteredLater: the host's domain was registered after Aveloxis
+// KindRegisteredLater means the host's domain was registered after Aveloxis
 // first fetched from the host, the direct sign of a name that lapsed and was
 // registered by someone else (v0.29.190; summary/70, 4.5, D14).
 const KindRegisteredLater Kind = "registered_later"

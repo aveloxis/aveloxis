@@ -31,13 +31,11 @@ package sqlscan
 //        functions on string constants, or with an embedded file's
 //        variable, evaluated by RUNNING the real function, which the
 //        package's test supplies (Env);
-//      - NUMBERED: fixed text with integers in it, made by the real
-//        fmt.Sprintf for several numbers and accepted only if the number
-//        never changes the statement's tokens;
-//      - FROM CALLERS: fixed text whose gaps are parameters nothing
-//        changes, made by the real fmt.Sprintf with what every caller
-//        passes, when every caller (found by object, to any depth) passes
-//        text the reading reads;
+//      - NUMBERED: fixed text with integers in it (see below);
+//      - FROM CALLERS: fixed text whose gaps are a function's parameters,
+//        filled with what every caller passes (see below);
+//      - QUEUED: the SQL of a statement read back from a batch's own
+//        queue to copy it, which was judged where it was queued;
 //      - PARAMETER: the function's own parameter, unexported, never
 //        assigned and never addressed, read at each of its callers.
 //    Everything else is a HOLE, and a hole fails until it is registered
@@ -53,21 +51,94 @@ package sqlscan
 //    makes any change a failure, and an argument that can write must give
 //    the policy check something to judge.
 //
-// 3. JUDGE (lex.go, parse.go, policy.go). Each statement is tokenised by
-//    PostgreSQL's lexical rules and its writes are read from the tokens. A
-//    statement not read to its end, a write whose target names no schema
-//    and assigns a registered column's name, a write through a view over a
-//    registered table, and a value of a registered column that does not
-//    match its policy are violations.
+// 3. JUDGE (pgread.go, policy.go). Each statement is parsed by POSTGRESQL'S
+//    OWN PARSER (libpg_query: the server's parser, compiled to WebAssembly
+//    and run in the test process; no cgo, and no production binary links
+//    it), and its writes are read from the parse tree: UPDATE, INSERT with
+//    its ON CONFLICT DO UPDATE, DELETE, MERGE with each of its actions,
+//    TRUNCATE, COPY FROM, ALTER TABLE's actions that rewrite or destroy a
+//    column (TYPE, SET EXPRESSION, DROP, RENAME), DROP TABLE; at any depth
+//    (a data-modifying WITH, a subquery, EXPLAIN, PREPARE, a rule's
+//    actions, CREATE TABLE AS); and in the body of a DO block or a
+//    function, which is parsed in its own language (an SQL body by the
+//    same parser, a PL/pgSQL body by the server's PL/pgSQL parser, every
+//    statement and expression of it then read in turn; a trigger's
+//    assignment to NEW.col is a write of col). A value is judged on its
+//    tree, and so is the WHERE that guards a fill. Violations:
+//      - a statement the parser refuses, or that holds a statement kind or
+//        an ALTER TABLE action this package has not classified (the lists
+//        are the parser's whole sets for its grammar version; a test fails
+//        on a parser of another major version until they are redone);
+//      - a body in a language that is not read, EXECUTE of text made at
+//        run time, an assignment of the whole NEW row;
+//      - a write whose target names no schema and assigns a registered
+//        column's name; a write through a view over a registered table;
+//      - a value of a registered column that does not match its policy.
+//    The grammar is PostgreSQL 17's. A statement that needs a later
+//    grammar is refused by the parser, and so is a violation, never a pass.
+//
+// THE TWO READINGS THAT FILL A GAP, exactly.
+//
+// NUMBERED (strict.go, numberedTexts). The argument is fmt.Sprintf of a
+// readable format, or a + of readable text, and every operand that is not
+// readable is of a BASIC integer type (a local given once by such an
+// expression is followed into it). The statement is made by the real
+// fmt.Sprintf for ten numbers, and read only if PostgreSQL's parser reads
+// each, and to the same parse tree but for the digits (treeShape: a number
+// is a number of the same sign, a name or a string the same but for its
+// runs of digits); for a SIGNED type, for negative numbers too.
+//   PROVES: whatever number the gap holds at run time, the statement is the
+//   one that was judged: the number is a number, or the digits of a name or
+//   of a string, and nothing else.
+//   ASSUMES: that fmt.Sprintf writes a basic integer the same way for
+//   every value of one sign, the verb deciding and not the value; and that
+//   ten probes (with the code points of a quote, a semicolon, a backslash,
+//   a minus and a slash among them) show every shape a verb gives.
+//   REFUSES: a declared integer type (it may print through String or
+//   Format); a verb that writes the number as a character or in letters
+//   (%c, %x); text, in any gap; a signed number wherever a minus sign
+//   changes the tree (LIMIT -1 is another constant, a name's digits are cut
+//   from the name, a second minus begins a comment); a statement the
+//   parser does not read whole.
+//
+// FROM CALLERS (strict.go, callerTuples). The argument is fmt.Sprintf of a
+// readable format, or a + of readable text, and every other operand is a
+// parameter of the function it stands in (a declaration, or a literal held
+// in one variable that is given nothing else). The statement is made by
+// the real fmt.Sprintf with what each caller passes. The same search gives
+// a registered builder its inputs (Site.FromCallers).
+//   PROVES: the statements judged are every statement the argument can be,
+//   because every value the parameter can hold is a constant written at a
+//   call the reading found.
+//   ASSUMES: that the package's non-test files are all the code that can
+//   call an unexported function of it (a _test file's call is not read,
+//   and is not a caller); no reflection, unsafe or linkname.
+//   REFUSES: a parameter that is assigned or has its address taken
+//   anywhere, a closure that captures it included; an exported function,
+//   one used as a value (a function value, a method value), a method an
+//   interface of the package can call; a caller that passes anything the
+//   reading does not read (a variable, a field, a call), at any depth; a
+//   function with no caller in the files read; a function that is its own
+//   caller, whose constants are never reached (the search stops four calls
+//   deep). len(p) of a parameter is the number of elements of the list
+//   literal each caller writes out, and nothing else.
 //
 // WHAT IS NOT GUARANTEED:
 //   - A FROZEN statement is a person's reading plus fixed text judged with
 //     representative values; its run-time parts are not checked.
 //   - An Env function is trusted to depend on nothing but its arguments.
-//   - The value matchers of policy.go read ONE extracted value with
-//     patterns, as before.
-//   - parse.go is not a grammar: it reads each write's target, SET list and
-//     WHERE, and steps over the rest.
+//   - The policy shapes of policy.go are a closed list: a value of another
+//     shape fails, whatever it computes. "Stored" is any column reference
+//     ending in the column's name that EXCLUDED does not qualify, so a
+//     same-named column of another table in a subquery counts as stored.
+//   - The parser is PostgreSQL 17's and the fleet runs 18: what 18 reads
+//     and 17 does not is refused, and what both read is read as 17 does.
+//   - A trigger function's assignment to NEW.col is reported for every
+//     registered column of that name, since the function does not say
+//     which table its trigger is on.
 //   - Text made in the database (EXECUTE of a computed string in a body) is
 //     reported unread, never judged.
+//   - The other source tripwires of sqlscan.go (Statements, FindWrites,
+//     WritesColumn, SetExprs) still match text with patterns. The policy
+//     check does not use them.
 //   - Packages other than the one read, reflection, unsafe and linkname.

@@ -12,8 +12,8 @@ var repoGit = []Registered{{Table: "aveloxis_data.repos", Column: "repo_git", Po
 
 // Every spelling of a write of a registered column with a value its policy
 // forbids is a violation: the rows reviewers found passing in rounds 3 to
-// 5 (the old matchers read text with patterns), and the forms the token
-// reader adds. Deny by default: what is not understood fails too.
+// 5 (the old matchers read text with patterns), and the forms a reader of
+// statements adds. Deny by default: what is not understood fails too.
 func TestAForbiddenWriteIsAViolationHoweverItIsSpelled(t *testing.T) {
 	for name, sql := range map[string]string{
 		"plain":                            `UPDATE aveloxis_data.repos SET repo_git = 'x' WHERE repo_id = 1`,
@@ -29,6 +29,7 @@ func TestAForbiddenWriteIsAViolationHoweverItIsSpelled(t *testing.T) {
 		"all quoted":                       `UPDATE "aveloxis_data"."repos" SET "repo_git" = $1`,
 		"a Unicode-escaped column":         `UPDATE aveloxis_data.repos SET U&"repo\005fgit" = 'x'`,
 		"a Unicode-escaped table":          `UPDATE aveloxis_data.U&"\0072epos" SET repo_git = 'x'`,
+		"a Unicode escape with UESCAPE":    `UPDATE aveloxis_data.repos SET U&"repo!005fgit" UESCAPE '!' = 'x'`,
 		"upper case":                       `UPDATE AVELOXIS_DATA.REPOS SET REPO_GIT = 'x'`,
 		"no space before SET":              `UPDATE aveloxis_data."repos"SET repo_git = 'x'`,
 		"database-qualified":               `UPDATE aveloxis.aveloxis_data.repos SET repo_git = 'x'`,
@@ -77,7 +78,6 @@ func TestTextThatIsNotReadToItsEndIsReported(t *testing.T) {
 		"an open comment":            `SELECT 1 /* UPDATE`,
 		"an open bracket":            `SELECT (1`,
 		"an open dollar quote":       `DO $$ BEGIN`,
-		"UESCAPE":                    `UPDATE aveloxis_data.repos SET U&"repo!005fgit" UESCAPE '!' = 'x'`,
 		"UPDATE of nothing":          `UPDATE (SELECT 1) SET a = 1`,
 		"UPDATE with no SET":         `UPDATE aveloxis_data.repos`,
 		"an assignment with no =":    `UPDATE aveloxis_data.repos SET repo_git`,
@@ -159,7 +159,7 @@ func TestParseWritesSaysWhatAStatementWrites(t *testing.T) {
 	want := []string{
 		"insert s1.t as x:",
 		"conflict-update s1.t as x: n=x.n + 1 m=CASE WHEN TRUE THEN 1 END",
-		"update s2.U as u: a=(1, 2)(multi) b=(1, 2)(multi) c=(SELECT max(c) FROM s2.z WHERE z.k = u.k)",
+		"update s2.U as u: a=(1, 2)(multi) b=(1, 2)(multi) c=(subquery)",
 		"truncate s3.p as :", "truncate s3.q as :", "delete s4.d as :",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -170,18 +170,50 @@ func TestParseWritesSaysWhatAStatementWrites(t *testing.T) {
 	}
 }
 
-// The tokeniser, on the spellings PostgreSQL has for one thing.
-func TestTheTokeniserReadsPostgresSpellings(t *testing.T) {
-	toks, err := lexSQL(`Sel "A""b" U&"d\0061t\+000061" 'it''s' E'a\'b' $1 $q$x'y$q$ 1.5e-3 a::int /* c /* d */ */ -- e` + "\n" + `x.y <> !=- 3 B'01' N'n'`)
+// PostgreSQL's scanner, on the spellings it has for one thing: the words
+// of a fragment are the names it names, however each is written, and what
+// is in a string or a comment is not a word.
+func TestFragmentWordsAreTheScannersNames(t *testing.T) {
+	got := FragmentWords(`Sel "A""b" U&"d\0061t\+000061" 'it''s' E'a\'b' $1 $q$x'y$q$ 1.5e-3 a::int /* c /* d */ */ -- e` + "\n" + `x.y <> !=- 3 B'01' N'n'`)
+	// (N'n' is the key word NCHAR and a string to the scanner.)
+	if want := `sel A"b data a int x y n`; strings.Join(got, " ") != want {
+		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(got, " "), want)
+	}
+	// Text the scanner refuses is read word by word up to the trouble.
+	if got := FragmentWords(`UPDATE t SET a = 'open`); strings.Join(got, " ") != "update t set a open" {
+		t.Errorf("an open string: %q", got)
+	}
+}
+
+// The token numbers pgtok.go names are the scanner's: one of each is
+// scanned, so a parser whose grammar numbers them otherwise fails here.
+func TestTheScannersTokenNumbersAreTheOnesNamed(t *testing.T) {
+	toks, err := scanSQL("a \"b\" U&\"c\" := -- d\n/* e */ select ( = [")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	var got []int
 	for _, tk := range toks {
-		got = append(got, tk.val+"|"+tk.raw)
+		got = append(got, tk.token)
 	}
-	want := `sel|Sel A"b|"A""b" data|U&"d\0061t\+000061" it's|'it''s' a\'b|E'a\'b' $1|$1 x'y|$q$x'y$q$ 1.5e-3|1.5e-3 a|a |:: int|int x|x |. y|y |<> |!=- 3|3 01|B'01' n|N'n'`
-	if strings.Join(got, " ") != want {
-		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(got, " "), want)
+	want := []int{tokIdent, tokIdent, tokUIdent, tokColonEquals, tokSQLComment, tokBlockComment, 0, '(', '=', '['}
+	if len(got) != len(want) {
+		t.Fatalf("tokens %v, want %d of them", got, len(want))
+	}
+	for i := range want {
+		if want[i] != 0 && got[i] != want[i] {
+			t.Errorf("token %d is %d, want %d", i, got[i], want[i])
+		}
+	}
+	if !toks[6].keyword || toks[0].keyword {
+		t.Error("SELECT is a key word and a is not")
+	}
+	if toks[1].start != 2 || toks[1].end != 5 {
+		t.Errorf("the quoted name stands at %d to %d, want 2 to 5", toks[1].start, toks[1].end)
+	}
+	for _, open := range []string{`'open`, `"open`, `/* open`, `$t$ open`} {
+		if _, err := scanSQL(open); err == nil {
+			t.Errorf("%s: scanned without complaint", open)
+		}
 	}
 }

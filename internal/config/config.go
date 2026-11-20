@@ -2119,7 +2119,7 @@ const (
 	MaxOSVRejectedQueriesPerBatch     = 1000
 )
 
-// DefaultMavenRepositories: Maven Central, and the Jenkins project's public
+// DefaultMavenRepositories is Maven Central, and the Jenkins project's public
 // repository, where Jenkins plugins and their parents are published and
 // Central does not carry them (summary/69's sample).
 var DefaultMavenRepositories = []string{"https://repo1.maven.org/maven2", "https://repo.jenkins-ci.org/public"}
@@ -2256,7 +2256,7 @@ func (c *CollectionConfig) RepositoryHostThreatListURLValue() string {
 	return strings.TrimSpace(*c.RepositoryHostThreatListURL)
 }
 
-// DefaultRepositoryHostCheckHours: once a day. What the check looks for (a
+// DefaultRepositoryHostCheckHours is once a day. What the check looks for (a
 // lapsed name, a certificate left to expire) changes over days, and a day
 // is the cadence serve's other daily housekeeping already runs at
 // (SupplyChainRefreshInterval).

@@ -240,6 +240,39 @@ func contentQuery(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error
 // sqlLiteral quotes a catalog name as a string literal.
 func sqlLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// The four statements of diffOneTable for one relation: its totals, its
+// buckets, the rows of some buckets, and rows by key. The names are the
+// catalog's: the table through pgx.Identifier, the key's columns through
+// contentKeyExpr (each as a quoted literal and a quoted identifier).
+func contentTotalsSQL(schema, table string) string {
+	tbl := pgx.Identifier{schema, table}.Sanitize()
+	rowExpr := `(to_jsonb(t) - $1::text[])`
+	return `SELECT COUNT(*), COALESCE(SUM(hashtextextended(` + rowExpr + `::text, 0)), 0)::text FROM ` + tbl + ` t`
+}
+
+func contentBucketsSQL(schema, table string, pk []string) string {
+	tbl := pgx.Identifier{schema, table}.Sanitize()
+	rowExpr := `(to_jsonb(t) - $1::text[])`
+	keyExpr := contentKeyExpr(pk)
+	bucketExpr := `((hashtextextended(` + keyExpr + `::text, 7) % $2::bigint + $2::bigint) % $2::bigint)::int`
+	return `SELECT ` + bucketExpr + `, COUNT(*)::text || ':' || SUM(hashtextextended(` + rowExpr + `::text, 0))::text FROM ` + tbl + ` t GROUP BY 1`
+}
+
+func contentBucketRowsSQL(schema, table string, pk []string) string {
+	tbl := pgx.Identifier{schema, table}.Sanitize()
+	rowExpr := `(to_jsonb(t) - $1::text[])`
+	keyExpr := contentKeyExpr(pk)
+	bucketExpr := `((hashtextextended(` + keyExpr + `::text, 7) % $2::bigint + $2::bigint) % $2::bigint)::int`
+	return `SELECT ` + keyExpr + `::text, hashtextextended(` + rowExpr + `::text, 0) FROM ` + tbl + ` t WHERE ` + bucketExpr + ` = ANY($3::int[])`
+}
+
+func contentRowsByKeySQL(schema, table string, pk []string) string {
+	tbl := pgx.Identifier{schema, table}.Sanitize()
+	rowExpr := `(to_jsonb(t) - $1::text[])`
+	keyExpr := contentKeyExpr(pk)
+	return `SELECT ` + keyExpr + `::text, ` + rowExpr + `::text FROM ` + tbl + ` t WHERE ` + keyExpr + ` = ANY($2::jsonb[])`
+}
+
 func diffOneTable(ctx context.Context, released, newPool *pgxpool.Pool, rel, nw *contentTable, opts ContentDiffOptions, res *ContentDiffTable) error {
 	ignored := map[string]bool{}
 	for _, c := range opts.Ignore["*"] {
@@ -272,13 +305,11 @@ func diffOneTable(ctx context.Context, released, newPool *pgxpool.Pool, rel, nw 
 	sort.Strings(res.OnlyReleasedColumns)
 	sort.Strings(res.OnlyNewColumns)
 
-	tbl := pgx.Identifier{rel.schema, rel.table}.Sanitize()
-	rowExpr := `(to_jsonb(t) - $1::text[])`
 	totals := func(pool *pgxpool.Pool, drop []string) (int64, string, error) {
 		var n int64
 		var sum string
 		err := contentQuery(ctx, pool, func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(hashtextextended(`+rowExpr+`::text, 0)), 0)::text FROM `+tbl+` t`, drop).Scan(&n, &sum)
+			return tx.QueryRow(ctx, contentTotalsSQL(rel.schema, rel.table), drop).Scan(&n, &sum)
 		})
 		return n, sum, err
 	}
@@ -308,13 +339,10 @@ func diffOneTable(ctx context.Context, released, newPool *pgxpool.Pool, rel, nw 
 	res.Keyed = true
 	res.Key = append([]string(nil), rel.pk...)
 
-	keyExpr := contentKeyExpr(rel.pk)
-	bucketExpr := `((hashtextextended(` + keyExpr + `::text, 7) % $2::bigint + $2::bigint) % $2::bigint)::int`
-
 	buckets := func(pool *pgxpool.Pool, drop []string) (map[int]string, error) {
 		out := map[int]string{}
 		err := contentQuery(ctx, pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT `+bucketExpr+`, COUNT(*)::text || ':' || SUM(hashtextextended(`+rowExpr+`::text, 0))::text FROM `+tbl+` t GROUP BY 1`, drop, opts.Buckets)
+			rows, err := tx.Query(ctx, contentBucketsSQL(rel.schema, rel.table, rel.pk), drop, opts.Buckets)
 			if err != nil {
 				return err
 			}
@@ -349,7 +377,7 @@ func diffOneTable(ctx context.Context, released, newPool *pgxpool.Pool, rel, nw 
 	rowHashes := func(pool *pgxpool.Pool, drop []string) (map[string]int64, error) {
 		out := map[string]int64{}
 		err := contentQuery(ctx, pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT `+keyExpr+`::text, hashtextextended(`+rowExpr+`::text, 0) FROM `+tbl+` t WHERE `+bucketExpr+` = ANY($3::int[])`, drop, opts.Buckets, differing)
+			rows, err := tx.Query(ctx, contentBucketRowsSQL(rel.schema, rel.table, rel.pk), drop, opts.Buckets, differing)
 			if err != nil {
 				return err
 			}
@@ -400,7 +428,7 @@ func diffOneTable(ctx context.Context, released, newPool *pgxpool.Pool, rel, nw 
 	full := func(pool *pgxpool.Pool, drop []string) (map[string]json.RawMessage, error) {
 		out := map[string]json.RawMessage{}
 		err := contentQuery(ctx, pool, func(tx pgx.Tx) error {
-			rows, err := tx.Query(ctx, `SELECT `+keyExpr+`::text, `+rowExpr+`::text FROM `+tbl+` t WHERE `+keyExpr+` = ANY($2::jsonb[])`, drop, keys)
+			rows, err := tx.Query(ctx, contentRowsByKeySQL(rel.schema, rel.table, rel.pk), drop, keys)
 			if err != nil {
 				return err
 			}

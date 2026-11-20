@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.211 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.212 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=dc51b6c9"></script>
+      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2095,26 +2095,42 @@ Phase 3 write-policy matchers classify. <code class="docutils literal notranslat
 the assignments that belong to a write of <code class="docutils literal notranslate"><span class="pre">table</span></code>: one statement can write
 two tables (a data-modifying CTE and the statement proper). A column written
 by its quoted name (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">&quot;col&quot;</span> <span class="pre">=</span> <span class="pre">…</span></code>) is that column.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.Assemble(files)</span></code> (v0.29.203) — the statements that are ASSEMBLED
-in Go: a constant joined to a clause, <code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code> with <code class="docutils literal notranslate"><span class="pre">%s</span></code> / <code class="docutils literal notranslate"><span class="pre">%[n]s</span></code>, a
-one-line builder function, <code class="docutils literal notranslate"><span class="pre">strings.Join</span></code> over a fixed list, a local given
-fixed values (one statement per value; a value under <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">x.flag</span></code> follows the
-flag when <code class="docutils literal notranslate"><span class="pre">x</span></code> is a loop’s element), and a statement in a <code class="docutils literal notranslate"><span class="pre">range</span></code> loop over a
-fixed list (one per element). It returns what it read whole and what it
-could not, with the reason.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.CheckUnreadable(unread,</span> <span class="pre">registry,</span> <span class="pre">fills,</span> <span class="pre">exceptions)</span></code> — what
-becomes of each expression that could not be read: a <code class="docutils literal notranslate"><span class="pre">Fill</span></code> supplies the
-real values of its unread parts, taken from the variable the code reads; a
-statement whose unread parts stand only in a row-choosing clause (<code class="docutils literal notranslate"><span class="pre">WHERE</span></code>,
-<code class="docutils literal notranslate"><span class="pre">FROM</span></code>) or inside the parentheses of one column’s value is handed on with
-them; anything else that writes a registered table, or whose table is itself
-unread, is a violation.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.StrictArguments(root,</span> <span class="pre">files,</span> <span class="pre">env)</span></code> (v0.29.212) — every SQL argument
+of a package, found by type (a call of a database-library function that runs
+SQL, by object) and classified. There is no evaluator of Go: an argument is
+read only as a compiler constant; a listed pure function (<code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code>,
+<code class="docutils literal notranslate"><span class="pre">strings.Join/Repeat/Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix</span></code>,
+<code class="docutils literal notranslate"><span class="pre">+</span></code>) on compiler constants, by calling it; text built by one of the store’s
+own functions on constants, by running that function (<code class="docutils literal notranslate"><span class="pre">Env</span></code>); fixed text
+with an integer in it, made with the real <code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code> for several numbers;
+fixed text whose gaps are a helper’s parameters, filled with the constants
+every caller passes; or a helper’s parameter handed on untouched, read at
+its callers. Anything else is a hole.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.CheckSites(args,</span> <span class="pre">sites,</span> <span class="pre">pins,</span> <span class="pre">tests)</span></code> — every hole must be
+registered. An EXECUTED registration names the store’s builder function and
+its inputs, and the check runs the real builder for each input; a finite
+domain names the test showing an input outside it gives no statement, and
+an open one may put what varies into the text only through
+<code class="docutils literal notranslate"><span class="pre">pgx.Identifier</span></code> or a registered quoting helper. Nothing is registered on
+a person’s reading alone: a frozen registration fails the test.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.ParseWrites(sql)</span></code> — the writes of a statement, read from the
+parse tree PostgreSQL’s own parser gives (<code class="docutils literal notranslate"><span class="pre">pgread.go</span></code>; the parser is
+<code class="docutils literal notranslate"><span class="pre">github.com/wasilibs/go-pgquery</span></code>, the server’s grammar compiled to
+WebAssembly, linked into tests only). <code class="docutils literal notranslate"><span class="pre">sqlscan.Check</span></code>
+judges with it and denies by default: a statement not read to its end, a
+target with no schema that assigns a registered column’s name, and a write
+through a view over a registered table are violations.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.StrictReferences(root,</span> <span class="pre">files)</span></code> — references to something that runs
+SQL which no reading of arguments covers (a runner taken as a value, rows
+written with no text, a library type that carries SQL arriving from or
+leaving to other code).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stmt.WhereGuardsEmpty(col)</span></code> — recognizes the guarded fill-empty shape
 (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">col</span> <span class="pre">=</span> <span class="pre">$N</span> <span class="pre">...</span> <span class="pre">WHERE</span> <span class="pre">COALESCE(col,</span> <span class="pre">'')</span> <span class="pre">=</span> <span class="pre">''</span></code> / <code class="docutils literal notranslate"><span class="pre">col</span> <span class="pre">IS</span> <span class="pre">NULL</span></code>).</p></li>
 </ul>
-<p>Known blind spots are documented in the package doc (tagged dollar-quotes
-untracked; the reading of assembled SQL is by syntax, with no type
-information, and reports where it cannot be sure). The flagship consumer is
+<p>What the write-policy check guarantees, and what it does not, is stated in
+<code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan/doc.go</span></code>. The text matchers above (<code class="docutils literal notranslate"><span class="pre">Statements</span></code>,
+<code class="docutils literal notranslate"><span class="pre">FindWrites</span></code>, <code class="docutils literal notranslate"><span class="pre">WritesColumn</span></code>, <code class="docutils literal notranslate"><span class="pre">SetExprs</span></code>) remain for the other source
+tripwires, whose flagship consumer is
 <code class="docutils literal notranslate"><span class="pre">internal/db/column_writer_tripwire_test.go</span></code>; port verified behavior-identical
 (same zero-violation pass on the real corpus; fake-column and stale-allowlist
 mutations flag identically).</p>
@@ -2133,13 +2149,17 @@ fixture in the engine’s suite, and re-red-verified against the live registry.
 An SQL argument of a call that runs SQL in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code> (reads included) is
 read whole by the check, or it is registered, or <code class="docutils literal notranslate"><span class="pre">TestNoProtectedWriteGoesUnread</span></code>
 fails. Nothing decides that an unread part “cannot matter”. Triage, in this
-order: write the statement so that every part is fixed text (a constant, a
-builder called with constants, a loop over a list written out) | give the real
-values of its parts in <code class="docutils literal notranslate"><span class="pre">columnWriteFills</span></code>, from the variable the code reads |
-list its declaration under a <em>shape</em> (a pattern its whole text must match: a
-read, a savepoint, a schema change, a batch insert’s rows) | last, and only
-with the maintainer’s decision, an exception with its reason. A fill, a shape
-or an exception names the DECLARATION the statement stands in, never its file.
+order: write the statement as a constant (a value belongs in a placeholder) |
+build it with one named function of the store from string constants, and add
+that function to <code class="docutils literal notranslate"><span class="pre">columnWriteEnv</span></code> | register the function in
+<code class="docutils literal notranslate"><span class="pre">columnWriteBuilders</span></code> with its inputs: the index of each member of a fixed
+list (<code class="docutils literal notranslate"><span class="pre">indexedBuilders</span></code>), every key of a map it looks its input up in
+(<code class="docutils literal notranslate"><span class="pre">keyedBuilders</span></code>), every combination of its bools (<code class="docutils literal notranslate"><span class="pre">boolBuilders</span></code>), or the
+constants its callers pass | last, and only with the maintainer’s decision, a
+frozen registration with its reason. Source pins elsewhere in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code>
+hold some statements’ text in place (the page-cache writer registry, the
+shutdown and dedup pins): moving such text into a builder means re-anchoring
+that pin in the same change.
 An exported function that hands a parameter to a statement call is refused:
 SQL does not enter the store from outside it.</p>
 <p>Triage protocol for a red run (in the failure message; never weaken a

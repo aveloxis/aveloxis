@@ -20,7 +20,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -199,21 +202,6 @@ var columnWriteExceptions = []sqlscan.Exception{
 		Reason: "one-time repair of a value that is not a date (year before 1970); the condition is in the statement and the whole statement is matched"},
 }
 
-// goneClearSidelines are the sidelines of the goneClear literals the row
-// lock gates on (those not locked always).
-func goneClearSidelines(t testing.TB) [][]string {
-	seen := map[string]bool{}
-	var out [][]string
-	for _, c := range goneClearsInSource(t) {
-		if !seen[c.sideline] {
-			seen[c.sideline] = true
-			out = append(out, []string{c.sideline})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
-	return out
-}
-
 // packageKeyFillTablesChecked are the tables the package-key fill walks.
 var packageKeyFillTablesChecked = []PackageKeyFillTable{PackageKeyFillInventory, PackageKeyFillLockfile}
 
@@ -283,7 +271,9 @@ func TestCatalogNamesAreQuotedAsSQLQuotesThem(t *testing.T) {
 	if got := quotedIdentifier("aveloxis_data", `ta"ble`); got != `"aveloxis_data"."ta""ble"` {
 		t.Errorf("a dotted path: %s", got)
 	}
-	for _, fn := range []string{"func tableRowCounts(", "func populatedCounts("} {
+	// 0.29.212: the two statements are built by tableRowCountSQL and
+	// populatedCountsSQL; the names are quoted there.
+	for _, fn := range []string{"func tableRowCountSQL(", "func populatedCountsSQL("} {
 		body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", fn))
 		if strings.Contains(body, "%q") || !strings.Contains(body, "quotedIdentifier(") {
 			t.Errorf("%s must quote catalog names with quotedIdentifier, never with fmt's %%q", fn)
@@ -589,6 +579,7 @@ func columnWriteEnv(t testing.TB) sqlscan.Env {
 		"stampLinkedOwnerSQL": stampLinkedOwnerSQL, "deleteSessionsSQL": deleteSessionsSQL, "deleteSessionTreeSQL": deleteSessionTreeSQL,
 		"backendOnThisHostSQL": backendOnThisHostSQL, "probingSessionSQL": probingSessionSQL,
 		"apiTokenDailyLimitColumnType": apiTokenDailyLimitColumnType,
+		"forgeIDChangesListSQL":        forgeIDChangesListSQL, "forgeIDChangesAdoptedSQL": forgeIDChangesAdoptedSQL,
 	}
 	env := sqlscan.Env{
 		Embedded: map[string]string{"schemaSQL": schemaSQL, "viewsSQL": viewsSQL, "matviewsSQL": matviewsSQL},
@@ -659,7 +650,7 @@ func columnWriteReadingOf(t testing.TB, files map[string]string, sites []sqlscan
 		result := a.BuilderResult
 		sites = append(sites, sqlscan.Site{Decl: a.Decl, Ordinal: a.Ordinal, Builder: a.Builder, Result: result, Tuples: b.Tuples, FromCallers: b.FromCallers,
 			Run:    func(in []string) (string, error) { return b.Run(result, in) },
-			Domain: b.Domain, Open: b.Open, RefusalTest: b.RefusalTest, Quoters: columnWriteQuoters, Reason: b.Reason})
+			Domain: b.Domain, Open: b.Open, RefusalTest: b.RefusalTest, Quoters: columnWriteQuoters, Raw: b.Raw, Reason: b.Reason})
 	}
 	return sqlscan.CheckSites(args, sites, pins, storeTestNames(t))
 }
@@ -677,213 +668,46 @@ func TestNoProtectedWriteGoesUnread(t *testing.T) {
 			"  3. Register it in columnWriteSites as EXECUTED: name the builder, give the statements running it gives over its whole domain, and name the test that shows it refuses any other input.\n"+
 			"  4. FROZEN (last, with the operator's decision): say what the statement is, and record the digest printed above.", p)
 	}
+	if rep.Frozen != 0 {
+		t.Errorf("%d SQL arguments are registered FROZEN (read by a person, not run): the store has none, and one needs the operator's decision", rep.Frozen)
+	}
+	if rep.Raw != 1 {
+		t.Errorf("%d builder parameters reach a statement's text unquoted by design; the store has ONE (contentWherePassingSQL's where, an operator's predicate): another needs the operator's decision", rep.Raw)
+	}
 	t.Logf("SQL arguments of internal/db: %d constants, %d pure calls on constants, %d built by running the store's own text, %d fixed text with a number in it, %d fixed text filled with its callers' constants, %d queued statements read back, %d parameters read at their callers; registered: %d executed, %d open, %d frozen",
 		rep.Constant, rep.Pure, rep.Built, rep.Numbered, rep.FromCallers, rep.Queued, rep.Parameter, rep.Executed, rep.Open, rep.Frozen)
 }
 
-// columnWriteFrozen are the digests of the declarations whose unread SQL
-// arguments are FROZEN (sqlscan.Site), or EXECUTED from a variable (its
-// Pin): the source each statement is made of, as it stood when the
-// registration was written. A digest that no
-// longer matches fails TestNoProtectedWriteGoesUnread with the new one;
-// read the statement as it now is before recording it.
+// columnWriteFrozen holds the digest of the source the two libyear
+// statement variables are computed from (the Pin of their registrations):
+// a change to it fails TestNoProtectedWriteGoesUnread with the new digest;
+// read how the variable is computed before recording it.
 var columnWriteFrozen = map[string]string{
-	"PostgresStore.SnapshotSeries":          "97c9c8a1f8636ebc/6",
-	"ContentExpectations.wherePassing":      "6a063ced5e12ecb8/8",
-	"PostgresStore.GetPackageExposedRepos":  "1bcfdce21d17bbeb/9",
-	"PostgresStore.GetPackageVersionsInUse": "cc9820a347d6120a/8",
-	"PostgresStore.ListPackageExposure":     "324f2f2d92b17e99/24",
-	"PostgresStore.ListQueuePage":           "47683c6dfc54ed59/8",
-	"PostgresStore.ReplaceRepoLibyear":      "542965e8c1f0c231/16",
-	"PostgresStore.RunDataVerification":     "3570692a1c6540ac/33",
-	"PostgresStore.TopContributors":         "4fb7ae3f2408c1fc/16",
-	"PostgresStore.catalogPick":             "6c6795374136bbcf/11",
-	"PostgresStore.listRepos":               "605c1d9cbe27013c/12",
-	"PostgresStore.queryForgeIDChanges":     "ee04d248c423cb9f/35",
-	"diffOneTable":                          "14244630714ea244/8",
+	"PostgresStore.ReplaceRepoLibyear": "542965e8c1f0c231/16",
 }
 
-// columnWriteSites registers every SQL argument of the store that the
-// reading does not read. EXECUTED entries name the store's own builder and
-// give what running it gave. The rest are FROZEN: nothing was run for
-// them; each says what the argument is, and gives the policy check
-// something to judge where the argument can write (the source's own fixed
-// text with representative values in its gaps, made by the real
-// fmt.Sprintf; or the fixed statements of its source, harvested).
+// columnWriteSites registers the SQL arguments of the store that are a
+// package VARIABLE computed at start (a function of the store's own lists):
+// EXECUTED, the statement judged being the real variable, with a Pin on the
+// source it is computed from. Every other unread argument is a call of a
+// registered builder (columnWriteBuilders), which the reading runs. Nothing
+// is FROZEN (TestNoProtectedWriteGoesUnread fails on one).
 func columnWriteSites(t testing.TB) []sqlscan.Site {
 	var sites []sqlscan.Site
-	frozen := func(decl string, reason string, ordinals []int, with func(ord int, s *sqlscan.Site)) {
-		if columnWriteFrozen[decl] == "" {
-			return // converted: its arguments are constants or a registered builder's
-		}
-		for _, ord := range ordinals {
-			site := sqlscan.Site{Decl: decl, Ordinal: ord, Frozen: columnWriteFrozen[decl], Reason: reason}
-			if with != nil {
-				with(ord, &site)
-			}
-			sites = append(sites, site)
-		}
-	}
-	fills := func(rows map[int][][]string) func(int, *sqlscan.Site) {
-		return func(ord int, s *sqlscan.Site) { s.Fills = rows[ord] }
-	}
-	all := func(rows ...[]string) func(int, *sqlscan.Site) {
-		return func(_ int, s *sqlscan.Site) { s.Fills = rows }
-	}
-	harvest := func(_ int, s *sqlscan.Site) { s.Harvest = true }
-	statements := func(texts ...string) func(int, *sqlscan.Site) {
-		return func(_ int, s *sqlscan.Site) { s.Statements = texts }
-	}
-	flat := func(rows [][]string) []string {
-		var out []string
-		for _, r := range rows {
-			out = append(out, r...)
-		}
-		return out
-	}
-
-	// EXECUTED: the argument is the package variable, given its value once
-	// (a function computes it from libyearRotatedColumns at start); the
-	// statement judged is that variable.
 	sites = append(sites,
 		sqlscan.Site{Decl: "PostgresStore.ReplaceRepoLibyear", Ordinal: 1, Builder: "rotateLibyearInsertSQL", Statements: []string{rotateLibyearInsertSQL},
 			Domain: "no input: the variable's one value", Pin: columnWriteFrozen["PostgresStore.ReplaceRepoLibyear"], Reason: "the INSERT that rotates a repository's libyear rows to history"},
 		sqlscan.Site{Decl: "PostgresStore.ReplaceRepoLibyear", Ordinal: 2, Builder: "replaceLibyearDeleteAndCarrySQL", Statements: []string{replaceLibyearDeleteAndCarrySQL},
 			Domain: "no input: the variable's one value", Pin: columnWriteFrozen["PostgresStore.ReplaceRepoLibyear"], Reason: "the DELETE ... RETURNING and carrying INSERT of a libyear replacement, run through Query for its rows"})
-
-	// The package-key fill's three statements are packageKeyFillSQL(table)'s
-	// results for the tables it accepts: run here for each.
-	var keyBound, keyPage, keyWrite []string
-	for _, tbl := range packageKeyFillTablesChecked {
-		b, pg, w, err := packageKeyFillSQL(tbl)
-		if err != nil {
-			t.Fatal(err)
-		}
-		keyBound, keyPage, keyWrite = append(keyBound, b), append(keyPage, pg), append(keyWrite, w)
-	}
-	var keyBoundRows [][]string
-	for _, b := range keyBound {
-		keyBoundRows = append(keyBoundRows, []string{b})
-	}
-	frozen("PostgresStore.FillPackageKeysStep", "the three statements of packageKeyFillSQL(table), a local each (TestThePackageKeyFillWriteIsTheFunctionsResult pins that they are taken once and not changed); judged as that function's real results for both tables it accepts",
-		[]int{1, 3, 5}, func(ord int, s *sqlscan.Site) {
-			switch ord {
-			case 1:
-				s.Fills = keyBoundRows
-			case 3:
-				s.Statements = keyPage
-			case 5:
-				s.Statements = keyWrite
-			}
-		})
-
-	// The gone-clear statements: c.build(c.sideline + c.guard) for the
-	// goneClear a caller passes; judged for every goneClear literal in the
-	// store's source (goneClearsInSource), by running its build.
-	frozen("clearInTxUnderRowLock", "the gone-clear statement and its row lock, built from the goneClear the caller passes; judged as built by every goneClear literal in the source",
-		[]int{2, 3, 4}, func(ord int, s *sqlscan.Site) {
-			if ord == 3 {
-				s.Fills = goneClearSidelines(t)
-			} else {
-				s.Statements = flat(goneClearStatements(t))
-			}
-		})
-
-	// Schema changes whose table, constraint, index or column name is a
-	// value of a list in the function or of the catalog. Judged with a
-	// representative name in each gap.
-	frozen("ensureOnUpdateCascadeOnCntrbIDFKs", "ALTER TABLE ... DROP/ADD/VALIDATE CONSTRAINT for each contributor foreign key of a fixed list", []int{2, 3},
-		fills(map[int][][]string{2: {{"issues", "fk_issues_cntrb", "fk_issues_cntrb", "cntrb_id"}}, 3: {{"issues", "fk_issues_cntrb"}}}))
-	frozen("applyFullBehaviorFK", "ALTER TABLE ... DROP/ADD/VALIDATE CONSTRAINT for the foreign key its caller names", []int{1, 2},
-		fills(map[int][][]string{1: {{"issues", "fk_x", "fk_x", "cntrb_id", "contributors", "cntrb_id"}}, 2: {{"issues", "fk_x"}}}))
-	frozen("ensureAllFKsDeferrable", "ALTER TABLE ... ALTER CONSTRAINT ... DEFERRABLE for each foreign key the catalog lists, names quoted by quotedIdentifier", []int{2},
-		all([]string{`"aveloxis_data"."issues"`, `"fk_x"`}))
-	frozen("migrateStage4DedupAndIndexes", "CREATE INDEX CONCURRENTLY with the schema of the trigram operator class, quoted by quoteIdent", []int{3}, all([]string{`"public"`}))
-	frozen("migrateStage9DataQuality", "two INSERTs into contributor_login_history with the tool version in a literal", []int{17, 18}, all([]string{ToolVersion}))
-	frozen("migrateStage10RecentReleases", "ALTER TABLE ... SET (autovacuum...) for each table of a fixed list", []int{17}, all([]string{"releases"}))
-	frozen("execCreateIndexConcurrently", "DROP INDEX of the invalid index it is about to rebuild, and ANALYZE of the table the catalog names for it", []int{4},
-		fills(map[int][][]string{4: {{`"aveloxis_data"."repos"`}}}))
-	frozen("seedAPITokenSettings", "the INSERT of the one api_token_settings row, with the shipped limits as numbers", []int{2}, all([]string{"1000"}))
-	frozen("setToolVersionDefaults", "ALTER TABLE ... ALTER COLUMN tool_version SET DEFAULT for each table the catalog lists (a default is not a write of stored rows)", []int{2},
-		all([]string{`"aveloxis_data"."repos"`, `'` + ToolVersion + `'`}))
-	frozen("dropIndexOnceReplacementIsValid", "DROP INDEX CONCURRENTLY of the index its caller names", []int{2}, all([]string{"idx_old"}))
-	frozen("addColumnWithOneTimeStampTx", "ALTER TABLE ... ADD COLUMN IF NOT EXISTS for the column its caller names", []int{2}, all([]string{"aveloxis_data", "repos", "x_added", "timestamptz"}))
-	frozen("consolidateRepoGroups", "the UPDATE and DELETE that move each table of a fixed list onto the canonical repo group", []int{2, 3}, all([]string{"aveloxis_data.repos"}))
-	frozen("refreshMatview", "REFRESH MATERIALIZED VIEW of the view its caller names", []int{1, 2}, all([]string{"aveloxis_data.explorer_entry_list"}))
-	frozen("rotateRepoRowsToHistory", "the INSERT ... SELECT * into a history table and the DELETE of the rotated rows, for the table pair its caller names", []int{1, 2},
-		fills(map[int][][]string{1: {{"aveloxis_data.repo_info_history", "aveloxis_data.repo_info"}}, 2: {{"aveloxis_data.repo_info"}}}))
-	frozen("dedupOnePair", "the loser repository's rows moved or deleted table by table: steps from lists in the function, and a DELETE per table of a list", []int{6, 7, 8, 9},
-		func(ord int, s *sqlscan.Site) {
-			if ord >= 8 {
-				s.Fills = [][]string{{"aveloxis_data.repo_info"}}
-			} else {
-				s.Harvest = true
-			}
-		})
-	frozen("PostgresStore.BackfillAssignmentIdentities", "a count, a MAX and the UPDATE that fills cntrb_id on each assignment table of a fixed list", []int{1, 2, 3},
-		fills(map[int][][]string{3: {{"issue_assignees", "issue_assignee_id", "assignee_src_id"}}}))
-	// Statements chosen or stepped through from fixed statements written
-	// in the source: every one of those that writes is judged (Harvest).
-	for decl, ords := range map[string][]int{
-		"PostgresStore.RefreshRepoAggregates": {1, 2}, "PostgresStore.RefreshGroupAggregates": {1, 2},
-		"dedupRepoGroupsListServeTx": {3}, "PostgresStore.HealAutomationPhantomContributors": {1}, "PostgresStore.HealRenamedDuplicate": {2},
-		"addSessionTokenHashedColumn": {3}, "PostgresStore.UpsertCommitBatch": {1}, "PostgresStore.UpsertCommitMessageBatch": {1},
-	} {
-		frozen(decl, "one of the fixed statements written in the function or in the list it steps through; each that writes is judged", ords, harvest)
-	}
-	frozen("addColumnIfMissing", "ALTER TABLE ... ADD COLUMN IF NOT EXISTS for the table, column and type its caller names", []int{1},
-		all([]string{"aveloxis_data.repos", "x_added", "text"}))
-	frozen("cleanupBadTimestamps", "the one-time repair UPDATE t SET \"c\" = NULL (or NOW()) WHERE the year is before 1970, for each (table, column) of a list in the function; judged for the two registered columns in that list and one other",
-		[]int{1}, all([]string{"aveloxis_data.repos", "created_at", "NULL", "created_at", "created_at"},
-			[]string{"aveloxis_data.repos", "updated_at", "NULL", "updated_at", "updated_at"},
-			[]string{"aveloxis_data.commits", "cmt_author_timestamp", "NOW()", "cmt_author_timestamp", "cmt_author_timestamp"}))
-	frozen("createSupplyChainView", "DROP, CREATE MATERIALIZED VIEW and CREATE UNIQUE INDEX for one supply-chain view: schema changes on a view, which write no table's rows",
-		[]int{1}, statements("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_exposure CASCADE",
-			"CREATE MATERIALIZED VIEW aveloxis_data.explorer_package_exposure AS "+PackageExposureMatviewSQL()))
-	frozen("freshBatch", "a copy of the statements queued on another batch, for a re-send", []int{1}, func(_ int, s *sqlscan.Site) {
-		s.ReadElsewhere = "each statement on the batch it copies was queued by a Queue call in this package, which is an SQL argument the reading reads"
-	})
-	// Index creation from a list of fixed definitions.
-	for _, decl := range []string{"ensureCntrbIDFKIndexes", "ensureEmailMessageFKIndexes", "ensureExtraFKIndexes", "ensurePerfWaveIndexes", "ensureRepoGroupFKIndexes"} {
-		frozen(decl, "CREATE INDEX CONCURRENTLY for each index of a fixed list: a schema change that writes no row", []int{1},
-			statements("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_x ON aveloxis_data.issues (cntrb_id)"))
-	}
-	frozen("ensureMsgRefMetadata", "a MAX and the windowed UPDATE MsgRefDataSourceWindowSQL builds for each message-reference table of a fixed list", []int{3, 4},
-		func(ord int, s *sqlscan.Site) {
-			if ord == 4 {
-				for _, tbl := range []string{"aveloxis_data.issue_message_ref", "aveloxis_data.pull_request_message_ref"} {
-					s.Statements = append(s.Statements, MsgRefDataSourceWindowSQL(tbl, "msg_ref_id"))
-				}
-			}
-		})
-
-	// Reads: a SELECT (or SHOW) whose text is chosen or composed in the
-	// function. Nothing is judged for them but their fixed text, which
-	// holds no word that writes (the reading requires something to judge
-	// when it does).
-	for decl, ords := range map[string][]int{
-		"PostgresStore.MetricWeeklySeries": {1}, "populatedCounts": {1}, "contentCount": {1}, "diffOneTable": {1, 2, 3, 4},
-		"ContentExpectations.CheckContent": {1}, "ContentExpectations.wherePassing": {1}, "PostgresStore.TopContributors": {1},
-		"PostgresStore.GetContributorsForHistoryBackfill": {1}, "PostgresStore.RunDataVerification": {5}, "PostgresStore.postSchemaProbes": {1, 2},
-		"PostgresStore.ClaimNextDistributionRepo": {1}, "PostgresStore.GetMailingListBodiesForStrip": {1}, "PostgresStore.GetGapHealCandidates": {1},
-		"PostgresStore.BackfillClosedByFromEvents": {1}, "PostgresStore.IssuesNeedingClosedBySweep": {1}, "loadKeysFromTable": {1},
-		"PostgresStore.catalogPick": {1}, "PostgresStore.SnapshotSeries": {1}, "PostgresStore.LatestCount": {1}, "PostgresStore.GetNewRepos": {1},
-		"PostgresStore.ListPackageExposure": {1, 2, 3}, "PostgresStore.GetPackageVersionsInUse": {1}, "PostgresStore.GetPackageExposedRepos": {1},
-		"PostgresStore.listRepos": {1}, "PostgresStore.ListQueuePage": {1, 2}, "PostgresStore.queryForgeIDChanges": {1},
-		"PostgresStore.ContributorRetentionSeries": {1}, "tableRowCounts": {2}, "ServerConnectionBudget": {1}, "PostgresStore.GetRepoTimeSeries": {2},
-		"PostgresStore.SignInOAuthUser": {1},
-	} {
-		frozen(decl, "a read: a SELECT (or SHOW) chosen or composed in the function from fixed text and a name, predicate, order or unit the function picks", ords, nil)
-	}
 	return sites
 }
 
 // columnWriteReferences are the store's references to something that runs
 // SQL which no reading of arguments covers, each read by a person.
-var columnWriteReferences = []struct{ File, Why, Reason string }{
-	{File: "internal/db/prepared_stmt_retry.go", Why: "a batch made with its QueuedQueries given",
+var columnWriteReferences = []struct{ Decl, Why, Reason string }{
+	{Decl: "freshBatch", Why: "a batch made with its QueuedQueries given",
 		Reason: "freshBatch copies a batch for a re-send: the list starts empty (make) and takes only copies of the queries queued on the batch it is given, each of which a Queue call in this package put there"},
-	{File: "internal/db/prepared_stmt_retry.go", Why: "QueuedQueries used other than to read it",
+	{Decl: "freshBatch", Why: "QueuedQueries used other than to read it",
 		Reason: "the same copy: fresh.QueuedQueries = append(fresh.QueuedQueries, a copy of q), for q ranging over the given batch's own list"},
 }
 
@@ -900,20 +724,20 @@ func TestNoSQLReachesTheLibraryUnseen(t *testing.T) {
 	for _, r := range refs {
 		ok := false
 		for i, a := range columnWriteReferences {
-			if a.File == r.File && strings.Contains(r.Why, a.Why) {
+			if a.Decl == r.Decl && strings.Contains(r.Why, a.Why) {
 				used[i], ok = true, true
 			}
 		}
 		if !ok {
-			t.Errorf("%s:%d: %s", r.File, r.Line, r.Why)
+			t.Errorf("%s:%d (%s): %s", r.File, r.Line, r.Decl, r.Why)
 		}
 	}
 	for i, a := range columnWriteReferences {
 		if !used[i] {
-			t.Errorf("stale reference registration %s (%q): it covers nothing; delete it", a.File, a.Why)
+			t.Errorf("stale reference registration %s (%q): it covers nothing; delete it", a.Decl, a.Why)
 		}
 		if a.Reason == "" {
-			t.Errorf("reference registration %s (%q) gives no reason", a.File, a.Why)
+			t.Errorf("reference registration %s (%q) gives no reason", a.Decl, a.Why)
 		}
 	}
 }
@@ -924,7 +748,7 @@ func TestNoSQLReachesTheLibraryUnseen(t *testing.T) {
 // function in it, by type; no text filter chooses the packages).
 //
 // What it proves, exactly: (1) every SQL argument outside internal/db
-// that is a compiler constant, or a pure call on constants, was tokenised
+// that is a compiler constant, or a pure call on constants, was parsed
 // and judged against the registered policies like the store's own, and
 // none violates one or failed to be read to its end; (2) no argument
 // outside the store that is NOT read holds, among the compiler constants
@@ -1138,6 +962,9 @@ type sqlBuilder struct {
 	// FromCallers: the inputs are the constants every caller passes,
 	// which the reading finds (sqlscan.Site.FromCallers).
 	FromCallers bool
+	// Raw: parameters that reach the text unquoted by design, each with
+	// what confines it (sqlscan.Site.Raw).
+	Raw map[string]string
 }
 
 // runSQLBuilder runs f, one of the store's builders, with inputs written as
@@ -1213,6 +1040,7 @@ func indexedBuilders() map[string]struct {
 		f func(int) string
 	}{
 		"repoURLRewriteSQL":                 {len(repoURLColumns), repoURLRewriteSQL},
+		"dataVerifyInvariantSQL":            {len(dataVerifyInvariants), dataVerifyInvariantSQL},
 		"renameHealStepSQL":                 {len(renameHealSteps), renameHealStepSQL},
 		"dedupPairStepSQL":                  {len(dedupPairSteps), dedupPairStepSQL},
 		"loserJoinDeleteSQL":                {len(loserJoinDeletes), loserJoinDeleteSQL},
@@ -1273,14 +1101,20 @@ func TestAnIndexedStatementBuilderRefusesAnIndexOutsideItsList(t *testing.T) {
 	}
 }
 
+// keyedBuilder is a builder with a finite domain it enforces itself: every
+// input of the domain, and inputs outside it, each of which it must refuse.
+// callerCols is how many of its leading inputs are constants its callers
+// pass (the reading finds those; the domain's rows then hold a sample).
+type keyedBuilder struct {
+	f          any
+	domain     [][]string
+	bads       [][]string
+	callerCols int
+}
+
 // keyedBuilders are the builders that look their input up in a fixed map
-// of the store and refuse a key it does not have: each with every key
-// (its domain) and one input that is no key.
-func keyedBuilders() map[string]struct {
-	f      any
-	domain [][]string
-	bad    []string
-} {
+// or switch of the store and refuse anything else.
+func keyedBuilders() map[string]keyedBuilder {
 	keys := func(m map[string]string) []string {
 		out := make([]string, 0, len(m))
 		for k := range m {
@@ -1296,39 +1130,78 @@ func keyedBuilders() map[string]struct {
 		}
 		return out
 	}
-	var metricByBucket [][]string
+	bools := []string{"false", "true"}
+	var metricByBucket, exposure, queue, listing [][]string
 	for _, m := range keys(metricSeriesSQL) {
 		for _, b := range keys(seriesBuckets) {
 			metricByBucket = append(metricByBucket, []string{m, b})
 		}
 	}
-	return map[string]struct {
-		f      any
-		domain [][]string
-		bad    []string
-	}{
-		"latestCountSQL":           {latestCountSQL, one(keys(snapshotColumns)), []string{"repo_name FROM x; --"}},
-		"retentionSeriesStatement": {retentionSeriesStatement, one(keys(seriesBuckets)), []string{"week; DROP TABLE x"}},
-		"metricSeriesStatement":    {metricSeriesStatement, metricByBucket, []string{keys(metricSeriesSQL)[0], "day"}},
+	for _, sortKey := range keys(PackageExposureSorts) {
+		for source := exposureFromView; source <= exposureFromLiveFleet; source++ {
+			for _, eco := range bools {
+				for _, search := range bools {
+					exposure = append(exposure, []string{strconv.Itoa(source), eco, search, sortKey})
+				}
+			}
+		}
+	}
+	for _, sortKey := range append([]string{""}, keys(queueSorts)...) {
+		for _, searching := range bools {
+			for _, desc := range bools {
+				queue = append(queue, []string{searching, sortKey, desc})
+			}
+		}
+	}
+	const member = `SELECT repo_id FROM aveloxis_ops.user_repos WHERE group_id = $1`
+	for _, sortKey := range keys(collectionRepoSorts) {
+		for _, dir := range []string{"asc", "desc"} {
+			listing = append(listing, []string{member, sortKey, dir})
+		}
+	}
+	const inject = "repo_name FROM x; --"
+	return map[string]keyedBuilder{
+		"snapshotSeriesSQL":        {f: snapshotSeriesSQL, domain: one(keys(snapshotColumns)), bads: [][]string{{inject}}},
+		"latestCountSQL":           {f: latestCountSQL, domain: one(keys(snapshotColumns)), bads: [][]string{{inject}}},
+		"retentionSeriesStatement": {f: retentionSeriesStatement, domain: one(keys(seriesBuckets)), bads: [][]string{{"week; DROP TABLE x"}}},
+		"metricSeriesStatement":    {f: metricSeriesStatement, domain: metricByBucket, bads: [][]string{{keys(metricSeriesSQL)[0], "day"}, {"no-such-metric", "week"}}},
+		"packageExposureListSQL":   {f: packageExposureListSQL, domain: exposure, bads: [][]string{{"3", "false", "false", "repos"}, {"-1", "false", "false", "repos"}, {"0", "false", "false", inject}}},
+		"queuePageSQL":             {f: queuePageSQL, domain: queue, bads: [][]string{{"false", inject, "false"}}},
+		"repoListingStatement":     {f: repoListingStatement, domain: listing, bads: [][]string{{member, inject, "asc"}, {member, keys(collectionRepoSorts)[0], "sideways"}, {member, keys(collectionRepoSorts)[0], ""}}, callerCols: 1},
 	}
 }
 
 func TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave(t *testing.T) {
 	for name, k := range keyedBuilders() {
-		if len(k.domain) == 0 {
-			t.Errorf("%s: no key, so nothing is judged for it", name)
+		if len(k.domain) == 0 || len(k.bads) == 0 {
+			t.Errorf("%s: no input in its domain, or none outside it", name)
+			continue
 		}
 		run := runSQLBuilder(k.f)
-		if text, err := run(0, k.bad); err == nil {
-			t.Errorf("%s(%q) gave a statement: %s", name, k.bad, text)
-		}
-		// Each input of the domain but one value, changed, is refused too:
-		// the refusal is per input, not for the first alone.
-		for i := range k.domain[0] {
-			in := append([]string(nil), k.domain[0]...)
-			in[i] = "no-such-key"
-			if text, err := run(0, in); err == nil {
-				t.Errorf("%s(%q) gave a statement: %s", name, in, text)
+		ft := reflect.TypeOf(k.f)
+		for result := 0; result < ft.NumOut()-1; result++ {
+			for _, in := range k.domain {
+				if _, err := run(result, in); err != nil {
+					t.Errorf("%s(%q) is in the domain and was refused: %v", name, in, err)
+				}
+			}
+			for _, bad := range k.bads {
+				if text, err := run(result, bad); err == nil {
+					t.Errorf("%s(%q) gave a statement: %s", name, bad, text)
+				}
+			}
+			// Each TEXT input of a domain row, changed, is refused too: the
+			// refusal is per input. (A number or a bool that is not one is
+			// no input at all; those have their own rows above.)
+			for i := k.callerCols; i < ft.NumIn(); i++ {
+				if ft.In(i).Kind() != reflect.String {
+					continue
+				}
+				in := append([]string(nil), k.domain[len(k.domain)-1]...)
+				in[i] = "no-such-key"
+				if text, err := run(result, in); err == nil {
+					t.Errorf("%s(%q) gave a statement: %s", name, in, text)
+				}
 			}
 		}
 	}
@@ -1344,16 +1217,20 @@ func openBuilders() map[string]struct {
 } {
 	const names = "names the database's catalog gives at run time; each reaches the text only as a quoted identifier"
 	const number = "a number: it is written with %d, and a number is digits"
-	_, _ = names, number
+	const keyed = names + " (a key column also as a quoted literal, by sqlLiteral)"
+	key := [][]string{{"aveloxis_data", "repos", "repo_id"}, {"s", `odd "t`, "a'b\x00c\"d"}}
 	return map[string]struct {
 		f                      any
 		inputs                 [][]string
 		domain, varies, reason string
 	}{
-		// (open builders are added here)
-		"closedBySweepSQL":   {closedBySweepSQL, [][]string{{"0"}, {"25"}}, "any limit", number, "a read"},
-		"tableRowCountSQL":   {tableRowCountSQL, [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, "any table of the aveloxis schemas", names, "a count"},
-		"populatedCountsSQL": {populatedCountsSQL, [][]string{{"aveloxis_data", "repos", "repo_git\x00repo_id\x00odd \"c", "text\x00bigint\x00jsonb"}}, "any table with its columns and their data types", names + "; a data type only chooses among three fixed predicates", "counts"},
+		"closedBySweepSQL":     {closedBySweepSQL, [][]string{{"0"}, {"25"}}, "any limit", number, "a read"},
+		"tableRowCountSQL":     {tableRowCountSQL, [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, "any table of the aveloxis schemas", names, "a count"},
+		"populatedCountsSQL":   {populatedCountsSQL, [][]string{{"aveloxis_data", "repos", "repo_git\x00repo_id\x00odd \"c", "text\x00bigint\x00jsonb"}}, "any table with its columns and their data types", names + "; a data type only chooses among three fixed predicates", "counts"},
+		"contentTotalsSQL":     {contentTotalsSQL, [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, "any table", names, "a read"},
+		"contentBucketsSQL":    {contentBucketsSQL, key, "any table and its key", keyed, "a read"},
+		"contentBucketRowsSQL": {contentBucketRowsSQL, key, "any table and its key", keyed, "a read"},
+		"contentRowsByKeySQL":  {contentRowsByKeySQL, key, "any table and its key", keyed, "a read"},
 	}
 }
 
@@ -1362,6 +1239,9 @@ func openBuilders() map[string]struct {
 func boolBuilders() map[string]any {
 	return map[string]any{
 		// (bool builders are added here)
+		"packageVersionsInUseSQL":  packageVersionsInUseSQL,
+		"packageExposedReposSQL":   packageExposedReposSQL,
+		"topContributorsStatement": topContributorsStatement,
 		"gapHealCandidatesSQL":     gapHealCandidatesSQL,
 		"distributionClaimSQL":     distributionClaimSQL,
 		"weeklyCommitsSQL":         weeklyCommitsSQL,
@@ -1377,6 +1257,7 @@ func boolBuilders() map[string]any {
 var columnWriteQuoters = map[string]string{
 	"quotedIdentifier": "TestCatalogNamesAreQuotedAsSQLQuotesThem",
 	"quoteIdent":       "TestCatalogNamesAreQuotedAsSQLQuotesThem",
+	"sqlLiteral":       "TestSQLLiteralIsOneStringToSQL",
 }
 
 // columnWriteBuilders are the store's statement builders, by name.
@@ -1406,8 +1287,21 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 	// Builders keyed by a value of a fixed map of the store: run for every
 	// key, and refused for any other (keyedBuilders).
 	for name, k := range keyedBuilders() {
-		out[name] = sqlBuilder{Tuples: k.domain, Run: runSQLBuilder(k.f), Domain: "every key of the map the builder looks its input up in",
-			RefusalTest: "TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave", Reason: "a read whose column or unit is chosen by a request value"}
+		tuples := k.domain
+		if k.callerCols > 0 {
+			// The leading inputs are the callers' constants, which the
+			// reading finds; the registration gives the rest.
+			seen := map[string]bool{}
+			tuples = nil
+			for _, row := range k.domain {
+				if key := strings.Join(row[k.callerCols:], "\x00"); !seen[key] {
+					seen[key] = true
+					tuples = append(tuples, row[k.callerCols:])
+				}
+			}
+		}
+		out[name] = sqlBuilder{Tuples: tuples, FromCallers: k.callerCols > 0, Run: runSQLBuilder(k.f), Domain: "every input the builder accepts: the keys of the map, or the cases of the switch, it looks each up in",
+			RefusalTest: "TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave", Reason: "a read whose column, unit, source or order is chosen by a request value"}
 	}
 	// Open builders whose every text parameter reaches the statement only
 	// as a quoted name (the reading checks that, by object) and whose other
@@ -1415,6 +1309,13 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 	for name, o := range openBuilders() {
 		out[name] = sqlBuilder{Tuples: o.inputs, Run: runSQLBuilder(o.f), Domain: o.domain, Open: o.varies, Reason: o.reason}
 	}
+	// THE ONE DELIBERATE EXCEPTION: an operator's predicate, from the
+	// data-test rules file, is put into this statement as written.
+	out["contentWherePassingSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_id", "t.repo_archived IS NOT TRUE"}, {"s", `odd "t`, "a\x00b", "TRUE"}},
+		Run: runSQLBuilder(contentWherePassingSQL), Domain: "any table with its key, and any predicate a rule gives",
+		Open:   "the table and its key, quoted; and the rule's predicate, which is NOT quoted (Raw)",
+		Raw:    map[string]string{"where": "the statement runs only inside contentQuery's transaction, begun READ ONLY (pgx.TxOptions{AccessMode: pgx.ReadOnly}), and as one parameterised statement, so a second statement cannot ride on it; PostgreSQL refuses a write to a table in such a transaction. Nothing checks the predicate's text"},
+		Reason: "the rows of a table a data-test rule's predicate holds for"}
 	const identifiers = "names of the tables and columns being compared, from the catalog or an operator's rules file; each goes through pgx.Identifier"
 	out["contentCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(contentCountSQL), Domain: "any table", Open: identifiers, Reason: "a count"}
 	out["contentNotNullCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_git"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(contentNotNullCountSQL),
@@ -1450,8 +1351,9 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 	}
 	// Builders whose inputs are the constants their callers pass (the
 	// reading finds them), builders that take nothing, and open builders.
-	for name, f := range map[string]any{"addColumnSQL": addColumnSQL, "addQualifiedColumnSQL": addQualifiedColumnSQL, "dropSupersededIndexSQL": dropSupersededIndexSQL} {
-		out[name] = sqlBuilder{FromCallers: true, Run: runSQLBuilder(f), Domain: "the constants every caller passes", Reason: "a schema change whose names are written at its callers"}
+	for name, f := range map[string]any{"addColumnSQL": addColumnSQL, "addQualifiedColumnSQL": addQualifiedColumnSQL, "dropSupersededIndexSQL": dropSupersededIndexSQL,
+		"catalogPickSQL": catalogPickSQL} {
+		out[name] = sqlBuilder{FromCallers: true, Run: runSQLBuilder(f), Domain: "the constants every caller passes", Reason: "text whose varying parts are written at its callers"}
 	}
 	for name, f := range map[string]any{"loginHistoryFromIdentitiesSQL": loginHistoryFromIdentitiesSQL, "loginHistoryFromContributorsSQL": loginHistoryFromContributorsSQL,
 		"seedAPITokenSettingsSQL": seedAPITokenSettingsSQL} {
@@ -1472,4 +1374,113 @@ func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
 	out["dropInvalidIndexSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "idx_x"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(dropInvalidIndexSQL),
 		Domain: "the index a caller is about to build", Open: "the index's schema and name, from its caller's list; both go through pgx.Identifier", Reason: "DROP INDEX"}
 	return out
+}
+
+// sqlLiteral writes a value as ONE SQL string constant: whatever the value
+// holds (a quote, a backslash, a comment's opening, a dollar quote, a new
+// line), PostgreSQL's scanner reads the result as a single string and nothing
+// else. It assumes standard_conforming_strings is on, PostgreSQL's default
+// since 9.1: a backslash is then an ordinary character in '...'.
+func TestSQLLiteralIsOneStringToSQL(t *testing.T) {
+	if got := sqlLiteral("a'b"); got != "'a''b'" {
+		t.Errorf("sqlLiteral = %s", got)
+	}
+	for _, v := range []string{"", "plain", "a'b", "''", "a\\'; DROP TABLE x; --", "$$x$$", "-- c", "/* c", "line\nbreak", "E'x'", `"q"`} {
+		lit := sqlLiteral(v)
+		ws, err := sqlscan.ParseWrites("SELECT " + lit + " AS v")
+		if err != nil || len(ws) != 0 {
+			t.Errorf("%q: SELECT %s is not read as a plain read: %v %v", v, lit, ws, err)
+		}
+		if words := sqlscan.FragmentWords("SELECT " + lit + " AS v"); strings.Join(words, " ") != "select as v" {
+			t.Errorf("%q: the literal %s is not one string to the scanner: words %q", v, lit, words)
+		}
+	}
+}
+
+// builtByQueuePageSQL: ListQueuePage runs the two statements queuePageSQL
+// builds, and nothing else. The pins on the queue page's statements read
+// the builder's body; this is what ties them to the reader.
+func builtByQueuePageSQL(t *testing.T) {
+	t.Helper()
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) ListQueuePage("))
+	for _, needle := range []string{
+		`countQuery, dataQuery, err := queuePageSQL(search != "", sortKey, strings.EqualFold(sortDir, "desc"))`,
+		"s.pool.QueryRow(ctx, countQuery, args...)", "s.pool.Query(ctx, dataQuery, args...)",
+	} {
+		if strings.Count(body, needle) != 1 {
+			t.Fatalf("ListQueuePage must contain, once: %s", needle)
+		}
+	}
+	if strings.Count(body, "s.pool.") != 2 {
+		t.Fatal("ListQueuePage must run queuePageSQL's two statements and no other")
+	}
+}
+
+// Every call of execCreateIndexConcurrently names its index by a schema and
+// a name, apart, each a plain lower-case name: never an already-qualified
+// or already-quoted string (0.29.212: dropInvalidIndexSQL quotes the two
+// as two identifiers, where they stood in the text unquoted). The calls
+// are read from the source; a name that comes from a list is checked in
+// the list.
+func TestEveryIndexHelperCallNamesAPlainSchemaAndIndex(t *testing.T) {
+	plain := regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+	fset := token.NewFileSet()
+	calls, fromLists := 0, 0
+	for name, src := range srctest.PackageFiles(t, "internal/db", 30) {
+		af, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(af, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "execCreateIndexConcurrently" {
+				return true
+			}
+			calls++
+			if len(c.Args) != 7 {
+				t.Errorf("%s: execCreateIndexConcurrently called with %d arguments", fset.Position(c.Pos()), len(c.Args))
+				return true
+			}
+			for i, what := range map[int]string{4: "schema", 5: "index name"} {
+				switch a := c.Args[i].(type) {
+				case *ast.BasicLit:
+					if v, err := strconv.Unquote(a.Value); err != nil || !plain.MatchString(v) {
+						t.Errorf("%s: the %s %s is not a plain lower-case name", fset.Position(a.Pos()), what, a.Value)
+					}
+				case *ast.SelectorExpr, *ast.Ident:
+					fromLists++ // a member of one of the lists below, or a local chosen between two literals
+				default:
+					t.Errorf("%s: the %s is neither a literal nor a list member's field: it could be a qualified or quoted string", fset.Position(c.Args[i].Pos()), what)
+				}
+			}
+			return true
+		})
+	}
+	if calls < 20 || fromLists == 0 {
+		t.Fatalf("%d calls of execCreateIndexConcurrently read (%d naming their index from a list): the store has more", calls, fromLists)
+	}
+	var names []string
+	for _, idx := range cntrbIDFKIndexes {
+		names = append(names, idx.indexName)
+	}
+	for _, idx := range emailMessageFKIndexes {
+		names = append(names, idx.indexName)
+	}
+	for _, idx := range fkExtraIndexes {
+		names = append(names, idx.indexName)
+	}
+	for _, idx := range repoGroupFKIndexes {
+		names = append(names, idx.indexName)
+	}
+	for _, idx := range perfWaveIndexDDL {
+		names = append(names, idx.name)
+	}
+	for _, n := range names {
+		if !plain.MatchString(n) {
+			t.Errorf("the index name %q, from a list, is not a plain lower-case name", n)
+		}
+	}
 }

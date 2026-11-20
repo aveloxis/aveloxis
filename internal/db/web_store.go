@@ -95,10 +95,10 @@ func GitLabOAuthHost(base string) string {
 // or (gitlab) a GitLab instance's.
 func oauthUserByIDSQL(gitlab bool) string {
 	byID := `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gh_user_id = $1 AND $2 = ''
-		ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
+			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
 	if gitlab {
 		byID = `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gl_user_id = $1 AND gl_oauth_host = $2
-		ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
+			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
 	}
 	return byID
 }

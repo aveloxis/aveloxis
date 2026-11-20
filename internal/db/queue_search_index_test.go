@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSchemaCreatesTrigramExtension pins the migration-side contract:
@@ -94,10 +96,12 @@ func TestListQueuePageSearchUsesIndexedExpression(t *testing.T) {
 		t.Fatalf("read queue.go: %v", err)
 	}
 	src := string(data)
-	body := extractBatchFunc(src, "ListQueuePage")
-	if body == "" {
-		t.Fatal("could not locate ListQueuePage")
-	}
+	// 0.29.212: the page's two statements are built by queuePageSQL (so that
+	// the write-policy check runs them for every sort). What is pinned is
+	// unchanged, and read where the text now stands: ListQueuePage runs
+	// that builder's statements, and the builder's body has the shape.
+	builtByQueuePageSQL(t)
+	body := srctest.FuncBody(t, src, "func queuePageSQL(")
 
 	// The exact concatenation form must appear in the WHERE clause so
 	// the planner uses the GIN index on the expression.

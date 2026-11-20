@@ -167,20 +167,26 @@ func (s *PostgresStore) GetRepoInGroupByName(ctx context.Context, groupID int64,
 		fmt.Sprintf("repo %s in group %d", name, groupID))
 }
 
+// catalogPickSQL is catalogPick's listing statement: where is the
+// predicate its caller wrote (a constant at each), and n the number of
+// arguments that predicate takes, after which the scope's two stand.
+func catalogPickSQL(where string, n int) string {
+	all, ids := fmt.Sprintf("$%d", n+1), fmt.Sprintf("$%d", n+2)
+	return `
+		SELECT ` + repoResultColumns + `
+		FROM aveloxis_data.repos
+		WHERE ` + where + ` AND ` + repoScopeSQL("repo_id", all, ids) + `
+		ORDER BY platform_id, repo_id
+		LIMIT 1`
+}
+
 // catalogPick is the one lookup behind the two by-name readers: the first
 // match of where (its arguments first) inside the scope by platform then
 // id; otherwise an unscoped probe tells RepoOutOfScopeError (the twin's
 // id) from ErrRepoNotFound.
 func (s *PostgresStore) catalogPick(ctx context.Context, where string, args []any, scope RepoScope, what string) (*RepoResult, error) {
-	n := len(args)
-	all, ids := fmt.Sprintf("$%d", n+1), fmt.Sprintf("$%d", n+2)
 	scoped := append(append([]any{}, args...), scope.All, scope.ids())
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+repoResultColumns+`
-		FROM aveloxis_data.repos
-		WHERE `+where+` AND `+repoScopeSQL("repo_id", all, ids)+`
-		ORDER BY platform_id, repo_id
-		LIMIT 1`, scoped...)
+	rows, err := s.pool.Query(ctx, catalogPickSQL(where, len(args)), scoped...)
 	if err != nil {
 		return nil, err
 	}
@@ -691,21 +697,14 @@ func latestCountSQL(column string) (string, error) {
 		LIMIT 1`, col), nil
 }
 
-// SnapshotSeries returns one repo_info count over time: the history rows
-// and the current snapshot (the history pattern keeps only the latest in
-// repo_info — v0.27.37: without the union a "series" had one point),
-// oldest first. The one reader behind /stars, /forks and /watchers (stage
-// 1b, eval-4 item 7). A NULL-dated row (legacy snapshots exist) is left
-// out, and so is a NULL count (0.29.145): the count of that snapshot is
-// unknown, and drawing it as 0 put a false value in the chart — the
-// migrate's ClearStarCountWatchers makes such rows on purpose. Both failed
-// the scan before stage 1b. Empty is [].
-func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column string) ([]MetricRow, error) {
+// snapshotSeriesSQL is SnapshotSeries' statement for a column that is a key
+// of snapshotColumns; any other is refused here, before a statement exists.
+func snapshotSeriesSQL(column string) (string, error) {
 	col, ok := snapshotColumns[column]
 	if !ok {
-		return nil, fmt.Errorf("invalid column: %s", column)
+		return "", fmt.Errorf("invalid column: %s", column)
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+	return fmt.Sprintf(`
 		SELECT snap.date, snap.value, r.repo_name
 		FROM (
 			SELECT data_collection_date AS date, %[1]s AS value, repo_id
@@ -716,7 +715,24 @@ func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column
 		) snap
 		JOIN aveloxis_data.repos r ON snap.repo_id = r.repo_id
 		WHERE snap.date IS NOT NULL AND snap.value IS NOT NULL
-		ORDER BY snap.date`, col), repoID)
+		ORDER BY snap.date`, col), nil
+}
+
+// SnapshotSeries returns one repo_info count over time: the history rows
+// and the current snapshot (the history pattern keeps only the latest in
+// repo_info — v0.27.37: without the union a "series" had one point),
+// oldest first. The one reader behind /stars, /forks and /watchers (stage
+// 1b, eval-4 item 7). A NULL-dated row (legacy snapshots exist) is left
+// out, and so is a NULL count (0.29.145): the count of that snapshot is
+// unknown, and drawing it as 0 put a false value in the chart — the
+// migrate's ClearStarCountWatchers makes such rows on purpose. Both failed
+// the scan before stage 1b. Empty is [].
+func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column string) ([]MetricRow, error) {
+	stmt, err := snapshotSeriesSQL(column)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, stmt, repoID)
 	if err != nil {
 		return nil, err
 	}

@@ -346,7 +346,9 @@ func TestHarvestJudgesTheFixedStatementsOfTheSource(t *testing.T) {
 	for _, v := range chk.Violations {
 		exprs[v.Expr] = true
 	}
-	if !exprs["'x'"] || !exprs["EXCLUDED.repo_git"] {
+	// (A violation's Expr is the value written out from its tree: a name as
+	// PostgreSQL folds it.)
+	if !exprs["'x'"] || !exprs["excluded.repo_git"] {
 		t.Errorf("the step's write and the conflict's update must both be judged; violations: %+v", chk.Violations)
 	}
 }
@@ -533,6 +535,28 @@ func TestAnOpenBuilderMayOnlyQuoteWhatVaries(t *testing.T) {
 			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
 		"inside a literal that is no Identifier": {`func b(t string) string { return "SELECT 1 FROM " + strings.Join([]string{t}, "") }`, `os.Getenv("A")`,
 			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
+		"raw by design, with its sentence": {`func b(t, where string) string { return "SELECT 1 FROM " + pgx.Identifier{t}.Sanitize() + " WHERE " + where }`, `os.Getenv("A"), os.Getenv("B")`,
+			Site{Tuples: [][]string{{"t", "TRUE"}}, Open: "the table", Raw: map[string]string{"where": "a read-only transaction"}}, true},
+		"raw with no sentence": {`func b(t, where string) string { return "SELECT 1 FROM " + pgx.Identifier{t}.Sanitize() + " WHERE " + where }`, `os.Getenv("A"), os.Getenv("B")`,
+			Site{Tuples: [][]string{{"t", "TRUE"}}, Open: "the table", Raw: map[string]string{"where": " "}}, false},
+		"raw registered for a parameter that is quoted": {`func b(t string) string { return "SELECT 1 FROM " + pgx.Identifier{t}.Sanitize() }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"t"}}, Open: "the table", Raw: map[string]string{"t": "x"}}, false},
+		"another parameter than the raw one is loose": {`func b(t, where string) string { return "SELECT 1 FROM " + t + " WHERE " + where }`, `os.Getenv("A"), os.Getenv("B")`,
+			Site{Tuples: [][]string{{"t", "TRUE"}}, Open: "the table", Raw: map[string]string{"where": "a read-only transaction"}}, false},
+		"a chooser: the parameter only picks among fixed texts": {`func pick(k string) string { switch k { case "a": return "x" }; return "y" }; func b(k string) string { if k == "z" { return "SELECT 0" }; return "SELECT " + pick(k) }`, `os.Getenv("A")`,
+			Site{Tuples: [][]string{{"a"}}, Open: "the kind"}, true},
+		"a list of names, each quoted": {`func b(cols []string) string { out := "SELECT 1"; for i := range cols { out += ", " + pgx.Identifier{cols[i]}.Sanitize() }; for _, c := range cols { out += ", " + pgx.Identifier{c}.Sanitize() }; return out + fmt.Sprint(len(cols)) }`, `os.Args`,
+			Site{Tuples: [][]string{{"a"}}, Open: "the columns"}, true},
+		"a list of names, one joined raw": {`func b(cols []string) string { out := "SELECT 1"; for _, c := range cols { out += ", " + c }; return out }`, `os.Args`,
+			Site{Tuples: [][]string{{"a"}}, Open: "the columns"}, false},
+		"a number written with %d": {`func b(n int) string { return fmt.Sprintf("SELECT 1 LIMIT %d", n+1) + strconv.Itoa(n) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, true},
+		"a number written as a character": {`func b(n int) string { return fmt.Sprintf("SELECT 1 %c", n) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number converted to a string": {`func b(n int) string { return "SELECT 1 " + string(rune(n)) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
+		"a number handed to other code": {`func b(n int) string { return "SELECT 1 " + strings.Repeat(";", n) + os.Getenv(fmt.Sprint(reflect.ValueOf(n))) }`, `len(os.Args)`,
+			Site{Tuples: [][]string{{"1"}}, Open: "the limit"}, false},
 		"copied to a local first": {`func b(t string) string { u := t; return "SELECT 1 FROM " + pgx.Identifier{u}.Sanitize() }`, `os.Getenv("A")`,
 			Site{Tuples: [][]string{{"t"}}, Open: "the table"}, false},
 		"bools, every combination": {`func b(x, y bool) string { if x && y { return "SELECT 1" }; return "SELECT 2" }`, `len(os.Args) > 1, len(os.Args) > 2`,
@@ -586,6 +610,44 @@ func f(ctx context.Context, tx pool, r runs) { T{}.helper(ctx, tx, "s.t", "a"); 
 			}
 		}
 	}
+	// len(p) of a parameter is the number of elements of the list each
+	// caller writes out; a list that is not written out there gives none.
+	const counted = `func pick(where string, n int) string { return fmt.Sprintf("SELECT 1 WHERE %s AND x = $%d", where, n+1) }
+func helper(ctx context.Context, tx pool, where string, args []any) { tx.Exec(ctx, pick(where, len(args)), args...) }
+`
+	a = one(t, counted+`func f(ctx context.Context, tx pool, x int) { helper(ctx, tx, "a = $1 AND b = $2", []any{x, x}); helper(ctx, tx, "TRUE", []any{}) }`, Env{})
+	if got := fmt.Sprint(a.CallerTuples); got != "[[a = $1 AND b = $2 2] [TRUE 0]]" && got != "[[TRUE 0] [a = $1 AND b = $2 2]]" {
+		t.Errorf("len of a caller's list: %s (%s)", got, a.CallerWhy)
+	}
+	for name, call := range map[string]string{
+		"a list held in a variable": `l := []any{x}; helper(ctx, tx, "a = $1", l)`,
+		"a keyed list":              `helper(ctx, tx, "a = $1", []any{3: x})`,
+	} {
+		if a := one(t, counted+`func f(ctx context.Context, tx pool, x int) { `+call+` }`, Env{}); a.CallerTuples != nil {
+			t.Errorf("%s: caller tuples %v", name, a.CallerTuples)
+		}
+	}
+	// Some inputs from the callers and the others the registration's:
+	// every combination is run, and the registration's part needs its
+	// refusal test like any finite domain.
+	const mixed = `type page struct{ sort string }
+func list(member, sort string) string { return "SELECT 1 FROM (" + member + ") m ORDER BY " + sort }
+func helper(ctx context.Context, tx pool, member string, p page) { tx.Exec(ctx, list(member, p.sort)) }
+func f(ctx context.Context, tx pool, p page) { helper(ctx, tx, "SELECT a FROM s.t", p); helper(ctx, tx, "SELECT b FROM s.u", p) }`
+	a = one(t, mixed, Env{})
+	if fmt.Sprint(a.CallerFree) != "[1]" || len(a.CallerTuples) != 2 {
+		t.Fatalf("free %v, caller tuples %v (%s)", a.CallerFree, a.CallerTuples, a.CallerWhy)
+	}
+	runList := func(in []string) (string, error) { return "SELECT 1 FROM (" + in[0] + ") m ORDER BY " + in[1], nil }
+	mixedSite := Site{Decl: "helper", Ordinal: 1, Builder: "list", FromCallers: true, Tuples: [][]string{{"a"}, {"b"}}, Run: runList, Domain: "d", RefusalTest: "TestListRefuses", Reason: "r"}
+	if rep := siteProbe(t, mixed, []Site{mixedSite}, map[string]bool{"TestListRefuses": true}); len(rep.Problems) != 0 || len(rep.Statements) != 4 {
+		t.Errorf("a mixed registration: problems %v, %d statements, want the four combinations", rep.Problems, len(rep.Statements))
+	}
+	noTest := mixedSite
+	noTest.RefusalTest = ""
+	if rep := siteProbe(t, mixed, []Site{noTest}, nil); len(rep.Problems) == 0 {
+		t.Error("a mixed registration with no refusal test for its own part was accepted")
+	}
 	// The site check runs the builder for each of them, and refuses a
 	// registration that asks for them where there are none.
 	run := func(in []string) (string, error) { return "ALTER TABLE " + in[0] + " ADD " + in[1] + " int", nil }
@@ -601,7 +663,7 @@ func f(ctx context.Context, tx pool, r runs) { T{}.helper(ctx, tx, "s.t", "a"); 
 
 // Fixed text with a number in it is read by making it, with the real
 // fmt.Sprintf, for several numbers, and only when the number never changes
-// the statement's tokens.
+// the statement's parse tree.
 func TestFixedTextWithANumberInItIsReadByMakingIt(t *testing.T) {
 	for name, c := range map[string]struct {
 		body string
@@ -613,18 +675,22 @@ func TestFixedTextWithANumberInItIsReadByMakingIt(t *testing.T) {
 		"a width":                        {`tx.Exec(ctx, fmt.Sprintf("SELECT %05d", *n))`, "SELECT 00001"},
 		"written in hexadecimal (letters or digits, by the number)": {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %x", *n))`, ""},
 		"a declared integer type (it may print through a method)":   {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d", level(*n)))`, ""},
+		"a signed number where a sign is a token":                   {`tx.Exec(ctx, fmt.Sprintf("SELECT a FROM s.t LIMIT %d", *s))`, ""},
+		"a signed number as a name's digits":                        {`sp := fmt.Sprintf("cntrb_sp_%d", *s); tx.Exec(ctx, "SAVEPOINT "+sp)`, ""},
+		"a signed number that could begin a comment":                {`tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a -%d WHERE b IS NULL", *s))`, ""},
+		"a signed number converted to an unsigned one":              {`sp := fmt.Sprintf("cntrb_sp_%d", uint(*s)); tx.Exec(ctx, "SAVEPOINT "+sp)`, "SAVEPOINT cntrb_sp_1"},
 		"written as a character":                                    {`tx.Exec(ctx, fmt.Sprintf("SELECT 1 %c UPDATE aveloxis_data.repos SET repo_git = 'x'", *n))`, ""},
 		"a verb that does not take it":                              {`tx.Exec(ctx, fmt.Sprintf("SELECT %s", *n))`, ""},
-		"behind a minus":                                            {`tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a -%d WHERE b IS NULL", *n))`, ""},
+		"an unsigned number behind a minus (it cannot be negative)": {`tx.Exec(ctx, fmt.Sprintf("UPDATE s.t SET a = a -%d WHERE b IS NULL", *n))`, "UPDATE s.t SET a = a -1 WHERE b IS NULL"},
 		"text under a verb that takes anything":                     {`tx.Exec(ctx, fmt.Sprintf("SELECT %v", os.Getenv("T")))`, ""},
 		"text, not a number":                                        {`tx.Exec(ctx, fmt.Sprintf("SELECT %d FROM %s", *n, os.Getenv("T")))`, ""},
 		"text joined on":                                            {`tx.Exec(ctx, fmt.Sprintf("SELECT %d", *n)+os.Getenv("T"))`, ""},
 		"a local given twice":                                       {`sp := fmt.Sprintf("sp_%d", *n); sp = os.Getenv("T"); tx.Exec(ctx, "SAVEPOINT "+sp)`, ""},
 		"no number at all":                                          {`tx.Exec(ctx, os.Getenv("T"))`, ""},
 	} {
-		a := one(t, `type level int
+		a := one(t, `type level uint
 func (level) Format(f fmt.State, _ rune) { fmt.Fprint(f, "1; UPDATE aveloxis_data.repos SET repo_git = 'x'") }
-func f(ctx context.Context, tx pool, n *int) { `+c.body+` }`, Env{})
+func f(ctx context.Context, tx pool, n *uint, s *int) { _ = s; `+c.body+` }`, Env{})
 		switch {
 		case c.want == "" && a.Kind != StrictHole:
 			t.Errorf("%s: read as %s %q", name, a.Kind, a.Texts)
@@ -633,7 +699,7 @@ func f(ctx context.Context, tx pool, n *int) { `+c.body+` }`, Env{})
 		}
 	}
 	// Every statement made is handed to the policy check.
-	rep := siteProbe(t, `func f(ctx context.Context, tx pool, n *int) { tx.Exec(ctx, fmt.Sprintf("UPDATE aveloxis_data.repos SET repo_git = 'r%d'", *n)) }`, nil, nil)
+	rep := siteProbe(t, `func f(ctx context.Context, tx pool, n *uint) { tx.Exec(ctx, fmt.Sprintf("UPDATE aveloxis_data.repos SET repo_git = 'r%d'", *n)) }`, nil, nil)
 	if len(rep.Problems) != 0 || rep.Numbered != 1 || len(Check(rep.Statements, repoGit, nil).Violations) != len(rep.Statements) || len(rep.Statements) < 2 {
 		t.Errorf("a numbered forbidden write: problems %v, %d numbered, %d statements", rep.Problems, rep.Numbered, len(rep.Statements))
 	}
@@ -659,10 +725,16 @@ func TestFixedTextFilledByItsCallersConstants(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 	for name, src := range map[string]string{
-		"a caller passes a variable": helper + `func f(ctx context.Context, tx pool, x string) { rotate(ctx, tx, x, "h", 1) }`,
-		"the helper is exported":     strings.Replace(helper, "func rotate(", "func Rotate(", 1) + `func f(ctx context.Context, tx pool) { Rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"a gap is not a parameter":   strings.Replace(helper, "history, table), id)", "history, os.Getenv(\"T\")), id)", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
-		"the parameter is changed":   strings.Replace(helper, "\tstmt :=", "\ttable = os.Getenv(\"T\")\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"a caller passes a variable":                                           helper + `func f(ctx context.Context, tx pool, x string) { rotate(ctx, tx, x, "h", 1) }`,
+		"the helper is exported":                                               strings.Replace(helper, "func rotate(", "func Rotate(", 1) + `func f(ctx context.Context, tx pool) { Rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"a gap is not a parameter":                                             strings.Replace(helper, "history, table), id)", "history, os.Getenv(\"T\")), id)", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"the parameter is changed":                                             strings.Replace(helper, "\tstmt :=", "\ttable = os.Getenv(\"T\")\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"the parameter is changed by a closure that captures it":               strings.Replace(helper, "\tstmt :=", "\tfunc() { table = os.Getenv(\"T\") }()\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"the parameter's address is taken":                                     strings.Replace(helper, "\tstmt :=", "\tp := &table\n\t_ = p\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"a caller reached through a function value":                            helper + `func f(ctx context.Context, tx pool) { r := rotate; r(ctx, tx, "s.a", "s.h", 1) }`,
+		"a caller through a method value":                                      strings.Replace(helper, "func rotate(", "type T struct{}\n\nfunc (T) rotate(", 1) + `func f(ctx context.Context, tx pool) { r := T{}.rotate; r(ctx, tx, "s.a", "s.h", 1) }`,
+		"a caller that is the helper itself (the constants are never reached)": strings.Replace(helper, "\tstmt :=", "\tif id > 0 {\n\t\trotate(ctx, tx, table, history, id-1)\n\t}\n\tstmt :=", 1) + `func f(ctx context.Context, tx pool) { rotate(ctx, tx, "s.a", "s.h", 1) }`,
+		"no caller in the files read (a _test file's call is not read)":        helper,
 	} {
 		for _, a := range strictOf(t, src, Env{}) {
 			if a.Kind == StrictFromCallers && !(name == "a gap is not a parameter" && strings.HasPrefix(a.Texts[0], "DELETE")) {

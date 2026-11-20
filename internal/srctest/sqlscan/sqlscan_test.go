@@ -328,7 +328,7 @@ func TestWhereGuardsEmpty(t *testing.T) {
 // comments FIRST (StripGoComments preserves raw strings).
 func TestStatementsIgnoreCommentEmbeddedLiterals(t *testing.T) {
 	files := map[string]string{
-		"doc.go": "package db\n" +
+		"fixture_doc.go": "package db\n" +
 			"// The old shape was `UPDATE aveloxis_data.repos SET repo_name = $1` —\n" +
 			"// kept here for history only.\n" +
 			"var q = `INSERT INTO aveloxis_data.repos (repo_git) VALUES ($1)`\n",

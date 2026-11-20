@@ -126,7 +126,8 @@ func (p Prober) Probe(ctx context.Context, host string) []Observation {
 		return out()
 	}
 
-	address, name := host, host
+	address := host
+	var name string
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		name = h
 	} else {

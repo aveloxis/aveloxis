@@ -27,8 +27,8 @@
 //
 // THE WRITE-POLICY CHECK does not use this file's text matchers
 // (0.29.212). It reads SQL arguments through strict.go and statements
-// through the tokeniser and reader of lex.go and parse.go; doc.go states
-// what that check guarantees. What remains here serves the other source
+// through PostgreSQL's own parser (pgread.go); doc.go states what that
+// check guarantees. What remains here serves the other source
 // tripwires (which tables a literal writes, which columns have a writer):
 // Statements, FindWrites, WritesColumn and SetExprs read single backtick
 // literals with patterns, and their known limits are those of patterns:
@@ -599,7 +599,7 @@ func isSpace(c byte) bool {
 
 // WhereGuardsEmpty reports whether the write being judged lets it touch
 // only rows whose col is empty: the shape that makes a bare `SET col = $N`
-// a fill of the empty state. What counts is Write.GuardsEmpty's (parse.go):
+// a fill of the empty state. What counts is Write.GuardsEmpty's (pgread.go):
 // one of the conditions joined by AND at the top of that write's own WHERE,
 // never one in a string, under OR or NOT, or in a subquery.
 func (s Stmt) WhereGuardsEmpty(col string) bool {
@@ -630,7 +630,7 @@ func (s Stmt) WhereGuardsEmpty(col string) bool {
 // around names that need none (lower case, no special character): to
 // PostgreSQL `"aveloxis_data"."repos"` is aveloxis_data.repos, and the
 // text matchers of this file spell a table the plain way. (The policy
-// check does not use them: it reads names as tokens, parse.go.)
+// check does not use them: it reads names from the parse tree, pgread.go.)
 var plainHead = regexp.MustCompile(`((?i:INSERT\s+INTO|UPDATE(?:\s+ONLY)?|MERGE\s+INTO)\s+)("?[a-z_][a-z0-9_]*"?(?:\."?[a-z_][a-z0-9_]*"?)?)`)
 
 // plainWriteHead rewrites such heads without the quotes. A quoted name

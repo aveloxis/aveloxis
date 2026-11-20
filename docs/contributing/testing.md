@@ -277,10 +277,12 @@ instead of ad-hoc regexes:
   its inputs, and the check runs the real builder for each input; a finite
   domain names the test showing an input outside it gives no statement, and
   an open one may put what varies into the text only through
-  `pgx.Identifier` or a registered quoting helper. A FROZEN registration (a
-  digest of the source the text is made of) is the last resort.
-- `sqlscan.ParseWrites(sql)` — the writes of a statement, read from tokens
-  (`lex.go` is a tokeniser for PostgreSQL's lexical rules). `sqlscan.Check`
+  `pgx.Identifier` or a registered quoting helper. Nothing is registered on
+  a person's reading alone: a frozen registration fails the test.
+- `sqlscan.ParseWrites(sql)` — the writes of a statement, read from the
+  parse tree PostgreSQL's own parser gives (`pgread.go`; the parser is
+  `github.com/wasilibs/go-pgquery`, the server's grammar compiled to
+  WebAssembly, linked into tests only). `sqlscan.Check`
   judges with it and denies by default: a statement not read to its end, a
   target with no schema that assigns a registered column's name, and a write
   through a view over a registered table are violations.

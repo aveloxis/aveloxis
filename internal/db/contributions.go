@@ -343,68 +343,9 @@ func displayBotLoginSQL(login string) string {
 	return `(` + login + ` ~* 'bot[0-9]*$' AND ` + login + ` !~* '(` + strings.Join(botSurnames, "|") + `)[0-9]*$')`
 }
 
-// TopContributors (v0.27.61) returns the top-N contributors to repoID
-// in [since, until), ranked by total activity, with the per-kind
-// breakdown that produced the rank.
-//
-// What counts, per kind (each arm windowed on its own event time):
-//   - commits:  DISTINCT commit hashes authored (the commits table is
-//     one row per FILE per commit — COUNT(*) would weight a 30-file
-//     commit 30×). Windowed on cmt_author_timestamp (TIMESTAMPTZ);
-//     cmt_author_date is TEXT and unsafe to range-filter.
-//   - issues:   issues OPENED (reporter_id / created_at).
-//   - prs:      pull requests OPENED (author_id / created_at).
-//   - reviews:  PR reviews SUBMITTED (cntrb_id / submitted_at) — the
-//     arm that makes maintainer review load visible; it is invisible
-//     in commit/PR counts alone.
-//   - comments: unified messages (issue comments + PR conversation +
-//     inline review comment bodies) by msg_timestamp.
-//
-// Issue/PR events (labels, assignments, closes) are deliberately NOT
-// counted — they are process noise for a "who does the work here"
-// ranking, though they DO count for cohort membership in
-// contributorsInWindowCTE. The two surfaces answer different
-// questions and the difference is documented in docs/guide/api.md.
-//
-// Identity resolution matches GetRepoContributors exactly: the shared
-// COALESCE login chain and the cntrb_deleted=0 soft-delete filter, so
-// the two contributor surfaces can never disagree about who a
-// cntrb_id is. Commits with NULL cmt_ght_author_id (unresolved
-// authors) are excluded — there is no identity to rank.
-//
-// excludeBots (v0.27.69, the "hide bots" checkbox): filters rows whose
-// identity is a bot by THREE markers — gh_type='Bot' (GitHub App
-// accounts: dependabot[bot]), the '[bot]' login suffix, and a login
-// ending in "bot" (robot included) — displayBotLoginSQL. The third marker
-// exists because the k8s fleet's dominant committers (k8s-ci-robot,
-// k8s-release-robot) are gh_type='User' machine accounts — verified
-// live 2026-08-01 — that the first two markers cannot see. v0.29.70
-// dropped its -/_ separator requirement (operator: pytorchmergebot ranked
-// first with "Hide bots" on); human surnames are kept by name instead.
-// Deliberately BROADER than the contributor_retention metric's
-// exclusion (gh_type + [bot] only) — that one is pinned to 8Knot
-// parity; this one is a user-controlled display filter.
-func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since, until time.Time, limit int, excludeBots bool) ([]TopContributor, error) {
-	lower, upper := resolveWindow(since, until)
-	if limit <= 0 {
-		limit = 20
-	}
-	// Hard upper backstop AT THE STORE LAYER (CodeQL
-	// go/uncontrolled-allocation-size, 2026-07-31): the API handler
-	// caps limit at 100 too, but the store is the shared surface —
-	// a future caller that forgets its own cap must not reach the
-	// slice allocation (or the SQL LIMIT) with an unbounded value.
-	if limit > 100 {
-		limit = 100
-	}
-
-	// The commits arm (summary/49): the daily table when it serves this
-	// window, the commits table otherwise — one row per file per commit,
-	// scattered, 118 s for a kernel fork.
-	daily, err := s.commitDailyServes(ctx, repoID, lower, upper)
-	if err != nil {
-		return nil, fmt.Errorf("TopContributors: %w", err)
-	}
+// topContributorsStatement is TopContributors' statement: its commits arm from the
+// commit rows or (daily) the daily table, with or without the bots.
+func topContributorsStatement(daily, excludeBots bool) string {
 	commitsArm := `
     SELECT c.cmt_ght_author_id AS cntrb_id,
            COUNT(DISTINCT c.cmt_commit_hash) AS commits,
@@ -477,7 +418,6 @@ WHERE COALESCE(c.cntrb_deleted, 0) = 0`
 	// 'User' (codecov-io, codecov-commenter) are caught by the shared
 	// githubSystemAccounts curated list, bound as $5 only in this
 	// branch.
-	args := []any{repoID, lower, upper, limit}
 	if excludeBots {
 		// v0.28.10 (Copilot round 7): the login predicates test the
 		// SAME effective-login expression the SELECT returns — a row
@@ -492,13 +432,81 @@ WHERE COALESCE(c.cntrb_deleted, 0) = 0`
       OR ` + displayBotLoginSQL(`COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')`) + `
       OR LOWER(COALESCE(NULLIF(c.cntrb_login, ''), c.gh_login, c.gl_username, '')) = ANY($5::text[])
   )`
-		args = append(args, githubSystemAccounts)
 	}
 	sql += `
 ORDER BY total DESC, login
 LIMIT $4`
+	return sql
+}
 
-	rows, err := s.pool.Query(ctx, sql, args...)
+// TopContributors (v0.27.61) returns the top-N contributors to repoID
+// in [since, until), ranked by total activity, with the per-kind
+// breakdown that produced the rank.
+//
+// What counts, per kind (each arm windowed on its own event time):
+//   - commits:  DISTINCT commit hashes authored (the commits table is
+//     one row per FILE per commit — COUNT(*) would weight a 30-file
+//     commit 30×). Windowed on cmt_author_timestamp (TIMESTAMPTZ);
+//     cmt_author_date is TEXT and unsafe to range-filter.
+//   - issues:   issues OPENED (reporter_id / created_at).
+//   - prs:      pull requests OPENED (author_id / created_at).
+//   - reviews:  PR reviews SUBMITTED (cntrb_id / submitted_at) — the
+//     arm that makes maintainer review load visible; it is invisible
+//     in commit/PR counts alone.
+//   - comments: unified messages (issue comments + PR conversation +
+//     inline review comment bodies) by msg_timestamp.
+//
+// Issue/PR events (labels, assignments, closes) are deliberately NOT
+// counted — they are process noise for a "who does the work here"
+// ranking, though they DO count for cohort membership in
+// contributorsInWindowCTE. The two surfaces answer different
+// questions and the difference is documented in docs/guide/api.md.
+//
+// Identity resolution matches GetRepoContributors exactly: the shared
+// COALESCE login chain and the cntrb_deleted=0 soft-delete filter, so
+// the two contributor surfaces can never disagree about who a
+// cntrb_id is. Commits with NULL cmt_ght_author_id (unresolved
+// authors) are excluded — there is no identity to rank.
+//
+// excludeBots (v0.27.69, the "hide bots" checkbox): filters rows whose
+// identity is a bot by THREE markers — gh_type='Bot' (GitHub App
+// accounts: dependabot[bot]), the '[bot]' login suffix, and a login
+// ending in "bot" (robot included) — displayBotLoginSQL. The third marker
+// exists because the k8s fleet's dominant committers (k8s-ci-robot,
+// k8s-release-robot) are gh_type='User' machine accounts — verified
+// live 2026-08-01 — that the first two markers cannot see. v0.29.70
+// dropped its -/_ separator requirement (operator: pytorchmergebot ranked
+// first with "Hide bots" on); human surnames are kept by name instead.
+// Deliberately BROADER than the contributor_retention metric's
+// exclusion (gh_type + [bot] only) — that one is pinned to 8Knot
+// parity; this one is a user-controlled display filter.
+func (s *PostgresStore) TopContributors(ctx context.Context, repoID int64, since, until time.Time, limit int, excludeBots bool) ([]TopContributor, error) {
+	lower, upper := resolveWindow(since, until)
+	if limit <= 0 {
+		limit = 20
+	}
+	// Hard upper backstop AT THE STORE LAYER (CodeQL
+	// go/uncontrolled-allocation-size, 2026-07-31): the API handler
+	// caps limit at 100 too, but the store is the shared surface —
+	// a future caller that forgets its own cap must not reach the
+	// slice allocation (or the SQL LIMIT) with an unbounded value.
+	if limit > 100 {
+		limit = 100
+	}
+
+	// The commits arm (summary/49): the daily table when it serves this
+	// window, the commits table otherwise — one row per file per commit,
+	// scattered, 118 s for a kernel fork.
+	daily, err := s.commitDailyServes(ctx, repoID, lower, upper)
+	if err != nil {
+		return nil, fmt.Errorf("TopContributors: %w", err)
+	}
+	args := []any{repoID, lower, upper, limit}
+	if excludeBots {
+		args = append(args, githubSystemAccounts)
+	}
+
+	rows, err := s.pool.Query(ctx, topContributorsStatement(daily, excludeBots), args...)
 	if err != nil {
 		return nil, fmt.Errorf("TopContributors query: %w", err)
 	}

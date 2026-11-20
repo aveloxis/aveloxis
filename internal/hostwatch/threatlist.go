@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// KindThreatList: the host, or a domain above it, is on a public threat
+// KindThreatList means the host, or a domain above it, is on a public threat
 // list (v0.29.191; summary/70, 4.5, D14). The list is downloaded whole and
 // matched here, so no repository host is disclosed to its publisher. It is a
 // hint and never a verdict: the plan's sample of 82 hosts had one hit, a

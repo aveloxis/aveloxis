@@ -9,12 +9,6 @@ import (
 	"fmt"
 )
 
-// RefreshRepoAggregates recomputes the dm_repo_annual, dm_repo_monthly, and
-// dm_repo_weekly tables for a single repo by aggregating commit data.
-// This is the equivalent of Augur's facade post-processing.
-//
-// Each table is refreshed inside a transaction (DELETE old + INSERT new) so
-// readers never see a half-updated state.
 // aggQuery is one aggregate table's refresh: delete its rows for the key,
 // insert them again.
 type aggQuery struct {
@@ -110,6 +104,12 @@ func repoAggDeleteSQL(i int) string { return repoAggQueries[i].delete }
 // repoAggInsertSQL is its insert.
 func repoAggInsertSQL(i int) string { return repoAggQueries[i].insert }
 
+// RefreshRepoAggregates recomputes the dm_repo_annual, dm_repo_monthly, and
+// dm_repo_weekly tables for a single repo by aggregating commit data.
+// This is the equivalent of Augur's facade post-processing.
+//
+// Each table is refreshed inside a transaction (DELETE old + INSERT new) so
+// readers never see a half-updated state.
 func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64) error {
 	for i, q := range repoAggQueries {
 		tx, err := s.pool.Begin(ctx)

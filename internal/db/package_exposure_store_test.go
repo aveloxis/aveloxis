@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -308,14 +309,43 @@ func TestLeaderboardAggregatesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 0.29.212: the page and the count are built by packageExposureListSQL
+	// (so that the write-policy check runs them for every source and sort).
+	// What is pinned is unchanged, by the statements themselves: every
+	// page carries the total as ONE window count and no standalone count;
+	// and in ListPackageExposure the count statements run only inside the
+	// past-the-end guard.
 	body := srctest.StripGoComments(srctest.FuncBody(t, string(src), "func (s *PostgresStore) ListPackageExposure("))
-	if n := strings.Count(body, "COUNT(*) OVER ()"); n != 1 {
-		t.Errorf("ListPackageExposure must carry the total as one window count, found %d", n)
+	pages := 0
+	for _, in := range keyedBuilders()["packageExposureListSQL"].domain {
+		source, _ := strconv.Atoi(in[0])
+		page, count, err := packageExposureListSQL(source, in[1] == "true", in[2] == "true", in[3])
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		if n := strings.Count(page, "COUNT(*) OVER ()"); n != 1 || strings.Contains(page, "SELECT COUNT(*) FROM") {
+			t.Errorf("the page for %v must carry the total as one window count (found %d) and no standalone count", in, n)
+		}
+		if !strings.HasPrefix(count, "SELECT COUNT(*) FROM") {
+			t.Errorf("the count for %v: %s", in, count)
+		}
 	}
-	count := strings.Index(body, "SELECT COUNT(*) FROM")
+	if pages == 0 {
+		t.Fatal("no page statement was examined")
+	}
 	guard := strings.Index(body, "len(page.Rows) == 0 && offset > 0")
-	if strings.Count(body, "SELECT COUNT(*) FROM") != 1 || guard < 0 || count < guard {
-		t.Error("the only standalone COUNT(*) must sit inside the past-the-end guard; a second count re-runs the whole aggregate")
+	counts := 0
+	for _, use := range []string{"s.pool.QueryRow(ctx, countSQL, args...)", "s.pool.QueryRow(ctx, liveCountSQL, args...)"} {
+		at := strings.Index(body, use)
+		if guard < 0 || at < guard || strings.Count(body, use) != 1 {
+			t.Error("a count statement must run only inside the past-the-end guard; a second count re-runs the whole aggregate")
+		}
+		counts += strings.Count(body, use)
+	}
+	if strings.Count(body, "countSQL") != 2 || strings.Count(body, "liveCountSQL") != 2 || strings.Count(body, "QueryRow(") != counts ||
+		!strings.Contains(body, "s.pool.Query(ctx, pageSQL, pageArgs...)") || !strings.Contains(body, "s.pool.Query(ctx, livePageSQL, pageArgs...)") {
+		t.Error("ListPackageExposure must run packageExposureListSQL's page, and its count only inside the guard")
 	}
 }
 

@@ -164,10 +164,18 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.212 is the fixes from the fifth review; no schema change and no configuration change.** What changes on a fleet:
+
+- **Reading a Maven or Gradle build tree is bounded** in memory (16 times the bytes read), in requests for remote poms (one for every 64 bytes read) and in time. Work is counted per byte touched: about 1 to 3 minutes per 8 MiB of Gradle files, and seconds for Maven. A repository past a bound has the affected files reported unreadable, or its tree reported not whole, by name. Nothing is silently partial.
+- **A wall-clock backstop should never fire.** It is one minute plus ten times the stated bound (about 28 minutes per 8 MiB read). If the log shows a WARN saying a build-tree path was NOT ACCOUNTED FOR, report it: that is a defect, and the files after it were reported unreadable.
+- **More manifest forms are read:** in a Gemfile, a one-line `case ... when ... then gem`, `do;`, a brace block, a block closed by `end if ...`, and a gem written on the line that opens a block; a gem after such a block no longer inherits its group. In `mix.exs`, a dependency list written with leading commas; an interpolated version (`#{...}`) is no version. In `pubspec.yaml`, a `version:` whose value is on the next line.
+- **The migrate** quotes three names it did not quote before (an invalid index dropped before its rebuild, the `ANALYZE` after an expression index, savepoint counters). They are the same statements for every name the migrate uses.
+- **Building from source:** `go.mod` gains a test-only dependency, PostgreSQL's parser compiled to WebAssembly (`github.com/wasilibs/go-pgquery`). The binaries do not link it.
+
 **0.29.211 is the fixes from the fourth review; no schema change and no configuration change.** What changes on a fleet:
 
 - **A Maven build whose imported BOM cannot be obtained stays "not whole"**, whatever else its poms hold and in whatever order they are read. (0.29.210, which no fleet ran, judged such a pom whole once it had two dependencies with no version, and dropped its managed entries as unused.)
-- **Large honest builds are read.** A Maven reactor whose parent manages its own modules by reference, and a Gradle build whose modules share a large applied script, were refused by 0.29.210's bounds. The bound on a whole Gradle tree is ten times the bound on one file: a deliberately pathological tree can hold one worker for about three minutes per 8 MiB of Gradle files before the rest are reported unreadable.
+- **Large honest builds are read.** A Maven reactor whose parent manages its own modules by reference, and a Gradle build whose modules share a large applied script, were refused by 0.29.210's bounds. The bound on a whole Gradle tree is ten times the bound on one file (in 0.29.211 that allowance did not yet bound the time such a tree takes: 0.29.212 does).
 - **Memory while reading a build** no longer grows with modules times imports, or with directories times shared scripts.
 - **The manifest readers can run on several workers at once.** (0.29.210 had two counters shared between them.)
 - **More manifest forms are read:** one-line Gemfile blocks with several gems, an `else` arm, `gem(...)` or a modifier after `end`; a `pubspec.yaml` dependency written as a block with its version on its own line. A `mix.exs` comment after a dependency no longer ends up in its version.

@@ -35,6 +35,10 @@ func TestExprConformsFillEmptyOnly(t *testing.T) {
 		{"bare-param-without-guard", plain, `$2`, false},
 		{"bare-param-with-guard", stmtFor(`UPDATE aveloxis_data.repos SET platform_repo_id = $2 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = ''`), `$2`, true},
 		{"unrecognized-shape", plain, `some_function(repos.platform_repo_id)`, false},
+		// NULLIF against anything but the empty string keeps a stored blank
+		// and lets a stored 'x' be overwritten.
+		{"nullif-of-another-value", plain, `COALESCE(NULLIF(repos.platform_repo_id, 'x'), $7)`, false},
+		{"nullif-of-a-parameter", plain, `COALESCE(NULLIF(repos.platform_repo_id, $8), $7)`, false},
 	}
 	for _, c := range cases {
 		got, detail := exprConforms(c.stmt, c.expr, col, FillEmptyOnly)
@@ -74,6 +78,9 @@ func TestExprConformsGreatestNonNull(t *testing.T) {
 	excluded := `GREATEST(COALESCE(EXCLUDED.updated_at, repos.updated_at), COALESCE(repos.updated_at, EXCLUDED.updated_at))`
 	if ok, _ := exprConforms(plain, excluded, col, GreatestNonNull); !ok {
 		t.Error("the EXCLUDED-flavored GREATEST pair must conform")
+	}
+	if ok, _ := exprConforms(plain, `LEAST(COALESCE($9, repos.updated_at), COALESCE(repos.updated_at, $9))`, col, GreatestNonNull); ok {
+		t.Error("LEAST of the pair moves the value DOWN: it is not GreatestNonNull")
 	}
 	sameOrder := `GREATEST(COALESCE($9, repos.updated_at), COALESCE($9, repos.updated_at))`
 	if ok, _ := exprConforms(plain, sameOrder, col, GreatestNonNull); ok {
@@ -267,6 +274,10 @@ func TestExprConformsKeepCarryOrNow(t *testing.T) {
 		`CASE WHEN a THEN NULL ELSE NOW() END`,
 		`CASE WHEN a THEN CASE WHEN b THEN NOW() ELSE NULL END ELSE NOW() END`, // nested result
 		`COALESCE(CASE WHEN a THEN entered_exposure_at ELSE NOW() END, NOW())`,
+		`CASE a WHEN 1 THEN entered_exposure_at ELSE NOW() END`,                  // a CASE with an operand
+		`CASE WHEN a THEN entered_exposure_at ELSE now(1) END`,                   // not NOW()
+		`CASE WHEN a THEN entered_exposure_at ELSE pg_catalog.now() END`,         // another spelling is another shape
+		`CASE WHEN a THEN entered_exposure_at::text::timestamptz ELSE NOW() END`, // two casts
 	} {
 		if conforms, _ := exprConforms(plain, bad, col, KeepCarryOrNow); conforms {
 			t.Errorf("%s must NOT conform", bad)

@@ -22,6 +22,7 @@ const probePrelude = `import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -40,6 +41,7 @@ var (
 	_ = os.Getenv
 	_ reflect.Value
 	_ = slog.Info
+	_ = strconv.Itoa
 )
 `
 

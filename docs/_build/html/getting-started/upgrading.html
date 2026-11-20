@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.211 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.212 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=dc51b6c9"></script>
+      <script src="../_static/documentation_options.js?v=eba93ca3"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1996,11 +1996,20 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.212 is the fixes from the fifth review; no schema change and no configuration change.</strong> What changes on a fleet:</p>
+<ul class="simple">
+<li><p><strong>Reading a Maven or Gradle build tree is bounded</strong> in memory (16 times the bytes read), in requests for remote poms (one for every 64 bytes read) and in time. Work is counted per byte touched: about 1 to 3 minutes per 8 MiB of Gradle files, and seconds for Maven. A repository past a bound has the affected files reported unreadable, or its tree reported not whole, by name. Nothing is silently partial.</p></li>
+<li><p><strong>A wall-clock backstop should never fire.</strong> It is one minute plus ten times the stated bound (about 28 minutes per 8 MiB read). If the log shows a WARN saying a build-tree path was NOT ACCOUNTED FOR, report it: that is a defect, and the files after it were reported unreadable.</p></li>
+<li><p><strong>More manifest forms are read:</strong> in a Gemfile, a one-line <code class="docutils literal notranslate"><span class="pre">case</span> <span class="pre">...</span> <span class="pre">when</span> <span class="pre">...</span> <span class="pre">then</span> <span class="pre">gem</span></code>, <code class="docutils literal notranslate"><span class="pre">do;</span></code>, a brace block, a block closed by <code class="docutils literal notranslate"><span class="pre">end</span> <span class="pre">if</span> <span class="pre">...</span></code>, and a gem written on the line that opens a block; a gem after such a block no longer inherits its group. In <code class="docutils literal notranslate"><span class="pre">mix.exs</span></code>, a dependency list written with leading commas; an interpolated version (<code class="docutils literal notranslate"><span class="pre">#{...}</span></code>) is no version. In <code class="docutils literal notranslate"><span class="pre">pubspec.yaml</span></code>, a <code class="docutils literal notranslate"><span class="pre">version:</span></code> whose value is on the next line.</p></li>
+<li><p><strong>The migrate</strong> quotes three names it did not quote before (an invalid index dropped before its rebuild, the <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code> after an expression index, savepoint counters). They are the same statements for every name the migrate uses.</p></li>
+<li><p><strong>Building from source:</strong> <code class="docutils literal notranslate"><span class="pre">go.mod</span></code> gains a test-only dependency, PostgreSQL’s parser compiled to WebAssembly (<code class="docutils literal notranslate"><span class="pre">github.com/wasilibs/go-pgquery</span></code>). The binaries do not link it.</p></li>
+</ul>
 <p><strong>0.29.211 is the fixes from the fourth review; no schema change and no configuration change.</strong> What changes on a fleet:</p>
 <ul class="simple">
-<li><p><strong>A Maven build whose imported BOM cannot be obtained stays “not whole”</strong>, whatever else its poms hold and in whatever order they are read. (0.29.210, which no fleet ran, judged such a pom whole once it had two dependencies with no version.)</p></li>
-<li><p><strong>Large honest builds are read.</strong> A Maven reactor whose parent manages its own modules by reference, and a Gradle build whose modules share a large applied script, were refused by 0.29.210’s bounds. The bound on a whole Gradle tree is ten times the bound on one file: a deliberately pathological tree can hold one worker for about three minutes per 8 MiB of Gradle files before the rest are reported unreadable.</p></li>
+<li><p><strong>A Maven build whose imported BOM cannot be obtained stays “not whole”</strong>, whatever else its poms hold and in whatever order they are read. (0.29.210, which no fleet ran, judged such a pom whole once it had two dependencies with no version, and dropped its managed entries as unused.)</p></li>
+<li><p><strong>Large honest builds are read.</strong> A Maven reactor whose parent manages its own modules by reference, and a Gradle build whose modules share a large applied script, were refused by 0.29.210’s bounds. The bound on a whole Gradle tree is ten times the bound on one file (in 0.29.211 that allowance did not yet bound the time such a tree takes: 0.29.212 does).</p></li>
 <li><p><strong>Memory while reading a build</strong> no longer grows with modules times imports, or with directories times shared scripts.</p></li>
+<li><p><strong>The manifest readers can run on several workers at once.</strong> (0.29.210 had two counters shared between them.)</p></li>
 <li><p><strong>More manifest forms are read:</strong> one-line Gemfile blocks with several gems, an <code class="docutils literal notranslate"><span class="pre">else</span></code> arm, <code class="docutils literal notranslate"><span class="pre">gem(...)</span></code> or a modifier after <code class="docutils literal notranslate"><span class="pre">end</span></code>; a <code class="docutils literal notranslate"><span class="pre">pubspec.yaml</span></code> dependency written as a block with its version on its own line. A <code class="docutils literal notranslate"><span class="pre">mix.exs</span></code> comment after a dependency no longer ends up in its version.</p></li>
 <li><p><strong>The migrate</strong> quotes the table names in its tool-version defaults and deferrable-constraint statements. The statements are otherwise the same.</p></li>
 </ul>

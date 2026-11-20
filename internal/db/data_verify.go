@@ -92,6 +92,107 @@ func markSampled(results []VerifyResult, check string) {
 // same signal gap fill acts on, so data-verify WARNs at the same line.
 const driftThresholdPct = 5.0
 
+// dataVerifyInvariants are the release invariants RunDataVerification
+// probes, each with its statement and what it says when rows break it. A
+// package-level list, so that the write-policy check runs every statement
+// through dataVerifyInvariantSQL.
+var dataVerifyInvariants = []struct {
+	check, severity, query, bad, ok string
+}{
+	{
+		check: "gone episodes match the stamps", severity: "FAIL",
+		// Exactly one open episode per gone-stamped repository, none on
+		// a reachable one (the gone marker opens it with the stamp, every
+		// clearer closes it with the clear, in one transaction).
+		query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				LEFT JOIN LATERAL (SELECT COUNT(*) AS open_n FROM aveloxis_data.repo_gone_history h
+				                    WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL) o ON TRUE
+				WHERE (r.repo_gone_at IS NOT NULL AND o.open_n <> 1) OR (r.repo_gone_at IS NULL AND o.open_n > 0)`,
+		bad: "%d repositories whose open gone episodes disagree with the stamp (a stamped one needs exactly one, a reachable one none) — e.g. repo_id %s",
+		ok:  "every gone-stamped repository has one open episode, no reachable one has any",
+	},
+	{
+		check: "gone and queued", severity: "WARN",
+		// A pending re-probe: a user's re-add of a gone repository, which
+		// prelim's next probe clears or sidelines. Many of them, or old
+		// ones, mean the probe is not reaching them, or that it ends on
+		// a page that is not the repository's (0.29.146: the forge's
+		// sign-in page answers 200, which neither clears nor sidelines;
+		// the log has `redirect target is not a repository URL`).
+		query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE r.repo_gone_at IS NOT NULL
+				  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)`,
+		bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each, unless it is redirected to a page that is not the repository's (the log then says `redirect target is not a repository URL` at each collection) — e.g. repo_id %s",
+		ok:  "no gone-stamped repository is queued",
+	},
+	{
+		check: "repositories without owner or name", severity: "WARN",
+		// A row that is not a repository's (0.29.146). Two paths wrote
+		// them before that release: the add path stored a URL that did
+		// not parse as one (an organization's page) as a git-only row
+		// with no owner and no name, never cloned; and a redirect to a
+		// URL that did not parse blanked the owner and name of a row
+		// that may hold collected data. Nothing repairs either: the
+		// operator looks at each (the upgrade guide has the query).
+		query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE COALESCE(r.repo_owner, '') = '' OR COALESCE(r.repo_name, '') = ''`,
+		bad: "%d repository rows have no owner or no name (written before 0.29.146: an add of a URL that is not a repository's, such as an organization page, or a redirect to one) — look at each row's repo_git and whether it holds collected data before removing anything; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
+		ok:  "every repository row has an owner and a name",
+	},
+	{
+		check: "repositories at a forge account page", severity: "WARN",
+		// A GitHub or GitLab row whose URL is under the forge's own
+		// account space (platform.ForgeAccountSegments): before
+		// 0.29.146 a redirect to the sign-in page was stored as the
+		// repository's new URL (gitlab.com sends a project that went
+		// private to /users/sign_in), and every later repository
+		// redirected there was taken for that row's duplicate. A real
+		// namespace can carry one of the names on GitLab, so this is a
+		// WARN to look at, not a verdict.
+		query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
+				FROM aveloxis_data.repos r
+				WHERE r.platform_id IN (1, 2) AND r.repo_git ~* ` + sqlLiteral(forgeAccountPageRegex()),
+		bad: "%d GitHub or GitLab repository rows have a URL under the forge's own account pages (a sign-in page stored as a redirect target before 0.29.146, unless the namespace is real) — look at each row's repo_git; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
+		ok:  "no GitHub or GitLab repository row is stored under the forge's account pages",
+	},
+	{
+		check: "earlier-era daily buckets", severity: "FAIL",
+		// An adopted forge-ID change keeps the earlier repository's
+		// commits in the daily table: no bucket before the era boundary
+		// may sit below its fold from the append-only commits table (a
+		// lowered bucket is the shape the 0.29.140 repair raises). Only
+		// repositories whose daily table is complete; each one read
+		// through a LATERAL scan of its own rows (a subquery with GROUP
+		// BY is never flattened into a whole-table join).
+		query: `WITH eras AS (
+				SELECT c.repo_id, MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date) AS boundary
+				FROM aveloxis_data.repo_forge_id_changes c
+				JOIN aveloxis_data.repos r ON r.repo_id = c.repo_id AND r.commit_daily_complete_at IS NOT NULL
+				WHERE c.adopted_at IS NOT NULL
+				GROUP BY c.repo_id)
+				SELECT COUNT(*), COALESCE((array_agg(DISTINCT f.repo_id ORDER BY f.repo_id DESC))[1:5]::text, '{}')
+				FROM eras e
+				CROSS JOIN LATERAL (
+					SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date AS day, co.cmt_author_email AS email,
+					       COUNT(DISTINCT co.cmt_commit_hash) AS n
+					FROM aveloxis_data.commits co
+					WHERE co.repo_id = e.repo_id AND co.cmt_author_timestamp IS NOT NULL
+					  AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < e.boundary
+					GROUP BY 1, 2, 3) f
+				LEFT JOIN aveloxis_data.repo_commit_daily d
+				       ON d.repo_id = f.repo_id AND d.day = f.day AND d.author_email = f.email
+				WHERE COALESCE(d.commits, 0) < f.n`,
+		bad: "%d earlier-era daily buckets sit below their fold from commits (the charts undercount the earlier repository) — e.g. repo_id %s",
+		ok:  "every earlier-era bucket of an adopted change holds its commits",
+	},
+}
+
+// dataVerifyInvariantSQL is the statement of the i-th of them.
+func dataVerifyInvariantSQL(i int) string { return dataVerifyInvariants[i].query }
+
 // RunDataVerification executes the probe battery. The returned slice
 // is ordered FAIL → WARN → OK by the caller (sortVerifyResults).
 func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOptions) []VerifyResult {
@@ -166,101 +267,9 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 	// Each probe names up to five example repo_ids, the newest first (the
 	// rows an incident just wrote), so an operator (and a test) can find
 	// them. These run on a fleet after the deploy too.
-	for _, inv := range []struct {
-		check, severity, query, bad, ok string
-	}{
-		{
-			check: "gone episodes match the stamps", severity: "FAIL",
-			// Exactly one open episode per gone-stamped repository, none on
-			// a reachable one (the gone marker opens it with the stamp, every
-			// clearer closes it with the clear, in one transaction).
-			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
-				FROM aveloxis_data.repos r
-				LEFT JOIN LATERAL (SELECT COUNT(*) AS open_n FROM aveloxis_data.repo_gone_history h
-				                    WHERE h.repo_id = r.repo_id AND h.restored_at IS NULL) o ON TRUE
-				WHERE (r.repo_gone_at IS NOT NULL AND o.open_n <> 1) OR (r.repo_gone_at IS NULL AND o.open_n > 0)`,
-			bad: "%d repositories whose open gone episodes disagree with the stamp (a stamped one needs exactly one, a reachable one none) — e.g. repo_id %s",
-			ok:  "every gone-stamped repository has one open episode, no reachable one has any",
-		},
-		{
-			check: "gone and queued", severity: "WARN",
-			// A pending re-probe: a user's re-add of a gone repository, which
-			// prelim's next probe clears or sidelines. Many of them, or old
-			// ones, mean the probe is not reaching them, or that it ends on
-			// a page that is not the repository's (0.29.146: the forge's
-			// sign-in page answers 200, which neither clears nor sidelines;
-			// the log has `redirect target is not a repository URL`).
-			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
-				FROM aveloxis_data.repos r
-				WHERE r.repo_gone_at IS NOT NULL
-				  AND EXISTS (SELECT 1 FROM aveloxis_ops.collection_queue q WHERE q.repo_id = r.repo_id)`,
-			bad: "%d gone-stamped repositories are queued — pending re-probes (a re-add); prelim's next probe settles each, unless it is redirected to a page that is not the repository's (the log then says `redirect target is not a repository URL` at each collection) — e.g. repo_id %s",
-			ok:  "no gone-stamped repository is queued",
-		},
-		{
-			check: "repositories without owner or name", severity: "WARN",
-			// A row that is not a repository's (0.29.146). Two paths wrote
-			// them before that release: the add path stored a URL that did
-			// not parse as one (an organization's page) as a git-only row
-			// with no owner and no name, never cloned; and a redirect to a
-			// URL that did not parse blanked the owner and name of a row
-			// that may hold collected data. Nothing repairs either: the
-			// operator looks at each (the upgrade guide has the query).
-			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
-				FROM aveloxis_data.repos r
-				WHERE COALESCE(r.repo_owner, '') = '' OR COALESCE(r.repo_name, '') = ''`,
-			bad: "%d repository rows have no owner or no name (written before 0.29.146: an add of a URL that is not a repository's, such as an organization page, or a redirect to one) — look at each row's repo_git and whether it holds collected data before removing anything; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
-			ok:  "every repository row has an owner and a name",
-		},
-		{
-			check: "repositories at a forge account page", severity: "WARN",
-			// A GitHub or GitLab row whose URL is under the forge's own
-			// account space (platform.ForgeAccountSegments): before
-			// 0.29.146 a redirect to the sign-in page was stored as the
-			// repository's new URL (gitlab.com sends a project that went
-			// private to /users/sign_in), and every later repository
-			// redirected there was taken for that row's duplicate. A real
-			// namespace can carry one of the names on GitLab, so this is a
-			// WARN to look at, not a verdict.
-			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
-				FROM aveloxis_data.repos r
-				WHERE r.platform_id IN (1, 2) AND r.repo_git ~* ` + sqlLiteral(forgeAccountPageRegex()),
-			bad: "%d GitHub or GitLab repository rows have a URL under the forge's own account pages (a sign-in page stored as a redirect target before 0.29.146, unless the namespace is real) — look at each row's repo_git; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
-			ok:  "no GitHub or GitLab repository row is stored under the forge's account pages",
-		},
-		{
-			check: "earlier-era daily buckets", severity: "FAIL",
-			// An adopted forge-ID change keeps the earlier repository's
-			// commits in the daily table: no bucket before the era boundary
-			// may sit below its fold from the append-only commits table (a
-			// lowered bucket is the shape the 0.29.140 repair raises). Only
-			// repositories whose daily table is complete; each one read
-			// through a LATERAL scan of its own rows (a subquery with GROUP
-			// BY is never flattened into a whole-table join).
-			query: `WITH eras AS (
-				SELECT c.repo_id, MAX((COALESCE(c.forge_created_at, c.first_observed_at) AT TIME ZONE 'UTC')::date) AS boundary
-				FROM aveloxis_data.repo_forge_id_changes c
-				JOIN aveloxis_data.repos r ON r.repo_id = c.repo_id AND r.commit_daily_complete_at IS NOT NULL
-				WHERE c.adopted_at IS NOT NULL
-				GROUP BY c.repo_id)
-				SELECT COUNT(*), COALESCE((array_agg(DISTINCT f.repo_id ORDER BY f.repo_id DESC))[1:5]::text, '{}')
-				FROM eras e
-				CROSS JOIN LATERAL (
-					SELECT co.repo_id, (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date AS day, co.cmt_author_email AS email,
-					       COUNT(DISTINCT co.cmt_commit_hash) AS n
-					FROM aveloxis_data.commits co
-					WHERE co.repo_id = e.repo_id AND co.cmt_author_timestamp IS NOT NULL
-					  AND (co.cmt_author_timestamp AT TIME ZONE 'UTC')::date < e.boundary
-					GROUP BY 1, 2, 3) f
-				LEFT JOIN aveloxis_data.repo_commit_daily d
-				       ON d.repo_id = f.repo_id AND d.day = f.day AND d.author_email = f.email
-				WHERE COALESCE(d.commits, 0) < f.n`,
-			bad: "%d earlier-era daily buckets sit below their fold from commits (the charts undercount the earlier repository) — e.g. repo_id %s",
-			ok:  "every earlier-era bucket of an adopted change holds its commits",
-		},
-	} {
+	for i, inv := range dataVerifyInvariants {
 		var examples string
-		if err := s.pool.QueryRow(ctx, inv.query).Scan(&n, &examples); err != nil {
+		if err := s.pool.QueryRow(ctx, dataVerifyInvariantSQL(i)).Scan(&n, &examples); err != nil {
 			probeErr(inv.check, err)
 		} else if n > 0 {
 			add(inv.check, inv.severity, inv.bad, n, examples)

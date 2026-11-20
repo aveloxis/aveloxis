@@ -14,10 +14,13 @@
 // assignment conforms.
 //
 // A registered column assigned in a multiple-column SET, (a, col) = (...),
-// is a violation: no matcher reads that form (closed-world, as below).
-// Known boundary (round 6 of 0.29.123): a single-column SET of a quoted,
-// subscripted or field target (`SET "col" =`, `col[1] =`, `col.f =`) is not
-// read at all; Aveloxis' SQL does not spell a registered column so.
+// is a violation: no matcher reads that form (closed-world, as below). A
+// quoted, subscripted or field target (`SET "col" =`, `col[1] =`, `col.f
+// =`) is the column it names, by PostgreSQL's parser (pgread.go).
+//
+// The matchers read the value's PARSE TREE (0.29.212), not its text: what
+// is a call of COALESCE, which name is a column's and which a string's, is
+// the parser's reading.
 //
 // Matchers are ORDER-SENSITIVE and closed-world per registered column:
 // an RHS matching no recognized shape for the policy FAILS
@@ -29,7 +32,6 @@ package sqlscan
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/srctest"
@@ -143,9 +145,10 @@ type Report struct {
 	// registry rot (a renamed column) or a genuinely dark column (the
 	// column-writer tripwire's territory).
 	Unwritten []Registered
-	// Unparsed are the statements the token reader did not read to their
-	// end (parse.go says what that means). Each is a failure until a
-	// person has read it: nothing was checked on it.
+	// Unparsed are the statements the reader did not read to their end
+	// (pgread.go says what that means: PostgreSQL's parser refused the
+	// text, or a statement or a body is of a kind that is not read). Each
+	// is a failure until a person has read it: nothing was checked on it.
 	Unparsed []Unparsed
 }
 
@@ -154,8 +157,8 @@ type Report struct {
 func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 	var rep Report
 	used := make([]bool, len(exceptions))
-	// Every statement is read once, by the token reader. One that is not
-	// read to its end is reported whatever it is.
+	// Every statement is read once, through PostgreSQL's parser. One that
+	// is not read to its end is reported whatever it is.
 	type read struct {
 		stmt   Stmt
 		writes []Write
@@ -180,11 +183,6 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 	for _, reg := range registry {
 		bare := reg.Table[strings.LastIndex(reg.Table, ".")+1:]
 		seenWriter := false
-		for _, w := range FindWrites(stmts, reg.Table) {
-			if w.WritesColumn(reg.Table, reg.Column) {
-				seenWriter = true
-			}
-		}
 		for _, rd := range reads {
 			for i := range rd.writes {
 				w := rd.writes[i]
@@ -205,7 +203,7 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 					// depends on the session's search_path, so a write of a
 					// column of this NAME through one is judged a write of
 					// the registered column that nothing can check.
-					touches := w.Kind == "copy" && (w.CopyAll || w.Table == bare)
+					touches := (w.Kind == "copy" && (w.CopyAll || w.Table == bare)) || (w.Kind == "drop" && w.Table == bare)
 					for _, it := range w.Sets {
 						touches = touches || it.Column == reg.Column
 					}
@@ -215,7 +213,11 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 					for _, c := range w.CopyColumns {
 						touches = touches || (w.Kind == "copy" && c == reg.Column)
 					}
-					if touches {
+					switch {
+					case touches && w.Kind == "trigger-assign":
+						violate("NEW."+reg.Column+" := "+w.Sets[0].Expr, "a trigger's body assigns the column of the row being written; which table the trigger is on is said elsewhere, so it may be "+
+							reg.Table+" and nothing can tell")
+					case touches:
 						violate(w.Kind+" "+w.Table, "the target names no schema, so it may be "+reg.Table+
 							" and nothing can tell: write the schema")
 					}
@@ -229,6 +231,12 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 						}
 					}
 					continue
+				}
+				if w.writesColumn(reg.Column) {
+					seenWriter = true
+				}
+				if w.Kind == "drop" {
+					violate("DROP TABLE "+reg.Table, "the statement destroys every stored value of the column: no policy allows that; take a reviewed Exception")
 				}
 				for _, a := range w.Alters {
 					if a.Column == reg.Column {
@@ -256,12 +264,14 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 						// SET (a, col) = (...): the right side is one row,
 						// not a value per column.
 						ok, detail = false, "multiple-column SET: the policy cannot be checked on this form; assign the column on its own, or take a reviewed Exception"
-					case strings.Contains(it.Expr, Unknown):
+					case it.val == nil:
+						ok, detail = false, "the value is not an expression that was read, so the policy cannot be checked on it"
+					case holdsUnknown(it.val):
 						ok, detail = false, "the value has a part that is not fixed text ("+Unknown+"), so the policy cannot be checked on it"
 					case reg.Policy == InsertOnly:
 						ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET"
 					default:
-						ok, detail = exprConforms(st, it.Expr, reg.Column, reg.Policy)
+						ok, detail = valueConforms(it.val, reg.Column, reg.Policy, func() bool { return w.GuardsEmpty(reg.Column) })
 					}
 					if !ok {
 						violate(it.Expr, detail)
@@ -281,6 +291,48 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 	return rep
 }
 
+// writesColumn: the write, of the table it names, gives col a value: an
+// INSERT (or a MERGE's INSERT arm) that lists it or lists no column, or an
+// assignment of it.
+func (w Write) writesColumn(col string) bool {
+	if w.InsertAll && (w.Kind == "insert" || w.Kind == "merge") {
+		return true
+	}
+	for _, c := range w.InsertColumns {
+		if c == col {
+			return true
+		}
+	}
+	for _, it := range w.Sets {
+		if it.Column == col {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsUnknown: some name or string of the value holds a mark of the
+// Unknown placeholder, which stands for text that was not read.
+func holdsUnknown(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.ContainsAny(t, Unknown)
+	case []any:
+		for _, e := range t {
+			if holdsUnknown(e) {
+				return true
+			}
+		}
+	case jnode:
+		for _, e := range t {
+			if holdsUnknown(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func findException(exceptions []Exception, reg Registered, w Stmt) int {
 	for i, ex := range exceptions {
 		if ex.Table != reg.Table || ex.Column != reg.Column {
@@ -297,18 +349,29 @@ func findException(exceptions []Exception, reg Registered, w Stmt) int {
 	return -1
 }
 
-// exprConforms reports whether one SET RHS conforms to the policy for
+// exprConforms reports whether one SET RHS, given as text, conforms to the
+// policy for col; stmt is the statement it stands in (for the guard of a
+// bare fill). Text PostgreSQL's parser does not read as one expression
+// does not conform.
+func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
+	val, err := exprTree(expr)
+	if err != nil {
+		return false, "the value is not read as one expression: " + err.Error()
+	}
+	return valueConforms(val, col, want, func() bool { return stmt.WhereGuardsEmpty(col) })
+}
+
+// valueConforms reports whether a value's tree conforms to the policy for
 // col. On failure the detail classifies what the expression ACTUALLY
 // matches so the mismatch reads at a glance (the round-11 postmortem
 // hinged on recognizing "this is prefer-nonempty-INCOMING").
-func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
-	expr = srctest.NormalizeWS(expr)
-	if matchPolicy(stmt, expr, col, want) {
+func valueConforms(val any, col string, want Policy, guarded func() bool) (bool, string) {
+	if matchPolicy(val, col, want, guarded) {
 		return true, ""
 	}
 	var also []string
 	for _, p := range []Policy{FillEmptyOnly, PreferNonemptyIncoming, PreferNonNullIncoming, GreatestNonNull, AlwaysRefresh} {
-		if p != want && matchPolicy(stmt, expr, col, p) {
+		if p != want && matchPolicy(val, col, p, guarded) {
 			also = append(also, p.String())
 		}
 	}
@@ -318,41 +381,45 @@ func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
 	return false, fmt.Sprintf("unrecognized write shape for %s — conform, extend the tested shape set, or take a reviewed Exception", want)
 }
 
-func matchPolicy(stmt Stmt, expr, col string, p Policy) bool {
-	name, args, isCall := parseCall(expr)
+// twoArgs: v is a node of the given kind with exactly two arguments.
+func twoArgs(v any, kind string) (jnode, [2]any, bool) {
+	k, b := wrapped(v)
+	args := jlist(b["args"])
+	if k != kind || len(args) != 2 {
+		return nil, [2]any{}, false
+	}
+	return b, [2]any{args[0], args[1]}, true
+}
+
+func matchPolicy(val any, col string, p Policy, guarded func() bool) bool {
 	switch p {
 	case FillEmptyOnly:
-		if isCall && name == "COALESCE" && len(args) == 2 {
+		if _, args, ok := twoArgs(val, "CoalesceExpr"); ok {
 			// Text form: COALESCE(NULLIF(stored, ''), incoming)
-			if inner, _, ok := nullifEmpty(args[0]); ok && inner == "stored" && !containsStoredRef(args[1], col) {
+			if inner, ok := nullifEmpty(args[0]); ok && inner == "stored" && !containsStoredRef(args[1], col) {
 				return true
 			}
 			// Nullable form: COALESCE(stored, incoming)
-			if operandKind(args[0], col) == "stored" && !containsStoredRef(args[1], col) {
-				return true
-			}
-			return false
+			return operandKind(args[0], col) == "stored" && !containsStoredRef(args[1], col)
 		}
 		// Guarded bare form: SET col = $N ... WHERE COALESCE(col,'')=''.
-		return operandKind(expr, col) == "incoming" && stmt.WhereGuardsEmpty(col)
+		return operandKind(val, col) == "incoming" && guarded()
 	case PreferNonemptyIncoming:
-		if isCall && name == "COALESCE" && len(args) == 2 {
-			if inner, _, ok := nullifEmpty(args[0]); ok && inner == "incoming" && operandKind(args[1], col) == "stored" {
-				return true
-			}
+		if _, args, ok := twoArgs(val, "CoalesceExpr"); ok {
+			inner, ok := nullifEmpty(args[0])
+			return ok && inner == "incoming" && operandKind(args[1], col) == "stored"
 		}
 		return false
 	case PreferNonNullIncoming:
-		return isCall && name == "COALESCE" && len(args) == 2 &&
-			operandKind(args[0], col) == "incoming" && operandKind(args[1], col) == "stored"
+		_, args, ok := twoArgs(val, "CoalesceExpr")
+		return ok && operandKind(args[0], col) == "incoming" && operandKind(args[1], col) == "stored"
 	case GreatestNonNull:
-		if !isCall || name != "GREATEST" || len(args) != 2 {
+		b, args, ok := twoArgs(val, "MinMaxExpr")
+		if !ok || jstr(b["op"]) != "IS_GREATEST" {
 			return false
 		}
-		na, aargs, aok := coalescePair(args[0], col)
-		nb, bargs, bok := coalescePair(args[1], col)
-		_ = na
-		_ = nb
+		aargs, aok := coalescePair(args[0], col)
+		bargs, bok := coalescePair(args[1], col)
 		if !aok || !bok {
 			return false
 		}
@@ -361,23 +428,28 @@ func matchPolicy(stmt Stmt, expr, col string, p Policy) bool {
 		return (aargs == [2]string{"incoming", "stored"} && bargs == [2]string{"stored", "incoming"}) ||
 			(aargs == [2]string{"stored", "incoming"} && bargs == [2]string{"incoming", "stored"})
 	case AlwaysRefresh:
-		return !containsStoredRef(expr, col)
+		return !containsStoredRef(val, col)
 	case EarliestOfStoredAndIncoming:
-		if !isCall || name != "LEAST" || len(args) != 2 {
+		mm, args, ok := twoArgs(val, "MinMaxExpr")
+		if !ok || jstr(mm["op"]) != "IS_LEAST" {
 			return false
 		}
 		a, b := operandKind(args[0], col), operandKind(args[1], col)
 		return (a == "stored" && b == "incoming") || (a == "incoming" && b == "stored")
 	case KeepCarryOrNow:
-		results, ok := caseResults(expr)
+		results, ok := caseResults(val)
 		if !ok {
 			return false
 		}
 		for _, r := range results {
-			if strings.EqualFold(r, "NOW()") {
+			if isNow(r) {
 				continue
 			}
-			if k := operandKind(castRe.ReplaceAllString(r, ""), col); k != "stored" && k != "incoming" {
+			// One cast is allowed on a result ($23::timestamptz).
+			if k, tc := wrapped(r); k == "TypeCast" {
+				r = tc["arg"]
+			}
+			if k := operandKind(r, col); k != "stored" && k != "incoming" {
 				return false
 			}
 		}
@@ -386,182 +458,98 @@ func matchPolicy(stmt Stmt, expr, col string, p Policy) bool {
 	return false
 }
 
-// castRe strips one trailing ::type from a CASE result.
-var castRe = regexp.MustCompile(`::[A-Za-z_]+$`)
-
-// caseKeywordRe finds the words that structure a searched CASE.
-var caseKeywordRe = regexp.MustCompile(`(?i)\b(CASE|WHEN|THEN|ELSE|END)\b`)
+// isNow: v is the call NOW(), with no argument.
+func isNow(v any) bool {
+	k, f := wrapped(v)
+	if k != "FuncCall" || len(jlist(f["funcname"])) != 1 || len(jlist(f["args"])) != 0 {
+		return false
+	}
+	for _, extra := range []string{"agg_order", "agg_filter", "over", "agg_star", "agg_distinct", "func_variadic", "agg_within_group"} {
+		if f[extra] != nil {
+			return false
+		}
+	}
+	name, _ := sval(jlist(f["funcname"])[0])
+	return name == "now"
+}
 
 // caseResults returns the result expressions of `CASE WHEN c THEN r ... ELSE
-// r END` spanning the WHOLE expression: what follows each THEN and the ELSE.
-// It refuses (false) a nested CASE, a CASE with no ELSE (an unmatched row
-// would be NULLed), a keyword inside parentheses being taken for structure
-// (keywords are read at depth 0 only), and anything before or after.
-func caseResults(expr string) ([]string, bool) {
-	expr = strings.TrimSpace(expr)
-	type kw struct {
-		word       string
-		start, end int
-	}
-	var kws []kw
-	depth := 0
-	next := caseKeywordRe.FindAllStringIndex(expr, -1)
-	ni := 0
-	for i := 0; i < len(expr); i++ {
-		for ni < len(next) && next[ni][0] < i {
-			ni++
-		}
-		switch expr[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if ni < len(next) && next[ni][0] == i && depth == 0 {
-			kws = append(kws, kw{strings.ToUpper(expr[i:next[ni][1]]), i, next[ni][1]})
-		}
-	}
-	if len(kws) < 5 || kws[0].word != "CASE" || kws[0].start != 0 ||
-		kws[len(kws)-1].word != "END" || kws[len(kws)-1].end != len(expr) ||
-		kws[len(kws)-2].word != "ELSE" {
+// r END` that is the WHOLE value: what follows each THEN and the ELSE. It
+// refuses (false) a CASE with an operand (CASE x WHEN ...), and a CASE with
+// no ELSE (an unmatched row would be NULLed). A nested CASE as a result is
+// a result like any other, and matches nothing its caller allows.
+func caseResults(v any) ([]any, bool) {
+	k, c := wrapped(v)
+	if k != "CaseExpr" || c["arg"] != nil || c["defresult"] == nil || len(jlist(c["args"])) == 0 {
 		return nil, false
 	}
-	var out []string
-	for i := 1; i < len(kws)-1; i++ {
-		switch kws[i].word {
-		case "CASE", "END":
+	var out []any
+	for _, e := range jlist(c["args"]) {
+		wk, w := wrapped(e)
+		if wk != "CaseWhen" || w["result"] == nil {
 			return nil, false
-		case "WHEN":
-			if kws[i+1].word != "THEN" {
-				return nil, false
-			}
-		case "THEN":
-			if kws[i-1].word != "WHEN" || (kws[i+1].word != "WHEN" && kws[i+1].word != "ELSE") {
-				return nil, false
-			}
-			out = append(out, strings.TrimSpace(expr[kws[i].end:kws[i+1].start]))
-		case "ELSE":
-			if i != len(kws)-2 {
-				return nil, false
-			}
-			out = append(out, strings.TrimSpace(expr[kws[i].end:kws[i+1].start]))
 		}
+		out = append(out, w["result"])
 	}
-	return out, true
-}
-
-// parseCall decomposes `NAME( ... )` spanning the WHOLE expression into
-// its upper-cased name and depth-0-split arguments.
-func parseCall(expr string) (string, []string, bool) {
-	open := strings.IndexByte(expr, '(')
-	if open <= 0 || !strings.HasSuffix(expr, ")") {
-		return "", nil, false
-	}
-	name := strings.TrimSpace(expr[:open])
-	if !identRe.MatchString(name) {
-		return "", nil, false
-	}
-	inner := expr[open+1 : len(expr)-1]
-	// The parens must balance across the inner span (reject `f(a) + g(b`).
-	depth := 0
-	for i := 0; i < len(inner); i++ {
-		switch inner[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth < 0 {
-				return "", nil, false
-			}
-		}
-	}
-	if depth != 0 {
-		return "", nil, false
-	}
-	return strings.ToUpper(name), splitArgs(inner), true
-}
-
-var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-func splitArgs(inner string) []string {
-	var out []string
-	depth := 0
-	inQuote := false
-	start := 0
-	for i := 0; i < len(inner); i++ {
-		c := inner[i]
-		switch {
-		case inQuote:
-			if c == '\'' {
-				inQuote = false
-			}
-		case c == '\'':
-			inQuote = true
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		case c == ',' && depth == 0:
-			out = append(out, strings.TrimSpace(inner[start:i]))
-			start = i + 1
-		}
-	}
-	return append(out, strings.TrimSpace(inner[start:]))
+	return append(out, c["defresult"]), true
 }
 
 // operandKind classifies a single operand for col:
 //   - "incoming": EXCLUDED.<col> or a $N placeholder
 //   - "stored": bare <col>, or <qualifier>.<col> with a non-EXCLUDED
-//     qualifier (in UPDATE SET RHS both reference the OLD row value)
+//     qualifier (in UPDATE SET RHS both reference the OLD row value); the
+//     qualifier an alias or a table, or the table with its schema
+//     (0.29.203: the Jira comment upsert names the stored value in full)
 //   - "other": anything else
-func operandKind(op, col string) string {
-	op = strings.TrimSpace(op)
-	if op == "EXCLUDED."+col {
+//
+// Names are compared as PostgreSQL reads them: an unquoted name folded, a
+// quoted one exactly (so "EXCLUDED" in quotes is a table of that name).
+func operandKind(v any, col string) string {
+	if k, _ := wrapped(v); k == "ParamRef" {
 		return "incoming"
 	}
-	if placeholderRe.MatchString(op) {
-		return "incoming"
+	parts, ok := columnRef(v)
+	if !ok || len(parts) > 3 || parts[len(parts)-1] != col {
+		return "other"
 	}
-	if op == col {
+	if len(parts) == 1 {
 		return "stored"
 	}
-	if q, ok := strings.CutSuffix(op, "."+col); ok && qualifierRe.MatchString(q) && !strings.EqualFold(q, "EXCLUDED") {
-		return "stored"
+	if parts[len(parts)-2] == "excluded" {
+		if len(parts) == 2 {
+			return "incoming"
+		}
+		return "other"
 	}
-	return "other"
+	return "stored"
 }
 
-// qualifierRe is what may stand before a stored column's name: an alias or
-// a table, or the table with its schema (0.29.203: the Jira comment upsert
-// names the stored value in full and no statement read before it did).
-var qualifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
-
-var placeholderRe = regexp.MustCompile(`^\$\d+$`)
-
-// nullifEmpty matches `NULLIF(<operand>, "")` and returns the
-// operand's kind plus its text.
-func nullifEmpty(expr string) (kind, operand string, ok bool) {
-	name, args, isCall := parseCall(strings.TrimSpace(expr))
-	if !isCall || name != "NULLIF" || len(args) != 2 || args[1] != "''" {
-		return "", "", false
+// nullifEmpty matches NULLIF of an operand and the empty string, and
+// returns the operand's kind.
+func nullifEmpty(v any) (kind string, ok bool) {
+	k, e := wrapped(v)
+	if k != "A_Expr" || jstr(e["kind"]) != "AEXPR_NULLIF" {
+		return "", false
 	}
-	return operandKindName(args[0]), args[0], true
+	if s, isString := constString(e["rexpr"]); !isString || s != "" {
+		return "", false
+	}
+	return operandKindName(e["lexpr"]), true
 }
 
 // operandKindName is operandKind without the column bound — the NULLIF
 // helpers carry their own column reference, so classify by shape alone.
-func operandKindName(op string) string {
-	op = strings.TrimSpace(op)
-	if placeholderRe.MatchString(op) {
+func operandKindName(v any) string {
+	if k, _ := wrapped(v); k == "ParamRef" {
 		return "incoming"
 	}
-	if strings.HasPrefix(op, "EXCLUDED.") {
+	parts, ok := columnRef(v)
+	switch {
+	case !ok:
+		return "other"
+	case len(parts) >= 2 && parts[0] == "excluded":
 		return "incoming"
-	}
-	if identRe.MatchString(op) {
-		return "stored"
-	}
-	if q, rest, ok := strings.Cut(op, "."); ok && identRe.MatchString(q) && identRe.MatchString(rest) {
+	case len(parts) <= 2:
 		return "stored"
 	}
 	return "other"
@@ -569,21 +557,34 @@ func operandKindName(op string) string {
 
 // coalescePair matches `COALESCE(a, b)` and returns the two operands'
 // kinds for col.
-func coalescePair(expr, col string) (string, [2]string, bool) {
-	name, args, isCall := parseCall(strings.TrimSpace(expr))
-	if !isCall || name != "COALESCE" || len(args) != 2 {
-		return "", [2]string{}, false
+func coalescePair(v any, col string) ([2]string, bool) {
+	_, args, ok := twoArgs(v, "CoalesceExpr")
+	if !ok {
+		return [2]string{}, false
 	}
-	return name, [2]string{operandKind(args[0], col), operandKind(args[1], col)}, true
+	return [2]string{operandKind(args[0], col), operandKind(args[1], col)}, true
 }
 
-// containsStoredRef reports whether expr references the STORED value
-// of col anywhere — a bare or qualified (non-EXCLUDED) occurrence.
-func containsStoredRef(expr, col string) bool {
-	re := regexp.MustCompile(`(?:\b([A-Za-z_][A-Za-z0-9_]*)\.)?\b` + regexp.QuoteMeta(col) + `\b`)
-	for _, m := range re.FindAllStringSubmatch(expr, -1) {
-		if !strings.EqualFold(m[1], "EXCLUDED") {
+// containsStoredRef reports whether the value references the STORED value
+// of col anywhere, a subquery included: a column reference whose last part
+// is col, bare or qualified by anything but EXCLUDED.
+func containsStoredRef(v any, col string) bool {
+	switch t := v.(type) {
+	case []any:
+		for _, e := range t {
+			if containsStoredRef(e, col) {
+				return true
+			}
+		}
+	case jnode:
+		if parts, ok := columnRef(t); ok && parts[len(parts)-1] == col &&
+			!(len(parts) >= 2 && parts[len(parts)-2] == "excluded") {
 			return true
+		}
+		for _, e := range t {
+			if containsStoredRef(e, col) {
+				return true
+			}
 		}
 	}
 	return false

@@ -13,11 +13,13 @@
 #
 # Live network canaries (AVELOXIS_TEST_NETWORK=1, or a forge token):
 internal/collector TestFacadeRealRepoEndToEnd
+internal/collector TestLiveCrandbForCommonmark
 internal/collector TestLiveCratesIOForSerde
 internal/collector TestLiveGoProxyForCobra
 internal/collector TestLiveGoProxyForUppercaseModulePath
 internal/collector TestLiveMavenForCommonsLang
 internal/collector TestLiveNPMRegistryForLodash
+internal/collector TestLiveOSVMatchesAVersionSentWithAName
 internal/collector TestLiveOSVContract
 internal/collector TestLiveOSVGitHubActionsContract
 internal/collector TestLivePyPIForFlask

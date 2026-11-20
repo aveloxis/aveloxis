@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -362,7 +363,7 @@ func parsePubspecLock(data []byte) (parsedLockfileData, error) {
 // case-sensitively, so the purl carries the manifest's spelling and a
 // manifest that spells the URL non-canonically ("Apple/Swift-NIO", which
 // GitHub serves) mints a purl OSV does not match — and the identity is
-// the fallback for a pin with no host; the case-insensitive lockfileMatchKey still matches the
+// the fallback for a pin with no host; the case-insensitive pkgid.MatchKey still matches the
 // Package.swift manifest parser's repo-name extraction either way.
 // Direct deps are not distinguished.
 func parsePackageResolved(data []byte) (parsedLockfileData, error) {
@@ -397,7 +398,7 @@ func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 		// v0.29.59 (worklist 46): the pin's repository URL carries the purl
 		// namespace (host/owner) and the case-preserved repository name —
 		// the identity is that name lowercased, so the graph key
-		// (LockfileGraphKey lowercases) still matches the Package.swift
+		// (pkgid.Key lowercases) still matches the Package.swift
 		// direct dependency, and the purl now matches the direct writer's
 		// pkg:swift/github.com/Owner/Repo shape. A pin with no host (a
 		// local path) keeps its identity and stays namespace-less.
@@ -532,11 +533,11 @@ func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
 	return parsedLockfileData{Entries: entries}, nil
 }
 
-// swiftRepoNamespace is parseSwiftPackageURL's (namespace, repo) view for
+// swiftRepoNamespace is manifest.ParseSwiftPackageURL's (namespace, repo) view for
 // the Package.resolved reader: "", "" for anything that is not a package
 // repository URL, so the caller keeps the pin's identity with no namespace.
 func swiftRepoNamespace(rawURL string) (namespace, repo string) {
-	ref, ok := parseSwiftPackageURL(rawURL)
+	ref, ok := manifest.ParseSwiftPackageURL(rawURL)
 	if !ok {
 		return "", ""
 	}

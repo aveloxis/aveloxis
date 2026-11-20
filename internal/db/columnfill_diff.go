@@ -129,6 +129,12 @@ func populatedPredicate(quotedCol, dataType string) string {
 	}
 }
 
+// quotedIdentifier is a name, or a dotted path of names, quoted the way
+// SQL quotes identifiers: in double quotes, a double quote inside doubled.
+// THE way a catalog name is put into a statement's text in this package's
+// comparison tools.
+func quotedIdentifier(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
+
 type columnRef struct {
 	schema, table, column, dataType string
 }
@@ -340,12 +346,12 @@ func populatedCounts(ctx context.Context, pool colFillQuerier, cols []columnRef)
 		schema, table := tableCols[0].schema, tableCols[0].table
 		exprs := make([]string, len(tableCols))
 		for i, c := range tableCols {
-			quoted := fmt.Sprintf("%q", c.column)
-			exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quoted, c.dataType))
+			exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quotedIdentifier(c.column), c.dataType))
 		}
-		// Identifiers come from information_schema, quoted with %q —
-		// same safety posture as tableRowCounts.
-		q := fmt.Sprintf(`SELECT %s FROM %q.%q`, strings.Join(exprs, ", "), schema, table)
+		// Identifiers come from information_schema, quoted as SQL quotes
+		// an identifier (0.29.211: Go's %q was used, which writes a double
+		// quote inside a name as \", and that is not SQL's quoting).
+		q := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(exprs, ", "), quotedIdentifier(schema, table))
 		row := pool.QueryRow(ctx, q)
 		dests := make([]any, len(tableCols))
 		vals := make([]int64, len(tableCols))

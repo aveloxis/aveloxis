@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -1060,29 +1061,29 @@ func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Enforces SR-17 (scripts/standing_rules.go).
-// #1: graph keys now fold through the ONE shared db.LockfileGraphKey —
+// #1: graph keys now fold through the ONE shared pkgid.Key —
 // case, PyPI underscore/dot equivalence, and the rubygems↔gem-class
 // ecosystem vocabulary split. Raw keys silently dropped chains for
 // exactly the packages whose spellings differ between subsystems, and
 // the SBOM side's private fold was a duplicate waiting to drift.
 func TestLockfileGraphKeyIsTheOneFold(t *testing.T) {
-	if got := LockfileGraphKey("rubygems", "Rails"); got != "gem|rails" {
+	if got := pkgid.Key("rubygems", "Rails"); got != "gem|rails" {
 		t.Errorf("alias+case folding broken: %q", got)
 	}
-	if got := LockfileGraphKey("pypi", "Foo_Bar.baz"); got != "pypi|foo-bar-baz" {
+	if got := pkgid.Key("pypi", "Foo_Bar.baz"); got != "pypi|foo-bar-baz" {
 		t.Errorf("PyPI PEP 503 folding broken: %q", got)
 	}
 	chains := srctest.Read(t, "internal/api/vuln_chains.go")
-	if !strings.Contains(chains, "db.LockfileGraphKey(") {
-		t.Error("the chain walk must key through db.LockfileGraphKey")
+	if !strings.Contains(chains, "pkgid.Key(") {
+		t.Error("the chain walk must key through pkgid.Key")
 	}
 	sbom := srctest.Read(t, "internal/collector/sbom.go")
-	if !strings.Contains(sbom, "return db.LockfileGraphKey(eco, name)") {
-		t.Error("sbomGraphKey must delegate to db.LockfileGraphKey — a private fold copy WILL drift")
+	if !strings.Contains(sbom, "return pkgid.Key(eco, name)") {
+		t.Error("sbomGraphKey must delegate to pkgid.Key — a private fold copy WILL drift")
 	}
 	sets := srctest.Read(t, "internal/db/lockfile_store.go")
-	if !strings.Contains(sets, "key := LockfileGraphKey(eco, name)") {
-		t.Error("GetRepoDirectPackageSets must key through LockfileGraphKey")
+	if !strings.Contains(sets, "key := pkgid.Key(eco, name)") {
+		t.Error("GetRepoDirectPackageSets must key through pkgid.Key")
 	}
 }
 
@@ -1189,7 +1190,7 @@ func TestSPDXIDsAreEcosystemScoped(t *testing.T) {
 	if !strings.Contains(s, "func spdxPackageID(eco, name, version string) string") {
 		t.Error("spdxPackageID must take the ecosystem")
 	}
-	if !strings.Contains(s, `sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))`) {
+	if !strings.Contains(s, `sha256.Sum256([]byte(pkgid.Key(eco, name) + "@" + version))`) {
 		t.Error("the ID hash must scope by the alias-folded graph key — bare name@version collides across ecosystems")
 	}
 }

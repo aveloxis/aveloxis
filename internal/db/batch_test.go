@@ -6,11 +6,13 @@ package db
 import (
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
-// TestLibyearRowFields verifies LibyearRow struct has all fields used by batch insert.
+// TestLibyearRowFields verifies model.LibyearRow struct has all fields used by batch insert.
 func TestLibyearRowFields(t *testing.T) {
-	row := LibyearRow{
+	row := model.LibyearRow{
 		Name:               "express",
 		Requirement:        "^4.18.0",
 		Type:               "runtime",
@@ -24,10 +26,10 @@ func TestLibyearRowFields(t *testing.T) {
 		Purl:               "pkg:npm/express@4.18.0",
 	}
 	if row.Name != "express" {
-		t.Errorf("LibyearRow.Name = %q, want %q", row.Name, "express")
+		t.Errorf("model.LibyearRow.Name = %q, want %q", row.Name, "express")
 	}
 	if row.Libyear != 1.0 {
-		t.Errorf("LibyearRow.Libyear = %f, want 1.0", row.Libyear)
+		t.Errorf("model.LibyearRow.Libyear = %f, want 1.0", row.Libyear)
 	}
 }
 

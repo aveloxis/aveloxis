@@ -26,8 +26,10 @@
 // transitively.
 //
 // Known blind spots (documented, not hidden):
-//   - SQL assembled by string concatenation is invisible
-//     (srctest.BacktickLiterals only sees single backtick literals);
+//   - Statements sees single backtick literals only. SQL assembled in Go
+//     is read by Assemble (assemble.go, 0.29.203), and what Assemble cannot
+//     read is reported, not passed: a consumer that judges writes calls
+//     both, and CheckUnreadable for the remainder;
 //   - dollar quotes: splitStatements tracks only anonymous $$ blocks (the
 //     corpus's only kind, migrate.go's DO blocks), not $tag$...$tag$;
 //     extractExpr tracks no dollar quote ('…' only); the multiple-column SET
@@ -88,7 +90,7 @@ func Statements(files map[string]string) []Stmt {
 				if piece == "" {
 					continue
 				}
-				out = append(out, Stmt{File: name, SQL: piece})
+				out = append(out, Stmt{File: name, SQL: plainWriteHead(piece)})
 			}
 		}
 	}
@@ -194,7 +196,9 @@ func (s Stmt) WritesColumn(table, col string) bool {
 }
 
 func setLHSRe(col string) *regexp.Regexp {
-	return regexp.MustCompile(`(?is)(?:\bSET\s+|,\s*)` + regexp.QuoteMeta(col) + `\s*=`)
+	// The name bare (any case) or quoted (exactly): `"col"` is col.
+	q := regexp.QuoteMeta(col)
+	return regexp.MustCompile(`(?s)(?:(?i:\bSET)\s+|,\s*)(?:(?i:` + q + `)|"` + q + `")\s*=`)
 }
 
 // setListMember reports the first member of a multiple-column assignment
@@ -466,6 +470,95 @@ func (s Stmt) SetExprs(col string) []string {
 		out = append(out, strings.TrimSpace(extractExpr(s.SQL[loc[1]:])))
 	}
 	return out
+}
+
+// SetExprsOf is SetExprs for the assignments that belong to a write of
+// table. One statement can write two tables (a data-modifying CTE and the
+// statement proper), and an assignment is judged for the table of the write
+// it stands in. The owner is read, not matched: walking the statement,
+// quoted text skipped, the write named last at the assignment's own
+// parenthesis depth or outside it (UPDATE [ONLY] t, INSERT INTO t, MERGE
+// INTO t; DO UPDATE SET names none and keeps the INSERT's). It fails
+// closed: an assignment is left out ONLY when its owner is read as a
+// schema-qualified name that is another table's; an owner that is an
+// alias, unqualified or not found counts for every table the statement
+// writes, as all assignments did before 0.29.203.
+func (s Stmt) SetExprsOf(table, col string) []string {
+	var out []string
+	for _, loc := range setLHSRe(col).FindAllStringIndex(s.SQL, -1) {
+		if owner := writeOwner(s.SQL, loc[0]); strings.Contains(owner, ".") && !strings.EqualFold(owner, table) {
+			continue
+		}
+		out = append(out, strings.TrimSpace(extractExpr(s.SQL[loc[1]:])))
+	}
+	return out
+}
+
+// writeOwner is the table of the write that the text at sql[pos] stands
+// in, "" when none is named.
+func writeOwner(sql string, pos int) string {
+	owner := []string{""} // per parenthesis depth
+	word := func(i int) (string, int) {
+		for i < len(sql) && isSpace(sql[i]) {
+			i++
+		}
+		j := i
+		for j < len(sql) && (isIdentByte(sql[j]) || sql[j] == '.' || sql[j] == '"') {
+			j++
+		}
+		return sql[i:j], j
+	}
+	for i := 0; i < pos && i < len(sql); {
+		c := sql[i]
+		switch {
+		case c == '\'':
+			i++
+			for i < len(sql) && !(sql[i] == '\'' && (i+1 >= len(sql) || sql[i+1] != '\'')) {
+				if sql[i] == '\'' {
+					i++ // the first of a doubled quote
+				}
+				i++
+			}
+			i++
+		case c == '(':
+			owner = append(owner, "")
+			i++
+		case c == ')':
+			if len(owner) > 1 {
+				owner = owner[:len(owner)-1]
+			}
+			i++
+		case isIdentByte(c) && (i == 0 || !isIdentByte(sql[i-1])):
+			w, j := word(i)
+			name, end := "", j
+			switch asciiLower(w) {
+			case "update":
+				name, end = word(j)
+				if asciiLower(name) == "only" {
+					name, end = word(end)
+				}
+				if asciiLower(name) == "set" { // DO UPDATE SET: the INSERT's
+					name, end = "", j
+				}
+			case "insert", "merge":
+				if into, k := word(j); asciiLower(into) == "into" {
+					name, end = word(k)
+				}
+			}
+			if name != "" {
+				owner[len(owner)-1] = strings.ReplaceAll(name, `"`, "")
+			}
+			i = end
+		default:
+			i++
+		}
+	}
+	for d := len(owner) - 1; d >= 0; d-- {
+		if owner[d] != "" {
+			return owner[d]
+		}
+	}
+	return ""
 }
 
 var exprEndKeywordRe = regexp.MustCompile(`(?i)^(WHERE|RETURNING|FROM)\b`)

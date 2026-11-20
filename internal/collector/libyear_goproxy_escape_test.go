@@ -21,7 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 func TestGoProxyEscape(t *testing.T) {
@@ -84,7 +85,7 @@ func TestResolveGoLibyearEscapesUppercaseModulePaths(t *testing.T) {
 	defer func() { goProxyBase = old }()
 
 	row, err := resolveGoLibyear(context.Background(),
-		libyearDep{Name: "github.com/Masterminds/semver/v3", Version: "v3.2.0", Manager: "go"})
+		model.LibyearDep{Name: "github.com/Masterminds/semver/v3", Version: "v3.2.0", Manager: "go"})
 	if err != nil {
 		t.Fatalf("resolveGoLibyear: %v (requested paths %v)", err, paths)
 	}
@@ -97,9 +98,9 @@ func TestResolveGoLibyearEscapesUppercaseModulePaths(t *testing.T) {
 	if row.Name != "github.com/Masterminds/semver/v3" {
 		t.Errorf("Name = %q: the stored name must keep the module's real spelling", row.Name)
 	}
-	// The purl is built from the real name exactly as before (buildPurl's
+	// The purl is built from the real name exactly as before (pkgid.Purl's
 	// own golang normalization), never from the proxy encoding.
-	if want := buildPurl("golang", "github.com/Masterminds/semver/v3", "v3.2.0"); row.Purl != want {
+	if want := pkgid.Purl("golang", "github.com/Masterminds/semver/v3", "v3.2.0"); row.Purl != want {
 		t.Errorf("Purl = %q, want %q", row.Purl, want)
 	}
 	if strings.Contains(row.Purl, "!") {
@@ -111,7 +112,7 @@ func TestResolveGoLibyearEscapesUppercaseModulePaths(t *testing.T) {
 }
 
 // TestResolveGoLibyearPinnedVersionInfoPath pins the .info URL for the
-// version in use. go.mod versions keep their "v" (parseGoModVersions,
+// version in use. go.mod versions keep their "v" (manifest.ParseGoModVersions,
 // for purls and OSV), and the resolver prefixed another one, requesting
 // @v/vv1.8.0.info. The proxy 404'd and the error was swallowed, so on
 // 2026-09-17 0 of 825,136 Go libyear rows written in the previous 7 days
@@ -137,7 +138,7 @@ func TestResolveGoLibyearPinnedVersionInfoPath(t *testing.T) {
 			defer func() { goProxyBase = old }()
 
 			row, err := resolveGoLibyear(context.Background(),
-				libyearDep{Name: "github.com/spf13/cobra", Version: version, Manager: "go"})
+				model.LibyearDep{Name: "github.com/spf13/cobra", Version: version, Manager: "go"})
 			if err != nil {
 				t.Fatalf("resolveGoLibyear: %v", err)
 			}
@@ -158,7 +159,7 @@ func TestResolveGoLibyearPinnedVersionInfoPath(t *testing.T) {
 // would fabricate that 0 for every repo in the process. A definitive miss
 // (the proxy says that version does not exist) costs only the date.
 func TestResolveGoLibyearFailsWhenTheVersionDateSaysNothing(t *testing.T) {
-	serve := func(infoStatus int) (*db.LibyearRow, error) {
+	serve := func(infoStatus int) (*model.LibyearRow, error) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/@latest") {
 				_, _ = io.WriteString(w, `{"Version":"v1.8.1","Time":"2024-06-22T17:02:30Z"}`)
@@ -171,7 +172,7 @@ func TestResolveGoLibyearFailsWhenTheVersionDateSaysNothing(t *testing.T) {
 		goProxyBase = srv.URL
 		defer func() { goProxyBase = old }()
 		return resolveGoLibyear(context.Background(),
-			libyearDep{Name: "github.com/spf13/cobra", Version: "v1.8.0", Manager: "go"})
+			model.LibyearDep{Name: "github.com/spf13/cobra", Version: "v1.8.0", Manager: "go"})
 	}
 
 	// 500, not 503: a 503 enters doRegistryRequest's Retry-After ladder and

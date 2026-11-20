@@ -37,7 +37,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
@@ -248,12 +248,12 @@ func TestCratesIOIsPacedAtItsPublishedRate(t *testing.T) {
 }
 
 func TestLibyearCacheReusesAnswersAndMisses(t *testing.T) {
-	c := newTTLCache[*db.LibyearRow](time.Hour)
+	c := newTTLCache[*model.LibyearRow](time.Hour)
 	var calls int
-	dep := libyearDep{Name: "serde", Version: "1.0.0", Manager: "cargo", Requirement: "1.0", Type: "runtime"}
-	resolve := func(ctx context.Context, d libyearDep) (*db.LibyearRow, error) {
+	dep := model.LibyearDep{Name: "serde", Version: "1.0.0", Manager: "cargo", Requirement: "1.0", Type: "runtime"}
+	resolve := func(ctx context.Context, d model.LibyearDep) (*model.LibyearRow, error) {
 		calls++
-		return &db.LibyearRow{Name: d.Name, CurrentVersion: d.Version, Requirement: d.Requirement, Type: d.Type, LatestVersion: "1.0.200", PackageManager: "cargo"}, nil
+		return &model.LibyearRow{Name: d.Name, CurrentVersion: d.Version, Requirement: d.Requirement, Type: d.Type, LatestVersion: "1.0.200", PackageManager: "cargo"}, nil
 	}
 	ctx := context.Background()
 	if _, err := resolveLibyearCached(ctx, c, dep, resolve); err != nil {
@@ -281,16 +281,16 @@ func TestLibyearCacheReusesAnswersAndMisses(t *testing.T) {
 
 	// A definitive miss is cached; a transient failure is not (SR-5).
 	missCalls, transientCalls := 0, 0
-	miss := func(ctx context.Context, d libyearDep) (*db.LibyearRow, error) {
+	miss := func(ctx context.Context, d model.LibyearDep) (*model.LibyearRow, error) {
 		missCalls++
 		return nil, &registryStatusError{url: "u", status: http.StatusNotFound}
 	}
-	transient := func(ctx context.Context, d libyearDep) (*db.LibyearRow, error) {
+	transient := func(ctx context.Context, d model.LibyearDep) (*model.LibyearRow, error) {
 		transientCalls++
 		return nil, &registryStatusError{url: "u", status: http.StatusServiceUnavailable}
 	}
-	ghost := libyearDep{Name: "no-such-crate", Version: "0.1.0", Manager: "cargo"}
-	flaky := libyearDep{Name: "flaky", Version: "0.1.0", Manager: "cargo"}
+	ghost := model.LibyearDep{Name: "no-such-crate", Version: "0.1.0", Manager: "cargo"}
+	flaky := model.LibyearDep{Name: "flaky", Version: "0.1.0", Manager: "cargo"}
 	for i := 0; i < 2; i++ {
 		if _, err := resolveLibyearCached(ctx, c, ghost, miss); err == nil {
 			t.Error("a cached miss must still return its error")
@@ -394,7 +394,7 @@ func TestSwiftPMResolverUsesKeyedClientAndFindsCurrentRelease(t *testing.T) {
 		"/repos/Alamofire/Alamofire/releases/latest":     `{"tag_name":"5.10.2","published_at":"2024-11-14T18:00:00Z"}`,
 		"/repos/Alamofire/Alamofire/releases/tags/5.8.0": `{"tag_name":"5.8.0","published_at":"2023-09-18T18:00:00Z"}`,
 	}}
-	row, err := resolveSwiftPMLibyear(context.Background(), gh, libyearDep{
+	row, err := resolveSwiftPMLibyear(context.Background(), gh, model.LibyearDep{
 		Name: "Alamofire", Version: "5.8.0", Manager: "swiftpm",
 		Requirement: "https://github.com/Alamofire/Alamofire.git"})
 	if err != nil {
@@ -403,7 +403,7 @@ func TestSwiftPMResolverUsesKeyedClientAndFindsCurrentRelease(t *testing.T) {
 	if row.LatestVersion != "5.10.2" || row.CurrentReleaseDate == "" || row.Libyear <= 0 {
 		t.Errorf("row = %+v, want latest 5.10.2 with a current release date and libyear > 0", row)
 	}
-	if _, err := resolveSwiftPMLibyear(context.Background(), nil, libyearDep{
+	if _, err := resolveSwiftPMLibyear(context.Background(), nil, model.LibyearDep{
 		Name: "Alamofire", Version: "5.8.0", Manager: "swiftpm",
 		Requirement: "https://github.com/Alamofire/Alamofire.git"}); err == nil {
 		t.Error("no GitHub client must be an error")
@@ -435,7 +435,7 @@ func TestMavenResolverUsesRepositoryMetadataAndReleaseDates(t *testing.T) {
 	mavenRepositoryBase = srv.URL + "/maven2"
 	defer func() { mavenRepositoryBase = old }()
 
-	row, err := resolveMavenLibyear(context.Background(), libyearDep{
+	row, err := resolveMavenLibyear(context.Background(), model.LibyearDep{
 		Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"})
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +454,7 @@ func TestMavenResolverUsesRepositoryMetadataAndReleaseDates(t *testing.T) {
 	// classifier-only artifact) costs that DATE, not the dependency: the
 	// artifact exists, and failing here would also cache a definitive miss
 	// for something Maven Central has.
-	row, err = resolveMavenLibyear(context.Background(), libyearDep{
+	row, err = resolveMavenLibyear(context.Background(), model.LibyearDep{
 		Name: "org.apache.commons:commons-lang3", Version: "3.9", Manager: "maven"})
 	if err != nil {
 		t.Fatalf("a version outside the metadata list must not fail the dependency: %v", err)
@@ -463,13 +463,13 @@ func TestMavenResolverUsesRepositoryMetadataAndReleaseDates(t *testing.T) {
 		t.Errorf("row = %+v, want the latest version even without the pinned version's date", row)
 	}
 
-	_, err = resolveMavenLibyear(context.Background(), libyearDep{Name: "org.nope:nothing", Version: "1", Manager: "maven"})
+	_, err = resolveMavenLibyear(context.Background(), model.LibyearDep{Name: "org.nope:nothing", Version: "1", Manager: "maven"})
 	if !isDefinitiveRegistryMiss(err) {
 		t.Errorf("an artifact Maven Central does not have must be a definitive miss, got %v", err)
 	}
 	// The latest version's .pom is absent too: the row still carries the
 	// latest version, with no date.
-	row, err = resolveMavenLibyear(context.Background(), libyearDep{Name: "org.gone:artifact", Version: "2.0", Manager: "maven"})
+	row, err = resolveMavenLibyear(context.Background(), model.LibyearDep{Name: "org.gone:artifact", Version: "2.0", Manager: "maven"})
 	if err != nil {
 		t.Fatalf("a missing .pom for the latest version must not fail the dependency: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestMavenResolverUsesRepositoryMetadataAndReleaseDates(t *testing.T) {
 	}
 
 	for _, name := range []string{"${project.groupId}:pki-server", "org.x:${artifact.id}"} {
-		if _, err := resolveMavenLibyear(context.Background(), libyearDep{Name: name, Version: "1", Manager: "maven"}); err == nil {
+		if _, err := resolveMavenLibyear(context.Background(), model.LibyearDep{Name: name, Version: "1", Manager: "maven"}); err == nil {
 			t.Errorf("%q: an unresolved property must never be sent to the repository", name)
 		}
 	}
@@ -537,14 +537,14 @@ func TestScanLibyearWiresKeyedGitHubClient(t *testing.T) {
 // they are exercised from many goroutines at once under -race.
 func TestRegistryLayerIsSafeUnderConcurrency(t *testing.T) {
 	noRegistrySleep(t)
-	cache := newTTLCache[*db.LibyearRow](time.Hour)
+	cache := newTTLCache[*model.LibyearRow](time.Hour)
 	var calls atomic.Int32
-	resolve := func(ctx context.Context, d libyearDep) (*db.LibyearRow, error) {
+	resolve := func(ctx context.Context, d model.LibyearDep) (*model.LibyearRow, error) {
 		calls.Add(1)
 		if d.Name == "ghost" {
 			return nil, &registryStatusError{url: "u", status: http.StatusNotFound}
 		}
-		return &db.LibyearRow{Name: d.Name, CurrentVersion: d.Version, LatestVersion: "9.9.9"}, nil
+		return &model.LibyearRow{Name: d.Name, CurrentVersion: d.Version, LatestVersion: "9.9.9"}, nil
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{}`)
@@ -562,7 +562,7 @@ func TestRegistryLayerIsSafeUnderConcurrency(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
 				name := []string{"serde", "tokio", "ghost"}[j%3]
-				dep := libyearDep{Name: name, Version: "1.0.0", Manager: "cargo", Type: "runtime"}
+				dep := model.LibyearDep{Name: name, Version: "1.0.0", Manager: "cargo", Type: "runtime"}
 				row, err := resolveLibyearCached(ctx, cache, dep, resolve)
 				switch {
 				case name == "ghost":

@@ -57,6 +57,13 @@ const (
 type osvQueryEntry struct {
 	ids      []string
 	storedAt time.Time
+	// rejected (0.29.168): OSV refused the query. Not an answer: GetQuery
+	// never returns such an entry.
+	rejected bool
+	// askedAt (0.29.171): when the answer was asked of OSV, a database
+	// time. An answer can be applied up to the cache's lifetime after it
+	// was asked; this is what says how old it is.
+	askedAt time.Time
 }
 
 type osvDetailEntry struct {
@@ -88,25 +95,37 @@ func NewOSVCache() *OSVCache {
 // scan — READ-ONLY by contract (v0.27.40): mutating it is a data race
 // AND cross-scan cache poisoning.
 func (c *OSVCache) GetQuery(purl string) (ids []string, ok bool) {
-	if c == nil {
+	ids, rejected, _, ok := c.lookupQuery(purl)
+	if rejected {
 		return nil, false
+	}
+	return ids, ok
+}
+
+// lookupQuery is GetQuery that also reports a cached REJECTION: ok with
+// rejected means OSV refused this purl within the cache's lifetime, and ids
+// is nil.
+func (c *OSVCache) lookupQuery(purl string) (ids []string, rejected bool, askedAt time.Time, ok bool) {
+	if c == nil {
+		return nil, false, time.Time{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, hit := c.queries[purl]
 	if !hit {
-		return nil, false
+		return nil, false, time.Time{}, false
 	}
 	if c.now().Sub(e.storedAt) > osvCacheTTL {
 		delete(c.queries, purl)
-		return nil, false
+		return nil, false, time.Time{}, false
 	}
-	return e.ids, true
+	return e.ids, e.rejected, e.askedAt, true
 }
 
-// PutQuery stores a purl's vuln-ID answer (empty = negative result,
-// deliberately cached).
-func (c *OSVCache) PutQuery(purl string, ids []string) {
+// putRejectedQuery records that OSV refused a purl, for the cache's
+// lifetime: other repositories sending the same purl that day do not pay an
+// isolation for it.
+func (c *OSVCache) putRejectedQuery(purl string) {
 	if c == nil {
 		return
 	}
@@ -115,7 +134,26 @@ func (c *OSVCache) PutQuery(purl string, ids []string) {
 	if len(c.queries) >= osvQueryCacheCap {
 		c.evictQueriesLocked()
 	}
-	c.queries[purl] = osvQueryEntry{ids: ids, storedAt: c.now()}
+	c.queries[purl] = osvQueryEntry{rejected: true, storedAt: c.now()}
+}
+
+// PutQuery stores a purl's vuln-ID answer (empty = negative result,
+// deliberately cached).
+func (c *OSVCache) PutQuery(purl string, ids []string) {
+	c.putAnswer(purl, ids, time.Time{})
+}
+
+// putAnswer is PutQuery with the time the answer was asked of OSV.
+func (c *OSVCache) putAnswer(purl string, ids []string, askedAt time.Time) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.queries) >= osvQueryCacheCap {
+		c.evictQueriesLocked()
+	}
+	c.queries[purl] = osvQueryEntry{ids: ids, storedAt: c.now(), askedAt: askedAt}
 }
 
 // GetDetail returns the cached detail for a vuln ID.

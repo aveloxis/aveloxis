@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.147 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.211 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=0d5eebe3"></script>
+      <script src="../_static/documentation_options.js?v=dc51b6c9"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -318,6 +318,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/web-gui.html#search">Search</a></li>
@@ -339,10 +340,22 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -791,9 +804,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1008,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1072,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1665,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1738,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -2059,12 +2091,30 @@ statements naming a schema-qualified table (aveloxis_ops works too).</p></li>
 list or UPDATE SET left-hand side; WHERE/RETURNING/RHS appearances do NOT
 count — the v0.27.116 contract, fixtures moved wholesale).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stmt.SetExprs(col)</span></code> — the depth-counting, quote-aware RHS extractor the
-Phase 3 write-policy matchers classify.</p></li>
+Phase 3 write-policy matchers classify. <code class="docutils literal notranslate"><span class="pre">Stmt.SetExprsOf(table,</span> <span class="pre">col)</span></code> keeps
+the assignments that belong to a write of <code class="docutils literal notranslate"><span class="pre">table</span></code>: one statement can write
+two tables (a data-modifying CTE and the statement proper). A column written
+by its quoted name (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">&quot;col&quot;</span> <span class="pre">=</span> <span class="pre">…</span></code>) is that column.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.Assemble(files)</span></code> (v0.29.203) — the statements that are ASSEMBLED
+in Go: a constant joined to a clause, <code class="docutils literal notranslate"><span class="pre">fmt.Sprintf</span></code> with <code class="docutils literal notranslate"><span class="pre">%s</span></code> / <code class="docutils literal notranslate"><span class="pre">%[n]s</span></code>, a
+one-line builder function, <code class="docutils literal notranslate"><span class="pre">strings.Join</span></code> over a fixed list, a local given
+fixed values (one statement per value; a value under <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">x.flag</span></code> follows the
+flag when <code class="docutils literal notranslate"><span class="pre">x</span></code> is a loop’s element), and a statement in a <code class="docutils literal notranslate"><span class="pre">range</span></code> loop over a
+fixed list (one per element). It returns what it read whole and what it
+could not, with the reason.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.CheckUnreadable(unread,</span> <span class="pre">registry,</span> <span class="pre">fills,</span> <span class="pre">exceptions)</span></code> — what
+becomes of each expression that could not be read: a <code class="docutils literal notranslate"><span class="pre">Fill</span></code> supplies the
+real values of its unread parts, taken from the variable the code reads; a
+statement whose unread parts stand only in a row-choosing clause (<code class="docutils literal notranslate"><span class="pre">WHERE</span></code>,
+<code class="docutils literal notranslate"><span class="pre">FROM</span></code>) or inside the parentheses of one column’s value is handed on with
+them; anything else that writes a registered table, or whose table is itself
+unread, is a violation.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stmt.WhereGuardsEmpty(col)</span></code> — recognizes the guarded fill-empty shape
 (<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">col</span> <span class="pre">=</span> <span class="pre">$N</span> <span class="pre">...</span> <span class="pre">WHERE</span> <span class="pre">COALESCE(col,</span> <span class="pre">'')</span> <span class="pre">=</span> <span class="pre">''</span></code> / <code class="docutils literal notranslate"><span class="pre">col</span> <span class="pre">IS</span> <span class="pre">NULL</span></code>).</p></li>
 </ul>
-<p>Known blind spots are documented in the package doc (concatenated SQL is
-invisible; tagged dollar-quotes untracked). The flagship consumer is
+<p>Known blind spots are documented in the package doc (tagged dollar-quotes
+untracked; the reading of assembled SQL is by syntax, with no type
+information, and reports where it cannot be sure). The flagship consumer is
 <code class="docutils literal notranslate"><span class="pre">internal/db/column_writer_tripwire_test.go</span></code>; port verified behavior-identical
 (same zero-violation pass on the real corpus; fake-column and stale-allowlist
 mutations flag identically).</p>
@@ -2079,9 +2129,24 @@ corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
 bug (<code class="docutils literal notranslate"><span class="pre">COALESCE(NULLIF(EXCLUDED.platform_repo_id,</span> <span class="pre">''),</span> <span class="pre">repos.platform_repo_id)</span></code>,
 incoming-first where fill-empty-only was intended) is a permanent canary
 fixture in the engine’s suite, and re-red-verified against the live registry.
-Triage protocol for a red run (in the failure message; never weaken a
+<strong>No SQL in the store goes unread (v0.29.203; every statement since v0.29.210).</strong>
+An SQL argument of a call that runs SQL in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code> (reads included) is
+read whole by the check, or it is registered, or <code class="docutils literal notranslate"><span class="pre">TestNoProtectedWriteGoesUnread</span></code>
+fails. Nothing decides that an unread part “cannot matter”. Triage, in this
+order: write the statement so that every part is fixed text (a constant, a
+builder called with constants, a loop over a list written out) | give the real
+values of its parts in <code class="docutils literal notranslate"><span class="pre">columnWriteFills</span></code>, from the variable the code reads |
+list its declaration under a <em>shape</em> (a pattern its whole text must match: a
+read, a savepoint, a schema change, a batch insert’s rows) | last, and only
+with the maintainer’s decision, an exception with its reason. A fill, a shape
+or an exception names the DECLARATION the statement stands in, never its file.
+An exported function that hands a parameter to a statement call is refused:
+SQL does not enter the store from outside it.</p>
+<p>Triage protocol for a red run (in the failure message; never weaken a
 matcher): fix the SQL | correct the registered policy | add an <code class="docutils literal notranslate"><span class="pre">Exception</span></code>
-WITH a reason. Exceptions that suppress nothing are reported STALE and fail
+WITH a reason. An <code class="docutils literal notranslate"><span class="pre">Exception</span></code> with no <code class="docutils literal notranslate"><span class="pre">File</span></code> is for one statement, whole: its
+<code class="docutils literal notranslate"><span class="pre">Match</span></code> is the statement’s entire text, so it ends with any change to the
+statement. Exceptions that suppress nothing are reported STALE and fail
 the run. New schema columns with a meaningful write discipline register at
 introduction (schema-migrations.md checklist step 7).</p>
 </section>
@@ -2108,13 +2173,29 @@ prose, not a property.</p>
 paired with a test that DRIVES its loop to done:</p>
 <ul class="simple">
 <li><p>The scanner sweeps every non-test source in <code class="docutils literal notranslate"><span class="pre">cmd/</span></code> + <code class="docutils literal notranslate"><span class="pre">internal/</span></code> +
-<code class="docutils literal notranslate"><span class="pre">scripts/</span></code> for the marker phrases; every hit must be registered in
-<code class="docutils literal notranslate"><span class="pre">convergenceContracts</span></code> with at least one <strong>driving test</strong>, or carry a
-reviewed exemption with a reason.</p></li>
+<code class="docutils literal notranslate"><span class="pre">scripts/</span></code> for the marker phrases, in comments and in string literals (a
+command’s help text). Each hit belongs to a <strong>declaration</strong>: the function,
+method, variable, constant or type whose doc comment or body holds it, or,
+for a comment outside every declaration, the declaration that follows it.
+Every such declaration must be registered in <code class="docutils literal notranslate"><span class="pre">convergenceContracts</span></code> with at
+least one <strong>driving test</strong>, or carry a reviewed exemption with a reason.</p></li>
+<li><p>A row is <code class="docutils literal notranslate"><span class="pre">{Pkg:</span> <span class="pre">&quot;internal/db&quot;,</span> <span class="pre">Decl:</span> <span class="pre">&quot;PostgresStore.FillPackageKeysStep&quot;,</span> <span class="pre">DrivingTests:</span> <span class="pre">...}</span></code>: the package directory and the declaration, never a
+file name. A row that named its file was a by-name read of a production
+source file, which the file-reads ratchet forbids adding, so until 0.29.202
+no new contract could be registered. Keyed by declaration, a row survives
+its file being split and still fails when the contract is renamed, moved to
+another package or reworded.</p></li>
+<li><p>A phrase in a file that has no declaration at all is a failure that no row
+can excuse: state the contract on the function or command that implements
+it. And a row covers ONE file’s declaration of that name unless it says
+<code class="docutils literal notranslate"><span class="pre">Files:</span> <span class="pre">n</span></code> (same-named declarations in files built for different
+platforms); a second file carrying the phrase on that name fails until the
+row is reviewed and its count raised. Both rules exist so that a new
+contract can never be covered by an older contract’s row.</p></li>
 <li><p>Driving tests are verified as real test FuncDecls via <code class="docutils literal notranslate"><span class="pre">go/parser</span></code>
 (never a source regex — the round-22 lesson).</p></li>
-<li><p>Staleness both ways: a registered/exempt file that stops carrying a
-marker fails until the row is removed.</p></li>
+<li><p>Staleness both ways: a registered or exempt declaration that stops
+carrying a marker fails until the row is removed.</p></li>
 </ul>
 <p><strong>Registering a site is not the work — the driving test is.</strong> A driving
 test performs the unit of work, applies the SAME completion stamp the

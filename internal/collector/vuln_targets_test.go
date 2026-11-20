@@ -12,42 +12,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
+	"github.com/aveloxis/aveloxis/internal/scantarget"
+	"github.com/aveloxis/aveloxis/internal/srctest"
+	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
-
-func TestIsSelfDependency(t *testing.T) {
-	selfSet := map[string]bool{
-		"apache-airflow":                  true,
-		"apache-airflow-providers-google": true,
-		"airflow":                         true,
-	}
-	cases := []struct {
-		name string
-		want bool
-	}{
-		{"apache-airflow", true},
-		{"Apache-Airflow", true}, // case-insensitive
-		{"apache_airflow", true}, // '_'→'-' folded on the dep side
-		{"apache-airflow-providers-google", true},
-		{"apache-airflow-providers-amazon", false}, // exact only — NO prefix rule
-		{"flask", false},
-		{"airflow-lookalike", false},
-	}
-	for _, c := range cases {
-		if got := isSelfDependency(c.name, selfSet); got != c.want {
-			t.Errorf("isSelfDependency(%q) = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
 
 // Go needs NO lockfile: go.mod versions are exact under MVS, so Go
 // deps classify 'locked' by construction.
 func TestGoDepsAreLockedByConstruction(t *testing.T) {
-	dep := db.VulnScanDep{Name: "golang.org/x/text", CurrentVersion: "v0.3.0",
+	dep := model.VulnScanDep{Name: "golang.org/x/text", CurrentVersion: "v0.3.0",
 		PackageManager: "go", Purl: "pkg:golang/golang.org/x/text@v0.3.0",
 		Requirement: "golang.org/x/text v0.3.0"}
-	targets := vulnScanTargets(dep, nil)
-	if len(targets) != 1 || targets[0].Resolution != resolutionLocked {
+	targets := scantarget.DirectTargets(dep, nil)
+	if len(targets) != 1 || targets[0].Resolution != versionuse.Locked {
 		t.Fatalf("go deps must be 'locked' by construction, got %+v", targets)
 	}
 	if targets[0].Purl != dep.Purl {
@@ -63,20 +42,20 @@ func TestLockedVersionsWinOverFloor(t *testing.T) {
 	// manifest's spelling; only the purl canonicalizes. Pre-existing
 	// DB rows with non-canonical purls heal at each repo's next
 	// analysis pass.
-	dep := db.VulnScanDep{Name: "Flask_SQLAlchemy", CurrentVersion: "2.0",
+	dep := model.VulnScanDep{Name: "Flask_SQLAlchemy", CurrentVersion: "2.0",
 		PackageManager: "pypi", Purl: "pkg:pypi/flask-sqlalchemy@2.0",
 		Requirement: "Flask_SQLAlchemy>=2.0"}
 	locked := map[string][]string{
 		// PEP 503 folding on both sides: the lockfile spelled it
 		// flask-sqlalchemy.
-		lockfileMatchKey("pypi", "flask-sqlalchemy"): {"2.5.1", "3.1.1"},
+		pkgid.MatchKey("pypi", "flask-sqlalchemy"): {"2.5.1", "3.1.1"},
 	}
-	targets := vulnScanTargets(dep, locked)
+	targets := scantarget.DirectTargets(dep, locked)
 	if len(targets) != 2 {
 		t.Fatalf("every distinct locked version yields a purl, got %+v", targets)
 	}
 	for _, tgt := range targets {
-		if tgt.Resolution != resolutionLocked {
+		if tgt.Resolution != versionuse.Locked {
 			t.Errorf("locked resolution class wrong: %+v", tgt)
 		}
 		if tgt.Requirement != "Flask_SQLAlchemy>=2.0" {
@@ -90,36 +69,22 @@ func TestLockedVersionsWinOverFloor(t *testing.T) {
 }
 
 func TestNoLockfileFallsBackToFloorClassification(t *testing.T) {
-	dep := db.VulnScanDep{Name: "apache-airflow", CurrentVersion: "3.0.0",
+	dep := model.VulnScanDep{Name: "apache-airflow", CurrentVersion: "3.0.0",
 		PackageManager: "pypi", Purl: "pkg:pypi/apache-airflow@3.0.0",
 		Requirement: "apache-airflow>=3.0.0"}
-	targets := vulnScanTargets(dep, map[string][]string{})
+	targets := scantarget.DirectTargets(dep, map[string][]string{})
 	if len(targets) != 1 {
 		t.Fatalf("got %+v", targets)
 	}
 	if targets[0].Purl != dep.Purl {
 		t.Errorf("the FLOOR stays the scanned version (operator rejected latest-satisfying resolution): %s", targets[0].Purl)
 	}
-	if targets[0].Resolution != resolutionRangeFloor {
+	if targets[0].Resolution != versionuse.RangeFloor {
 		t.Errorf("class must be range-floor, got %s", targets[0].Resolution)
 	}
 	// A dep with no purl yields no targets (unchanged behavior).
-	if got := vulnScanTargets(db.VulnScanDep{Name: "x"}, nil); got != nil {
+	if got := scantarget.DirectTargets(model.VulnScanDep{Name: "x"}, nil); got != nil {
 		t.Errorf("purl-less deps must yield no targets: %+v", got)
-	}
-}
-
-func TestPurlWithVersion(t *testing.T) {
-	cases := []struct{ purl, version, want string }{
-		{"pkg:npm/express@4.18.0", "4.19.2", "pkg:npm/express@4.19.2"},
-		{"pkg:npm/@scope/name@1.0.0", "2.0.0", "pkg:npm/@scope/name@2.0.0"},
-		{"pkg:npm/@scope/name", "2.0.0", "pkg:npm/@scope/name@2.0.0"}, // scope @ is not a version separator
-		{"pkg:pypi/flask@", "2.3.3", "pkg:pypi/flask@2.3.3"},
-	}
-	for _, c := range cases {
-		if got := purlWithVersion(c.purl, c.version); got != c.want {
-			t.Errorf("purlWithVersion(%q, %q) = %q, want %q", c.purl, c.version, got, c.want)
-		}
 	}
 }
 
@@ -134,21 +99,14 @@ func TestScanWiringOrderAndSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	for _, needle := range []string{
-		"GetRepoDepsForVulnScan(", "GetRepoSelfPackageNames(", "GetRepoLockedVersions(",
-		"isSelfDependency(", "vulnScanTargets(",
-	} {
-		if !strings.Contains(s, needle) {
-			t.Errorf("ScanVulnerabilities must call %s", needle)
-		}
-	}
-	// Order: self-exclusion before target/locked selection, both before
-	// the OSV batch request is built.
-	selfIdx := strings.Index(s, "isSelfDependency(")
-	targetIdx := strings.Index(s, "vulnScanTargets(")
+	// The reads and their order are scantarget.Build's (its tests record the
+	// order of the five reads and drive self-exclusion before the locked
+	// lookup by behaviour). The scan builds its targets there, before the OSV
+	// batch request.
+	buildIdx := strings.Index(s, "scantarget.Build(")
 	batchIdx := strings.Index(s, "buildOSVBatchRequest(")
-	if !(selfIdx < targetIdx && targetIdx < batchIdx) {
-		t.Error("purl construction order must be: self-set exclusion → locked/classified targets → OSV batch")
+	if buildIdx < 0 || batchIdx < 0 || buildIdx > batchIdx {
+		t.Error("ScanVulnerabilities must build its targets with scantarget.Build before the OSV batch request")
 	}
 	// The legacy libyear-read entry point must be GONE from the scan —
 	// the vuln path reads requirement+purl through its own method.
@@ -181,9 +139,11 @@ func TestLibyearPathUntouchedBySelfDepAndLockfileLogic(t *testing.T) {
 				"(v0.27.11 hard rule)", forbidden)
 		}
 	}
-	// cleanVersion's floor convention is load-bearing for libyear and
+	// manifest.CleanVersion's floor convention is load-bearing for libyear and
 	// for the vuln floor purls alike — pin its presence unchanged.
-	if !strings.Contains(s, "func cleanVersion(") {
-		t.Error("cleanVersion (the floor convention) must remain in analysis.go")
+	// (It is manifest.CleanVersion since 0.29.152; PackageFunc fails the
+	// test if no such function exists in the package.)
+	if body := srctest.PackageFunc(t, "internal/manifest", "func CleanVersion("); body == "" {
+		t.Error("CleanVersion (the floor convention) must remain in internal/manifest")
 	}
 }

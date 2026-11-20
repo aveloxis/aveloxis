@@ -20,9 +20,11 @@ package collector
 //     repeats of an answer already fetched that day.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -32,6 +34,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -157,6 +160,14 @@ func registryLoggerFrom(ctx context.Context) *slog.Logger {
 // to: the registry answered that the package or version does not exist.
 var errRegistryNotFound = errors.New("registry: not found")
 
+// errRegistryCannotBeAsked is the other answer that is not a failure: the
+// registry cannot be asked about this dependency at all. The coordinate is
+// invalid (a Maven name with no group, a Go module path the proxy protocol
+// cannot encode), or the host is one the resolver does not support. Asking
+// again changes nothing, so, like a definitive miss, it is cached. It is NOT
+// a miss: nothing was asked, and "the package does not exist" was not said.
+var errRegistryCannotBeAsked = errors.New("registry: cannot be asked")
+
 // registryStatusError is a non-2xx registry answer. Its text keeps the
 // `registry URL: HTTP n` form the libyear WARN has always carried.
 type registryStatusError struct {
@@ -187,22 +198,52 @@ func isDefinitiveRegistryMiss(err error) bool {
 	return errors.Is(err, errRegistryNotFound) || platform.IsDefinitiveAnswer(err)
 }
 
+// isCacheableRegistryAnswer reports whether err is an answer, and so safe to
+// cache: the package does not exist, or it cannot be asked about. Every other
+// error is a failure that says nothing and is never cached (SR-5).
+func isCacheableRegistryAnswer(err error) bool {
+	return isDefinitiveRegistryMiss(err) || errors.Is(err, errRegistryCannotBeAsked)
+}
+
 // doRegistryRequest sends one registry request through the shared path:
 // identifying User-Agent, host pacing, and 429/503 retries within
 // registryRetryBudget. It returns the response only for a 2xx status; the
 // caller closes the body.
 func doRegistryRequest(ctx context.Context, method, rawURL string, headers ...string) (*http.Response, error) {
+	return doRegistryRequestBody(ctx, method, rawURL, nil, headers...)
+}
+
+// doRegistryRequestBody is doRegistryRequest with a request body (nil for
+// none), sent again on each retry.
+func doRegistryRequestBody(ctx context.Context, method, rawURL string, body []byte, headers ...string) (*http.Response, error) {
 	logger := registryLoggerFrom(ctx)
 	host := ""
 	if u, err := url.Parse(rawURL); err == nil {
 		host = u.Host
 	}
+	breaker := registryBreakerFor(host)
 	var waited time.Duration
 	for attempt := 0; ; attempt++ {
+		// A host that keeps failing is rested (0.29.179): not asked, and
+		// not paced for, until its rest ends.
+		if breaker.IsOpen() {
+			return nil, registryHostResting(host)
+		}
 		if err := paceRegistryHost(ctx, host, logger); err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+		// Through a proxy the dial is the proxy's, so the rule cannot be
+		// applied to the connection: the target is judged by name here.
+		if len(proxyHosts) > 0 {
+			if err := registryPolicyFor(ctx).RefuseHost(ctx, host); err != nil {
+				return nil, err
+			}
+		}
+		var reqBody io.Reader
+		if body != nil {
+			reqBody = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, reqBody)
 		if err != nil {
 			return nil, err
 		}
@@ -215,15 +256,33 @@ func doRegistryRequest(ctx context.Context, method, rawURL string, headers ...st
 				req.Header.Set(k, v)
 			}
 		}
-		resp, err := registryHTTPClient.Do(req)
+		resp, err := registryClientFor(ctx).Do(req)
 		if err != nil {
+			if isRegistryHostFailure(ctx, err) {
+				breaker.RecordTransientFailure()
+			}
+			// A refused redirect is reported by its reason and the URL
+			// that was ASKED for: net/http's own error names the target,
+			// which can carry credentials.
+			for _, refusal := range []error{platform.ErrLinkLocalAddress, platform.ErrPrivateAddress,
+				platform.ErrRedirectTargetUserinfo, errRegistryRedirectScheme, errRegistryRedirectDistrusted, errTooManyRedirects} {
+				if errors.Is(err, refusal) {
+					return nil, fmt.Errorf("registry request %s: %w", platform.RedactURLUserinfo(rawURL), refusal)
+				}
+			}
 			return nil, err
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			breaker.RecordSuccess()
 			return resp, nil
 		}
 		_ = resp.Body.Close()
 		statusErr := &registryStatusError{url: rawURL, status: resp.StatusCode}
+		if isRegistryHostFailure(ctx, statusErr) && resp.StatusCode != http.StatusServiceUnavailable {
+			breaker.RecordTransientFailure()
+		} else if resp.StatusCode < 500 {
+			breaker.RecordSuccess() // the host answered
+		}
 		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
 			return nil, statusErr
 		}
@@ -392,14 +451,14 @@ func (c *ttlCache[V]) put(key string, val V, err error) {
 // libyearRowCache and githubLicenseCache are shared by every analysis in
 // the process (a collector is built per repo).
 var (
-	libyearRowCache    = newTTLCache[*db.LibyearRow](registryCacheTTL)
+	libyearRowCache    = newTTLCache[*model.LibyearRow](registryCacheTTL)
 	githubLicenseCache = newTTLCache[string](registryCacheTTL)
 )
 
 // libyearCacheKey identifies one registry answer. SwiftPM resolves from
 // the requirement's repository URL, not the package label, so its URL is
 // part of the key.
-func libyearCacheKey(dep libyearDep) string {
+func libyearCacheKey(dep model.LibyearDep) string {
 	key := dep.Manager + "\x00" + dep.Name + "\x00" + dep.Version
 	if dep.Manager == "swiftpm" {
 		key += "\x00" + dep.Requirement
@@ -408,15 +467,24 @@ func libyearCacheKey(dep libyearDep) string {
 }
 
 // resolveLibyearCached answers dep from the cache or the resolver. A hit
-// is a copy carrying this dependency's own requirement text and scope.
-// Only answers are cached: a resolved row, or a definitive miss.
-func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], dep libyearDep,
-	resolve func(context.Context, libyearDep) (*db.LibyearRow, error)) (*db.LibyearRow, error) {
+// is a copy carrying this dependency's own requirement text, scope and
+// manifest path.
+// Only answers are cached: a resolved row, a definitive miss, or "cannot be
+// asked" (isCacheableRegistryAnswer).
+func resolveLibyearCached(ctx context.Context, cache *ttlCache[*model.LibyearRow], dep model.LibyearDep,
+	resolve func(context.Context, model.LibyearDep) (*model.LibyearRow, error)) (*model.LibyearRow, error) {
 	key := libyearCacheKey(dep)
+	if dep.Manager == "maven" {
+		// v0.29.186: a Maven answer is only as good as the repositories
+		// that could give it. The effective list is part of the key, so an
+		// answer cached before a host was distrusted (or restored) is a
+		// miss afterwards, with no host recorded on the entry.
+		key += "\x00" + strings.Join(usableMavenRepositories(ctx), "\x00")
+	}
 	// mine returns the answer shaped for THIS dependency: the row is always
 	// copied, because a cached or coalesced answer was built for some other
 	// caller's requirement text and scope.
-	mine := func(shared *db.LibyearRow, err error) (*db.LibyearRow, error) {
+	mine := func(shared *model.LibyearRow, err error) (*model.LibyearRow, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -426,6 +494,13 @@ func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], 
 		row := *shared
 		row.Requirement = dep.Requirement
 		row.Type = dep.Type
+		row.ManifestPath = dep.ManifestPath
+		// Every per-dependency field is copied (0.29.177): a cached answer
+		// was built for another repository's dependency, whose version may
+		// have come from a lockfile when this one's did not.
+		row.VersionSource = dep.VersionSource
+		row.VersionReason = dep.VersionReason
+		row.VersionHosts = dep.VersionHosts
 		return &row, nil
 	}
 
@@ -452,7 +527,7 @@ func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], 
 	// holding a worker slot until `stop serve`. The panic still propagates;
 	// waiters are released with the zero answer and simply resolve again.
 	var (
-		row *db.LibyearRow
+		row *model.LibyearRow
 		err error
 	)
 	defer func() { cache.finish(key, own, row, err) }()
@@ -462,7 +537,7 @@ func resolveLibyearCached(ctx context.Context, cache *ttlCache[*db.LibyearRow], 
 	case err == nil && row != nil:
 		stored := *row
 		cache.put(key, &stored, nil)
-	case err != nil && isDefinitiveRegistryMiss(err):
+	case err != nil && isCacheableRegistryAnswer(err):
 		cache.put(key, nil, err)
 	}
 	return mine(row, err)

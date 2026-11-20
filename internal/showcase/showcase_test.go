@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 func TestSlugify(t *testing.T) {
@@ -84,9 +87,9 @@ func hostileRepoPage() RepoPageData {
 			{Name: "Fuzzing", Score: 1},
 			{Name: "CI-Tests", Score: -1},
 		},
-		VulnScanned:  true,
 		VulnTotal:    3,
 		VulnCritical: 1,
+		VulnState:    "scanned 2026-07-30",
 	}
 }
 
@@ -127,6 +130,8 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 		Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y",
 		GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
 	}
+	never := vulnclass.Coverage(vulnclass.CoverageInputs{})
+	d.SetVulnCoverage(&never)
 	var b strings.Builder
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)
@@ -135,18 +140,70 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	if !strings.Contains(out, "not yet scanned") {
 		t.Error("missing scorecard 'not yet scanned' empty state")
 	}
-	if !strings.Contains(out, "scan pending") {
-		t.Error("missing vulnerability 'scan pending' empty state (v0.28.7 wording — the SCAN is what's pending under the stamp gate)")
+	// Never scanned (0.29.200: the state's own wording, decided by
+	// vulnclass.Coverage; "scan pending" is retired for it): a dash, not a
+	// 0, and the sentence says what is known.
+	if !strings.Contains(out, `<div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">not yet scanned</div>`) {
+		t.Errorf("the tile of a repository never scanned must show a dash and the state:\n%s", out)
+	}
+	if !strings.Contains(out, "Not yet scanned.") || strings.Contains(out, "No open vulnerabilities") || strings.Contains(out, "scan pending") {
+		t.Error("a repository never scanned must say so in the state's wording, and must not read as clean")
 	}
 
 	// Scanned with zero findings is a genuinely clean state and says so.
-	d.VulnScanned = true
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	in := vulnclass.CoverageInputs{HasRow: true, ScanStamp: &at}
+	in.Coverage.AnalysedAt, in.Coverage.ScanAttemptAt = &at, &at
+	in.Coverage.Scan.Outcome = model.ScanSent
+	clean := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&clean)
 	b.Reset()
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(b.String(), "No open vulnerabilities") {
-		t.Error("scanned repo with zero findings must render the clean state")
+	if !strings.Contains(b.String(), "No open vulnerabilities") || !strings.Contains(b.String(), `<div class="v">0</div><div class="k">Vulnerabilities</div><div class="s">scanned 2026-08-01</div>`) {
+		t.Errorf("scanned repo with zero findings must render the clean state, a real 0 and the scan's date:\n%s", b.String())
+	}
+
+	// The scan failed and nothing is known: not clean, a dash, the state.
+	in.Coverage.Scan.Outcome, in.ScanStamp = model.ScanFailed, nil
+	failed := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&failed)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), "Scan failed.") || strings.Contains(b.String(), "No open vulnerabilities") {
+		t.Error("a failed scan with nothing known must say so and must not read as clean")
+	}
+
+	// Scanned, and nothing has ever said what it depends on: the sentence
+	// says that, and so does the second line.
+	yes := true
+	in.Coverage.Scan.Outcome, in.ScanStamp, in.Coverage.AnalysedAt = model.ScanSent, &at, nil
+	in.Coverage.Scan.DependenciesUnknown = &yes
+	unknown := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&unknown)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), "No dependency inventory recorded.") || strings.Contains(b.String(), "No open vulnerabilities") {
+		t.Errorf("scanned with no inventory recorded must say so and must not read as clean:\n%s", b.String())
+	}
+	// Once: the sentence and the line beside it are the same words here.
+	if n := strings.Count(b.String(), "No dependency inventory recorded."); n != 1 {
+		t.Errorf("the page says \"No dependency inventory recorded.\" %d times, want once", n)
+	}
+
+	// The coverage could not be decided: not known, a zero blank.
+	d.SetVulnCoverage(nil)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), `<div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">coverage not known</div>`) || !strings.Contains(b.String(), "Coverage not known.") {
+		t.Errorf("with no coverage view the page must say coverage not known and blank the zero:\n%s", b.String())
 	}
 }
 

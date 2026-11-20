@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -31,7 +32,7 @@ func TestEdgesGatedOnTransitiveKnobAndSameSnapshot(t *testing.T) {
 	if !strings.Contains(s, "if ac.TransitiveLockfiles {\n\t\t\tedgeSeen := map[string]bool{}") {
 		t.Error("edge collection must be gated on ac.TransitiveLockfiles")
 	}
-	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges)") {
+	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges, failed)" /* 0.29.176: and the failed lockfiles */) {
 		t.Error("edges must ride the SAME snapshot transaction as the package rows")
 	}
 	if !strings.Contains(s, "ac.scanGoModGraph(ctx, repoID, workDir, declared)") {
@@ -108,17 +109,10 @@ func TestVulnAPIAttachesIntroducedBy(t *testing.T) {
 // NO purl mapping (their transitives were silently dropped from the
 // scan — the C2 exploration find).
 func TestPurlEcosystemAliasesForRosterStrings(t *testing.T) {
-	src, err := os.ReadFile("vuln_targets.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	for _, needle := range []string{`"rubygems":`, `"packagist":`, `"swiftpm":`, `"hackage":`} {
-		if !strings.Contains(s, needle) {
-			t.Errorf("purlEcosystemTypes missing the roster alias %s — its transitives are silently dropped", needle)
-		}
-	}
-	if purlForPackage("rubygems", "", "rails", "7.0.8") == "" {
+	// The map itself is pkgid's (TestEveryLockfileRosterAliasHasAPurlType
+	// there checks each alias by behaviour; this test used to read the
+	// source for the map's keys).
+	if pkgid.PurlForPackage("rubygems", "", "rails", "7.0.8") == "" {
 		t.Error("a rubygems transitive must produce a purl")
 	}
 }

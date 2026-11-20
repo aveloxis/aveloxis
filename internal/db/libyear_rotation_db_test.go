@@ -8,8 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
+// (0.29.157: the rotation is the first half of ReplaceRepoLibyear's one
+// transaction; these tests rotate by replacing the inventory with nothing.)
+//
 // The libyear history table is created `LIKE repo_deps_libyear INCLUDING ALL`,
 // which copies the columns the current table has on the day it is created and
 // follows no later ALTER. The rotation used to copy with `INSERT ... SELECT *`,
@@ -47,19 +52,19 @@ func seedLibyearRotationRepo(t *testing.T, store *PostgresStore, ctx context.Con
 	return repoID
 }
 
-// TestRotateLibyearToHistorySurvivesAColumnTheHistoryTableLacks is the red test
+// TestLibyearRotationSurvivesAColumnTheHistoryTableLacks is the red test
 // for the named column list: a column on the current table that the history
 // table does not have must not stop the rotation.
-func TestRotateLibyearToHistorySurvivesAColumnTheHistoryTableLacks(t *testing.T) {
+func TestLibyearRotationSurvivesAColumnTheHistoryTableLacks(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	repoID := seedLibyearRotationRepo(t, store, ctx, "extra-column")
 
-	if err := store.InsertRepoLibyear(ctx, repoID, &LibyearRow{
+	if err := store.ReplaceRepoLibyear(ctx, repoID, []*model.LibyearRow{&model.LibyearRow{
 		Name: "left-pad", Requirement: "^1.3.0", Type: "runtime", PackageManager: "npm",
 		CurrentVersion: "1.3.0", LatestVersion: "1.3.0", Libyear: 0,
 		License: "WTFPL", Purl: "pkg:npm/left-pad@1.3.0",
-	}); err != nil {
+	}}, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatalf("insert libyear row: %v", err)
 	}
 
@@ -74,7 +79,7 @@ func TestRotateLibyearToHistorySurvivesAColumnTheHistoryTableLacks(t *testing.T)
 			`ALTER TABLE aveloxis_data.repo_deps_libyear DROP COLUMN IF EXISTS zz_rotation_probe`)
 	})
 
-	if err := store.RotateLibyearToHistory(ctx, repoID); err != nil {
+	if err := store.ReplaceRepoLibyear(ctx, repoID, nil, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatalf("rotation must not depend on the two tables having the same columns: %v", err)
 	}
 
@@ -104,19 +109,19 @@ func TestRotateLibyearToHistorySurvivesAColumnTheHistoryTableLacks(t *testing.T)
 	}
 }
 
-// TestRotateLibyearToHistoryKeepsTheRowsKey pins what the rotation does today
+// TestLibyearRotationKeepsTheRowsKey pins what the rotation does today
 // and must keep doing: the history row carries the current row's surrogate key
 // (the history table copies the primary key, so a second rotation of a row
 // with the same key would fail, which is why re-inserted rows take new keys).
-func TestRotateLibyearToHistoryKeepsTheRowsKey(t *testing.T) {
+func TestLibyearRotationKeepsTheRowsKey(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	repoID := seedLibyearRotationRepo(t, store, ctx, "keeps-key")
 
-	if err := store.InsertRepoLibyear(ctx, repoID, &LibyearRow{
+	if err := store.ReplaceRepoLibyear(ctx, repoID, []*model.LibyearRow{&model.LibyearRow{
 		Name: "requests", PackageManager: "pypi", CurrentVersion: "2.31.0",
 		Purl: "pkg:pypi/requests@2.31.0", NoLibyear: true,
-	}); err != nil {
+	}}, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatal(err)
 	}
 	var before int64
@@ -125,7 +130,7 @@ func TestRotateLibyearToHistoryKeepsTheRowsKey(t *testing.T) {
 		repoID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RotateLibyearToHistory(ctx, repoID); err != nil {
+	if err := store.ReplaceRepoLibyear(ctx, repoID, nil, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 	var after int64
@@ -188,13 +193,13 @@ func TestMigrateGivesTheLibyearHistoryTableEveryRotatedColumn(t *testing.T) {
 		}
 	}
 
-	if err := store.InsertRepoLibyear(ctx, repoID, &LibyearRow{
+	if err := store.ReplaceRepoLibyear(ctx, repoID, []*model.LibyearRow{&model.LibyearRow{
 		Name: "serde", PackageManager: "cargo", CurrentVersion: "1.0.200",
 		License: "MIT OR Apache-2.0", Purl: "pkg:cargo/serde@1.0.200",
-	}); err != nil {
+	}}, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RotateLibyearToHistory(ctx, repoID); err != nil {
+	if err := store.ReplaceRepoLibyear(ctx, repoID, nil, nil, model.InventoryCoverage{}); err != nil {
 		t.Fatalf("rotate on a migrated old-shape database: %v", err)
 	}
 	var license, purl string

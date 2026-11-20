@@ -712,3 +712,103 @@ func TestPendingMigrateLabelStandsAlone(t *testing.T) {
 		t.Errorf("the migrate line must stand alone:\n%s", out.String())
 	}
 }
+
+// A release whose ladder is the previous one with a note added (every
+// ladder built by withStartNote) says everything its predecessor's does: the
+// same commands, and each step's note with the earlier note at its end. The
+// range printer prints the later block alone. Before 0.29.207 it printed
+// both, and a range of sixty such releases (the vulnerability program's
+// first chunk, 0.29.147 to 0.29.206) printed sixty blocks of some 1,400
+// lines each: 71,288 lines, of which one block said all of it.
+func TestARangeOfNotedLaddersPrintsOneBlock(t *testing.T) {
+	list := deployStepsFrom("0.29.146", false, "0.29.206")
+	if len(list) != 60 {
+		t.Fatalf("%d releases with steps after 0.29.146 up to 0.29.206, want 60", len(list))
+	}
+	blocks := collapseIdenticalChecklists(list)
+	if len(blocks) != 1 {
+		t.Fatalf("%d blocks, want 1", len(blocks))
+	}
+	if !strings.HasPrefix(blocks[0].version, "0.29.206 (also 0.29.147–0.29.205, ") {
+		t.Errorf("label = %q; want the latest version, then the range it covers", blocks[0].version)
+	}
+	if !sameSteps(blocks[0].steps, deployChecklists["0.29.206"]) {
+		t.Error("the block that is printed must be the LATEST release's: it is the one that holds every note")
+	}
+	// Nothing is lost: every step of every covered release is in the block,
+	// its command the same and its note inside the block's.
+	for _, vs := range list {
+		for i, st := range vs.steps {
+			kept := blocks[0].steps[i]
+			if kept.cmd != st.cmd || !strings.HasSuffix(kept.desc, st.desc) {
+				t.Fatalf("%s step %d (%s) is not contained in the printed block", vs.version, i+1, st.cmd)
+			}
+		}
+	}
+	var out bytes.Buffer
+	printStepBlocks(&out, list, "since 0.29.146")
+	if n := strings.Count(out.String(), "=== Deployment steps for aveloxis"); n != 1 {
+		t.Errorf("%d blocks printed, want 1", n)
+	}
+	// The header still counts every release.
+	if !strings.Contains(out.String(), "60 releases have deploy steps since 0.29.146") {
+		t.Error("the header must still say how many releases the range holds")
+	}
+}
+
+// What is NOT contained is still printed on its own.
+func TestALadderThatSaysSomethingElseIsItsOwnBlock(t *testing.T) {
+	base := []deployStep{{cmd: "aveloxis stop all", desc: "stop"}, {cmd: "aveloxis start all", desc: "old note"}}
+	noted := withStartNote(base, "1.0.1: new. ")
+	for what, next := range map[string][]deployStep{
+		"a changed command":             {{cmd: "aveloxis stop serve", desc: "stop"}, {cmd: "aveloxis start all", desc: "1.0.1: new. old note"}},
+		"an added step":                 append(append([]deployStep{}, noted...), deployStep{cmd: "aveloxis data-verify", desc: "check"}),
+		"a note that drops the old one": {{cmd: "aveloxis stop all", desc: "stop"}, {cmd: "aveloxis start all", desc: "1.0.1: new."}},
+		"a note with the old one first": {{cmd: "aveloxis stop all", desc: "stop"}, {cmd: "aveloxis start all", desc: "old note 1.0.1: new."}},
+		"another step's note rewritten": {{cmd: "aveloxis stop all", desc: "halt"}, {cmd: "aveloxis start all", desc: "1.0.1: new. old note"}},
+	} {
+		got := collapseIdenticalChecklists([]versionSteps{{version: "1.0.0", steps: base}, {version: "1.0.1", steps: next}})
+		if len(got) != 2 {
+			t.Errorf("%s: collapsed into %d block(s); the earlier release's text would be lost", what, len(got))
+		}
+	}
+	// The contained case, and the identical case with its own wording.
+	got := collapseIdenticalChecklists([]versionSteps{{version: "1.0.0", steps: base}, {version: "1.0.1", steps: noted}, {version: "1.0.2", steps: noted}})
+	if len(got) != 1 || !sameSteps(got[0].steps, noted) || got[0].version != "1.0.2 (also 1.0.0–1.0.1, whose steps and notes this block contains)" {
+		t.Errorf("contained then identical: %+v", got)
+	}
+	same := collapseIdenticalChecklists([]versionSteps{{version: "1.0.0", steps: base}, {version: "1.0.1", steps: base}})
+	if len(same) != 1 || same[0].version != "1.0.1 (also 1.0.0, same steps)" {
+		t.Errorf("identical: %+v", same)
+	}
+}
+
+// What must be done before the stop is said ON the stop step, where it is
+// read in time: 0.29.207's block tells the operator to end a running
+// heal-vulnerabilities or collect before anything else.
+func TestTheChunksLadderWarnsOnItsStopStep(t *testing.T) {
+	steps := deployChecklists["0.29.207"]
+	if steps[0].cmd != "aveloxis stop all" || !strings.HasPrefix(steps[0].desc, "0.29.207: FIRST end any running `aveloxis heal-vulnerabilities` or `aveloxis collect`") {
+		t.Errorf("the stop step = %q: %.120q", steps[0].cmd, steps[0].desc)
+	}
+	// And it still contains its predecessor, so the range stays one block.
+	if !containsSteps(steps, deployChecklists["0.29.206"]) {
+		t.Error("0.29.207's ladder no longer contains 0.29.206's")
+	}
+	// A note on a step the ladder has not, or has twice, cannot be carried.
+	for what, f := range map[string]func(){
+		"no such step": func() { withNoteOn([]deployStep{{cmd: "aveloxis start all"}}, "aveloxis stop all", "1.0.0: x ") },
+		"two of them": func() {
+			withNoteOn([]deployStep{{cmd: "aveloxis stop all"}, {cmd: "aveloxis stop all"}}, "aveloxis stop all", "1.0.0: x ")
+		},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: no panic", what)
+				}
+			}()
+			f()
+		}()
+	}
+}

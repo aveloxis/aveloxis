@@ -78,7 +78,11 @@ func (s *PostgresStore) GetNewVulnerabilityFindings(ctx context.Context, since t
 		       COALESCE(v.summary, ''), v.first_detected_at
 		FROM aveloxis_data.repo_deps_vulnerabilities v
 		JOIN aveloxis_data.repos r ON r.repo_id = v.repo_id
-		WHERE v.first_detected_at > $1
+		-- v0.29.166: the window reads when the finding ENTERED EXPOSURE,
+		-- or first detection where there is no such time (a row written
+		-- before that release). First detection alone cannot serve: a
+		-- successor carries its predecessor's.
+		WHERE COALESCE(v.entered_exposure_at, v.first_detected_at) > $1
 		  AND v.resolved_at IS NULL
 		  AND ($3 OR COALESCE(v.dependency_kind, '') IS DISTINCT FROM 'transitive')
 		  AND ($4 OR COALESCE(v.dependency_scope, '') NOT IN ('dev','test','build','optional','peer'))

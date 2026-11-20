@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func serveFixture(t *testing.T, fixture string) *httptest.Server {
@@ -47,34 +47,38 @@ func TestAllLibyearResolversParseRealRegistryShapes(t *testing.T) {
 		name     string
 		fixture  string
 		base     *string
-		resolver func(context.Context, libyearDep) (*db.LibyearRow, error)
-		dep      libyearDep
+		resolver func(context.Context, model.LibyearDep) (*model.LibyearRow, error)
+		dep      model.LibyearDep
 		purlWant string // canonical prefix the resolved row must carry
 	}{
 		{"npm", "", &npmRegistryBase, resolveNPMLibyear,
-			libyearDep{Name: "lodash", Version: "4.17.0", Manager: "npm"}, "pkg:npm/lodash@"},
+			model.LibyearDep{Name: "lodash", Version: "4.17.0", Manager: "npm"}, "pkg:npm/lodash@"},
 		{"pypi", "pypi_flask.json", &pypiRegistryBase, resolvePyPILibyear,
-			libyearDep{Name: "flask", Version: "2.0.0", Manager: "pypi"}, "pkg:pypi/flask@"},
+			model.LibyearDep{Name: "flask", Version: "2.0.0", Manager: "pypi"}, "pkg:pypi/flask@"},
 		{"goproxy", "goproxy_cobra_latest.json", &goProxyBase, resolveGoLibyear,
-			libyearDep{Name: "github.com/spf13/cobra", Version: "1.8.0", Manager: "go"}, "pkg:golang/github.com/spf13/cobra@"},
+			model.LibyearDep{Name: "github.com/spf13/cobra", Version: "1.8.0", Manager: "go"}, "pkg:golang/github.com/spf13/cobra@"},
 		{"cargo", "crates_serde.json", &cratesRegistryBase, resolveCargoLibyear,
-			libyearDep{Name: "serde", Version: "1.0.0", Manager: "cargo"}, "pkg:cargo/serde@"},
+			model.LibyearDep{Name: "serde", Version: "1.0.0", Manager: "cargo"}, "pkg:cargo/serde@"},
 		{"rubygems", "rubygems_rails.json", &rubygemsRegistryBase, resolveRubyGemsLibyear,
-			libyearDep{Name: "rails", Version: "7.0.0", Manager: "gem"}, "pkg:gem/rails@"},
+			model.LibyearDep{Name: "rails", Version: "7.0.0", Manager: "gem"}, "pkg:gem/rails@"},
 		// v0.29.56: Maven Central's repository metadata (captured live
 		// 2026-09-17), not the search API.
 		{"maven", "maven_commonslang3_metadata.xml", &mavenRepositoryBase, resolveMavenLibyear,
-			libyearDep{Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"}, "pkg:maven/org.apache.commons/commons-lang3@"},
+			model.LibyearDep{Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"}, "pkg:maven/org.apache.commons/commons-lang3@"},
 		{"packagist", "packagist_monolog.json", &packagistRegistryBase, resolvePackagistLibyear,
-			libyearDep{Name: "monolog/monolog", Version: "3.0.0", Manager: "composer"}, "pkg:composer/monolog/monolog@"},
+			model.LibyearDep{Name: "monolog/monolog", Version: "3.0.0", Manager: "composer"}, "pkg:composer/monolog/monolog@"},
 		{"hex", "hex_phoenix.json", &hexRegistryBase, resolveHexLibyear,
-			libyearDep{Name: "phoenix", Version: "1.7.0", Manager: "hex"}, "pkg:hex/phoenix@"},
+			model.LibyearDep{Name: "phoenix", Version: "1.7.0", Manager: "hex"}, "pkg:hex/phoenix@"},
 		{"nuget", "nuget_newtonsoft.json", &nugetRegistryBase, resolveNuGetLibyear,
-			libyearDep{Name: "Newtonsoft.Json", Version: "13.0.0", Manager: "nuget"}, "pkg:nuget/newtonsoft.json@"},
+			model.LibyearDep{Name: "Newtonsoft.Json", Version: "13.0.0", Manager: "nuget"}, "pkg:nuget/newtonsoft.json@"},
 		{"pubdev", "pubdev_http.json", &pubDevRegistryBase, resolvePubDevLibyear,
-			libyearDep{Name: "http", Version: "1.0.0", Manager: "pub"}, "pkg:pub/http@"},
+			model.LibyearDep{Name: "http", Version: "1.0.0", Manager: "pub"}, "pkg:pub/http@"},
 		{"hackage", "hackage_aeson_preferred.json", &hackageRegistryBase, resolveHackageLibyear,
-			libyearDep{Name: "aeson", Version: "2.0.0.0", Manager: "haskell"}, "pkg:hackage/aeson@"},
+			model.LibyearDep{Name: "aeson", Version: "2.0.0.0", Manager: "haskell"}, "pkg:hackage/aeson@"},
+		// crandb's answer for commonmark, captured live 2026-11-19 and
+		// trimmed to the fields read.
+		{"cran", "crandb_commonmark.json", &cranRegistryBase, resolveCRANLibyear,
+			model.LibyearDep{Name: "commonmark", Version: "1.9.2", Manager: "cran"}, "pkg:cran/commonmark@"},
 	}
 
 	for _, tc := range cases {
@@ -125,7 +129,7 @@ func TestSwiftPMResolverParsesRealReleaseShape(t *testing.T) {
 	gh := &fakeGitHubAPI{answers: map[string]string{
 		"/repos/Alamofire/Alamofire/releases/latest": string(data),
 	}}
-	row, err := resolveSwiftPMLibyear(context.Background(), gh, libyearDep{Name: "Alamofire", Version: "5.8.0", Manager: "swift",
+	row, err := resolveSwiftPMLibyear(context.Background(), gh, model.LibyearDep{Name: "Alamofire", Version: "5.8.0", Manager: "swift",
 		Requirement: "https://github.com/Alamofire/Alamofire.git"})
 	if err != nil {
 		t.Fatalf("swiftpm resolver error against REAL captured shape: %v", err)

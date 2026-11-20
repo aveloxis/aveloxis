@@ -249,7 +249,7 @@ func TestPackageVersionIsReadAfterTheLastAt(t *testing.T) {
 		repo int64
 		purl string
 	}{
-		{r1, "pkg:npm/%40scope/" + pkg + "@1.0.0"}, // canonical (buildPurl escapes the scope's @)
+		{r1, "pkg:npm/%40scope/" + pkg + "@1.0.0"}, // canonical (pkgid.Purl escapes the scope's @)
 		{r2, "pkg:npm/@scope/" + pkg + "@1.0.0"},   // legacy raw scoped purl
 		{r3, "pkg:npm/@scope/" + pkg},              // legacy, versionless
 	} {

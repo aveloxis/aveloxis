@@ -556,9 +556,9 @@ func (s *Server) handleSBOMDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sbomFormat == collector.FormatCycloneDX {
-			data, err = annotateCycloneDXWithVulns(data, vulns)
+			data, err = collector.AnnotateCycloneDXWithVulns(data, vulns)
 		} else {
-			data, err = annotateSPDXWithVulns(data, vulns)
+			data, err = collector.AnnotateSPDXWithVulns(data, vulns)
 		}
 		if err != nil {
 			s.serverError(w, r, "handleSBOMDownload", err)
@@ -653,11 +653,22 @@ func (s *Server) handleLicenses(w http.ResponseWriter, r *http.Request) {
 		// Served as "not scanned"; never cached (v0.29.73).
 		s.partialAnswer(r, err, "dependency-data probe failed — licenses served as not scanned", "repo_id", repoID, "error", err)
 	}
-	s.writeJSON(w, r, map[string]any{
+	// 0.29.198: how many dependencies are outside the table because the
+	// registry was never asked about their licence. Not part of "Unknown".
+	leftOut, lerr := s.store.CountRepoLicenseRowsLeftOut(r.Context(), repoID, runtimeOnly)
+	resp := map[string]any{
 		"scanned":  scanned,
 		"scope":    map[bool]string{true: "runtime", false: "all"}[runtimeOnly],
 		"licenses": licenses,
-	})
+	}
+	if lerr != nil {
+		// Served without the count, and not cached: absent is "not known",
+		// a 0 would say every dependency is in the table.
+		s.partialAnswer(r, lerr, "licence left-out count failed", "repo_id", repoID, "error", lerr)
+	} else {
+		resp["left_out"] = leftOut
+	}
+	s.writeJSON(w, r, resp)
 }
 
 // handleScancodeLicenses returns source code license detections from ScanCode.

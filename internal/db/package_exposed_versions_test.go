@@ -167,7 +167,7 @@ func TestPackageExposedRepoVersionDetail(t *testing.T) {
 }
 
 // TestPackageExposedRepoLockfileKey — the lockfile rows are matched with
-// the lockfile-graph key (LockfileGraphKey): the ecosystem alias fold
+// the lockfile-graph key (pkgid.Key): the ecosystem alias fold
 // (a finding stored under "gem" matches a Gemfile.lock row stored under
 // "rubygems"), the lowercase name, and PyPI's PEP 503 separator fold.
 func TestPackageExposedRepoLockfileKey(t *testing.T) {

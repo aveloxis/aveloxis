@@ -66,7 +66,6 @@ var unboundedDataBodyReads = map[string]struct {
 	reads  int
 	reason string
 }{
-	srctest.SiteKey("internal/collector", "fetchRegistryJSON"): {1, "O5 data body: limit pending the operator decision (registry documents: an npm packument runs to tens of MB)"},
 	srctest.SiteKey("internal/importers/apache", "fetchJSON"):  {1, "O5 data body: limit pending the operator decision"},
 	srctest.SiteKey("internal/importers/cncf", "Fetch"):        {1, "O5 data body: limit pending the operator decision"},
 	srctest.SiteKey("internal/importers/numfocus", "crawlURL"): {1, "O5 data body: limit pending the operator decision"},

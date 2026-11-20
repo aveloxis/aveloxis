@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -665,9 +666,13 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 // snapshotColumns are the repo_info counts a caller may ask for by name
 // (LatestCount, SnapshotSeries): the one allowlist that keeps the column
 // name out of the SQL text's reach.
-var snapshotColumns = map[string]bool{
-	"star_count": true, "fork_count": true, "watcher_count": true,
-	"commit_count": true, "issues_count": true, "pr_count": true,
+//
+// Each name maps to the column it is (0.29.212): a reader takes the column
+// from the map, never from its caller, so that what reaches the statement's
+// text is one of these values whatever was asked for.
+var snapshotColumns = map[string]string{
+	"star_count": "star_count", "fork_count": "fork_count", "watcher_count": "watcher_count",
+	"commit_count": "commit_count", "issues_count": "issues_count", "pr_count": "pr_count",
 }
 
 // SnapshotSeries returns one repo_info count over time: the history rows
@@ -680,7 +685,8 @@ var snapshotColumns = map[string]bool{
 // migrate's ClearStarCountWatchers makes such rows on purpose. Both failed
 // the scan before stage 1b. Empty is [].
 func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column string) ([]MetricRow, error) {
-	if !snapshotColumns[column] {
+	col, ok := snapshotColumns[column]
+	if !ok {
 		return nil, fmt.Errorf("invalid column: %s", column)
 	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
@@ -694,7 +700,7 @@ func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column
 		) snap
 		JOIN aveloxis_data.repos r ON snap.repo_id = r.repo_id
 		WHERE snap.date IS NOT NULL AND snap.value IS NOT NULL
-		ORDER BY snap.date`, column), repoID)
+		ORDER BY snap.date`, col), repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -710,7 +716,8 @@ func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column
 
 // LatestCount returns the most recent value for a repo_info integer column.
 func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column string) (int, string, error) {
-	if !snapshotColumns[column] {
+	col, ok := snapshotColumns[column]
+	if !ok {
 		return 0, "", fmt.Errorf("invalid column: %s", column)
 	}
 	var count int
@@ -721,7 +728,7 @@ func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column st
 		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
 		WHERE ri.repo_id = $1
 		ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
-		LIMIT 1`, column), repoID).Scan(&count, &name)
+		LIMIT 1`, col), repoID).Scan(&count, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No repo_info snapshot yet (repo not collected) — zero, not 500.
 		return 0, "", nil
@@ -789,24 +796,55 @@ func (s *PostgresStore) Releases(ctx context.Context, repoID int64) ([]ReleaseRo
 
 // DepRow represents a dependency for API responses.
 type DepRow struct {
-	Name           string  `json:"name"`
-	Requirement    string  `json:"requirement"`
-	Type           string  `json:"dep_type"`
-	PackageManager string  `json:"package_manager"`
-	CurrentVersion string  `json:"current_version"`
-	LatestVersion  string  `json:"latest_version"`
-	Libyear        float64 `json:"libyear"`
-	License        string  `json:"license,omitempty"`
-	Purl           string  `json:"purl,omitempty"`
+	Name           string `json:"name"`
+	Requirement    string `json:"requirement"`
+	Type           string `json:"dep_type"`
+	PackageManager string `json:"package_manager"`
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version"`
+	// Libyear is null when no libyear could be computed (0.29.198; D4):
+	// LibyearStatus says why. Until then an unknown read as 0, "up to date".
+	Libyear *float64 `json:"libyear"`
+	License string   `json:"license,omitempty"`
+	Purl    string   `json:"purl,omitempty"`
+	// LibyearStatus is why the row has a libyear or lacks one (one of
+	// model's Libyear* values); "" for a row written before 0.29.162.
+	LibyearStatus string `json:"libyear_status"`
+	// Scope is the dependency's scope in the one vocabulary every answer
+	// that names a dependency uses (N10): runtime, dev, test, build,
+	// optional or peer. An empty or unrecognised stored type is runtime.
+	// dep_type stays, as stored.
+	Scope string `json:"scope"`
+	// VersionSource is how the version was worked out when it was not
+	// simply declared (locked, locked_several, managed); VersionReason why
+	// there is none when a pom or BOM that might have given it could not be
+	// obtained.
+	VersionSource string `json:"version_source,omitempty"`
+	VersionReason string `json:"version_reason,omitempty"`
+}
+
+// depRowColumnsSQL are a dependency row's columns as every read of them
+// selects them, in the order scanDepRow takes them.
+const depRowColumnsSQL = `name, COALESCE(requirement, ''), COALESCE(type, ''),
+		       COALESCE(package_manager, ''), COALESCE(current_version, ''),
+		       COALESCE(latest_version, ''), libyear,
+		       COALESCE(license, ''), COALESCE(purl, ''), COALESCE(libyear_status, ''),
+		       COALESCE(version_source, ''), COALESCE(version_reason, '')`
+
+// scanDepRow reads one row selected with depRowColumnsSQL.
+func scanDepRow(rows interface{ Scan(dest ...any) error }) (DepRow, error) {
+	var r DepRow
+	err := rows.Scan(&r.Name, &r.Requirement, &r.Type, &r.PackageManager,
+		&r.CurrentVersion, &r.LatestVersion, &r.Libyear, &r.License, &r.Purl, &r.LibyearStatus,
+		&r.VersionSource, &r.VersionReason)
+	r.Scope = model.StoredScope(r.Type)
+	return r, err
 }
 
 // Deps returns all dependencies for a repo (latest collection).
 func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, COALESCE(requirement, ''), COALESCE(type, ''),
-		       COALESCE(package_manager, ''), COALESCE(current_version, ''),
-		       COALESCE(latest_version, ''), COALESCE(libyear, 0),
-		       COALESCE(license, ''), COALESCE(purl, '')
+		SELECT `+depRowColumnsSQL+`
 		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1
 		ORDER BY name`, repoID)
@@ -816,9 +854,8 @@ func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error
 	defer rows.Close()
 	result := []DepRow{} // D6: empty is []
 	for rows.Next() {
-		var r DepRow
-		if err := rows.Scan(&r.Name, &r.Requirement, &r.Type, &r.PackageManager,
-			&r.CurrentVersion, &r.LatestVersion, &r.Libyear, &r.License, &r.Purl); err != nil {
+		r, err := scanDepRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -841,10 +878,7 @@ func (s *PostgresStore) Deps(ctx context.Context, repoID int64) ([]DepRow, error
 // client-side trap this method exists to avoid.
 func (s *PostgresStore) DepsFiltered(ctx context.Context, repoID int64, license string, runtimeOnly bool) ([]DepRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, COALESCE(requirement, ''), COALESCE(type, ''),
-		       COALESCE(package_manager, ''), COALESCE(current_version, ''),
-		       COALESCE(latest_version, ''), COALESCE(libyear, 0),
-		       COALESCE(license, ''), COALESCE(purl, '')
+		SELECT `+depRowColumnsSQL+`
 		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1`+licenseRowUniverseSQL+`
 		ORDER BY name`, repoID, runtimeOnly)
@@ -854,9 +888,8 @@ func (s *PostgresStore) DepsFiltered(ctx context.Context, repoID int64, license 
 	defer rows.Close()
 	result := []DepRow{} // D6: empty is []
 	for rows.Next() {
-		var r DepRow
-		if err := rows.Scan(&r.Name, &r.Requirement, &r.Type, &r.PackageManager,
-			&r.CurrentVersion, &r.LatestVersion, &r.Libyear, &r.License, &r.Purl); err != nil {
+		r, err := scanDepRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		if license != "" && normalizeLicense(r.License) != license {

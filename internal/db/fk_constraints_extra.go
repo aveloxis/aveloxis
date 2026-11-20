@@ -300,8 +300,8 @@ func ensureAllFKsDeferrable(ctx context.Context, pg *PostgresStore, logger *slog
 	for _, t := range pending {
 		label := fmt.Sprintf("v0.22.7 ALTER CONSTRAINT DEFERRABLE on %s.%s.%s", t.schema, t.table, t.constraint)
 		execMigrationStep(ctx, pg, logger, errs, label, fmt.Sprintf(`
-			ALTER TABLE %s.%s
+			ALTER TABLE %s
 			ALTER CONSTRAINT %s DEFERRABLE INITIALLY DEFERRED
-		`, t.schema, t.table, t.constraint))
+		`, quotedIdentifier(t.schema, t.table), quotedIdentifier(t.constraint)))
 	}
 }

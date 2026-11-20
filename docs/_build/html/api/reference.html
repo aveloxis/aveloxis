@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.147 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.211 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=0d5eebe3"></script>
+      <script src="../_static/documentation_options.js?v=dc51b6c9"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -318,6 +318,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/web-gui.html#search">Search</a></li>
@@ -339,10 +340,22 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -791,9 +804,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1008,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1072,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1665,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1738,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1974,6 +2006,41 @@ answers zeros to an unscoped caller (a scoped caller gets the <code class="docut
 <li><p><strong>vulnerabilities</strong> (<em>integer, required</em>) – Current findings (unresolved, not the repository’s own package, version known).</p></li>
 <li><p><strong>critical_vulns</strong> (<em>integer, required</em>) – Current findings with severity CRITICAL or a CVSS score of at least 9.0.</p></li>
 <li><p><strong>vulnerabilities_version_unknown</strong> (<em>integer, required</em>) – Findings matched against an unpinned version.</p></li>
+<li><p><strong>coverage</strong> (<em>object</em>) – What is known about whether the repository’s dependencies were read
+and checked (0.29.197), decided by one function for every answer that
+carries it. Draw <code class="docutils literal notranslate"><span class="pre">state</span></code> in words; show a count of findings blank when
+<code class="docutils literal notranslate"><span class="pre">count_blank</span></code> is true; say “no vulnerabilities” only when
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is true. When the object is absent (an input could not
+be read, or the server is older) show “coverage not known”: a count of
+zero is then blank, never 0 and never “not yet scanned”. A <code class="docutils literal notranslate"><span class="pre">state</span></code> you
+do not know is “coverage not known” too.</p></li>
+<li><p><strong>coverage.state</strong> (<em>string:enum, required</em>) – <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>: scanned; some packages not fully checked.
+<cite>scanned</cite>: scanned. <cite>nothing_to_scan</cite>: nothing to scan.
+<code class="docutils literal notranslate"><span class="pre">nothing_sendable</span></code>: no dependency could be sent for checking.
+<code class="docutils literal notranslate"><span class="pre">no_answer</span></code> (0.29.208): sent for checking; no complete answer
+came back.
+<cite>scan_failed</cite>: scan failed. <cite>not_analysed</cite>: not yet analysed.
+<code class="docutils literal notranslate"><span class="pre">analysed_not_scanned</span></code>: analysed, not yet scanned.
+<code class="docutils literal notranslate"><span class="pre">scan_history_undated</span></code>: findings present, no completed scan
+recorded. <code class="docutils literal notranslate"><span class="pre">not_scanned</span></code>: not yet scanned.</p></li>
+<li><p><strong>coverage.partial</strong> (<em>boolean, required</em>) – True exactly for <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>.</p></li>
+<li><p><strong>coverage.last_completed_scan_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan that completed. Shown beside any state when set.</p></li>
+<li><p><strong>coverage.last_scan_attempt_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan attempt, whatever its outcome.</p></li>
+<li><p><strong>coverage.analysed_at</strong> (<em>['string', 'null']:date-time, required</em>) – When the dependency inventory now stored was written whole. Null for a repository analysed only before 0.29.159; its stored rows are still its inventory.</p></li>
+<li><p><strong>coverage.last_analysis_attempt</strong> (<em>object, required</em>) – The last analysis that did not replace the inventory. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.last_analysis_attempt.at</strong> (<em>string:date-time, required</em>)</p></li>
+<li><p><strong>coverage.last_analysis_attempt.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>coverage.manifests_failed</strong> (<em>integer, required</em>) – Manifests that could not be read or parsed.</p></li>
+<li><p><strong>coverage.manifests_carried</strong> (<em>integer, required</em>) – Of those, the ones whose earlier rows were kept.</p></li>
+<li><p><strong>coverage.lockfiles_carried</strong> (<em>integer, required</em>) – Lockfiles that could not be read and whose earlier rows were kept.</p></li>
+<li><p><strong>coverage.dependencies_without_row</strong> (<em>object, required</em>) – Declared dependencies with no inventory row, counted by the kind of reason (<code class="docutils literal notranslate"><span class="pre">non_registry</span></code>, <code class="docutils literal notranslate"><span class="pre">managed_unused</span></code>, <code class="docutils literal notranslate"><span class="pre">name_rejected</span></code>, <code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">no_namespace</span></code>).</p></li>
+<li><p><strong>coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
+<li><p><strong>coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
+<li><p><strong>coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
+<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
+<li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
 <li><p><strong>forked_from</strong> (<em>string</em>) – Single-repository answer only (always absent in the batch answer). The upstream <code class="docutils literal notranslate"><span class="pre">owner/name</span></code> of a fork; <code class="docutils literal notranslate"><span class="pre">(unknown</span> <span class="pre">upstream)</span></code> when the forge reports a fork but not its upstream; absent otherwise.</p></li>
@@ -2069,6 +2136,41 @@ longer in the collection queue fall back to live counts.</p>
 <li><p><strong>{repo_id}.vulnerabilities</strong> (<em>integer, required</em>) – Current findings (unresolved, not the repository’s own package, version known).</p></li>
 <li><p><strong>{repo_id}.critical_vulns</strong> (<em>integer, required</em>) – Current findings with severity CRITICAL or a CVSS score of at least 9.0.</p></li>
 <li><p><strong>{repo_id}.vulnerabilities_version_unknown</strong> (<em>integer, required</em>) – Findings matched against an unpinned version.</p></li>
+<li><p><strong>{repo_id}.coverage</strong> (<em>object</em>) – What is known about whether the repository’s dependencies were read
+and checked (0.29.197), decided by one function for every answer that
+carries it. Draw <code class="docutils literal notranslate"><span class="pre">state</span></code> in words; show a count of findings blank when
+<code class="docutils literal notranslate"><span class="pre">count_blank</span></code> is true; say “no vulnerabilities” only when
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is true. When the object is absent (an input could not
+be read, or the server is older) show “coverage not known”: a count of
+zero is then blank, never 0 and never “not yet scanned”. A <code class="docutils literal notranslate"><span class="pre">state</span></code> you
+do not know is “coverage not known” too.</p></li>
+<li><p><strong>{repo_id}.coverage.state</strong> (<em>string:enum, required</em>) – <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>: scanned; some packages not fully checked.
+<cite>scanned</cite>: scanned. <cite>nothing_to_scan</cite>: nothing to scan.
+<code class="docutils literal notranslate"><span class="pre">nothing_sendable</span></code>: no dependency could be sent for checking.
+<code class="docutils literal notranslate"><span class="pre">no_answer</span></code> (0.29.208): sent for checking; no complete answer
+came back.
+<cite>scan_failed</cite>: scan failed. <cite>not_analysed</cite>: not yet analysed.
+<code class="docutils literal notranslate"><span class="pre">analysed_not_scanned</span></code>: analysed, not yet scanned.
+<code class="docutils literal notranslate"><span class="pre">scan_history_undated</span></code>: findings present, no completed scan
+recorded. <code class="docutils literal notranslate"><span class="pre">not_scanned</span></code>: not yet scanned.</p></li>
+<li><p><strong>{repo_id}.coverage.partial</strong> (<em>boolean, required</em>) – True exactly for <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.last_completed_scan_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan that completed. Shown beside any state when set.</p></li>
+<li><p><strong>{repo_id}.coverage.last_scan_attempt_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan attempt, whatever its outcome.</p></li>
+<li><p><strong>{repo_id}.coverage.analysed_at</strong> (<em>['string', 'null']:date-time, required</em>) – When the dependency inventory now stored was written whole. Null for a repository analysed only before 0.29.159; its stored rows are still its inventory.</p></li>
+<li><p><strong>{repo_id}.coverage.last_analysis_attempt</strong> (<em>object, required</em>) – The last analysis that did not replace the inventory. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.last_analysis_attempt.at</strong> (<em>string:date-time, required</em>)</p></li>
+<li><p><strong>{repo_id}.coverage.last_analysis_attempt.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>{repo_id}.coverage.manifests_failed</strong> (<em>integer, required</em>) – Manifests that could not be read or parsed.</p></li>
+<li><p><strong>{repo_id}.coverage.manifests_carried</strong> (<em>integer, required</em>) – Of those, the ones whose earlier rows were kept.</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_carried</strong> (<em>integer, required</em>) – Lockfiles that could not be read and whose earlier rows were kept.</p></li>
+<li><p><strong>{repo_id}.coverage.dependencies_without_row</strong> (<em>object, required</em>) – Declared dependencies with no inventory row, counted by the kind of reason (<code class="docutils literal notranslate"><span class="pre">non_registry</span></code>, <code class="docutils literal notranslate"><span class="pre">managed_unused</span></code>, <code class="docutils literal notranslate"><span class="pre">name_rejected</span></code>, <code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">no_namespace</span></code>).</p></li>
+<li><p><strong>{repo_id}.coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
+<li><p><strong>{repo_id}.coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
+<li><p><strong>{repo_id}.coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
+<li><p><strong>{repo_id}.coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>{repo_id}.coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
+<li><p><strong>{repo_id}.coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>{repo_id}.coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>{repo_id}.last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
 <li><p><strong>{repo_id}.forked_from</strong> (<em>string</em>) – Single-repository answer only (always absent in the batch answer). The upstream <code class="docutils literal notranslate"><span class="pre">owner/name</span></code> of a fork; <code class="docutils literal notranslate"><span class="pre">(unknown</span> <span class="pre">upstream)</span></code> when the forge reports a fork but not its upstream; absent otherwise.</p></li>
@@ -2443,6 +2545,12 @@ there are no dependencies.</p>
 <dd class="field-even"><ul class="simple">
 <li><p><strong>scanned</strong> (<em>boolean, required</em>)</p></li>
 <li><p><strong>scope</strong> (<em>string:enum, required</em>) – The scope in effect.</p></li>
+<li><p><strong>left_out</strong> (<em>integer</em>) – Dependencies outside the table under the same scope
+because the registry did not answer for them and nothing
+gave them a licence (0.29.198). They are not part of the
+<code class="docutils literal notranslate"><span class="pre">Unknown</span></code> row, which is a licence looked for and not
+found. GitHub Actions rows are not counted. Absent when
+the count could not be read: not known, not zero.</p></li>
 <li><p><strong>licenses[]</strong> (<em>object</em>)</p></li>
 <li><p><strong>licenses[].license</strong> (<em>string, required</em>) – The license as a canonical SPDX expression (operands of OR and AND in a fixed order), or <code class="docutils literal notranslate"><span class="pre">Unknown</span></code>.</p></li>
 <li><p><strong>licenses[].count</strong> (<em>integer, required</em>)</p></li>
@@ -2978,6 +3086,27 @@ part, and the answer is not cached.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>repo_id</strong> (<em>integer:int64, required</em>)</p></li>
 <li><p><strong>vulnerabilities[]</strong> (<em>object</em>) – One vulnerability finding (<code class="docutils literal notranslate"><span class="pre">vulnJSON</span></code>).</p></li>
+<li><p><strong>vulnerabilities[].class</strong> (<em>string:enum, required</em>) – The finding’s one class, decided by the server (0.29.196).
+<cite>closed</cite>: no longer reported (see <cite>closed_reason</cite>). <cite>self</cite>: an
+advisory against a package the repository publishes.
+<code class="docutils literal notranslate"><span class="pre">version_not_determined</span></code>: the dependency declares no version, so
+every advisory for the package is listed. <code class="docutils literal notranslate"><span class="pre">exposure</span></code>: affected at
+a version in use or at the lowest a declared range allows. A
+client should key on this field; a later release adds values, and
+a value a client does not know is not exposure.</p></li>
+<li><p><strong>vulnerabilities[].evidence</strong> (<em>string:enum</em>) – Present on <code class="docutils literal notranslate"><span class="pre">exposure</span></code> findings only: how sure the version is.
+<code class="docutils literal notranslate"><span class="pre">in_use</span></code>: from a lockfile, an exact declaration or the build’s
+management. <code class="docutils literal notranslate"><span class="pre">lowest_allowed</span></code>: the lowest version a declared range
+allows; the version in use may be a later one. <code class="docutils literal notranslate"><span class="pre">floating_ref</span></code>: a
+GitHub Actions ref that moves. <code class="docutils literal notranslate"><span class="pre">not_classified</span></code>: a row written
+before the resolution was stored.</p></li>
+<li><p><strong>vulnerabilities[].closed_reason</strong> (<em>string</em>) – Present on a <code class="docutils literal notranslate"><span class="pre">closed</span></code> finding that did not close because of a
+fix: <code class="docutils literal notranslate"><span class="pre">superseded</span></code> (now tracked at a known version),
+<code class="docutils literal notranslate"><span class="pre">version_determined</span></code> (does not affect the version in use),
+<code class="docutils literal notranslate"><span class="pre">version_lost</span></code> (version no longer known), <code class="docutils literal notranslate"><span class="pre">version_changed</span></code> (now
+tracked at another version), <code class="docutils literal notranslate"><span class="pre">never_applied</span></code> (on a managed entry
+nothing used), <code class="docutils literal notranslate"><span class="pre">unsendable</span></code> (its package name could not be sent).
+Absent: the dependency moved past the advisory or was removed.</p></li>
 <li><p><strong>vulnerabilities[].vuln_id</strong> (<em>string, required</em>) – The OSV id (GHSA, PYSEC, GO, …).</p></li>
 <li><p><strong>vulnerabilities[].cve_id</strong> (<em>string</em>)</p></li>
 <li><p><strong>vulnerabilities[].package_name</strong> (<em>string, required</em>)</p></li>
@@ -3013,6 +3142,41 @@ part, and the answer is not cached.</p>
 <li><p><strong>lockfile_certainty.ecosystems[].ecosystem</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>lockfile_certainty.ecosystems[].lockfile_kind</strong> (<em>string, required</em>) – The lockfile format (<code class="docutils literal notranslate"><span class="pre">go.mod</span></code> for Go, which pins by construction).</p></li>
 <li><p><strong>lockfile_certainty.ecosystems[].locked_packages</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>coverage</strong> (<em>object</em>) – What is known about whether the repository’s dependencies were read
+and checked (0.29.197), decided by one function for every answer that
+carries it. Draw <code class="docutils literal notranslate"><span class="pre">state</span></code> in words; show a count of findings blank when
+<code class="docutils literal notranslate"><span class="pre">count_blank</span></code> is true; say “no vulnerabilities” only when
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is true. When the object is absent (an input could not
+be read, or the server is older) show “coverage not known”: a count of
+zero is then blank, never 0 and never “not yet scanned”. A <code class="docutils literal notranslate"><span class="pre">state</span></code> you
+do not know is “coverage not known” too.</p></li>
+<li><p><strong>coverage.state</strong> (<em>string:enum, required</em>) – <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>: scanned; some packages not fully checked.
+<cite>scanned</cite>: scanned. <cite>nothing_to_scan</cite>: nothing to scan.
+<code class="docutils literal notranslate"><span class="pre">nothing_sendable</span></code>: no dependency could be sent for checking.
+<code class="docutils literal notranslate"><span class="pre">no_answer</span></code> (0.29.208): sent for checking; no complete answer
+came back.
+<cite>scan_failed</cite>: scan failed. <cite>not_analysed</cite>: not yet analysed.
+<code class="docutils literal notranslate"><span class="pre">analysed_not_scanned</span></code>: analysed, not yet scanned.
+<code class="docutils literal notranslate"><span class="pre">scan_history_undated</span></code>: findings present, no completed scan
+recorded. <code class="docutils literal notranslate"><span class="pre">not_scanned</span></code>: not yet scanned.</p></li>
+<li><p><strong>coverage.partial</strong> (<em>boolean, required</em>) – True exactly for <code class="docutils literal notranslate"><span class="pre">scanned_partial</span></code>.</p></li>
+<li><p><strong>coverage.last_completed_scan_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan that completed. Shown beside any state when set.</p></li>
+<li><p><strong>coverage.last_scan_attempt_at</strong> (<em>['string', 'null']:date-time, required</em>) – The last scan attempt, whatever its outcome.</p></li>
+<li><p><strong>coverage.analysed_at</strong> (<em>['string', 'null']:date-time, required</em>) – When the dependency inventory now stored was written whole. Null for a repository analysed only before 0.29.159; its stored rows are still its inventory.</p></li>
+<li><p><strong>coverage.last_analysis_attempt</strong> (<em>object, required</em>) – The last analysis that did not replace the inventory. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.last_analysis_attempt.at</strong> (<em>string:date-time, required</em>)</p></li>
+<li><p><strong>coverage.last_analysis_attempt.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>coverage.manifests_failed</strong> (<em>integer, required</em>) – Manifests that could not be read or parsed.</p></li>
+<li><p><strong>coverage.manifests_carried</strong> (<em>integer, required</em>) – Of those, the ones whose earlier rows were kept.</p></li>
+<li><p><strong>coverage.lockfiles_carried</strong> (<em>integer, required</em>) – Lockfiles that could not be read and whose earlier rows were kept.</p></li>
+<li><p><strong>coverage.dependencies_without_row</strong> (<em>object, required</em>) – Declared dependencies with no inventory row, counted by the kind of reason (<code class="docutils literal notranslate"><span class="pre">non_registry</span></code>, <code class="docutils literal notranslate"><span class="pre">managed_unused</span></code>, <code class="docutils literal notranslate"><span class="pre">name_rejected</span></code>, <code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">no_namespace</span></code>).</p></li>
+<li><p><strong>coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
+<li><p><strong>coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
+<li><p><strong>coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
+<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
+<li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>counts</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>counts.current</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>counts.resolved</strong> (<em>integer, required</em>)</p></li>
@@ -3024,6 +3188,14 @@ part, and the answer is not cached.</p>
 <li><p><strong>counts.self</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>counts.unknown_version</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>counts.unknown_version_critical</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>counts.resolved_unlabelled</strong> (<em>integer</em>) – Closed findings with no <code class="docutils literal notranslate"><span class="pre">closed_reason</span></code>, which are the ones resolved in the ordinary sense. With the <code class="docutils literal notranslate"><span class="pre">resolved_&lt;reason&gt;</span></code> keys it sums to <code class="docutils literal notranslate"><span class="pre">resolved</span></code>.</p></li>
+<li><p><strong>counts.resolved_superseded</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_version_determined</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_version_lost</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_version_changed</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_never_applied</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_unsendable</strong> (<em>integer</em>)</p></li>
+<li><p><strong>counts.resolved_other_reason</strong> (<em>integer</em>) – Closed findings that carry a reason this release does not name (written by a later one). Never a fix. Always present; 0 when there is none.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Status Codes<span class="colon">:</span></dt>
@@ -3957,6 +4129,7 @@ Answers are cached for 60 seconds.</p>
 <li><p><strong>packages[].lead_fixed_version</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>packages[].lead_advisory_repos</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>packages[].repos_with_known_versions</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>packages[].closed_with_reason</strong> (<em>integer, required</em>) – Findings on this package that closed for a reason other than a fix (the package’s version was worked out, lost or changed, or its purl can no longer be sent to OSV). Since 0.29.167 they are in no other figure of this object, and a package with only such findings is not listed.</p></li>
 <li><p><strong>sort</strong> (<em>string, required</em>) – The sort in effect.</p></li>
 <li><p><strong>generated_at</strong> (<em>string:date-time, required</em>)</p></li>
 </ul>
@@ -4034,6 +4207,7 @@ cached for 60 seconds.</p>
 <li><p><strong>package.lead_fixed_version</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>package.lead_advisory_repos</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>package.repos_with_known_versions</strong> (<em>integer, required</em>)</p></li>
+<li><p><strong>package.closed_with_reason</strong> (<em>integer, required</em>) – Findings on this package that closed for a reason other than a fix (the package’s version was worked out, lost or changed, or its purl can no longer be sent to OSV). Since 0.29.167 they are in no other figure of this object, and a package with only such findings is not listed.</p></li>
 <li><p><strong>advisories[]</strong> (<em>object</em>)</p></li>
 <li><p><strong>advisories[].vuln_id</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>advisories[].cve_id</strong> (<em>string, required</em>)</p></li>
@@ -8570,7 +8744,20 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 <li><p><strong>package_manager</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>current_version</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>latest_version</strong> (<em>string, required</em>)</p></li>
-<li><p><strong>libyear</strong> (<em>number, required</em>) – Years between the used version’s release and the latest’s; 0 when unknown.</p></li>
+<li><p><strong>libyear</strong> (<em>number, null, required</em>) – Years between the used version’s release and the latest’s. Null
+when it is not known (0.29.198; until then 0); <code class="docutils literal notranslate"><span class="pre">libyear_status</span></code>
+says why. A 0 is a number and means the latest version.</p></li>
+<li><p><strong>libyear_status</strong> (<em>string:enum, required</em>) – Why the row has a libyear or lacks one. <code class="docutils literal notranslate"><span class="pre">resolved</span></code>: it has one.
+<cite>no_version</cite>: no version determined. <cite>no_release_date</cite>: no release
+date for this version. <code class="docutils literal notranslate"><span class="pre">not_on_registry</span></code>: the registry has no such
+package. <code class="docutils literal notranslate"><span class="pre">cannot_be_asked</span></code>: the registry cannot be asked about it.
+<code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code>: no answer this cycle; it is asked again.
+<code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>: not applicable (a GitHub Action). Empty for a row
+written before 0.29.162. A row is an unknown when <code class="docutils literal notranslate"><span class="pre">libyear</span></code> is
+null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
+<li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
+<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_reason</strong> (<em>string</em>) – Why there is no version, when a parent pom or BOM that might have supplied it could not be obtained (<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>). Absent otherwise.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>
@@ -8646,7 +8833,20 @@ rides on whatever that request answers, a <code class="docutils literal notransl
 <li><p><strong>package_manager</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>current_version</strong> (<em>string, required</em>)</p></li>
 <li><p><strong>latest_version</strong> (<em>string, required</em>)</p></li>
-<li><p><strong>libyear</strong> (<em>number, required</em>) – Years between the used version’s release and the latest’s; 0 when unknown.</p></li>
+<li><p><strong>libyear</strong> (<em>number, null, required, required</em>) – Years between the used version’s release and the latest’s. Null
+when it is not known (0.29.198; until then 0); <code class="docutils literal notranslate"><span class="pre">libyear_status</span></code>
+says why. A 0 is a number and means the latest version.</p></li>
+<li><p><strong>libyear_status</strong> (<em>string:enum, required</em>) – Why the row has a libyear or lacks one. <code class="docutils literal notranslate"><span class="pre">resolved</span></code>: it has one.
+<cite>no_version</cite>: no version determined. <cite>no_release_date</cite>: no release
+date for this version. <code class="docutils literal notranslate"><span class="pre">not_on_registry</span></code>: the registry has no such
+package. <code class="docutils literal notranslate"><span class="pre">cannot_be_asked</span></code>: the registry cannot be asked about it.
+<code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code>: no answer this cycle; it is asked again.
+<code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>: not applicable (a GitHub Action). Empty for a row
+written before 0.29.162. A row is an unknown when <code class="docutils literal notranslate"><span class="pre">libyear</span></code> is
+null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
+<li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
+<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_reason</strong> (<em>string</em>) – Why there is no version, when a parent pom or BOM that might have supplied it could not be obtained (<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>). Absent otherwise.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>

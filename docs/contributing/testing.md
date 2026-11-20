@@ -257,12 +257,30 @@ instead of ad-hoc regexes:
   list or UPDATE SET left-hand side; WHERE/RETURNING/RHS appearances do NOT
   count — the v0.27.116 contract, fixtures moved wholesale).
 - `Stmt.SetExprs(col)` — the depth-counting, quote-aware RHS extractor the
-  Phase 3 write-policy matchers classify.
+  Phase 3 write-policy matchers classify. `Stmt.SetExprsOf(table, col)` keeps
+  the assignments that belong to a write of `table`: one statement can write
+  two tables (a data-modifying CTE and the statement proper). A column written
+  by its quoted name (`SET "col" = …`) is that column.
+- `sqlscan.Assemble(files)` (v0.29.203) — the statements that are ASSEMBLED
+  in Go: a constant joined to a clause, `fmt.Sprintf` with `%s` / `%[n]s`, a
+  one-line builder function, `strings.Join` over a fixed list, a local given
+  fixed values (one statement per value; a value under `if x.flag` follows the
+  flag when `x` is a loop's element), and a statement in a `range` loop over a
+  fixed list (one per element). It returns what it read whole and what it
+  could not, with the reason.
+- `sqlscan.CheckUnreadable(unread, registry, fills, exceptions)` — what
+  becomes of each expression that could not be read: a `Fill` supplies the
+  real values of its unread parts, taken from the variable the code reads; a
+  statement whose unread parts stand only in a row-choosing clause (`WHERE`,
+  `FROM`) or inside the parentheses of one column's value is handed on with
+  them; anything else that writes a registered table, or whose table is itself
+  unread, is a violation.
 - `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
   (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
 
-Known blind spots are documented in the package doc (concatenated SQL is
-invisible; tagged dollar-quotes untracked). The flagship consumer is
+Known blind spots are documented in the package doc (tagged dollar-quotes
+untracked; the reading of assembled SQL is by syntax, with no type
+information, and reports where it cannot be sure). The flagship consumer is
 `internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
 (same zero-violation pass on the real corpus; fake-column and stale-allowlist
 mutations flag identically).
@@ -277,9 +295,25 @@ corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
 bug (`COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id)`,
 incoming-first where fill-empty-only was intended) is a permanent canary
 fixture in the engine's suite, and re-red-verified against the live registry.
+**No SQL in the store goes unread (v0.29.203; every statement since v0.29.210).**
+An SQL argument of a call that runs SQL in `internal/db` (reads included) is
+read whole by the check, or it is registered, or `TestNoProtectedWriteGoesUnread`
+fails. Nothing decides that an unread part "cannot matter". Triage, in this
+order: write the statement so that every part is fixed text (a constant, a
+builder called with constants, a loop over a list written out) | give the real
+values of its parts in `columnWriteFills`, from the variable the code reads |
+list its declaration under a *shape* (a pattern its whole text must match: a
+read, a savepoint, a schema change, a batch insert's rows) | last, and only
+with the maintainer's decision, an exception with its reason. A fill, a shape
+or an exception names the DECLARATION the statement stands in, never its file.
+An exported function that hands a parameter to a statement call is refused:
+SQL does not enter the store from outside it.
+
 Triage protocol for a red run (in the failure message; never weaken a
 matcher): fix the SQL | correct the registered policy | add an `Exception`
-WITH a reason. Exceptions that suppress nothing are reported STALE and fail
+WITH a reason. An `Exception` with no `File` is for one statement, whole: its
+`Match` is the statement's entire text, so it ends with any change to the
+statement. Exceptions that suppress nothing are reported STALE and fail
 the run. New schema columns with a meaningful write discipline register at
 introduction (schema-migrations.md checklist step 7).
 
@@ -307,13 +341,30 @@ prose, not a property.
 paired with a test that DRIVES its loop to done:
 
 - The scanner sweeps every non-test source in `cmd/` + `internal/` +
-  `scripts/` for the marker phrases; every hit must be registered in
-  `convergenceContracts` with at least one **driving test**, or carry a
-  reviewed exemption with a reason.
+  `scripts/` for the marker phrases, in comments and in string literals (a
+  command's help text). Each hit belongs to a **declaration**: the function,
+  method, variable, constant or type whose doc comment or body holds it, or,
+  for a comment outside every declaration, the declaration that follows it.
+  Every such declaration must be registered in `convergenceContracts` with at
+  least one **driving test**, or carry a reviewed exemption with a reason.
+- A row is `{Pkg: "internal/db", Decl: "PostgresStore.FillPackageKeysStep",
+  DrivingTests: ...}`: the package directory and the declaration, never a
+  file name. A row that named its file was a by-name read of a production
+  source file, which the file-reads ratchet forbids adding, so until 0.29.202
+  no new contract could be registered. Keyed by declaration, a row survives
+  its file being split and still fails when the contract is renamed, moved to
+  another package or reworded.
+- A phrase in a file that has no declaration at all is a failure that no row
+  can excuse: state the contract on the function or command that implements
+  it. And a row covers ONE file's declaration of that name unless it says
+  `Files: n` (same-named declarations in files built for different
+  platforms); a second file carrying the phrase on that name fails until the
+  row is reviewed and its count raised. Both rules exist so that a new
+  contract can never be covered by an older contract's row.
 - Driving tests are verified as real test FuncDecls via `go/parser`
   (never a source regex — the round-22 lesson).
-- Staleness both ways: a registered/exempt file that stops carrying a
-  marker fails until the row is removed.
+- Staleness both ways: a registered or exempt declaration that stops
+  carrying a marker fails until the row is removed.
 
 **Registering a site is not the work — the driving test is.** A driving
 test performs the unit of work, applies the SAME completion stamp the

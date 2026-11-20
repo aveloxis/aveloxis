@@ -58,13 +58,13 @@ Several operations support batching via `pgx.Batch` to reduce network round-trip
 | `InsertContributorRepoBatch` | Batch breadth events via `pgx.Batch` |
 | `StagingWriter.Stage/Flush` | Buffers staging inserts, flushes every 500 rows |
 
-The single-row variants `InsertRepoDependency` and `InsertRepoLibyear` remain for callers that process items one at a time; the breadth and labor writers are batch-only (`InsertContributorRepoBatch`, `ReplaceRepoLaborSnapshot`).
+The two dependency tables each have one writer that replaces a repository's rows in one transaction, so neither is ever partial: `ReplaceRepoLibyear` for the inventory (`repo_deps_libyear`; it copies the previous rows to the history table first) and `ReplaceRepoDependencies` for the name inventory (`repo_dependencies`, a snapshot with no history); the breadth and labor writers are batch-only (`InsertContributorRepoBatch`, `ReplaceRepoLaborSnapshot`).
 
 ---
 
 ## Text sanitization
 
-`SanitizeText()` cleans strings for PostgreSQL TEXT columns by removing null bytes, replacing invalid UTF-8 with the Unicode replacement character, and stripping control characters (except `\n`, `\r`, `\t`). It includes a fast-path check that returns the original string when no cleaning is needed.
+`SanitizeText()` (the sanitizer itself is `textclean.Sanitize`; `internal/textclean` holds it so that packages which may not import `db` can use it) cleans strings for PostgreSQL TEXT columns by removing null bytes, replacing invalid UTF-8 with the Unicode replacement character, and stripping control characters (except `\n`, `\r`, `\t`). It includes a fast-path check that returns the original string when no cleaning is needed.
 
 `NullTime()` converts Go's zero `time.Time` to `nil` to prevent year-0001 garbage timestamps in PostgreSQL.
 

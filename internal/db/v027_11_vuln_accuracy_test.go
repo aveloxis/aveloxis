@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -171,14 +172,14 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 		{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 100, DirectCount: 7},
 		{Ecosystem: "pypi", LockfilePath: "svc/poetry.lock", LockfileKind: "poetry.lock", EntryCount: 40, DirectCount: 3},
 	}
-	pkgs := []*RepoLockfilePackage{
+	pkgs := []*model.RepoLockfilePackage{
 		{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json", Direct: true},
 		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "svc/poetry.lock", Direct: true},
 		// Same package at a DIFFERENT version in a second lockfile is
 		// legitimate (two apps in a monorepo) — both must survive.
 		{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "3.0.0", LockfilePath: "svc2/poetry.lock", Direct: true},
 	}
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, inv, pkgs, nil); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, inv, pkgs, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	locked, err := store.GetRepoLockedVersions(ctx, repoID)
@@ -192,8 +193,8 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 	// Snapshot-replace: a second, smaller snapshot removes the old rows.
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
 		[]*RepoLockfileInfo{{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 5, DirectCount: 1}},
-		[]*RepoLockfilePackage{{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "5.0.0", LockfilePath: "package-lock.json", Direct: true}},
-		nil,
+		[]*model.RepoLockfilePackage{{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "5.0.0", LockfilePath: "package-lock.json", Direct: true}},
+		nil, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestLockfileSnapshotRoundTrip(t *testing.T) {
 	}
 
 	// Empty snapshot clears everything (last successful walk found none).
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, nil, nil); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	locked, _ = store.GetRepoLockedVersions(ctx, repoID)
@@ -257,10 +258,10 @@ func TestVulnClassificationAlwaysRefreshedEndToEnd(t *testing.T) {
 	store, ctx := lockfileTestStore(t)
 	repoID := seedLockfileTestRepo(t, ctx, store, "_avlock", "reclass")
 
-	row := &VulnerabilityRow{VulnID: "GHSA-x", PackageName: "flask",
+	row := &model.VulnerabilityRow{VulnID: "GHSA-x", PackageName: "flask",
 		PackagePurl: "pkg:pypi/flask@2.0.0", Severity: "HIGH", Source: "osv.dev",
 		DeclaredRequirement: "flask>=2.0.0", VersionResolution: "range-floor"}
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{row}); err != nil {
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{row}); err != nil {
 		t.Fatal(err)
 	}
 	// The repo adds a lockfile; next scan reclassifies. The columns
@@ -268,7 +269,7 @@ func TestVulnClassificationAlwaysRefreshedEndToEnd(t *testing.T) {
 	// back to '' must also stick (never prefer-nonempty).
 	row.DeclaredRequirement = "flask>=2.0.0"
 	row.VersionResolution = "locked"
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{row}); err != nil {
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{row}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.GetRepoVulnerabilities(ctx, repoID)
@@ -328,10 +329,10 @@ func TestLockfileCertaintyDerivation(t *testing.T) {
 			{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 10, DirectCount: 1},
 			{Ecosystem: "pypi", LockfilePath: "poetry.lock", LockfileKind: "poetry.lock", EntryCount: 10, DirectCount: 1},
 		},
-		[]*RepoLockfilePackage{
+		[]*model.RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.19.2", LockfilePath: "package-lock.json", Direct: true},
 			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.3.3", LockfilePath: "poetry.lock", Direct: true},
-		}, nil); err != nil {
+		}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	c, err = store.GetRepoLockfileCertainty(ctx, repoID)

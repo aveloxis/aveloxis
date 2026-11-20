@@ -111,11 +111,13 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 // logCreateFailure says what a failed (re-)create leaves behind, by path
 // (review round 1 finding 3): the transaction rolled back, so a view that
 // EXISTED keeps its previous definition and data — the API keeps serving
-// it, not "live" — and a view that did not exist is still absent, which
-// the API answers with the live aggregate.
+// it where it can answer, and aggregates live where the reader selects a
+// column the previous definition lacks (fleetViewCannotAnswer) — and a
+// view that did not exist is still absent, which the API answers with the
+// live aggregate.
 func logCreateFailure(logger *slog.Logger, name string, existed bool, err error, took time.Duration) {
 	if existed {
-		logger.Error("supply-chain view re-create failed — the PREVIOUS definition and its data are kept and still served; fix the cause and re-run `aveloxis migrate`",
+		logger.Error("supply-chain view re-create failed — the PREVIOUS definition and its data are kept. A reader it can still answer is served from it; a reader that needs a column this build added aggregates live. Fix the cause and re-run `aveloxis migrate`",
 			"view", name, "error", err, "duration", took.Truncate(time.Millisecond))
 		return
 	}

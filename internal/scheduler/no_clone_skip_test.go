@@ -34,4 +34,12 @@ func TestNoCloneSkipsAnalysisAndScorecard(t *testing.T) {
 	if !strings.Contains(after, "\n\t\treturn\n") {
 		t.Error("the guard must return before analysis when there is no clone")
 	}
+	// 0.29.160: the guard records, through the analysis's one attempt
+	// writer, that the dependency inventory was not refreshed, BEFORE it
+	// returns (the analysis that would have recorded it is never entered).
+	record := strings.Index(after, "collector.RecordAnalysisSkippedForNoClone(ctx, s.store, s.logger, repoID)")
+	ret := strings.LastIndex(after, "\n\t\treturn\n")
+	if record < 0 || record > ret {
+		t.Error("the guard must call collector.RecordAnalysisSkippedForNoClone before it returns")
+	}
 }

@@ -2207,6 +2207,12 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 		}
 		db.SetProcessCapacitySources(cfg.CapacitySources()) // v0.29.89: every store this process opens
 		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
+		collector.SetOSVRejectedQueryCap(cfg.Collection.OSVRejectedQueryCap())    // v0.29.168
+		collector.SetOSVPagesPerQuery(cfg.Collection.OSVPagesPerQueryOrDefault()) // v0.29.169
+		collector.SetMavenRepositories(cfg.Collection.MavenRepositoryList())      // v0.29.180
+		logger.Info("maven repositories", "hosts", cfg.Collection.MavenRepositoryHosts())
+		collector.SetDeclaredRepositoryFetch(cfg.Collection.DeclaredRepositoryFetchValue()) // v0.29.184
+		logger.Info("declared repositories", "fetched", cfg.Collection.DeclaredRepositoryFetchValue())
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
@@ -2214,6 +2220,12 @@ func loadConfig(cfgPath string, logger *slog.Logger) *config.Config {
 		cfg = config.DefaultConfig()
 		db.SetProcessCapacitySources(cfg.CapacitySources())
 		collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))
+		collector.SetOSVRejectedQueryCap(cfg.Collection.OSVRejectedQueryCap())    // v0.29.168
+		collector.SetOSVPagesPerQuery(cfg.Collection.OSVPagesPerQueryOrDefault()) // v0.29.169
+		collector.SetMavenRepositories(cfg.Collection.MavenRepositoryList())      // v0.29.180
+		logger.Info("maven repositories", "hosts", cfg.Collection.MavenRepositoryHosts())
+		collector.SetDeclaredRepositoryFetch(cfg.Collection.DeclaredRepositoryFetchValue()) // v0.29.184
+		logger.Info("declared repositories", "fetched", cfg.Collection.DeclaredRepositoryFetchValue())
 		return cfg
 	}
 	// v0.29.61: a file that EXISTS but does not parse or validate used to
@@ -2349,7 +2361,8 @@ func mailerConfigFrom(cfg *config.Config) mailer.Config { return cfg.MailerConfi
 // newWebServer builds `aveloxis web`'s server with its mailer attached.
 // TestProcessMailWiring checks the mailer it carries.
 func newWebServer(store *db.PostgresStore, cfg *config.Config, logger *slog.Logger) *web.Server {
-	return web.New(store, cfg.Web, cfg.GitHub.GitHubAPIBase(), logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger)).WithGitLabAPIBase(cfg.GitLab.BaseURL)
+	return web.New(store, cfg.Web, cfg.GitHub.GitHubAPIBase(), logger).WithMailer(mailer.New(mailerConfigFrom(cfg), logger)).WithGitLabAPIBase(cfg.GitLab.BaseURL).
+		WithRepositoryHosts(cfg.Collection.MavenRepositoryHosts())
 }
 
 // newMonitorServer, newAPIServer and newWebHTTPServer build the three

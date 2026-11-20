@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/admin"
+	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 )
@@ -229,7 +230,7 @@ func (s *Server) handleSupplyChainPackage(w http.ResponseWriter, r *http.Request
 	}
 	advOut := make([]supplyChainAdvisoryJSON, 0, len(advisories))
 	for _, a := range advisories {
-		osv, cve := advisoryURLs(a.VulnID, a.CVEID)
+		osv, cve := collector.AdvisoryURLs(a.VulnID, a.CVEID)
 		advOut = append(advOut, supplyChainAdvisoryJSON{PackageAdvisory: a, AdvisoryURL: osv, CVEURL: cve})
 	}
 	if versions == nil {

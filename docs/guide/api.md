@@ -8,6 +8,116 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.199
+
+`GET /api/v1/repos/{id}/sbom`, both formats, with or without `vulns=1`:
+
+- The document carries a **coverage marker**: CycloneDX `metadata.properties` named
+  `aveloxis:coverage:*`, and an SPDX document `comment` that begins
+  `aveloxis:coverage:`. It holds the coverage state, whether the dependencies are known,
+  a recorded failed analysis attempt's reason, and the counts of failed and carried
+  manifests. See [Vulnerabilities and SBOM](../architecture/vulnerability-and-sbom.md),
+  "The coverage marker". A consumer that compares documents byte for byte will see the
+  new fields.
+- With `vulns=1`, a CycloneDX finding whose version is not determined carries the
+  property `aveloxis:version_not_determined` = `true`. Its `analysis.state` stays
+  `in_triage`, the nearest value the schema has.
+
+## Changes for API clients in 0.29.198
+
+`GET /api/v1/repos/{id}/deps` and its alias `/libyear`:
+
+- **`libyear` can be `null`.** It was a number on every row, and an unknown read as 0,
+  which is "up to date". It is now null when it is not known. A client that does
+  arithmetic on it must skip nulls. `0` is still a number: at the latest version.
+- **`libyear_status`** says why a row has a libyear or lacks one. A row is an unknown when
+  `libyear` is null and the status is not `no_timeline`.
+- **`scope`** on every row: `runtime`, `dev`, `test`, `build`, `optional` or `peer`.
+  `dep_type` stays, as stored.
+- `version_source` and `version_reason`, where they apply.
+
+`GET /api/v1/repos/{id}/licenses` gains **`left_out`**: the dependencies outside the table
+because the registry did not answer for them and nothing gave them a licence. They are
+not in the `Unknown` row.
+
+The `upstream_dependencies` snapshot's detail gains **`libyear_unknown`** and
+**`dev_libyear_unknown`**: how many dependencies in each split the count and the medians
+leave out.
+
+## Changes for API clients in 0.29.197
+
+`GET /api/v1/repos/{id}/vulnerabilities`, `GET /api/v1/repos/{id}/stats` and
+`GET /api/v1/repos/stats?ids=` carry a **`coverage`** object: what is known about whether
+the repository's dependencies were read and checked. One function decides it for all
+three, so they cannot disagree.
+
+- **`state`** is one of nine values, each with one wording (see the reference). It replaces
+  any rule a client had for "has this been scanned".
+- **`count_blank`**: show the count of findings blank. A 0 there would claim a check that
+  did not happen (never scanned and nothing found; or nothing could be sent for
+  checking).
+- **`clean_result`**: a sentence that says there are no vulnerabilities may be used only
+  when this is true.
+- **`second_line`**, beside the state: a failed analysis attempt, no dependency inventory
+  recorded, or an inventory older than the last attempt.
+- The dates (`last_completed_scan_at`, `last_scan_attempt_at`, `analysed_at`), the last
+  failed analysis attempt, and the counts of failed and carried manifests and of
+  declared dependencies with no inventory row. The list answer adds the manifests' paths.
+
+When the object is **absent** (one of its inputs could not be read; the list answer is
+then partial and not cached), show "coverage not known": a count of zero is blank, never
+0 and never "not yet scanned"; a non-zero count stays. Treat a `state` you do not know the
+same way. On the statistics answers a failed coverage read fails the request, as the
+count reads do. The list answer's top-level `scanned_at` keeps its meaning.
+
+## Changes for API clients in 0.29.196
+
+`GET /api/v1/repos/{id}/vulnerabilities`:
+
+- Every finding carries **`class`**: `closed`, `self`, `version_not_determined` or
+  `exposure`. The server decides it, by the rule its counts use. Key on it instead of
+  working the class out from `resolved_at`, `dependency_kind` and `version_resolution`.
+  A later release adds values (a withdrawn advisory); treat a value you do not know as
+  its own group and never as exposure.
+- An `exposure` finding carries **`evidence`**: `in_use`, `lowest_allowed`,
+  `floating_ref` or `not_classified`.
+- A `closed` finding that did not close because of a fix carries **`closed_reason`**.
+- **`counts.resolved` is no longer "fixed".** It stays the total of closed findings, and
+  is now split: `resolved_unlabelled` (resolved in the ordinary sense) and
+  `resolved_superseded`, `resolved_version_determined`, `resolved_version_lost`,
+  `resolved_version_changed`, `resolved_never_applied`, `resolved_unsendable`, and
+  `resolved_other_reason` (closed for a reason this release does not name; never a fix).
+  The parts sum to `resolved`. A client that shows "N resolved" should show `resolved_unlabelled`
+  and name the others for what they are.
+
+## Changes for API clients in 0.29.178
+
+`version_resolution` gains the value `managed`: a Maven dependency declared with no
+version, whose version comes from `dependencyManagement` (see the table under the
+vulnerabilities answer). Such a dependency was `unpinned` before, with no version in its
+purl; its findings at the versionless purl close with `closed_reason` set, and a
+dependency row's `current_version` and purl now carry the managed version.
+
+## Changes for API clients in 0.29.177
+
+Dependency rows (the repository's dependency list and libyear answers) and SBOM
+components report the version in use where a lockfile determines it, so
+`current_version`, the row's purl and `libyear` change at a repository's next analysis
+with no change in the repository. A row declared `^4.0.0` and locked at 4.18.2 was
+reported at 4.0.0 and is now reported at 4.18.2. The declaration is still in
+`requirement`. Vulnerability findings are unaffected.
+
+## Changes for API clients in 0.29.167
+
+The package answers (`/api/v1/packages/...`, the leaderboard and one package's profile) gain
+`closed_with_reason`: the findings on the package that closed for a reason other than a fix
+(the package's version was worked out, lost or changed, or its purl can no longer be sent to
+OSV). Those findings are no longer in any other figure of the answer: `cohort_repos`,
+`findings`, `pct_unresolved`, `pct_transitive`, `worst_severity`, `max_cvss`,
+`n_advisories` and the lead advisory, nor in the advisory list. A package or an advisory
+whose only findings are such closures is no longer listed, and one package's profile then
+answers 404.
+
 ## Changes for API clients in 0.29.145
 
 `GET /api/v1/repos/{id}/stars`, `/forks` and `/watchers` leave out a metadata
@@ -1492,8 +1602,8 @@ Token semantics:
   declares no version (`version_resolution: "unpinned"`) was queried
   at OSV.dev without one, and OSV answers such a query with every
   advisory ever published for the package — most of them for old
-  releases. Whether the repository is affected is unknown (the VEX
-  `under_investigation` class), so these rows are no longer
+  releases. The version in use is not determined, so whether the
+  repository is affected is not known, and these rows are no longer
   dependency exposure: `current`, `critical`, `direct`,
   `transitive`, `dev` and `runtime` exclude them, and they are
   counted apart as `unknown_version` (with `unknown_version_critical`).
@@ -1552,7 +1662,8 @@ Token semantics:
   | `exact` | `==X` or a bare version: the manifest names exactly one version. |
   | `bounded-range` | The requirement has an upper bound (`~=`, `^`, `~`, or a compound containing `<`/`<=`). The purl is the range FLOOR. |
   | `range-floor` | Lower bound only (`>=`, `>`). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. "lowest allowed" beside the version, with the declared requirement. |
-  | `unpinned` | No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as `unknown_version` (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in `current`. |
+  | `managed` | (0.29.178) A Maven dependency declared with no version, whose version comes from `dependencyManagement`: in the same pom, a parent pom, or an imported BOM found in the repository. The purl is that version. Before 0.29.178 such a dependency was `unpinned`. |
+  | `unpinned` | No version declared: OSV.dev was queried without one and returned every advisory for the package, so the version is not determined — counted apart as `unknown_version` (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in `current`. |
 
   Both fields are absent (`""`) on findings last touched by a
   pre-v0.27.11 scan and heal on the repo's next scan.

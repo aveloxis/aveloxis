@@ -61,6 +61,17 @@ const (
 	// InsertOnly: the column is written at INSERT time only — any
 	// UPDATE SET assignment is a violation.
 	InsertOnly
+	// EarliestOfStoredAndIncoming: the value only moves EARLIER (or lower).
+	// LEAST(stored, incoming), in either order, for a NOT NULL column: the
+	// first-detection shape, where a successor may hand in an older date
+	// and a plain re-observation, which offers NOW(), never moves it.
+	EarliestOfStoredAndIncoming
+	// KeepCarryOrNow: a searched CASE whose every result is the stored
+	// value, an incoming placeholder (a cast allowed) or NOW(): the column
+	// can keep what it has, take a value handed in, or be stamped now, and
+	// nothing else. The conditions are not judged; they are behaviour, and
+	// behaviour is pinned by tests. The entered-exposure shape.
+	KeepCarryOrNow
 )
 
 func (p Policy) String() string {
@@ -77,6 +88,10 @@ func (p Policy) String() string {
 		return "AlwaysRefresh"
 	case InsertOnly:
 		return "InsertOnly"
+	case EarliestOfStoredAndIncoming:
+		return "EarliestOfStoredAndIncoming"
+	case KeepCarryOrNow:
+		return "KeepCarryOrNow"
 	}
 	return fmt.Sprintf("Policy(%d)", int(p))
 }
@@ -97,6 +112,9 @@ type Registered struct {
 type Exception struct {
 	Table  string
 	Column string
+	// File, with Match a needle in the statement; or no File, with Match
+	// the statement's WHOLE text (0.29.203), which names no source file
+	// and ends with any change to the statement.
 	File   string
 	Match  string
 	Reason string
@@ -144,10 +162,14 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 					Expr: expr, Want: reg.Policy, Detail: detail,
 				})
 			}
-			for _, expr := range w.SetExprs(reg.Column) {
+			for _, expr := range w.SetExprsOf(reg.Table, reg.Column) {
 				var ok bool
 				var detail string
-				if reg.Policy == InsertOnly {
+				if strings.Contains(expr, Unknown) {
+					// A statement CheckUnreadable handed on with a hole in
+					// this column's value: nothing can judge it.
+					ok, detail = false, "the value has a part that is not fixed text ("+Unknown+"), so the policy cannot be checked on it"
+				} else if reg.Policy == InsertOnly {
 					ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET"
 				} else {
 					ok, detail = exprConforms(w, expr, reg.Column, reg.Policy)
@@ -180,8 +202,14 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 
 func findException(exceptions []Exception, reg Registered, w Stmt) int {
 	for i, ex := range exceptions {
-		if ex.Table == reg.Table && ex.Column == reg.Column && ex.File == w.File &&
-			srctest.ContainsNormalized(w.SQL, ex.Match) {
+		if ex.Table != reg.Table || ex.Column != reg.Column {
+			continue
+		}
+		// With no file, the exception is for one statement, whole.
+		if ex.File == "" && ex.Match != "" && srctest.NormalizeWS(w.SQL) == srctest.NormalizeWS(ex.Match) {
+			return i
+		}
+		if ex.File != "" && ex.File == w.File && srctest.ContainsNormalized(w.SQL, ex.Match) {
 			return i
 		}
 	}
@@ -253,8 +281,92 @@ func matchPolicy(stmt Stmt, expr, col string, p Policy) bool {
 			(aargs == [2]string{"stored", "incoming"} && bargs == [2]string{"incoming", "stored"})
 	case AlwaysRefresh:
 		return !containsStoredRef(expr, col)
+	case EarliestOfStoredAndIncoming:
+		if !isCall || name != "LEAST" || len(args) != 2 {
+			return false
+		}
+		a, b := operandKind(args[0], col), operandKind(args[1], col)
+		return (a == "stored" && b == "incoming") || (a == "incoming" && b == "stored")
+	case KeepCarryOrNow:
+		results, ok := caseResults(expr)
+		if !ok {
+			return false
+		}
+		for _, r := range results {
+			if strings.EqualFold(r, "NOW()") {
+				continue
+			}
+			if k := operandKind(castRe.ReplaceAllString(r, ""), col); k != "stored" && k != "incoming" {
+				return false
+			}
+		}
+		return true
 	}
 	return false
+}
+
+// castRe strips one trailing ::type from a CASE result.
+var castRe = regexp.MustCompile(`::[A-Za-z_]+$`)
+
+// caseKeywordRe finds the words that structure a searched CASE.
+var caseKeywordRe = regexp.MustCompile(`(?i)\b(CASE|WHEN|THEN|ELSE|END)\b`)
+
+// caseResults returns the result expressions of `CASE WHEN c THEN r ... ELSE
+// r END` spanning the WHOLE expression: what follows each THEN and the ELSE.
+// It refuses (false) a nested CASE, a CASE with no ELSE (an unmatched row
+// would be NULLed), a keyword inside parentheses being taken for structure
+// (keywords are read at depth 0 only), and anything before or after.
+func caseResults(expr string) ([]string, bool) {
+	expr = strings.TrimSpace(expr)
+	type kw struct {
+		word       string
+		start, end int
+	}
+	var kws []kw
+	depth := 0
+	next := caseKeywordRe.FindAllStringIndex(expr, -1)
+	ni := 0
+	for i := 0; i < len(expr); i++ {
+		for ni < len(next) && next[ni][0] < i {
+			ni++
+		}
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if ni < len(next) && next[ni][0] == i && depth == 0 {
+			kws = append(kws, kw{strings.ToUpper(expr[i:next[ni][1]]), i, next[ni][1]})
+		}
+	}
+	if len(kws) < 5 || kws[0].word != "CASE" || kws[0].start != 0 ||
+		kws[len(kws)-1].word != "END" || kws[len(kws)-1].end != len(expr) ||
+		kws[len(kws)-2].word != "ELSE" {
+		return nil, false
+	}
+	var out []string
+	for i := 1; i < len(kws)-1; i++ {
+		switch kws[i].word {
+		case "CASE", "END":
+			return nil, false
+		case "WHEN":
+			if kws[i+1].word != "THEN" {
+				return nil, false
+			}
+		case "THEN":
+			if kws[i-1].word != "WHEN" || (kws[i+1].word != "WHEN" && kws[i+1].word != "ELSE") {
+				return nil, false
+			}
+			out = append(out, strings.TrimSpace(expr[kws[i].end:kws[i+1].start]))
+		case "ELSE":
+			if i != len(kws)-2 {
+				return nil, false
+			}
+			out = append(out, strings.TrimSpace(expr[kws[i].end:kws[i+1].start]))
+		}
+	}
+	return out, true
 }
 
 // parseCall decomposes `NAME( ... )` spanning the WHOLE expression into
@@ -332,11 +444,16 @@ func operandKind(op, col string) string {
 	if op == col {
 		return "stored"
 	}
-	if q, rest, ok := strings.Cut(op, "."); ok && rest == col && identRe.MatchString(q) && !strings.EqualFold(q, "EXCLUDED") {
+	if q, ok := strings.CutSuffix(op, "."+col); ok && qualifierRe.MatchString(q) && !strings.EqualFold(q, "EXCLUDED") {
 		return "stored"
 	}
 	return "other"
 }
+
+// qualifierRe is what may stand before a stored column's name: an alias or
+// a table, or the table with its schema (0.29.203: the Jira comment upsert
+// names the stored value in full and no statement read before it did).
+var qualifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 var placeholderRe = regexp.MustCompile(`^\$\d+$`)
 

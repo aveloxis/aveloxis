@@ -44,7 +44,7 @@ func TestGetNewVulnerabilityFindingsQueryContract(t *testing.T) {
 	}
 	s := string(src)
 	for _, needle := range []string{
-		"v.first_detected_at > $1",
+		"COALESCE(v.entered_exposure_at, v.first_detected_at) > $1", // 0.29.166
 		"v.resolved_at IS NULL",
 		"= ANY($2)",
 		"WHEN 'CRITICAL' THEN 4",

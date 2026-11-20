@@ -36,9 +36,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/aveloxis/aveloxis/internal/spdx"
+	"github.com/aveloxis/aveloxis/internal/textclean"
+	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
 
 // AnalysisCollector runs file-content analysis on repos.
@@ -141,6 +145,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 
 	barePath := BareClonePath(ac.bareDir, repoID)
 	if !HasBareClone(ac.bareDir, repoID) {
+		ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptCloneUnavailable)
 		return result, fmt.Errorf("no bare clone at %s", barePath)
 	}
 
@@ -166,6 +171,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	cmd.Env = gitCloneEnv()
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptCloneUnavailable)
 		return result, fmt.Errorf("local clone failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
 
@@ -174,8 +180,14 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 		result.Errors = append(result.Errors, fmt.Errorf("dependencies: %w", err))
 	}
 
+	// v0.29.176 (summary/70, 4.3): the lockfiles are READ here, ahead of
+	// the libyear phase, and stored in phase 2b. Parsing only: nothing is
+	// written, and the libyear phase does not use the result yet. The order
+	// is what lets a later release give an inventory row its locked version.
+	locks := collectLockfiles(workDir, ac.logger)
+
 	// Phase 2: Libyear (dependency age).
-	if err := ac.scanLibyear(ctx, repoID, workDir, result); err != nil {
+	if err := ac.scanLibyear(ctx, repoID, workDir, ac.lockfilesInUse(ctx, repoID, locks), result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("libyear: %w", err))
 	}
 
@@ -183,7 +195,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	// resolutions. Must run AFTER Phase 2 — the storage filter matches
 	// lockfile entries against the repo_deps_libyear rows the libyear
 	// phase just refreshed. Best-effort like every other phase.
-	if err := ac.scanLockfiles(ctx, repoID, workDir, result); err != nil {
+	if err := ac.scanLockfiles(ctx, repoID, workDir, locks, result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("lockfiles: %w", err))
 	}
 
@@ -230,79 +242,23 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 // Dependency scanning
 // ============================================================
 
-// canonicalManifestName is the ONE spelling the three manifest dispatches
-// (the inventory lookup, parseDependencyFile's switch, the libyear walk's
-// switch) compare: the requirements family is matched case-insensitively
-// (`Requirements.txt`, `REQUIREMENTS.TXT` were collected by nothing —
-// worklist §4, v0.29.68) and every other name byte-exact, because the other
-// mixed-case keys (Gemfile, Cargo.toml, Package.swift, Pipfile, …) are the
-// real names and lowering them would drop those inventories. Decided as the
-// class: the requirements family only.
-func canonicalManifestName(base string) string {
-	if strings.EqualFold(base, "requirements.txt") {
-		return "requirements.txt"
-	}
-	return base
-}
-
-// manifestFiles maps filename patterns to their language/ecosystem.
-var manifestFiles = map[string]string{
-	"package.json":             "JavaScript",
-	"yarn.lock":                "JavaScript",
-	"requirements.txt":         "Python",
-	"setup.py":                 "Python",
-	"setup.cfg":                "Python",
-	"pyproject.toml":           "Python",
-	"Pipfile":                  "Python",
-	"poetry.lock":              "Python",
-	"go.mod":                   "Go",
-	"go.sum":                   "Go",
-	"Cargo.toml":               "Rust",
-	"Cargo.lock":               "Rust",
-	"Gemfile":                  "Ruby",
-	"Gemfile.lock":             "Ruby",
-	"pom.xml":                  "Java",
-	"build.gradle":             "Java",
-	"build.gradle.kts":         "Java",
-	"composer.json":            "PHP",
-	"mix.exs":                  "Elixir",
-	"Package.swift":            "Swift",
-	"pubspec.yaml":             "Dart",
-	"Makefile":                 "C/C++",
-	"CMakeLists.txt":           "C/C++",
-	"build.sbt":                "Scala",
-	"packages.config":          ".NET",
-	"Directory.Packages.props": ".NET",
-	"package.yaml":             "Haskell",
-	"stack.yaml":               "Haskell",
-}
-
 func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
 	ac.logger.Info("scanning dependencies", "repo_id", repoID)
 
-	// Clear previous dependency data before inserting fresh results.
-	// repo_dependencies is a snapshot table (no history rotation needed).
-	if err := ac.store.ClearRepoDependencies(ctx, repoID); err != nil {
-		// Round-8 class sweep: shutdown is not a scan failure, and
-		// continuing the whole dependency scan on a dead ctx just
-		// produces one WARN per dep below.
-		if errors.Is(err, context.Canceled) {
-			return err
-		}
-		// H-4: abort the pass. repo_dependencies has no unique arbiter, so
-		// inserting on top of an un-cleared snapshot duplicates every row
-		// (the libyear rotation aborts the same way since v0.27.17). The
-		// next cycle retries with a fresh clear.
-		ac.logger.Error("failed to clear old dependencies — skipping the dependency scan this cycle",
-			"repo_id", repoID, "error", err)
-		return fmt.Errorf("clear previous dependency snapshot: %w", err)
-	}
-
+	// Walk first, write last (0.29.158). repo_dependencies is a snapshot
+	// table with no history; it is replaced in one transaction once the
+	// whole clone has been walked. Before, the table was cleared and then
+	// the clone walked, so a clone that could not be read emptied it.
 	depCounts := make(map[string]map[string]int) // language -> dep_name -> count
 
 	err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip unreadable files
+			if path == workDir {
+				// The root itself could not be read: nothing will be
+				// visited. Returned, so the previous snapshot stands.
+				return err
+			}
+			return nil // one unreadable entry: skipped, the rest is walked
 		}
 		// Reject symlinks to prevent traversal attacks. A malicious repo can
 		// symlink requirements.txt -> /etc/passwd and have host file contents
@@ -319,21 +275,12 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 			return nil
 		}
 
-		filename := canonicalManifestName(filepath.Base(path))
-		lang, ok := manifestFiles[filename]
-		if !ok {
-			// Check extension-based matches (e.g., .csproj).
-			ext := filepath.Ext(filename)
-			if ext == ".csproj" {
-				lang = ".NET"
-			} else {
-				return nil
-			}
-		}
-
-		deps, err := parseDependencyFile(path, lang)
-		if err != nil {
-			return nil // skip unparseable files
+		// The roster says which files the name inventory counts and reads
+		// them (manifest.Names): a file no kind claims, and one that cannot
+		// be read or parsed, contribute nothing.
+		lang, deps, matched, err := manifest.Names(path)
+		if !matched || err != nil {
+			return nil
 		}
 
 		if depCounts[lang] == nil {
@@ -345,1138 +292,107 @@ func (ac *AnalysisCollector) scanDependencies(ctx context.Context, repoID int64,
 		return nil
 	})
 	if err != nil {
-		return err
+		ac.logger.Error("dependency manifest walk failed at the clone's root — the previous dependency names are kept",
+			"repo_id", repoID, "dir", workDir, "error", err)
+		return fmt.Errorf("dependency manifest walk: %w", err)
 	}
 
-	// Insert into repo_dependencies.
+	// One row PostgreSQL refuses would refuse the whole snapshot, so rows
+	// are made storable here. A name is never repaired: one the sanitizer
+	// would change is left out and counted.
+	var rows []db.RepoDependency
+	nameRejected := 0
 	for lang, deps := range depCounts {
 		for depName, count := range deps {
-			if err := ac.store.InsertRepoDependency(ctx, repoID, depName, count, lang); err != nil {
-				// Round-8 class sweep: warn-and-continue over every dep
-				// of every language — a shutdown here emitted one WARN
-				// per dependency (v0.27.91 flood class).
-				if errors.Is(err, context.Canceled) {
-					return err
-				}
-				ac.logger.Warn("failed to insert dependency", "dep", depName, "error", err)
+			if textclean.WouldChange(depName) {
+				nameRejected++
 				continue
 			}
-			result.Dependencies++
+			rows = append(rows, db.RepoDependency{Language: textclean.Sanitize(lang), Name: depName, Count: count})
 		}
+	}
+	if err := ac.store.ReplaceRepoDependencies(ctx, repoID, rows); err != nil {
+		// A cancelled context is a `stop serve`, not a defect.
+		if !errors.Is(err, context.Canceled) {
+			ac.logger.Error("failed to replace the dependency names — the previous ones are kept",
+				"repo_id", repoID, "rows", len(rows), "error", err)
+		}
+		return fmt.Errorf("replace dependency snapshot: %w", err)
+	}
+	result.Dependencies = len(rows)
+	if nameRejected > 0 {
+		ac.logger.Warn("dependency names that cannot be stored unchanged were left out",
+			"repo_id", repoID, "deps", nameRejected)
 	}
 
 	return nil
-}
-
-// parseDependencyFile extracts dependency names from a manifest file.
-func parseDependencyFile(path, lang string) ([]string, error) {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil, err
-	}
-	// readManifest already transcoded UTF-16 and dropped a UTF-8 BOM.
-	content := string(data)
-
-	switch canonicalManifestName(filepath.Base(path)) {
-	case "package.json":
-		return parsePackageJSON(data)
-	case "requirements.txt":
-		return parseRequirementsTxt(content), nil
-	case "go.mod":
-		return parseGoMod(content), nil
-	case "Cargo.toml":
-		return parseTOMLDeps(content, "[dependencies]"), nil
-	case "pyproject.toml":
-		return parsePyprojectDeps(content)
-	case "setup.py":
-		return parseSetupPyDeps(content)
-	case "setup.cfg":
-		return parseSetupCfgDeps(content)
-	case "Pipfile":
-		return parsePipfileDeps(content)
-	case "Gemfile":
-		return parseGemfile(content), nil
-	case "pom.xml":
-		return parsePomXML(content), nil
-	case "build.gradle", "build.gradle.kts":
-		return parseBuildGradle(content), nil
-	case "composer.json":
-		return parseComposerJSON(data)
-	case "build.sbt":
-		return parseBuildSbt(content), nil
-	case "packages.config":
-		return parseNuGetPackagesConfig(content), nil
-	case "Directory.Packages.props":
-		return parseDirectoryPackagesProps(content)
-	case "package.yaml":
-		return parsePackageYaml(content), nil
-	case "mix.exs":
-		return parseMixExsDeps(content), nil
-	case "pubspec.yaml":
-		return parsePubspecDeps(content), nil
-	case "Package.swift":
-		return parsePackageSwiftDeps(content), nil
-	default:
-		// Extension-based matching for files like *.csproj.
-		if strings.HasSuffix(filepath.Base(path), ".csproj") {
-			return parseCsprojDeps(content)
-		}
-		return nil, nil
-	}
-}
-
-func parsePackageJSON(data []byte) ([]string, error) {
-	var pkg struct {
-		Dependencies    map[string]interface{} `json:"dependencies"`
-		DevDependencies map[string]interface{} `json:"devDependencies"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return nil, err
-	}
-	var deps []string
-	for name := range pkg.Dependencies {
-		deps = append(deps, name)
-	}
-	for name := range pkg.DevDependencies {
-		deps = append(deps, name)
-	}
-	return deps, nil
-}
-
-// cutPyInlineComment returns s up to an inline comment: a '#' that opens
-// the text or follows whitespace (space or tab), pip's own rule. It is the
-// ONE comment cut for every Python requirement reader, inventory and libyear
-// alike (SR-17; review round 4 on v0.29.66: the readers cut " #" in three
-// places, one of them missing, and none cut a tab). A '#' inside a URL
-// (a "#sha256=" fragment) has no whitespace before it and is kept.
-func cutPyInlineComment(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
-			return strings.TrimSpace(s[:i])
-		}
-	}
-	return strings.TrimSpace(s)
-}
-
-// cleanPyRequirementLine reduces one requirements-file line to the
-// requirement itself, or "" when the line holds none: blank, comment and
-// option lines ("-r", "-e", "--hash=…") are skipped; a trailing "\"
-// continuation, an inline comment, a PEP 508 environment marker and
-// same-line pip options are stripped. ONE cleanup for both requirements
-// readers (SR-17; v0.29.62 review round 1: only the libyear reader
-// stripped " --" options, so "name --global-option=x" was a dependency
-// there and nothing on the name path).
-func cleanPyRequirementLine(raw string) string {
-	line := strings.TrimSpace(raw)
-	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
-		return ""
-	}
-	// v0.27.71 (the zephyr false-CRITICAL incident): pip's hash-pinned
-	// format ends the pin line with a backslash continuation
-	// ("pyyaml==6.0.3 \"); it survived into the version and defeated
-	// OSV's version matching.
-	line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
-	// Inline comments, PEP 508 environment markers, and same-line pip
-	// args are not version content ("attrs==3.1.0  # Apache-2.0",
-	// "croniter==0.4.6 ; sys_platform == 'win32'").
-	line = cutPyInlineComment(line)
-	if idx := strings.Index(line, ";"); idx > 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
-	if idx := strings.Index(line, " --"); idx > 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
-	return line
-}
-
-func parseRequirementsTxt(content string) []string {
-	var deps []string
-	for _, raw := range strings.Split(content, "\n") {
-		line := cleanPyRequirementLine(raw)
-		if line == "" {
-			continue
-		}
-		if name := pyInventoryName(line); name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps
-}
-
-func parseGoMod(content string) []string {
-	var deps []string
-	inRequire := false
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "require (" {
-			inRequire = true
-			continue
-		}
-		if line == ")" {
-			inRequire = false
-			continue
-		}
-		if inRequire && line != "" && !strings.HasPrefix(line, "//") {
-			parts := strings.Fields(line)
-			if len(parts) >= 1 {
-				deps = append(deps, parts[0])
-			}
-		}
-	}
-	return deps
-}
-
-// parseTOMLDeps lists the dependency names declared in one TOML section
-// (Cargo [dependencies], poetry's [tool.poetry.dependencies]) through the
-// shared table scanner (manifest_toml.go), whatever their source.
-func parseTOMLDeps(content, section string) []string {
-	var deps []string
-	for _, e := range scanTOMLDepTables(content, map[string]bool{section: true}) {
-		if e.Name != "python" {
-			deps = append(deps, e.Name)
-		}
-	}
-	return deps
-}
-
-// gemDeclaredName is the gem a `gem` line declares, or "" if the line
-// declares none. ONE spelling for both readers of a Gemfile (SR-17,
-// v0.29.57): the inventory used to split the raw line on `\'` and fall back
-// to `"` only when the line held no apostrophe at all, which meant
-//
-//   - an apostrophe in a trailing comment became the delimiter, so
-//     `gem "rails" # don't upgrade` was inventoried as a gem named
-//     `t upgrade` and rails was lost; and
-//   - a double-quoted name with a single-quoted CONSTRAINT
-//     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
-//     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
-//
-// Item 71 (v0.29.69): "the first comma-separated argument" was not the name
-// either. A trailing modifier or an interpolated name became a fabricated gem
-// (`json" if defined?(RUBY_VERSION) && RUBY_VERSION < '1.9`,
-// `github-pages" if ENV["GH_PAGES"]`, `beaker-#{ENV['BEAKER_HYPERVISOR']}`),
-// stored in the inventory and minted into purls. The name is now read the way
-// Ruby reads it: parseGemDeclaration.
-func gemDeclaredName(line string) string {
-	d, _ := parseGemDeclaration(line)
-	return d.Name
-}
-
-// gemDeclaration is one `gem` call of a Gemfile: the static name, the
-// version requirements given as string literals right after it, and Text,
-// the call's source without its comment or a trailing `if`/`unless`
-// modifier — what a reader stores as the declared requirement, so the
-// modifier's `< '1.9'` or `=~` never reaches classifyRequirement. Keyword
-// options stay in Text, as they always have in the stored requirement.
-type gemDeclaration struct {
-	Name         string
-	Requirements []string
-	// Declared is the call through its last version literal — what the
-	// requirement classifier reads (classificationText). Keyword options are
-	// not version material (`:require => false` read as a `>` lower bound;
-	// `install_if: -> { RUBY_VERSION < "3.0" }` as an upper one), so they
-	// stop here (item 71 review round 2).
-	Declared string
-	// Text is the call without its comment or a trailing modifier, keyword
-	// options included — the stored requirement (the raw manifest truth the
-	// display shows, `path: "../shared"` included) and where the inline
-	// group scope is read.
-	Text string
-}
-
-// parseGemDeclaration reads a `gem` call the way Ruby does, for every reader
-// of a Gemfile (SR-17). The first argument must be a string literal — "x",
-// 'x', %q(x), %Q(x) or %(x) — and the name is exactly its contents. The
-// requirements are the string literals that follow, each after a comma;
-// anything else (keyword options, a splat, a computed value, a trailing `if`
-// or `unless` modifier, a comment) ends the list. A name built by
-// interpolation (`"beaker-#{hv}"`) is not a static name and cannot be
-// resolved, so the line declares nothing — the same as any other line the
-// readers cannot read (no log: a manifest reader reports what it found). An
-// interpolated requirement is dropped with the ones after it.
-func parseGemDeclaration(line string) (gemDeclaration, bool) {
-	rest := strings.TrimLeft(line, " \t")
-	start := rest
-	if !strings.HasPrefix(rest, "gem") {
-		return gemDeclaration{}, false
-	}
-	// `gem "x"`, `gem("x")` and `gem"x"` are all the call; `gemspec`,
-	// `gems "x"` and `gem_name "x"` are not, and fail below because a
-	// string literal cannot start with an identifier character.
-	rest = strings.TrimLeft(rest[3:], " \t(")
-	name, interpolated, rest, ok := rubyStringLiteral(rest)
-	if !ok || interpolated || name == "" {
-		return gemDeclaration{}, false
-	}
-	d := gemDeclaration{Name: name}
-	for {
-		rest = strings.TrimLeft(rest, " \t")
-		if !strings.HasPrefix(rest, ",") {
-			break
-		}
-		req, interp, after, ok := rubyStringLiteral(strings.TrimLeft(rest[1:], " \t"))
-		if !ok || interp {
-			break
-		}
-		d.Requirements = append(d.Requirements, req)
-		rest = after
-	}
-	d.Declared = strings.TrimRight(start[:len(start)-len(rest)], " \t")
-	tail := stripHashComment(rest)
-	if cut := rubyModifierIndex(tail); cut >= 0 {
-		tail = tail[:cut]
-	}
-	d.Text = strings.TrimRight(start[:len(start)-len(rest)]+tail, " \t")
-	return d, true
-}
-
-// rubyModifierIndex is the offset in s of a statement modifier keyword
-// (`if`, `unless`) outside any string, or -1. A keyword must stand as a word
-// (at the start or after a space, followed by a space, `(` or the end): `if:`
-// (a hash key) and `diff` are not modifiers. Declined edges (item 71 review): `if!x` / `)if` with no
-// space are left uncut (legal Ruby, not seen in Gemfiles), and an `unless`
-// inside an `install_if: -> { ... }` block cuts inside the option (the
-// declared literals are already read; only the stored text is shorter).
-func rubyModifierIndex(s string) int {
-	at := -1
-	scanOutsideStrings(s, func(i int, c byte) bool {
-		if i > 0 && s[i-1] != ' ' && s[i-1] != '\t' {
-			return true
-		}
-		for _, kw := range []string{"if", "unless"} {
-			if !strings.HasPrefix(s[i:], kw) {
-				continue
-			}
-			if j := i + len(kw); j == len(s) || s[j] == ' ' || s[j] == '\t' || s[j] == '(' {
-				at = i
-				return false
-			}
-		}
-		return true
-	})
-	return at
-}
-
-// rubyStringLiteral reads the Ruby string literal at the start of s: its
-// contents, whether it interpolates (`#{` in a double-quoted or %Q/% form),
-// and the text after it. ok is false when s does not start with a literal or
-// the literal is unterminated. Delimiters of the %-forms do not nest (no gem
-// name contains one).
-func rubyStringLiteral(s string) (contents string, interpolated bool, rest string, ok bool) {
-	if s == "" {
-		return "", false, s, false
-	}
-	var closer byte
-	interpolating := false
-	body := 0
-	switch {
-	case s[0] == '"':
-		closer, interpolating, body = '"', true, 1
-	case s[0] == '\'':
-		closer, body = '\'', 1
-	case strings.HasPrefix(s, "%q") && len(s) > 2:
-		closer, body = rubyPercentCloser(s[2]), 3
-	case strings.HasPrefix(s, "%Q") && len(s) > 2:
-		closer, interpolating, body = rubyPercentCloser(s[2]), true, 3
-	case s[0] == '%' && len(s) > 1 && strings.IndexByte("([{<", s[1]) >= 0:
-		closer, interpolating, body = rubyPercentCloser(s[1]), true, 2
-	default:
-		return "", false, s, false
-	}
-	if closer == 0 {
-		return "", false, s, false
-	}
-	var b strings.Builder
-	for i := body; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '\\' && i+1 < len(s):
-			i++
-			b.WriteByte(s[i])
-		case c == closer:
-			return b.String(), interpolated, s[i+1:], true
-		default:
-			if interpolating && c == '#' && i+1 < len(s) && s[i+1] == '{' {
-				interpolated = true
-			}
-			b.WriteByte(c)
-		}
-	}
-	return "", false, s, false
-}
-
-// rubyPercentCloser is the closing delimiter of a %-literal opened by open,
-// or 0 when open cannot open one (alphanumerics and space).
-func rubyPercentCloser(open byte) byte {
-	switch open {
-	case '(':
-		return ')'
-	case '[':
-		return ']'
-	case '{':
-		return '}'
-	case '<':
-		return '>'
-	}
-	if open == ' ' || open == '\t' || ('a' <= open && open <= 'z') || ('A' <= open && open <= 'Z') || ('0' <= open && open <= '9') {
-		return 0
-	}
-	return open
-}
-
-func parseGemfile(content string) []string {
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		if name := gemDeclaredName(line); name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps
-}
-
-func parsePomXML(content string) []string {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []string
-	// Simple extraction of <artifactId> within <dependency> blocks.
-	inDep := false
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "<dependency>") {
-			inDep = true
-		}
-		if strings.Contains(line, "</dependency>") {
-			inDep = false
-		}
-		if inDep && strings.Contains(line, "<artifactId>") {
-			name := strings.TrimPrefix(line, "<artifactId>")
-			name = strings.TrimSuffix(name, "</artifactId>")
-			name = strings.TrimSpace(name)
-			if name != "" {
-				deps = append(deps, name)
-			}
-		}
-	}
-	return deps
-}
-
-// parsePyprojectDeps extracts dependency names from pyproject.toml.
-// Handles both PEP 621 ([project] dependencies = [...]) and Poetry
-// ([tool.poetry.dependencies]) formats.
-func parsePyprojectDeps(content string) ([]string, error) {
-	var deps []string
-
-	// Try PEP 621 format: [project] section with dependencies = ["pkg>=1.0", ...]
-	deps = append(deps, parsePEP621Deps(content)...)
-
-	// Try Poetry format: [tool.poetry.dependencies] with key = value pairs
-	poetryDeps := parseTOMLDeps(content, "[tool.poetry.dependencies]")
-	deps = append(deps, poetryDeps...)
-
-	return deps, nil
-}
-
-// parsePEP621Deps extracts dependency names from PEP 621 format pyproject.toml.
-// Parses the dependencies = [...] array under [project].
-func parsePEP621Deps(content string) []string {
-	var deps []string
-	lines := strings.Split(content, "\n")
-	inProject := false
-	inDepsArray := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Track [project] section.
-		if tomlHeaderIs(trimmed, "project") {
-			inProject = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") && !tomlHeaderIs(trimmed, "project") {
-			inProject = false
-			inDepsArray = false
-			continue
-		}
-
-		if !inProject {
-			continue
-		}
-
-		// Detect dependencies = [ start. Whether a bracket opens or closes
-		// the array is decided OUTSIDE strings and comments (v0.29.57): the
-		// `]` of an extra — `dependencies = ["celery[redis]>=5.0",` — used
-		// to end the array on its opening line, dropping every dependency
-		// after it from the inventory, from libyear and from the OSV scan.
-		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
-			code := stripHashComment(trimmed)
-			opens, closes := listBrackets(code)
-			if opens {
-				// Items may share the opening line whether or not the array
-				// closes on it.
-				deps = append(deps, extractPEP621DepsFromLine(code)...)
-				inDepsArray = !closes
-			}
-			continue
-		}
-
-		if inDepsArray {
-			// The closer may carry the last item (`"celery>=5.0"]`), so the
-			// line is read before the array ends; a line that is only a
-			// closer yields nothing.
-			code := stripHashComment(trimmed)
-			_, closes := listBrackets(code)
-			deps = append(deps, extractPEP621DepsFromLine(code)...)
-			if closes {
-				inDepsArray = false
-			}
-		}
-	}
-	return deps
-}
-
-// extractPEP621DepName extracts a package name from a PEP 621 dependency string.
-// Input: `"flask>=2.0",` or `"tomli>=2.2.1 ; python_version < '3.11'",`
-// Output: `flask` or `tomli`
-func extractPEP621DepName(line string) string {
-	line = strings.TrimSpace(line)
-	// TOML literal strings are legal in pyproject.toml, so an item may be
-	// single-quoted. Trimming only '"' kept the apostrophe in the name
-	// ('tomli) while the libyear path stripped it — the two disagreed about
-	// the same file (v0.29.56).
-	line = strings.Trim(line, "\"',")
-	line = strings.TrimSpace(line)
-	// The inline comment goes before the marker strip, because a comment
-	// can contain a ';' (review round 4 on v0.29.66: PEP 621 kept
-	// "requests # HTTP" whole, so it failed the name gate while the
-	// libyear side cut the comment and looked requests up).
-	line = cutPyInlineComment(line)
-	if line == "" {
-		return ""
-	}
-	// Strip environment markers: everything after ';'
-	if idx := strings.Index(line, ";"); idx > 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
-	return pyInventoryName(line)
-}
-
-// extractPEP621DepsFromLine extracts dep names from an inline deps array.
-func extractPEP621DepsFromLine(line string) []string {
-	var deps []string
-	// Bounds come from the shared scanner: a bracket inside a quoted item
-	// is part of the value, not the array (v0.29.57).
-	inner := listInner(line)
-
-	// Only a comma BETWEEN items separates them (v0.29.56). A comma inside
-	// the quoted item is data — a bounded range ("requests>=2.31.0,<3.0.0")
-	// or an extras list ("celery[redis,auth]>=5.3") — and splitting on it
-	// cuts one dependency into fragments, so the real package is never
-	// resolved and a fragment is inventoried in its place. (Which fragments
-	// depends on how each path strips extras, so this comment does not name
-	// them; TestInlineDeclarationsSplitOnStructuralCommasOnly asserts the
-	// CORRECT output for both paths.)
-	for _, item := range splitTOMLTopLevel(inner) {
-		if name := extractPEP621DepName(item); name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps
-}
-
-// parseSetupPyDeps extracts dependency names from setup.py install_requires.
-func parseSetupPyDeps(content string) ([]string, error) {
-	return extractSetupPyInstallRequires(content), nil
-}
-
-// extractSetupPyInstallRequires parses the install_requires=[...] list from setup.py.
-func extractSetupPyInstallRequires(content string) []string {
-	var deps []string
-	lines := strings.Split(content, "\n")
-	inRequires := false
-
-	for _, line := range lines {
-		// A requirement someone commented out is not a dependency, and the
-		// `]` of an extra is not the end of the list — `"celery[redis]>=5.0"`
-		// used to close it and drop every requirement after it (v0.29.57).
-		// Same two rules as the pyproject readers, same two helpers.
-		code := stripHashComment(strings.TrimSpace(line))
-
-		// Detect install_requires=[ or install_requires = [
-		if !inRequires && strings.Contains(code, "install_requires") && strings.Contains(code, "[") {
-			inRequires = true
-			if idx := strings.Index(code, "["); idx >= 0 {
-				rest := code[idx:]
-				deps = append(deps, extractQuotedPyDeps(rest)...)
-				if _, closes := listBrackets(rest); closes {
-					inRequires = false
-				}
-			}
-			continue
-		}
-
-		if inRequires {
-			// The closing bracket may carry the last requirement.
-			deps = append(deps, extractQuotedPyDeps(code)...)
-			if _, closes := listBrackets(code); closes {
-				inRequires = false
-			}
-		}
-	}
-	return deps
-}
-
-// extractQuotedPyDeps extracts package names from Python quoted dependency strings.
-// Input: `'flask>=2.0', "requests==2.28.0",`
-// Output: ["flask", "requests"]
-func extractQuotedPyDeps(line string) []string {
-	var deps []string
-	// Extract all quoted strings.
-	for _, quote := range []byte{'\'', '"'} {
-		rest := line
-		for {
-			start := strings.IndexByte(rest, quote)
-			if start < 0 {
-				break
-			}
-			end := strings.IndexByte(rest[start+1:], quote)
-			if end < 0 {
-				break
-			}
-			depStr := rest[start+1 : start+1+end]
-			rest = rest[start+1+end+1:]
-			if name := extractPyDepName(depStr); name != "" {
-				deps = append(deps, name)
-			}
-		}
-	}
-	return deps
-}
-
-// extractPyDepName extracts the package name from a Python requirement string.
-// "flask>=2.0" -> "flask", "numpy" -> "numpy"
-func extractPyDepName(req string) string {
-	req = strings.TrimSpace(req)
-	if req == "" {
-		return ""
-	}
-	// The inline comment goes before the marker strip, because a comment
-	// can contain a ';' (review rounds 3-4 on v0.29.66).
-	req = cutPyInlineComment(req)
-	// Strip environment markers.
-	if idx := strings.Index(req, ";"); idx > 0 {
-		req = strings.TrimSpace(req[:idx])
-	}
-	return pyInventoryName(req)
-}
-
-// pyInventoryName is the ONE name rule for the Python dependency inventory
-// (requirements.txt, PEP 621 dependencies, setup.py/setup.cfg
-// install_requires; SR-17, PR #212 review): given a requirement with its
-// comment and environment marker already stripped, it returns the package
-// name, or "" when the requirement names none.
-//   - A PEP 508 direct reference names its package before the '@'
-//     ("requests @ git+https://…"); an '@' after a "://" belongs to a bare
-//     URL, which names no package.
-//   - Extras and the version specifier (operators or the parenthesized
-//     form) are not part of the name.
-//   - The result must be a PEP 508 name: a URL, path or prose line is not.
-func pyInventoryName(req string) string {
-	if at := strings.IndexByte(req, '@'); at > 0 && !strings.Contains(req[:at], "://") && isPyDirectReferenceURI(req[at+1:]) {
-		req = req[:at]
-	}
-	name, _ := splitPyNameSpec(stripPyExtras(req))
-	if !isPyRequirementName(name) {
-		return ""
-	}
-	return name
-}
-
-// isPyDirectReferenceURI reports whether the text after a requirement's
-// '@' is PEP 508's url_req URI: a scheme URL (git+https://, file:///) or a
-// file: reference. Anything else is not a direct reference — scp-style
-// "git@github.com:o/r.git" names no package, and cutting at its '@' stored
-// "git" (review round 1 on v0.29.66).
-func isPyDirectReferenceURI(rest string) bool {
-	rest = strings.ToLower(strings.TrimSpace(rest))
-	return strings.Contains(rest, "://") || strings.HasPrefix(rest, "file:")
-}
-
-// parseSetupPyVersions extracts deps with versions from setup.py install_requires.
-func parseSetupPyVersions(content string) []libyearDep {
-	var deps []libyearDep
-	lines := strings.Split(content, "\n")
-	inRequires := false
-
-	for _, line := range lines {
-		// See extractSetupPyInstallRequires: the two readers of this list
-		// must agree line for line, so they apply the same two rules.
-		code := stripHashComment(strings.TrimSpace(line))
-
-		if !inRequires && strings.Contains(code, "install_requires") && strings.Contains(code, "[") {
-			inRequires = true
-			if idx := strings.Index(code, "["); idx >= 0 {
-				rest := code[idx:]
-				deps = append(deps, extractQuotedPyVersionDeps(rest)...)
-				if _, closes := listBrackets(rest); closes {
-					inRequires = false
-				}
-			}
-			continue
-		}
-
-		if inRequires {
-			deps = append(deps, extractQuotedPyVersionDeps(code)...)
-			if _, closes := listBrackets(code); closes {
-				inRequires = false
-			}
-		}
-	}
-	return deps
-}
-
-// extractQuotedPyVersionDeps extracts deps with versions from the quoted
-// Python strings of a requirement list. A string that is a function-call
-// argument or a keyword value is not a list element: v0.29.56 found
-// "read_without_comments('dev-requirements')" in pixie-io/cpplint's
-// extras_require sent to PyPI as a package, so a string whose preceding
-// token is '(' , '=' or an identifier is skipped. Strings are scanned in
-// order, so a quote of one kind inside the other kind is not a delimiter.
-func extractQuotedPyVersionDeps(line string) []libyearDep {
-	var deps []libyearDep
-	for i := 0; i < len(line); i++ {
-		quote := line[i]
-		if quote != '\'' && quote != '"' {
-			continue
-		}
-		end := strings.IndexByte(line[i+1:], quote)
-		if end < 0 {
-			break
-		}
-		depStr := line[i+1 : i+1+end]
-		prev := strings.TrimRight(line[:i], " \t")
-		i += end + 1
-		if prev != "" {
-			switch c := prev[len(prev)-1]; {
-			case c == '(' || c == '=' || c == '_' || c == '.' ||
-				('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9'):
-				continue
-			}
-		}
-		if d := parsePyRequirement(depStr); d != nil {
-			deps = append(deps, *d)
-		}
-	}
-	return deps
-}
-
-// pyVersionOperators are PEP 440's comparison operators, longest first so a
-// scan at one position matches "===" before "==" and ">=" before ">".
-var pyVersionOperators = []string{"===", "==", "~=", "!=", ">=", "<=", ">", "<"}
-
-// stripPyExtras removes a PEP 508 extras group ("celery[redis,auth]>=5.3"
-// -> "celery>=5.3"). An UNCLOSED bracket keeps only the prefix.
-//
-// One spelling, because there were five (v0.29.56) and they disagreed about
-// the unclosed case in three different ways: "celery[redis" answered
-// "celery" from pyproject.toml and setup.py but "celery[redis" from
-// requirements.txt — and buildPurl turns that into "pkg:pypi/celery[redis",
-// which wireValidPurl ACCEPTS, so it reaches OSV as a package that cannot
-// exist. A name can never legitimately contain '[': PEP 508 names are
-// [A-Za-z0-9._-] (SR-17).
-func stripPyExtras(req string) string {
-	idx := strings.Index(req, "[")
-	if idx <= 0 {
-		return req
-	}
-	if end := strings.Index(req, "]"); end > idx {
-		return req[:idx] + req[end+1:]
-	}
-	return req[:idx]
-}
-
-// pep508NameRe is PEP 508's project-name grammar: letters and digits at
-// both ends, ".", "_" and "-" allowed inside.
-var pep508NameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
-
-// isPyRequirementName reports whether a requirements-file line split to a
-// real package name. splitPyNameSpec splits only at a version operator, so
-// a line that is not a requirement becomes one long "name" — conda exports
-// ("ujson=5.9.0", "pytorch::cpuonly"), RST and prose, templates, and
-// space-separated lists all fail this check and are skipped by BOTH
-// requirements readers (2026-09-23 log review; SR-17: one rule).
-func isPyRequirementName(name string) bool {
-	return pep508NameRe.MatchString(name)
-}
-
-// splitPyNameSpec splits a PEP 508 requirement at its LEFTMOST version
-// operator: name is the text before it, spec the whole specifier set from
-// that operator on ("" when the requirement carries no operator, and name ""
-// when it opens with one and so names nothing).
-//
-// Position, not preference (v0.29.56). A specifier set is legal in either
-// order, and five parsers each scanned their own preference list — in four
-// different orders, one of them missing five operators — so the first
-// operator in the LIST rather than in the STRING ended the name.
-// "numpy<2,>=1.22", which is what apache/airflow ships, matched ">=" first
-// and yielded the package name "numpy<2,": no registry can answer for it, so
-// the dependency got no libyear row, no purl and no OSV coverage. The
-// preference lists were reaching for the VERSION, which is a separate
-// question — see pyFloorVersion (SR-17).
-//
-// A '(' ends the name too (PR #212 review): "requests (>=2.0)" is PEP 508's
-// parenthesized form ('(' version_many ')', which Poetry 2.x writes); the
-// spec is the text inside the parentheses.
-func splitPyNameSpec(req string) (name, spec string) {
-	for i := 0; i < len(req); i++ {
-		// PEP 508's parenthesized form, "name (>=1.0)": the '(' ends the
-		// name only when a version operator follows it — "Note (optional)"
-		// is prose, not a requirement (review round 1 on v0.29.66).
-		if req[i] == '(' {
-			inner := strings.TrimSpace(req[i+1:])
-			if hasPyVersionOperatorPrefix(inner) {
-				return strings.TrimSpace(req[:i]), strings.TrimSpace(strings.TrimSuffix(inner, ")"))
-			}
-		}
-		for _, op := range pyVersionOperators {
-			if strings.HasPrefix(req[i:], op) {
-				return strings.TrimSpace(req[:i]), strings.TrimSpace(req[i:])
-			}
-		}
-	}
-	return strings.TrimSpace(req), ""
-}
-
-// hasPyVersionOperatorPrefix reports whether s opens with a PEP 440
-// comparison operator.
-func hasPyVersionOperatorPrefix(s string) bool {
-	for _, op := range pyVersionOperators {
-		if strings.HasPrefix(s, op) {
-			return true
-		}
-	}
-	return false
-}
-
-// pyPermittedVersionRank ranks the PEP 440 operators that may supply the
-// version to record, best first: an exact pin, then a compatible release,
-// then an inclusive floor, then an inclusive ceiling.
-//
-// Membership is the rule, not the ranking (v0.29.56): an operator appears
-// here only if its OWN clause permits the version it names. "!=", "<" and
-// ">" are all EXCLUSIVE — each rules its version out — so none of them can
-// answer, and their absence from this map is what enforces that.
-//
-// The check is per CLAUSE, not per set. A redundant set such as "<3,<=4"
-// still yields 4, because "<=4" permits 4 on its own even though "<3" rules
-// it out. (The set itself is satisfiable — 2.0 is in it — so the recorded
-// value is wrong, not the requirement.) Catching that needs whole-set
-// version comparison, and two independent sweeps of real manifests —
-// checking every recorded version against its own specifier set — found NOT
-// ONE that its set rejects. So this is left undone deliberately rather than
-// overlooked. (No tally, on purpose: the corpora were fetched ad hoc and are
-// not in the repo, so any figure here would be one a later reader cannot
-// re-derive. This release shipped four such counts, the last of them inside
-// the sentence that replaced the third.)
-//
-// Recording an excluded version writes a release the manifest contradicts
-// into repo_dependencies and into the purl, and OSV then answers about a
-// version nobody installed (SR-6). For "!=" that invents findings; for "<"
-// it HIDES them, which is the worse direction. Measured against OSV on
-// 2026-09-17: pkg:pypi/pyyaml@6.0 reports 0 vulnerabilities, while permitted
-// releases below it carry up to 6 (5.3.1 → 2, 5.3 → 4, 5.1 → 6; 5.4 and
-// 5.4.1 are also permitted and carry 0, so the bound is not uniformly
-// safe-looking — it is just not the version in use). An upper bound is
-// often pinned because that release is the one that changed something, so
-// the excluded value tends to sit outside the vulnerable range.
-//
-// An empty version yields a versionless purl, which OSV answers with the
-// package's whole advisory history — less precise, but not a claim the
-// manifest contradicts.
-var pyPermittedVersionRank = map[string]int{"===": 4, "==": 4, "~=": 3, ">=": 2, "<=": 1}
-
-// pyFloorVersion picks the version to record for a PEP 508 specifier set.
-func pyFloorVersion(spec string) string {
-	best, bestRank := "", -1
-	for _, clause := range strings.Split(spec, ",") {
-		clause = strings.TrimSpace(clause)
-		for _, op := range pyVersionOperators {
-			if !strings.HasPrefix(clause, op) {
-				continue
-			}
-			if r, ok := pyPermittedVersionRank[op]; ok && r > bestRank {
-				best, bestRank = strings.TrimSpace(clause[len(op):]), r
-			}
-			break
-		}
-	}
-	return best
-}
-
-// parsePyRequirement parses a single Python requirement string into a libyearDep.
-func parsePyRequirement(req string) *libyearDep {
-	req = strings.TrimSpace(req)
-	if req == "" {
-		return nil
-	}
-	// Strip an inline comment FIRST, and the array punctuation a list item
-	// carries. The non-registry predicate below matches " @ ", URLs and
-	// paths, all of which appear in comments: leaving one attached deletes a
-	// legitimate pinned dependency, which then has no libyear row and drops
-	// out of the OSV scan entirely. requirements*.txt learned this in
-	// v0.29.56; these entry points inherited the predicate afterwards and
-	// must strip the same way. (The trailing `",` also left versions like
-	// `2.31.0"` behind on the PEP 621 path.)
-	req = strings.Trim(strings.TrimSpace(req), "\"',")
-	req = strings.Trim(cutPyInlineComment(req), "\"',")
-	// Strip environment markers.
-	if idx := strings.Index(req, ";"); idx > 0 {
-		req = strings.TrimSpace(req[:idx])
-	}
-	// A VCS or URL reference, a local path, or a PEP 508 direct reference
-	// names no PyPI package (v0.29.56). requirements*.txt learned this from
-	// the eclipse-velocitas shape; every other Python entry point —
-	// pyproject.toml, setup.py, setup.cfg, and the dev/build variants —
-	// builds its deps HERE, so the check belongs here too, or the same
-	// "velocitas-sdk @ git+https://…" goes to PyPI as a package name from
-	// one file format away.
-	if isNonRegistryPyRequirement(req) {
-		return nil
-	}
-	cleanReq := stripPyExtras(req)
-
-	name, spec := splitPyNameSpec(cleanReq)
-	version := pyFloorVersion(spec)
-	// The same PEP 508 name gate as the inventory (pyInventoryName) and
-	// requirements.txt's libyear reader: prose such as "Note (optional)"
-	// names no package, and without the gate it reached PyPI and OSV from
-	// setup.py, setup.cfg, PEP 621 and the dev/build variants (review
-	// round 2 on v0.29.66).
-	if !isPyRequirementName(name) {
-		return nil
-	}
-	return &libyearDep{Name: name, Version: version, Requirement: req, Type: "runtime", Manager: "pypi"}
-}
-
-// parsePipfileDeps extracts dependency names from Pipfile [packages] section.
-func parsePipfileDeps(content string) ([]string, error) {
-	// The shared table reader (worklist items 42 and 43): every declared
-	// name, whatever its source — the inventory lists git and path
-	// dependencies by name as npm's and Cargo's do.
-	var deps []string
-	for _, e := range scanTOMLDepTables(content, map[string]bool{"[packages]": true}) {
-		deps = append(deps, e.Name)
-	}
-	return deps, nil
-}
-
-// parsePipfileVersions extracts deps with versions from Pipfile [packages]
-// through the shared table reader (pythonTOMLDeps; worklist items 42 and 43).
-func parsePipfileVersions(content string) []libyearDep {
-	return pythonTOMLDeps(content, map[string]string{"[packages]": "runtime"})
-}
-
-// parsePyprojectVersionsFromContent extracts deps with versions from pyproject.toml content.
-// Handles both PEP 621 and Poetry formats.
-func parsePyprojectVersionsFromContent(content string) []libyearDep {
-	var deps []libyearDep
-
-	// PEP 621: [project] dependencies = ["flask==2.0.2", ...]
-	deps = append(deps, parsePEP621Versions(content)...)
-
-	// Poetry: [tool.poetry.dependencies] key = "^version"
-	deps = append(deps, parsePoetryVersions(content)...)
-
-	return deps
-}
-
-// parsePEP621Versions extracts deps with versions from PEP 621 format.
-func parsePEP621Versions(content string) []libyearDep {
-	var deps []libyearDep
-	lines := strings.Split(content, "\n")
-	inProject := false
-	inDepsArray := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if tomlHeaderIs(trimmed, "project") {
-			inProject = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") && !tomlHeaderIs(trimmed, "project") {
-			inProject = false
-			inDepsArray = false
-			continue
-		}
-		if !inProject {
-			continue
-		}
-
-		// The array's bounds are read outside strings and comments — see
-		// parsePEP621Deps, which reads the same array for the name
-		// inventory and must agree with this reader line for line.
-		if strings.HasPrefix(trimmed, "dependencies") && strings.Contains(trimmed, "=") {
-			code := stripHashComment(trimmed)
-			opens, closes := listBrackets(code)
-			if opens {
-				deps = append(deps, extractPEP621VersionDeps(code)...)
-				inDepsArray = !closes
-			}
-			continue
-		}
-
-		if inDepsArray {
-			code := stripHashComment(trimmed)
-			_, closes := listBrackets(code)
-			deps = append(deps, extractPEP621VersionDeps(code)...)
-			if closes {
-				inDepsArray = false
-			}
-		}
-	}
-	return deps
-}
-
-// extractPEP621VersionDeps extracts deps with versions from inline PEP 621 arrays.
-func extractPEP621VersionDeps(line string) []libyearDep {
-	var deps []libyearDep
-	// Bounds come from the shared scanner: a bracket inside a quoted item
-	// is part of the value, not the array (v0.29.57).
-	inner := listInner(line)
-
-	// Structural commas only — see extractPEP621DepsFromLine (v0.29.56).
-	for _, item := range splitTOMLTopLevel(inner) {
-		item = strings.Trim(strings.TrimSpace(item), "\"'")
-		if item != "" {
-			if d := parsePyRequirement(item); d != nil {
-				deps = append(deps, *d)
-			}
-		}
-	}
-	return deps
-}
-
-// parsePoetryVersions extracts deps with versions from Poetry's
-// [tool.poetry.dependencies] through the shared table reader
-// (pythonTOMLDeps; worklist items 42 and 43).
-func parsePoetryVersions(content string) []libyearDep {
-	return pythonTOMLDeps(content, map[string]string{"[tool.poetry.dependencies]": "runtime"})
-}
-
-// parseDirectoryPackagesProps extracts dependency names from .NET Directory.Packages.props.
-// Format: <PackageVersion Include="Name" Version="1.0.0" />
-func parseDirectoryPackagesProps(content string) ([]string, error) {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "PackageVersion") || !strings.Contains(line, "Include=") {
-			continue
-		}
-		name := extractXMLAttr(line, "Include")
-		if name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps, nil
-}
-
-// parseDirectoryPackagesPropsVersions extracts deps with versions from Directory.Packages.props.
-func parseDirectoryPackagesPropsVersions(content string) []libyearDep {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "PackageVersion") || !strings.Contains(line, "Include=") {
-			continue
-		}
-		name := extractXMLAttr(line, "Include")
-		version := extractXMLAttr(line, "Version")
-		// v0.27.44 (summary/19 P1): PrivateAssets="all" marks a
-		// build/analyzer-only package that never flows to consumers
-		// or the runtime output → build. Only the attribute form is
-		// visible to this line-based parser; the child-element form
-		// (<PrivateAssets>all</PrivateAssets>) spans lines and is a
-		// documented limitation.
-		scope := "runtime"
-		if strings.EqualFold(extractXMLAttr(line, "PrivateAssets"), "all") {
-			scope = model.ScopeBuild
-		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
-		}
-	}
-	return deps
-}
-
-// extractXMLAttr extracts the value of an XML attribute from a line.
-// extractXMLAttr(`<PackageVersion Include="Foo" />`, "Include") returns "Foo".
-func extractXMLAttr(line, attr string) string {
-	key := attr + "=\""
-	idx := strings.Index(line, key)
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+len(key):]
-	end := strings.Index(rest, "\"")
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
 }
 
 // ============================================================
 // Libyear scanning (dependency age)
 // ============================================================
 
-func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
+func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, workDir string, lockfiles []versionuse.Lockfile, result *AnalysisResult) error {
 	ac.logger.Info("scanning libyear", "repo_id", repoID)
 	// The registry layer's own conditions (a deep pacing queue) report
 	// through this collection's logger, not slog's default.
 	ctx = withRegistryLogger(ctx, ac.logger)
 
-	// Rotate previous libyear data to history before inserting fresh data.
-	// This ensures the main table always has the latest snapshot with current
-	// license values. Without rotation, old rows with empty licenses persist
-	// because ON CONFLICT DO NOTHING skips existing rows.
-	// v0.27.17: a failed rotation ABORTS this pass. The tables have no
-	// unique arbiter, so inserting on top of an un-rotated snapshot
-	// would duplicate every row (the old blanket ON CONFLICT DO
-	// NOTHING never protected against this — it was dead code). The
-	// next cycle retries with a fresh rotation.
-	if err := ac.store.RotateLibyearToHistory(ctx, repoID); err != nil {
-		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
-		// defect. Only the log is suppressed — surrounding behaviour is
-		// unchanged and the work is retried on the next cycle.
+	// The order of work is: walk and parse, resolve, replace (summary/70,
+	// 4.7). Nothing is written until the whole inventory is in memory, and
+	// then it is written in ONE transaction (store.ReplaceRepoLibyear), so
+	// the stored inventory is never partial. An analysis that stops before
+	// the replace, for any reason, has written nothing and the previous
+	// inventory stands whole. Before 0.29.157 the previous rows were rotated
+	// away first and each new row inserted after its own registry lookup; a
+	// vulnerability scan reading the table part-way closed the findings of
+	// every dependency not yet re-inserted.
+	var allDeps []model.LibyearDep
+	// The analysis half of the coverage record, written with the inventory.
+	var cov model.InventoryCoverage
+	// One walk per scan: it holds the Cargo workspace index, so every
+	// Cargo.toml of a workspace inherits from the same root, read once and
+	// never above the clone (v0.29.71).
+	walk := manifest.NewWalk(workDir, ac.logger)
+	// v0.29.182: a Maven parent or BOM that is not in the clone is obtained
+	// from the configured Maven repositories, and stored.
+	poms, err := newMavenPomSource(ctx, ac.store, ac.logger)
+	if err != nil {
+		// Which repository hosts may be used is not known. Nothing is
+		// walked; the previous inventory stands.
 		if !errors.Is(err, context.Canceled) {
-			ac.logger.Error("failed to rotate libyear to history — skipping libyear insert this cycle",
+			ac.logger.Error("libyear: the distrusted repository hosts could not be read — the previous dependency inventory is kept",
 				"repo_id", repoID, "error", err)
 		}
-		return fmt.Errorf("rotate libyear to history: %w", err)
+		return fmt.Errorf("libyear: %w", err)
 	}
-
-	var allDeps []libyearDep
-	// One index per scan: every Cargo.toml of a workspace inherits from the
-	// same root, read once and never above the clone (v0.29.71).
-	cargoWS := newCargoWorkspaceIndex(workDir, ac.logger)
+	walk.SetPomSource(poms)
+	defer poms.logSummary(repoID)
+	// The registry lookups below ask the same list.
+	ctx = withDistrustedHosts(ctx, poms.distrusted)
+	if configured := mavenRepositoryBases(); len(usableMavenRepositories(ctx)) != len(configured) {
+		// The effective value, where it is used: a configured repository
+		// is distrusted and is not being asked.
+		var hosts []string
+		for _, b := range usableMavenRepositories(ctx) {
+			hosts = append(hosts, hostOf(b))
+		}
+		ac.logger.Info("maven repositories in use (a configured one is distrusted)", "repo_id", repoID, "hosts", hosts)
+	}
+	manifestOptions := manifest.Options{DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps}
 
 	// v0.27.36: a root-stat failure makes Walk return without visiting
 	// anything — silently producing ZERO dependencies for the repo.
 	// Per-entry errors are still skipped inside the callback.
 	if err := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			if path == workDir {
+				// The root itself could not be read: nothing will be
+				// visited. Returned, so the phase stops (below) instead of
+				// going on with an inventory of nothing.
+				return err
+			}
+			return nil // one unreadable entry: skipped, the rest is walked
 		}
 		// Reject symlinks to prevent traversal attacks (see scanDependencies).
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -1489,137 +405,54 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			return nil
 		}
-		base := canonicalManifestName(filepath.Base(path))
-		switch base {
-		case "package.json":
-			deps, err := parsePackageJSONVersions(path)
-			if err != nil {
-				ac.logger.Warn("failed to parse package.json versions", "path", path, "error", err)
-			}
-			allDeps = append(allDeps, deps...)
-		case "requirements.txt":
-			deps := parseRequirementsTxtVersions(path)
-			allDeps = append(allDeps, deps...)
-		case "pyproject.toml":
-			if data, err := readManifest(path); err == nil {
-				deps := parsePyprojectVersionsFromContent(string(data))
-				allDeps = append(allDeps, deps...)
-				if ac.DevBuildDeps {
-					allDeps = append(allDeps, parsePyprojectDevBuildVersions(string(data))...)
-				}
-			}
-		case "setup.py":
-			if data, err := readManifest(path); err == nil {
-				deps := parseSetupPyVersions(string(data))
-				allDeps = append(allDeps, deps...)
-				if ac.DevBuildDeps {
-					allDeps = append(allDeps, parseSetupPyDevBuildVersions(string(data))...)
-				}
-			}
-		case "Pipfile":
-			if data, err := readManifest(path); err == nil {
-				deps := parsePipfileVersions(string(data))
-				allDeps = append(allDeps, deps...)
-				if ac.DevBuildDeps {
-					allDeps = append(allDeps, parsePipfileDevPackages(string(data))...)
-				}
-			}
-		case "setup.cfg":
-			if data, err := readManifest(path); err == nil {
-				deps := parseSetupCfgVersions(string(data))
-				allDeps = append(allDeps, deps...)
-				if ac.DevBuildDeps {
-					allDeps = append(allDeps, parseSetupCfgExtrasVersions(string(data))...)
-				}
-			}
-		case "go.mod":
-			deps := parseGoModVersions(path)
-			allDeps = append(allDeps, deps...)
-		case "Cargo.toml":
-			deps := parseCargoVersionsIn(cargoWS, path)
-			allDeps = append(allDeps, deps...)
-		case "Gemfile":
-			deps := parseGemfileVersions(path)
-			allDeps = append(allDeps, deps...)
-		case "pom.xml":
-			if data, err := readManifest(path); err == nil {
-				deps := parsePomXMLVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "build.gradle", "build.gradle.kts":
-			if data, err := readManifest(path); err == nil {
-				deps := parseBuildGradleVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "composer.json":
-			deps, err := parseComposerJSONVersions(path)
-			if err != nil {
-				ac.logger.Warn("failed to parse composer.json versions", "path", path, "error", err)
-			}
-			allDeps = append(allDeps, deps...)
-		case "mix.exs":
-			if data, err := readManifest(path); err == nil {
-				deps := parseMixExsVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "packages.config":
-			if data, err := readManifest(path); err == nil {
-				deps := parseNuGetPackagesConfigVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "Directory.Packages.props":
-			if data, err := readManifest(path); err == nil {
-				deps := parseDirectoryPackagesPropsVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "build.sbt":
-			if data, err := readManifest(path); err == nil {
-				deps := parseBuildSbtVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "pubspec.yaml":
-			if data, err := readManifest(path); err == nil {
-				deps := parsePubspecVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "Package.swift":
-			if data, err := readManifest(path); err == nil {
-				deps := parsePackageSwiftVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		case "package.yaml":
-			if data, err := readManifest(path); err == nil {
-				deps := parseHaskellPackageYamlVersions(string(data))
-				allDeps = append(allDeps, deps...)
-			}
-		default:
-			// v0.27.45 (summary/19 P2): requirements-variant files
-			// (requirements-dev.txt, test_requirements.txt, or another
-			// .txt directly inside a requirements/ directory — never
-			// requirements.txt itself) with filename-token scope.
-			if ac.DevBuildDeps {
-				if scope, ok := requirementsFileScope(base, path); ok {
-					allDeps = append(allDeps, parseRequirementsTxtVersionsScoped(path, scope)...)
-				}
-			}
-			// v0.27.47 (summary/19 P4): GitHub Actions workflow
-			// `uses:` references → build-scope deps.
-			if ac.GitHubActionsDeps && isWorkflowPath(path) {
-				if data, err := readManifest(path); err == nil {
-					allDeps = append(allDeps, parseWorkflowUses(string(data))...)
-				}
-			}
-			// Extension-based matching (e.g., *.csproj).
-			if strings.HasSuffix(base, ".csproj") {
-				if data, err := readManifest(path); err == nil {
-					deps := parseCsprojVersions(string(data))
-					allDeps = append(allDeps, deps...)
-				}
-			}
+		// The roster is the dispatch (manifest.Walk.Read): every kind that
+		// claims the file reads it, under the two knobs. A file no kind
+		// claims is not a manifest.
+		read := walk.Read(path, manifestOptions)
+		if !read.Claimed {
+			return nil
 		}
+		cov.ManifestsFound++
+		rel := relativeToClone(workDir, path)
+		if textclean.WouldChange(rel) {
+			// The path is what a manifest's rows are carried by, and two
+			// paths the sanitizer would change could become one. Such a
+			// manifest is recorded as unread under its sanitized path and
+			// neither contributes rows nor carries any.
+			cov.ManifestsFailed = append(cov.ManifestsFailed, model.ManifestFailure{
+				Path: textclean.Sanitize(rel), Kind: read.Kind, Reason: model.ManifestFailedRead, NoCarry: true})
+			ac.logger.Warn("manifest path cannot be stored unchanged — not read", "kind", read.Kind, "path", textclean.Sanitize(rel))
+			return nil
+		}
+		if f := read.Failure; f != nil {
+			// Recorded, not silent: a manifest that contributes nothing is
+			// otherwise indistinguishable from a project that dropped its
+			// dependencies. It contributes no declarations this cycle; the
+			// replace carries its previous rows by this path instead.
+			cov.ManifestsFailed = append(cov.ManifestsFailed, model.ManifestFailure{Path: rel, Kind: f.Kind, Reason: f.Reason})
+			if f.Reason == model.ManifestFailedParse {
+				ac.logger.Warn("failed to parse "+f.Kind+" versions", "path", path, "error", f.Err)
+			} else {
+				ac.logger.Warn("failed to read manifest", "kind", f.Kind, "path", path, "error", f.Err)
+			}
+			return nil
+		}
+		cov.ManifestsParsed++
+		for i := range read.Deps {
+			read.Deps[i].ManifestPath = rel
+		}
+		allDeps = append(allDeps, read.Deps...)
 		return nil
 	}); err != nil {
-		ac.logger.Warn("libyear manifest walk failed — dependency scan may be incomplete", "dir", workDir, "error", err)
+		// The walk failed at the root itself (per-entry errors are skipped
+		// inside the callback), so nothing was visited. Replacing the
+		// inventory now would replace it with nothing, and every finding
+		// would close as if its dependency were gone. The previous inventory
+		// stands (v0.27.36 logged this and went on with zero dependencies).
+		ac.logger.Error("libyear manifest walk failed at the clone's root — the previous dependency inventory is kept",
+			"repo_id", repoID, "dir", workDir, "error", err)
+		ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptRootUnreadable)
+		return fmt.Errorf("libyear manifest walk: %w", err)
 	}
 
 	// v0.27.71: central version-hygiene choke point. Every parser's
@@ -1630,7 +463,56 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	// silently defeating OSV version matching and registry lookups.
 	// See version_normalize.go for the incident history.
 	for i := range allDeps {
-		allDeps[i].Version = normalizeParsedVersion(allDeps[i].Manager, allDeps[i].Version)
+		allDeps[i].Version = manifest.NormalizeParsedVersion(allDeps[i].Manager, allDeps[i].Version)
+	}
+
+	// v0.29.183 (summary/70, 4.5, D9): a Maven dependencyManagement entry is
+	// not a dependency. In a tree read whole it stops being inventoried: an
+	// entry whose version a dependency took is represented by that
+	// dependency; one whose version was applied to nothing, and a BOM
+	// import's own coordinate, becomes a note. A tree that was not read
+	// whole keeps its entries as rows, and is named with the reason.
+	mavenManaged := walk.SettleMavenManaged(allDeps)
+	allDeps = mavenManaged.Kept
+	for _, h := range mavenManaged.TreeHosts {
+		cov.MavenTreeHosts = append(cov.MavenTreeHosts, model.MavenTreeHosts{Root: h.Root, Hosts: h.Hosts})
+	}
+	for _, g := range mavenManaged.NotWhole {
+		cov.MavenTreesNotWhole = append(cov.MavenTreesNotWhole, model.MavenTreeGap{Root: g.Root, Reason: g.Reason})
+	}
+	if len(mavenManaged.Unused)+len(mavenManaged.NotWhole) > 0 {
+		ac.logger.Info("maven: dependencyManagement entries",
+			"repo_id", repoID, "not_inventoried_unused_or_bom_import", len(mavenManaged.Unused),
+			"trees_not_read_whole_entries_kept", len(mavenManaged.NotWhole))
+	}
+
+	// v0.29.177 (summary/70, 4.3): the version IN USE. Where the nearest
+	// lockfile in a manifest's ancestry resolves a dependency to exactly
+	// one version, the row reports that version, with its source; the
+	// registry is then asked about the version really installed. AFTER the
+	// hygiene above, on purpose: a locked version is the lockfile's field
+	// as written. This changes what a row reports and never what the scan
+	// targets (versionuse.Nearest).
+	lockedRows := 0
+	for i := range allDeps {
+		if allDeps[i].NonRegistry {
+			continue
+		}
+		version, source := versionuse.Nearest(allDeps[i].ManifestPath, allDeps[i].Manager, allDeps[i].Name, lockfiles)
+		if source != "" {
+			// A lockfile's answer replaces a source the reader set (a
+			// Maven version from dependencyManagement); no answer leaves
+			// the reader's in place.
+			allDeps[i].VersionSource = source
+		}
+		if source == versionuse.SourceLocked {
+			allDeps[i].Version = version
+			lockedRows++
+		}
+	}
+	if lockedRows > 0 {
+		ac.logger.Info("libyear: dependencies reported at the version their nearest lockfile resolves",
+			"repo_id", repoID, "deps", lockedRows)
 	}
 
 	// v0.27.45 (summary/19 P2, Go C1): relabel go.mod deps whose
@@ -1645,11 +527,27 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	licenseFailures := 0
 	nonRegistry := 0
 	var licenseSample error
-	swiftPM := func(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+	// The whole inventory, held in memory until the one replace below.
+	rows := make([]*model.LibyearRow, 0, len(allDeps))
+	nameRejected := 0
+	nameRejectedSample := ""
+	withoutRow := map[string]int{}
+	// A declared dependency that gets no row is recorded as a note, with the
+	// reason, and counted under the same reason in the coverage record.
+	var notes []model.InventoryNote
+	noRow := func(dep model.LibyearDep, kind string) {
+		withoutRow[kind]++
+		notes = append(notes, inventoryNote(dep, kind))
+	}
+	cov.DependenciesDeclared = len(allDeps) + len(mavenManaged.Unused)
+	for _, dep := range mavenManaged.Unused {
+		noRow(dep, model.NoRowManagedUnused)
+	}
+	swiftPM := func(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 		return resolveSwiftPMLibyear(ctx, ac.GitHubAPI, dep)
 	}
 	for _, dep := range allDeps {
-		var resolve func(context.Context, libyearDep) (*db.LibyearRow, error)
+		var resolve func(context.Context, model.LibyearDep) (*model.LibyearRow, error)
 		switch dep.Manager {
 		case "npm":
 			resolve = resolveNPMLibyear
@@ -1673,6 +571,8 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			resolve = resolvePubDevLibyear
 		case "hackage":
 			resolve = resolveHackageLibyear
+		case "cran":
+			resolve = resolveCRANLibyear
 		case "swiftpm":
 			resolve = swiftPM
 		case "githubactions":
@@ -1681,6 +581,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			// The upstream-dependencies snapshot filters libyear IS
 			// NOT NULL, so actions never inflate the headline.
 		default:
+			// No resolver for this package manager. No parser emits one the
+			// switch above lacks; counted so the coverage record's numbers
+			// still add up if one ever does.
+			withoutRow[model.NoRowLookupFailed]++
 			continue
 		}
 		if dep.NonRegistry {
@@ -1693,19 +597,40 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			// scan's universe as an unscannable dependency, which blocks
 			// the scan-complete stamp (v0.28.5).
 			nonRegistry++
+			noRow(dep, model.NoRowNonRegistry)
 			ac.logger.Debug("libyear: dependency is not from a registry — not looked up",
 				"dep", dep.Name, "manager", dep.Manager, "requirement", dep.Requirement)
 			continue
 		}
-		var lb *db.LibyearRow
+		// Before any lookup: can this dependency have a row at all? A
+		// coordinate with no purl (no group where the purl type requires a
+		// namespace) is recorded and not looked up; it is not garbage. Then
+		// the name itself: one that fails its ecosystem's grammar, cannot be
+		// stored unchanged or is too long is not a package name, and the
+		// registry is not asked about it (0.29.164: the registry used to be
+		// the de facto validator, by answering for nothing else).
+		if _, hasPurl := manifestPurl(dep); !hasPurl {
+			noRow(dep, model.NoRowNoNamespace)
+			continue
+		}
+		if !pkgid.ValidName(dep.Manager, dep.Name) || textclean.WouldChange(dep.Name) {
+			nameRejected++
+			noRow(dep, model.NoRowNameRejected)
+			if nameRejectedSample == "" {
+				nameRejectedSample = textclean.Sanitize(dep.Name)
+			}
+			continue
+		}
+		var lb *model.LibyearRow
 		var err error
 		if resolve == nil {
-			lb = &db.LibyearRow{
+			lb = &model.LibyearRow{
 				Name: dep.Name, Requirement: dep.Requirement,
 				Type: dep.Type, PackageManager: dep.Manager,
 				CurrentVersion: dep.Version,
-				Purl:           buildPurl("githubactions", dep.Name, dep.Version),
+				Purl:           pkgid.Purl("githubactions", dep.Name, dep.Version),
 				NoLibyear:      true,
+				ManifestPath:   dep.ManifestPath,
 			}
 		} else {
 			lb, err = resolveLibyearCached(ctx, libyearRowCache, dep, resolve)
@@ -1715,6 +640,17 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 		}
 
 		if err != nil || lb == nil {
+			// 0.29.162: the dependency keeps its row. The inventory says
+			// what the repository DEPENDS ON, which the manifest states and
+			// the registry only annotates; dropping the row made a registry
+			// outage, a typo or a private package invisible to the
+			// vulnerability scan and to the SBOM.
+			kept, hasPurl := unansweredLibyearRow(dep, err)
+			if kept != nil && errors.Is(err, errRepositoryDistrusted) && dep.VersionReason == "" {
+				// Its only repositories are distrusted. Said as that, and
+				// never as "not on a registry", which would be false.
+				dep.VersionReason = model.VersionReasonInheritedRepositoryRefused
+			}
 			// v0.27.19: the silent `continue` here hid TWO
 			// since-inception ecosystem outages (npm CLI missing on
 			// hosts; crates.io 403 on curl's default UA). Count per
@@ -1726,8 +662,18 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 				if resolveSample[dep.Manager] == nil {
 					resolveSample[dep.Manager] = err
 				}
-				ac.logger.Debug("libyear resolution failed", "dep", dep.Name, "manager", dep.Manager, "error", err)
+				ac.logger.Debug("libyear resolution failed", "dep", dep.Name, "manager", dep.Manager,
+					"reason", libyearStatus(dep, lb, err), "error", err)
 			}
+			if !hasPurl || !storableLibyearRow(kept) {
+				// Unreachable: both were decided before the lookup. Kept as
+				// the same record a dependency with no purl gets, so the
+				// numbers add up if the two checks ever drift apart.
+				noRow(dep, model.NoRowNoNamespace)
+				continue
+			}
+			stampVersionSource(dep, kept)
+			rows = append(rows, kept)
 			continue
 		}
 		if dep.Manager == "go" {
@@ -1745,30 +691,59 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			}
 			lb.License = lic
 		}
-		markUnknownLibyear(lb)
-		if err := ac.store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
-			// Round-8 class sweep: same flood shape as the dependency
-			// loop above.
-			if errors.Is(err, context.Canceled) {
-				return err
-			}
-			ac.logger.Warn("failed to insert libyear", "dep", dep.Name, "error", err)
+		settleLibyear(dep, lb)
+		stampVersionSource(dep, lb)
+		if !storableLibyearRow(lb) {
+			// A resolver's row whose name differs from the declared one
+			// and cannot be stored unchanged (the declared name passed
+			// above). No resolver renames, so this is a guard.
+			nameRejected++
+			noRow(dep, model.NoRowNameRejected)
 			continue
 		}
-		result.LibyearDeps++
+		rows = append(rows, lb)
+	}
+
+	// Replace: the previous inventory goes to history and rows becomes the
+	// inventory, in one transaction, or nothing changes.
+	cov.DependenciesWithoutRow = withoutRow
+	// v0.29.184: the package repositories this repository's build files
+	// declare, written by the same replace.
+	for _, d := range walk.DeclaredRepositories() {
+		if textclean.WouldChange(d.URL) || textclean.WouldChange(d.ManifestPath) {
+			continue // cannot be stored unchanged; the next analysis reads it again
+		}
+		cov.DeclaredRepositories = append(cov.DeclaredRepositories, model.DeclaredRepository{
+			ManifestPath: d.ManifestPath, URL: d.URL, Host: hostOf(d.URL), Kind: d.Kind, NotFetched: d.NotFetched})
+	}
+	if err := ac.store.ReplaceRepoLibyear(ctx, repoID, rows, notes, cov); err != nil {
+		// A cancelled context is a `stop serve`, not a defect.
+		if !errors.Is(err, context.Canceled) {
+			ac.logger.Error("failed to replace the dependency inventory — the previous inventory is kept",
+				"repo_id", repoID, "rows", len(rows), "error", err)
+			ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptReplaceFailed)
+		}
+		return fmt.Errorf("replace dependency inventory: %w", err)
+	}
+	result.LibyearDeps = len(rows)
+	if nameRejected > 0 {
+		ac.logger.Warn("libyear: declared names that are not package names were given no row and not looked up",
+			"repo_id", repoID, "deps", nameRejected, "sample_name_sanitized", nameRejectedSample)
 	}
 
 	if nonRegistry > 0 {
-		// npm and cargo only: Python drops a VCS/URL/path requirement while
-		// parsing (isNonRegistryPyRequirement, applied in
-		// parseRequirementsTxtVersions and parsePyRequirement), because such
+		// Every manager whose reader marks such an entry (npm and cargo
+		// first; Dart, Elixir, Ruby, Go, Composer, R and NuGet since).
+		// Not Python: it drops a VCS/URL/path requirement while
+		// parsing (manifest.IsNonRegistryPyRequirement, applied in
+		// manifest.ParseRequirementsTxtVersions and manifest.ParsePyRequirement), because such
 		// a line names no PyPI package to look up, so it never reaches this
 		// counter. Its INVENTORY row survives when the entry point is one
 		// the inventory walk parses (requirements.txt lines other than
 		// pip's option lines, PEP 621 dependencies, install_requires), with
 		// the requirement line itself as the dependency name
 		// (docs/architecture/analysis.md).
-		ac.logger.Info("libyear: npm/cargo dependencies not from a registry were not looked up",
+		ac.logger.Info("libyear: dependencies not from a registry were not looked up",
 			"repo_id", repoID, "deps", nonRegistry)
 	}
 	if licenseFailures > 0 {
@@ -1784,33 +759,16 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 	return nil
 }
 
-type libyearDep struct {
-	Name        string
-	Version     string
-	Requirement string
-	Type        string // "runtime", "dev"
-	Manager     string // "npm", "pypi"
-	// NonRegistry (v0.29.56) marks a dependency the manifest sources from
-	// somewhere other than its ecosystem's registry: a local path or
-	// workspace package, a git or URL reference. The registry knows nothing
-	// about it — looking it up only drew 404s — and it is NOT the registry
-	// package of the same name (SR-6), so scanLibyear skips it: no lookup
-	// and no repo_deps_libyear row, counted in one INFO line per repo. The
-	// dependency scan still inventories it in repo_dependencies.
-	//
-	// Storing a purl-less row instead was tried and reverted: a blank purl
-	// counts as an UNSCANNABLE dependency in the vulnerability scan, which
-	// would stop a repo whose deps are all local from being stamped
-	// scan-complete (the v0.28.5 contract).
-	NonRegistry bool
-}
-
 // registryHTTPClient bounds every registry request at 30s — the same
 // budget the curl-era --max-time carried (v0.27.5's #2 hang class). The
 // same figure is the whole-lookup budget for rate-limit waits
 // (registryRetryBudget). Per-host PACING waits are separate and are not
 // bounded by it (paceRegistryHost).
-var registryHTTPClient = &http.Client{Timeout: 30 * time.Second}
+//
+// v0.29.179: under the outbound-address rule (registry_boundary.go): the
+// transport's dial pins the checked address, and each redirect hop is
+// judged before it is followed.
+var registryHTTPClient = &http.Client{Timeout: 30 * time.Second, Transport: registryTransport, CheckRedirect: registryCheckRedirect}
 
 // fetchRegistryJSON fetches a registry URL over net/http (v0.27.30 —
 // converted from curl so every resolver's base URL is injectable for
@@ -1832,237 +790,15 @@ func fetchRegistryJSON(ctx context.Context, url string, headers ...string) ([]by
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	// Bounded (0.29.179): one byte past the bound is read, to tell a body
+	// at the bound from one beyond it.
+	limit := registryBodyLimit(ctx)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	platform.NoteResponseSize(registryLoggerFrom(ctx), "registry", url, int64(len(b)))
+	if err == nil && int64(len(b)) > limit {
+		return nil, fmt.Errorf("%w (%d bytes): %s", errRegistryBodyTooLarge, limit, platform.RedactURLUserinfo(url))
+	}
 	return b, err
-}
-
-func parsePackageJSONVersions(path string) ([]libyearDep, error) {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil, err
-	}
-	var pkg struct {
-		Dependencies         map[string]string `json:"dependencies"`
-		DevDependencies      map[string]string `json:"devDependencies"`
-		PeerDependencies     map[string]string `json:"peerDependencies"`
-		OptionalDependencies map[string]string `json:"optionalDependencies"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return nil, err
-	}
-	var deps []libyearDep
-	add := func(m map[string]string, scope string) {
-		for name, requirement := range m {
-			if d, ok := npmManifestDep(name, requirement, scope); ok {
-				deps = append(deps, d)
-			}
-		}
-	}
-	add(pkg.Dependencies, "runtime")
-	add(pkg.DevDependencies, "dev")
-	// v0.27.44 (summary/19 P1): peer/optional carry their OWN scopes —
-	// they were conflated with runtime. Peer deps are expectations the
-	// CONSUMER satisfies (not vendored by this package); optional deps
-	// may be absent at runtime.
-	add(pkg.PeerDependencies, model.ScopePeer)
-	add(pkg.OptionalDependencies, model.ScopeOptional)
-	return deps, nil
-}
-
-// npmManifestDep turns one package.json dependency into a registry lookup.
-// v0.29.56: an alias ("typescript-3.5": "npm:typescript@~3.5.3") resolves
-// the package it names, and a dependency that is not on the registry at
-// all — a local package (file:, link:, portal:, workspace:) or a git, URL
-// or GitHub-shorthand reference — is skipped: its key was sent to the npm
-// registry as a name ("@ZettaScaleLabs/zenoh-ts": "file:…" in
-// eclipse-zenoh/zenoh-demos → 404). catalog: stays: it names a registry
-// version pinned elsewhere (the unpinned pathway).
-func npmManifestDep(name, requirement, scope string) (libyearDep, bool) {
-	req := strings.TrimSpace(requirement)
-	lower := strings.ToLower(req)
-	resolvedName, version := name, req
-	if strings.HasPrefix(lower, "npm:") {
-		alias := req[len("npm:"):]
-		if n, v, ok := splitNPMSpec(alias); ok {
-			resolvedName, version = n, v
-		} else {
-			resolvedName, version = alias, ""
-		}
-	}
-	nonRegistry := false
-	for _, prefix := range []string{"file:", "link:", "portal:", "workspace:", "git+", "git:", "git://", "github:", "gitlab:", "bitbucket:", "http://", "https://"} {
-		if strings.HasPrefix(lower, prefix) {
-			nonRegistry = true
-		}
-	}
-	// GitHub shorthand "owner/repo" or "owner/repo#ref": a '/' outside a
-	// version range, with no leading scope '@'.
-	if strings.Contains(req, "/") && !strings.HasPrefix(lower, "npm:") && !strings.HasPrefix(req, "@") {
-		nonRegistry = true
-	}
-	if resolvedName == "" {
-		return libyearDep{}, false
-	}
-	return libyearDep{Name: resolvedName, Version: cleanVersion(version), Requirement: requirement,
-		Type: scope, Manager: "npm", NonRegistry: nonRegistry}, true
-}
-
-func parseRequirementsTxtVersions(path string) []libyearDep {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil
-	}
-	var deps []libyearDep
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := cleanPyRequirementLine(raw)
-		if line == "" {
-			continue
-		}
-		// AFTER the comment/marker strip: a comment can contain " @ " (the
-		// direct-reference marker) — "numpy==1.26.0  # updated @ 2026-01-01"
-		// was dropped whole, taking numpy out of libyear AND out of the OSV
-		// scan.
-		if isNonRegistryPyRequirement(line) {
-			continue
-		}
-		name, spec := splitPyNameSpec(line)
-		version := cleanVersion(pyFloorVersion(spec))
-		// Strip PEP 508 extras from the name (anyio[trio] → anyio) —
-		// the local-canary catch, 2026-07-21: extras-suffixed names
-		// produced 404ing registry URLs and unmatchable purls, so
-		// those deps silently got no libyear and no OSV coverage.
-		name = strings.TrimSpace(stripPyExtras(name))
-		if isPyRequirementName(name) {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: "runtime", Manager: "pypi"})
-		}
-	}
-	return deps
-}
-
-// isNonRegistryPyRequirement reports a requirement line that does not name
-// a PyPI package: a VCS or URL reference (git+https://…, https://…/x.tar.gz,
-// file:…), a local path (./pkg, ../pkg, /opt/pkg) or a PEP 508 direct
-// reference ("name @ url"). v0.29.56: these were sent to PyPI as names
-// ("pypi/git+https://github.com/eclipse-velocitas/vehicle-model-python.git@v0.3.0/json").
-func isNonRegistryPyRequirement(line string) bool {
-	lower := strings.ToLower(line)
-	for _, prefix := range []string{"git+", "hg+", "svn+", "bzr+", "http://", "https://", "file:", "./", "../", "/", "~/"} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	// PEP 508's direct-reference marker takes OPTIONAL whitespace
-	// ("urlspec = '@' URI_reference", with wsp* around it), so
-	// "mypkg@https://host/x.whl" is as legal as the spaced form and matching
-	// only " @ " sent it to PyPI as a package name (v0.29.56). A bare '@' is
-	// safe to key on: neither a PEP 508 name ([A-Za-z0-9._-]) nor a version
-	// specifier can contain one, and this runs on the line AFTER its comment
-	// and environment marker are stripped.
-	return strings.Contains(line, "@")
-}
-
-// cleanVersion strips version specifier prefixes (^, ~, >=, ==, etc.)
-// and extracts the first version from compound ranges (>=1.0,<2.0).
-func cleanVersion(v string) string {
-	v = strings.TrimSpace(v)
-
-	// For compound ranges (>=1.0,<2.0 or ^1 || ^2), take only the first segment.
-	if idx := strings.IndexAny(v, ",|"); idx > 0 {
-		v = v[:idx]
-		v = strings.TrimSpace(v)
-	}
-
-	// Strip operator prefixes. Order matters: longest first.
-	for _, prefix := range []string{"^", "~=", "~", ">=", "<=", "==", "!=", ">", "<", "="} {
-		v = strings.TrimPrefix(v, prefix)
-	}
-
-	// Trim any whitespace left after operator removal (e.g., "~> 1.2" -> " 1.2").
-	v = strings.TrimSpace(v)
-
-	// v0.27.71: space-separated compound ranges keep the floor. pub
-	// ("'>=0.11.1 <0.12.0'"), npm hyphen ranges ("1.2.3 - 2.3.4"),
-	// and hex ("~> 3.0.0 and < 5.0.0") all separate bounds with
-	// spaces, which the comma/pipe split above never saw — the whole
-	// range leaked into versions and purls. No real version contains
-	// a space, so cutting at the first one is universally safe.
-	if idx := strings.IndexByte(v, ' '); idx > 0 {
-		v = strings.TrimSpace(v[:idx])
-	}
-	return v
-}
-
-// readManifest reads a dependency manifest and normalizes its encoding:
-// UTF-16 (LE or BE, by its byte-order mark) becomes UTF-8, and a UTF-8
-// byte-order mark is dropped. It is the ONE raw manifest read in this file
-// (SR-17): the libyear walk used a bare os.ReadFile while the
-// dependency-name path decoded UTF-16, so the same file produced clean
-// names on one path and NUL-interleaved ones on the other, and neither
-// stripped a UTF-8 BOM (2026-09-23 log review: 8 UTF-16LE requirements
-// files, a BOM on "astroid" and on a root package.json).
-// TestAnalysisReadsManifestsThroughOneReader pins it.
-func readManifest(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	data = decodeIfUTF16(data)
-	return bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), nil
-}
-
-// decodeIfUTF16 detects UTF-16 BOM and converts to UTF-8. Some Windows-created
-// manifest files (especially requirements.txt) are saved as UTF-16LE, producing
-// null-interleaved ASCII that fails PostgreSQL's UTF-8 validation.
-func decodeIfUTF16(data []byte) []byte {
-	if len(data) < 2 {
-		return data
-	}
-	// UTF-16LE BOM: 0xff 0xfe
-	if data[0] == 0xff && data[1] == 0xfe {
-		return utf16LEToUTF8(data[2:]) // skip BOM
-	}
-	// UTF-16BE BOM: 0xfe 0xff
-	if data[0] == 0xfe && data[1] == 0xff {
-		return utf16BEToUTF8(data[2:]) // skip BOM
-	}
-	return data
-}
-
-func utf16LEToUTF8(data []byte) []byte {
-	if len(data)%2 != 0 {
-		data = data[:len(data)-1] // drop trailing byte
-	}
-	var result []byte
-	for i := 0; i+1 < len(data); i += 2 {
-		ch := rune(data[i]) | rune(data[i+1])<<8
-		if ch < 0x80 {
-			result = append(result, byte(ch))
-		} else if ch < 0x800 {
-			result = append(result, byte(0xC0|(ch>>6)), byte(0x80|(ch&0x3F)))
-		} else {
-			result = append(result, byte(0xE0|(ch>>12)), byte(0x80|((ch>>6)&0x3F)), byte(0x80|(ch&0x3F)))
-		}
-	}
-	return result
-}
-
-func utf16BEToUTF8(data []byte) []byte {
-	if len(data)%2 != 0 {
-		data = data[:len(data)-1]
-	}
-	var result []byte
-	for i := 0; i+1 < len(data); i += 2 {
-		ch := rune(data[i])<<8 | rune(data[i+1])
-		if ch < 0x80 {
-			result = append(result, byte(ch))
-		} else if ch < 0x800 {
-			result = append(result, byte(0xC0|(ch>>6)), byte(0x80|(ch&0x3F)))
-		} else {
-			result = append(result, byte(0xE0|(ch>>12)), byte(0x80|((ch>>6)&0x3F)), byte(0x80|(ch&0x3F)))
-		}
-	}
-	return result
 }
 
 // npmRegistryBase is the npm registry root — a var so behavioral tests
@@ -2086,6 +822,9 @@ var (
 	nugetRegistryBase     = "https://api.nuget.org"
 	pubDevRegistryBase    = "https://pub.dev"
 	hackageRegistryBase   = "https://hackage.haskell.org"
+	// crandb, the R-hub project's database of CRAN (0.29.204; operator's
+	// choice, 2026-11-19): CRAN itself has no JSON interface.
+	cranRegistryBase = "https://crandb.r-pkg.org"
 )
 
 // resolveNPMLibyear checks the npm registry for the latest version.
@@ -2102,7 +841,7 @@ var (
 //
 // Scoped names (@babel/core) must be path-escaped (@babel%2Fcore) —
 // the deps.dev URL-encoding lesson.
-func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveNPMLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx, npmRegistryBase+"/"+url.PathEscape(dep.Name))
 	if err != nil {
 		return nil, err
@@ -2143,10 +882,11 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 	}
 
 	currentDate := timeOf(dep.Version)
+	_, onRegistry := info.Time[dep.Version]
 	latestDate := timeOf(info2.Version)
 	libyear := calcLibyear(currentDate, latestDate)
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -2157,12 +897,13 @@ func resolveNPMLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		LatestReleaseDate:  latestDate,
 		Libyear:            libyear,
 		License:            info2.License,
-		Purl:               buildPurl("npm", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("npm", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 	}, nil
 }
 
 // resolvePyPILibyear checks PyPI for the latest version.
-func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolvePyPILibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(pypiRegistryBase+"/pypi/%s/json", dep.Name))
 	if err != nil {
@@ -2190,6 +931,7 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 	}
 
 	currentDate := ""
+	_, onRegistry := info.Releases[dep.Version]
 	if releases, ok := info.Releases[dep.Version]; ok && len(releases) > 0 {
 		currentDate = releases[0].UploadTime
 	}
@@ -2213,13 +955,14 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 		license = parsePyPIClassifierLicense(info.Info.Classifiers)
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
 		PackageManager:     "pypi",
 		License:            license,
-		Purl:               buildPurl("pypi", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("pypi", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 		CurrentVersion:     dep.Version,
 		LatestVersion:      info.Info.Version,
 		CurrentReleaseDate: currentDate,
@@ -2228,137 +971,8 @@ func resolvePyPILibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, er
 	}, nil
 }
 
-// (parsePyprojectVersions replaced by parsePyprojectVersionsFromContent which
+// (parsePyprojectVersions replaced by manifest.ParsePyprojectVersionsFromContent which
 // correctly handles PEP 621 array format, not just Poetry key=value format.)
-
-// parseGoModVersions extracts deps with versions from go.mod.
-// Handles both block form "require (" and single-line "require module version".
-func parseGoModVersions(path string) []libyearDep {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil
-	}
-	var deps []libyearDep
-	inRequire := false
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-
-		// Handle single-line require: "require github.com/foo/bar v1.2.3"
-		if strings.HasPrefix(line, "require ") && !strings.Contains(line, "(") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				// Keep the v prefix — purl spec for golang keeps it, and
-				// OSV.dev matches on versions with v. Stripping it broke
-				// all Go vulnerability scanning.
-				deps = append(deps, libyearDep{Name: parts[1], Version: parts[2], Requirement: line, Type: "runtime", Manager: "go"})
-			}
-			continue
-		}
-
-		if line == "require (" {
-			inRequire = true
-			continue
-		}
-		if line == ")" {
-			inRequire = false
-			continue
-		}
-		if inRequire && line != "" && !strings.HasPrefix(line, "//") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				// Keep the v prefix for purl and OSV compatibility.
-				version := parts[1]
-				deps = append(deps, libyearDep{Name: parts[0], Version: version, Requirement: line, Type: "runtime", Manager: "go"})
-			}
-		}
-	}
-	return deps
-}
-
-// parseGemfileVersions extracts deps with versions from Gemfile.
-func parseGemfileVersions(path string) []libyearDep {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil
-	}
-	var deps []libyearDep
-	// v0.27.44 (summary/19 P1): Bundler group blocks + inline group:
-	// options were conflated as runtime. :test → test; :development
-	// (and any other non-default group) → dev. Nested groups keep the
-	// innermost classification; "end" pops the stack.
-	var groupStack []string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "group ") {
-			groupStack = append(groupStack, gemGroupScope(line))
-			continue
-		}
-		if line == "end" && len(groupStack) > 0 {
-			groupStack = groupStack[:len(groupStack)-1]
-			continue
-		}
-		// gem 'name', '~> 1.0' — read by the one shared declaration parser
-		// (item 71): only a string-literal argument after the name is a
-		// version requirement, so keyword options (v0.27.71: "require:
-		// false" was the #1 rubygems garbage version in production) and a
-		// trailing `if`/`unless` modifier (`">= 1.5" if RUBY_VERSION < '1.9'`
-		// was stored as `1.5"`) never are.
-		decl, ok := parseGemDeclaration(line)
-		if !ok {
-			continue
-		}
-		// v0.29.56: a trailing comment was read into the name or version
-		// ("gem 'logger'   # stdlib in Ruby <= 3.x" → name
-		// "logger'   # stdlib in Ruby <= 3.x", meshery/meshery.io). The
-		// parser stops before it and before a modifier, so decl.Text is
-		// the stored requirement (keyword options kept for display; the
-		// classifier reads decl.Declared through classificationText).
-		name := decl.Name
-		version := ""
-		if len(decl.Requirements) > 0 {
-			version = cleanVersion(decl.Requirements[0])
-		}
-		scope := "runtime"
-		if len(groupStack) > 0 {
-			scope = groupStack[len(groupStack)-1]
-		}
-		if inlineGroup := gemInlineGroupScope(decl.Text); inlineGroup != "" {
-			scope = inlineGroup
-		}
-		deps = append(deps, libyearDep{Name: name, Version: version, Requirement: decl.Text, Type: scope, Manager: "rubygems"})
-	}
-	return deps
-}
-
-// gemGroupScope classifies a Bundler `group :x[, :y] do` line: any
-// mention of :test → test; any other named group (development, ci,
-// lint, ...) → dev. A group line is by definition non-default.
-func gemGroupScope(line string) string {
-	if strings.Contains(line, ":test") {
-		return model.ScopeTest
-	}
-	return model.ScopeDev
-}
-
-// gemInlineGroupScope classifies `gem 'x', group: :test` /
-// `groups: [:development, :test]` inline options; "" = no group option.
-func gemInlineGroupScope(line string) string {
-	if !strings.Contains(line, "group") {
-		return ""
-	}
-	idx := strings.Index(line, "group")
-	tail := line[idx:]
-	if !strings.Contains(tail, ":") {
-		return ""
-	}
-	if strings.Contains(tail, ":test") {
-		return model.ScopeTest
-	}
-	if strings.Contains(tail, ":development") || strings.Contains(tail, ":dev") {
-		return model.ScopeDev
-	}
-	return ""
-}
 
 // goProxyEscape applies the module proxy protocol's case encoding to a
 // module path or version: every uppercase letter becomes '!' followed by
@@ -2374,7 +988,7 @@ func goProxyEscape(s string) (string, error) {
 		c := s[i]
 		switch {
 		case c == '!' || c >= utf8.RuneSelf:
-			return "", fmt.Errorf("go module path or version %q cannot be case-encoded for the module proxy", s)
+			return "", fmt.Errorf("go module path or version %q cannot be case-encoded for the module proxy: %w", s, errRegistryCannotBeAsked)
 		case 'A' <= c && c <= 'Z':
 			b.WriteByte('!')
 			b.WriteByte(c + ('a' - 'A'))
@@ -2386,7 +1000,7 @@ func goProxyEscape(s string) (string, error) {
 }
 
 // resolveGoLibyear checks the Go proxy for module version dates.
-func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveGoLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	// Go proxy API: https://proxy.golang.org/{module}/@v/{version}.info,
 	// with the module path and version case-encoded (goProxyEscape).
 	module, err := goProxyEscape(dep.Name)
@@ -2408,7 +1022,7 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 
 	currentDate := ""
 	if dep.Version != "" {
-		// go.mod versions keep their "v" (parseGoModVersions); add one only
+		// go.mod versions keep their "v" (manifest.ParseGoModVersions); add one only
 		// when it is missing. Prefixing unconditionally requested
 		// @v/vv1.2.3.info, which never exists.
 		version := dep.Version
@@ -2445,7 +1059,7 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 	// repository hosting the module (githubModuleLicense, through the key
 	// pool) after this answer is cached, so the license lookup is shared
 	// per owner/repo instead of repeated per version.
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -2455,12 +1069,12 @@ func resolveGoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, erro
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestInfo.Time,
 		Libyear:            calcLibyear(currentDate, latestInfo.Time),
-		Purl:               buildPurl("golang", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("golang", dep.Name, dep.Version),
 	}, nil
 }
 
 // resolveCargoLibyear checks crates.io for Rust crate versions.
-func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveCargoLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(cratesRegistryBase+"/api/v1/crates/%s", dep.Name))
 	if err != nil {
@@ -2481,6 +1095,7 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 	}
 
 	currentDate := ""
+	onRegistry := false
 	latestDate := ""
 	license := ""
 	// Normalize version for matching: Cargo.toml may say "1.0" but crates.io
@@ -2489,6 +1104,7 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 	normalizedVersion := normalizeSemanticVersion(dep.Version)
 	for _, v := range info.Versions {
 		if v.Num == dep.Version || v.Num == normalizedVersion {
+			onRegistry = true
 			currentDate = v.CreatedAt
 			license = v.License
 		}
@@ -2501,14 +1117,15 @@ func resolveCargoLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		}
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
 		PackageManager:     "cargo",
 		CurrentVersion:     dep.Version,
 		License:            license,
-		Purl:               buildPurl("cargo", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("cargo", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 		LatestVersion:      info.Crate.NewestVersion,
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
@@ -2530,7 +1147,7 @@ func joinRegistryLicenseList(list []string) string {
 }
 
 // resolveRubyGemsLibyear checks rubygems.org for gem versions.
-func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveRubyGemsLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(rubygemsRegistryBase+"/api/v1/versions/%s.json", dep.Name))
 	if err != nil {
@@ -2574,12 +1191,12 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 		license = latestLicense
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
 		License:            license,
-		Purl:               buildPurl("gem", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("gem", dep.Name, dep.Version),
 		PackageManager:     "rubygems",
 		CurrentVersion:     dep.Version,
 		LatestVersion:      latestVersion,
@@ -2589,8 +1206,214 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 	}, nil
 }
 
-// markUnknownLibyear flags a row whose libyear could not be WORKED OUT, so
-// it is stored as NULL rather than 0.
+// recordInventoryAttempt records, in the coverage record, that this analysis
+// did not replace the repository's inventory, and why. It is the one writer
+// of that fact. A shutdown is not a failed attempt and records nothing; a
+// failure to record is logged and never replaces the analysis's own error.
+func (ac *AnalysisCollector) recordInventoryAttempt(ctx context.Context, repoID int64, result string) {
+	recordInventoryAttempt(ctx, ac.store, ac.logger, repoID, result)
+}
+
+// inventoryAttemptStore is the one store call recordInventoryAttempt makes.
+type inventoryAttemptStore interface {
+	RecordInventoryAttempt(ctx context.Context, repoID int64, result string) error
+}
+
+func recordInventoryAttempt(ctx context.Context, store inventoryAttemptStore, logger *slog.Logger, repoID int64, result string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := store.RecordInventoryAttempt(ctx, repoID, result); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Warn("failed to record that the dependency inventory was not replaced",
+			"repo_id", repoID, "result", result, "error", err)
+	}
+}
+
+// RecordAnalysisSkippedForNoClone records, in the coverage record, that a
+// repository's analysis did not run because it has no clone. It is for the
+// scheduler, whose own guard returns before the analysis is entered (it also
+// skips the scorecard). The scheduler does not log this as a failure: it has
+// already logged why there is no clone. Going through here keeps one writer
+// of the attempt columns and one set of rules for it (nothing on shutdown; a
+// failure to record is a WARN and no more).
+func RecordAnalysisSkippedForNoClone(ctx context.Context, store inventoryAttemptStore, logger *slog.Logger, repoID int64) {
+	recordInventoryAttempt(ctx, store, logger, repoID, model.InventoryAttemptCloneUnavailable)
+}
+
+// relativeToClone is path relative to the clone's root, with forward slashes:
+// how a manifest is named in the coverage record. A path that is somehow not
+// under the root is returned as it is.
+func relativeToClone(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return filepath.ToSlash(path)
+	}
+	return filepath.ToSlash(rel)
+}
+
+// inventoryNote builds the note for a declared dependency that gets no row.
+// A note is a record, not identity: its name is stored sanitized and cut to
+// the name bound, and its key is computed from that stored name. It carries
+// the purl the dependency would have had only when one can be built and the
+// sanitizer would not change it, and never for a non-registry dependency,
+// which is NOT the registry package of the same name.
+func inventoryNote(dep model.LibyearDep, kind string) model.InventoryNote {
+	name := textclean.Sanitize(dep.Name)
+	if len(name) > pkgid.MaxNameBytes {
+		name = strings.ToValidUTF8(name[:pkgid.MaxNameBytes], "")
+	}
+	n := model.InventoryNote{
+		Kind: kind, PackageManager: textclean.Sanitize(dep.Manager), Name: name,
+		PackageKey: pkgid.Key(dep.Manager, name), ManifestPath: dep.ManifestPath,
+	}
+	if kind != model.NoRowNonRegistry && !textclean.WouldChange(dep.Name) && len(dep.Name) <= pkgid.MaxNameBytes {
+		if purl, ok := manifestPurl(dep); ok && !textclean.WouldChange(purl) {
+			n.Purl = purl
+		}
+	}
+	return n
+}
+
+// manifestPurl builds a declared dependency's purl from the manifest alone,
+// before any lookup: the purl the dependency's resolver builds when it
+// answers, byte for byte (TestManifestPurlIsThePurlTheResolverBuilds), since
+// a finding's identity includes it. ok is false when the dependency has no
+// purl: its package manager has no purl type, its purl type requires a
+// namespace and the coordinate has none (a Maven artifact with no group, a
+// Composer platform name), or it is a SwiftPM package whose address is not a
+// repository URL.
+func manifestPurl(dep model.LibyearDep) (purl string, ok bool) {
+	if dep.Name == "" {
+		return "", false
+	}
+	if dep.Manager == "githubactions" {
+		return pkgid.Purl("githubactions", dep.Name, dep.Version), true
+	}
+	typ, known := pkgid.PurlTypeOfManager(dep.Manager)
+	if !known {
+		return "", false
+	}
+	name := dep.Name
+	switch dep.Manager {
+	case "maven":
+		name = strings.Replace(name, ":", "/", 1)
+	case "swiftpm":
+		// The purl's namespace is the repository's host and owner, which
+		// the manifest gives as the package's URL.
+		ref, parsed := manifest.ParseSwiftPackageURL(dep.Requirement)
+		if !parsed {
+			return "", false
+		}
+		name = ref.Namespace + "/" + ref.Repo
+	}
+	if pkgid.NamespaceRequired(typ) && !pkgid.NameHasNamespace(name) {
+		return "", false
+	}
+	return pkgid.Purl(typ, name, dep.Version), true
+}
+
+// unansweredLibyearRow builds the inventory row of a dependency its registry
+// did not answer for: what the manifest declares, no libyear, and the reason
+// (not on the registry; cannot be asked; no answer this cycle). ok is false
+// when the dependency has no purl, in which case it gets no row.
+func unansweredLibyearRow(dep model.LibyearDep, err error) (row *model.LibyearRow, ok bool) {
+	purl, ok := manifestPurl(dep)
+	if !ok {
+		return nil, false
+	}
+	return &model.LibyearRow{
+		Name: dep.Name, Requirement: dep.Requirement, Type: dep.Type, PackageManager: dep.Manager,
+		CurrentVersion: dep.Version, Purl: purl, NoLibyear: true, ManifestPath: dep.ManifestPath,
+		Status: libyearStatus(dep, nil, err),
+	}, true
+}
+
+// storableLibyearRow makes an in-memory inventory row safe to store, and
+// reports whether it may be stored at all (summary/70, 4.7).
+//
+// The inventory is replaced in one transaction, so one row PostgreSQL refuses
+// would refuse the whole inventory, every cycle, for good. Rows are therefore
+// made storable here, in Go, before the transaction: there is no savepoint
+// per row and no reading of error codes.
+//
+//   - The name is IDENTITY and is never repaired (SR-6): a name the sanitizer
+//     would change gets no row. A cleaned name is a different name, and may be
+//     another package's.
+//   - A version is not identity, and one the sanitizer would change is not a
+//     version: the row is kept with no version and its purl without one, the
+//     existing "no version declared" path. Manifest versions are already
+//     cleaned by the version normaliser, so in practice this is an Actions
+//     ref.
+//   - Every other text column is sanitized and kept, whatever its origin: a
+//     requirement string from a manifest, a licence or a latest version or a
+//     date decoded from a registry's JSON (any of which can hold a NUL).
+//
+// The length bound on a name and the note that records a dependency given no
+// row arrive with the notes table (4.2); until then the collection loop
+// counts such a dependency and logs one line per repository.
+func storableLibyearRow(row *model.LibyearRow) bool {
+	if textclean.WouldChange(row.Name) {
+		return false
+	}
+	if textclean.WouldChange(row.CurrentVersion) {
+		row.CurrentVersion = ""
+		row.Purl = pkgid.ReplaceVersion(row.Purl, "")
+	}
+	row.Requirement = textclean.Sanitize(row.Requirement)
+	row.Type = textclean.Sanitize(row.Type)
+	row.PackageManager = textclean.Sanitize(row.PackageManager)
+	row.LatestVersion = textclean.Sanitize(row.LatestVersion)
+	row.CurrentReleaseDate = textclean.Sanitize(row.CurrentReleaseDate)
+	row.LatestReleaseDate = textclean.Sanitize(row.LatestReleaseDate)
+	row.License = textclean.Sanitize(row.License)
+	row.Purl = textclean.Sanitize(row.Purl)
+	return true
+}
+
+// libyearStatus is the ONE function that says why a dependency's row has a
+// libyear or lacks one (summary/70, 4.1.8), from what the three sites that
+// know a reason hold: the dependency, the resolver's row, the resolver's
+// error. It returns one of model's Libyear* constants.
+//
+// The order is the order of certainty. An ecosystem with no timeline has none
+// whatever was looked up. An error is the resolver's own account: the
+// registry's definitive "no such package", a coordinate that cannot be asked
+// about, or (everything else, a row-less answer with no error included) no
+// answer this cycle. Then the row's dates, asked of calcLibyear's OWN parser
+// and not of emptiness (v0.29.57): a date the parser cannot read is a missing
+// date. With no usable pair of dates, a dependency that declares no version
+// has nothing to date; one that declares a version got no date for it.
+//
+// Whether the registry HAS the declared version is a separate fact
+// (LibyearRow.VersionFound) and does not change the reason: four resolvers
+// cannot tell a version they lack from a version with no date
+// (resolverCanProveVersionMiss), so no reason may depend on it.
+func libyearStatus(dep model.LibyearDep, row *model.LibyearRow, err error) string {
+	if dep.Manager == "githubactions" {
+		return model.LibyearNoTimeline
+	}
+	switch {
+	case err != nil && isDefinitiveRegistryMiss(err):
+		return model.LibyearNotOnRegistry
+	case err != nil && errors.Is(err, errRegistryCannotBeAsked):
+		return model.LibyearCannotBeAsked
+	case err != nil || row == nil:
+		return model.LibyearLookupFailed
+	}
+	_, okCurrent := parseLibyearDate(row.CurrentReleaseDate)
+	_, okLatest := parseLibyearDate(row.LatestReleaseDate)
+	switch {
+	case okCurrent && okLatest:
+		return model.LibyearResolved
+	case dep.Version == "":
+		return model.LibyearNoVersion
+	default:
+		return model.LibyearNoReleaseDate
+	}
+}
+
+// settleLibyear gives a resolved row its status and makes the stored libyear
+// agree with it: anything but "resolved" is stored as NULL, never as 0.
 //
 // calcLibyear returns 0 when either release date is missing or unparseable,
 // which is indistinguishable from a dependency that really is on the latest
@@ -2600,33 +1423,75 @@ func resolveRubyGemsLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow
 // skips a NULL, which reported the fleet at 1.335 years against an honest
 // 2.861.
 //
-// NULL is the answer that already exists for "no timeline" (the v0.27.47
-// GitHub Actions path) and every consumer already handles it. Two classes
-// arrive here: a dependency with no pinned version, which can never be
-// computed, and a pinned one whose registry would not give a date, which
-// heals when it does.
-//
 // Applied once, where rows are collected — a dozen resolvers each building
 // their own row is exactly where a rule like this drifts.
-func markUnknownLibyear(row *db.LibyearRow) {
+func settleLibyear(dep model.LibyearDep, row *model.LibyearRow) {
 	if row == nil {
 		return
 	}
-	// Asked of calcLibyear's OWN parser, not of emptiness (v0.29.57): the
-	// two spellings would otherwise drift, and a date the parser cannot
-	// read — the case the doc comment claims to cover — would still store a
-	// fabricated 0 with the flag clear. No registry currently emits an
-	// unparseable date, so this is latent; SR-17 says one spelling anyway.
-	if _, okCur := parseLibyearDate(row.CurrentReleaseDate); !okCur {
-		row.NoLibyear = true
+	row.Status = libyearStatus(dep, row, nil)
+	if row.NoLibyear && row.Status == model.LibyearResolved {
+		// A row that arrives already marked "no libyear" keeps the mark,
+		// as it always has. The one producer of such a row is the path for
+		// an ecosystem with no timeline, so that is what its status says.
+		row.Status = model.LibyearNoTimeline
 	}
-	if _, okLat := parseLibyearDate(row.LatestReleaseDate); !okLat {
+	if row.Status != model.LibyearResolved {
 		row.NoLibyear = true
-	}
-	if row.NoLibyear {
 		// Never carry a number alongside the NULL: it would read as a
 		// measurement if anything ever dropped the flag.
 		row.Libyear = 0
+	}
+}
+
+// stampVersionSource records where the row's version came from, and for a
+// locked version builds the purl the way the scan does for a lockfile
+// version (pkgid.WithVersion over the row's purl), so the purl a row stores
+// and the purl the scan targets for that version are the same bytes.
+func stampVersionSource(dep model.LibyearDep, row *model.LibyearRow) {
+	if row == nil {
+		return
+	}
+	row.VersionSource = dep.VersionSource
+	row.VersionReason = dep.VersionReason
+	row.VersionHosts = dep.VersionHosts
+	if dep.VersionSource == versionuse.SourceLocked && row.Purl != "" {
+		row.Purl = pkgid.WithVersion(row.Purl, dep.Version)
+	}
+}
+
+// resolverCanProveVersionMiss states, per package manager, whether its
+// resolver can establish that the registry does NOT have the declared
+// version (as opposed to having it with no date). Seven read a list or map
+// of the package's versions and can. Five cannot:
+//
+//   - go: the proxy's 404 for a version is also what it answers for a private
+//     module, so it proves nothing about the version;
+//   - rubygems: the versions list omits yanked gems;
+//   - maven: the metadata's version list is not authoritative, and the date
+//     comes from a separate request for the pom;
+//   - hackage and swiftpm: one lookup answers for both the version and its
+//     date.
+//
+// A resolver that cannot prove a miss never sets VersionNotOnRegistry; it may
+// still set VersionOnRegistry when it found a date for the version.
+var resolverCanProveVersionMiss = map[string]bool{
+	"npm": true, "pypi": true, "cargo": true, "packagist": true, "hex": true, "nuget": true, "pub": true,
+	// crandb's timeline lists every version CRAN published.
+	"cran": true,
+	"go":   false, "rubygems": false, "maven": false, "hackage": false, "swiftpm": false,
+}
+
+// versionFound is the answer a resolver that CAN prove a miss gives for a
+// declared version: not established when none was declared.
+func versionFound(declared string, onRegistry bool) model.VersionFound {
+	switch {
+	case declared == "":
+		return model.VersionNotEstablished
+	case onRegistry:
+		return model.VersionOnRegistry
+	default:
+		return model.VersionNotOnRegistry
 	}
 }
 
@@ -3418,664 +2283,9 @@ type sccFile struct {
 // Additional manifest parsers (added in v0.5.4)
 // ============================================================
 
-// parseBuildGradle extracts dependency names from build.gradle / build.gradle.kts.
-func parseBuildGradle(content string) []string {
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		// Matches: implementation 'group:artifact:version' or implementation("group:artifact:version")
-		for _, prefix := range []string{"implementation", "api", "compileOnly", "runtimeOnly", "testImplementation", "testRuntimeOnly", "testCompileOnly"} {
-			if strings.HasPrefix(line, prefix) {
-				// Extract the string between quotes.
-				for _, q := range []string{"'", "\""} {
-					start := strings.Index(line, q)
-					if start < 0 {
-						continue
-					}
-					end := strings.Index(line[start+1:], q)
-					if end < 0 {
-						continue
-					}
-					coord := line[start+1 : start+1+end]
-					parts := strings.Split(coord, ":")
-					if len(parts) >= 2 {
-						deps = append(deps, parts[0]+":"+parts[1])
-					}
-					break
-				}
-			}
-		}
-	}
-	return deps
-}
-
-// parseBuildGradleVersions extracts deps with versions from build.gradle / build.gradle.kts.
-// Handles both Groovy (single-quoted) and Kotlin DSL (parenthesized double-quoted) syntax.
-// Format: implementation 'group:artifact:version' or implementation("group:artifact:version")
-func parseBuildGradleVersions(content string) []libyearDep {
-	var deps []libyearDep
-	prefixes := []string{"implementation", "api", "compileOnly", "runtimeOnly", "testImplementation", "testRuntimeOnly"}
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//") {
-			continue
-		}
-		// v0.27.71: project(":core:util") references are the repo's
-		// OWN modules, not external deps. The quoted ":"-separated
-		// module path split like a maven coordinate and emitted fake
-		// deps named ":core" with MODULE NAMES as versions (583+
-		// production rows on apereo/cas alone).
-		if strings.Contains(line, "project(") {
-			continue
-		}
-		for _, prefix := range prefixes {
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			for _, q := range []string{"'", "\""} {
-				start := strings.Index(line, q)
-				if start < 0 {
-					continue
-				}
-				end := strings.Index(line[start+1:], q)
-				if end < 0 {
-					continue
-				}
-				coord := line[start+1 : start+1+end]
-				parts := strings.Split(coord, ":")
-				if len(parts) >= 2 {
-					name := parts[0] + ":" + parts[1]
-					version := ""
-					if len(parts) >= 3 {
-						version = parts[2]
-					}
-					depType := "runtime"
-					if strings.HasPrefix(prefix, "test") {
-						depType = "dev"
-					}
-					deps = append(deps, libyearDep{
-						Name:        name,
-						Version:     version,
-						Requirement: coord,
-						Type:        depType,
-						Manager:     "maven",
-					})
-				}
-				break
-			}
-		}
-	}
-	return deps
-}
-
-// parseSetupCfgDeps extracts dependency names from setup.cfg [options] install_requires.
-func parseSetupCfgDeps(content string) ([]string, error) {
-	var deps []string
-	lines := strings.Split(content, "\n")
-	inRequires := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Detect install_requires = (with possible inline deps)
-		if strings.HasPrefix(trimmed, "install_requires") && strings.Contains(trimmed, "=") {
-			inRequires = true
-			// Check for inline deps after =
-			afterEq := strings.SplitN(trimmed, "=", 2)
-			if len(afterEq) == 2 {
-				inline := strings.TrimSpace(afterEq[1])
-				if inline != "" {
-					if name := extractPyDepName(inline); name != "" {
-						deps = append(deps, name)
-					}
-				}
-			}
-			continue
-		}
-
-		// In setup.cfg, continuation lines are indented.
-		if inRequires {
-			if trimmed == "" || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
-				// End of install_requires section (non-indented non-empty line).
-				if trimmed != "" {
-					inRequires = false
-				}
-				continue
-			}
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if name := extractPyDepName(trimmed); name != "" {
-				deps = append(deps, name)
-			}
-		}
-	}
-	return deps, nil
-}
-
-// parseSetupCfgVersions extracts deps with versions from setup.cfg.
-func parseSetupCfgVersions(content string) []libyearDep {
-	var deps []libyearDep
-	lines := strings.Split(content, "\n")
-	inRequires := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "install_requires") && strings.Contains(trimmed, "=") {
-			inRequires = true
-			afterEq := strings.SplitN(trimmed, "=", 2)
-			if len(afterEq) == 2 {
-				inline := strings.TrimSpace(afterEq[1])
-				if inline != "" {
-					if d := parsePyRequirement(inline); d != nil {
-						deps = append(deps, *d)
-					}
-				}
-			}
-			continue
-		}
-		if inRequires {
-			if trimmed == "" || (!strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")) {
-				if trimmed != "" {
-					inRequires = false
-				}
-				continue
-			}
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if d := parsePyRequirement(trimmed); d != nil {
-				deps = append(deps, *d)
-			}
-		}
-	}
-	return deps
-}
-
-// parseCsprojDeps extracts dependency names from .csproj PackageReference elements.
-// Format: <PackageReference Include="Name" Version="1.0.0" />
-func parseCsprojDeps(content string) ([]string, error) {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "PackageReference") || !strings.Contains(line, "Include=") {
-			continue
-		}
-		name := extractXMLAttr(line, "Include")
-		if name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps, nil
-}
-
-// parseCsprojVersions extracts deps with versions from .csproj files.
-func parseCsprojVersions(content string) []libyearDep {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "PackageReference") || !strings.Contains(line, "Include=") {
-			continue
-		}
-		name := extractXMLAttr(line, "Include")
-		version := extractXMLAttr(line, "Version")
-		// v0.27.44 (summary/19 P1): PrivateAssets="all" marks a
-		// build/analyzer-only package that never flows to consumers
-		// or the runtime output → build. Only the attribute form is
-		// visible to this line-based parser; the child-element form
-		// (<PrivateAssets>all</PrivateAssets>) spans lines and is a
-		// documented limitation.
-		scope := "runtime"
-		if strings.EqualFold(extractXMLAttr(line, "PrivateAssets"), "all") {
-			scope = model.ScopeBuild
-		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
-		}
-	}
-	return deps
-}
-
-// parseComposerJSON extracts dependency names from composer.json (PHP).
-func parseComposerJSON(data []byte) ([]string, error) {
-	var pkg struct {
-		Require    map[string]string `json:"require"`
-		RequireDev map[string]string `json:"require-dev"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return nil, err
-	}
-	var deps []string
-	for name := range pkg.Require {
-		if name != "php" && !strings.HasPrefix(name, "ext-") {
-			deps = append(deps, name)
-		}
-	}
-	for name := range pkg.RequireDev {
-		deps = append(deps, name)
-	}
-	return deps, nil
-}
-
-// parseBuildSbt extracts dependency names from Scala build.sbt.
-func parseBuildSbt(content string) []string {
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		// A declaration someone commented out is not one. Scala comments
-		// with `//`, and the version it carries looks valid, so such a row
-		// survived normalisation and reached the purl, the registry lookup
-		// and the OSV scan (v0.29.57).
-		line = strings.TrimSpace(stripSlashComment(line))
-		if !strings.Contains(line, "libraryDependencies") || !strings.Contains(line, "%") {
-			continue
-		}
-		// libraryDependencies += "org" %% "name" % "version"
-		parts := strings.Split(line, "\"")
-		if len(parts) >= 4 {
-			org := parts[1]
-			name := parts[3]
-			deps = append(deps, org+":"+name)
-		}
-	}
-	return deps
-}
-
-// parseNuGetPackagesConfig extracts package names from NuGet packages.config (XML).
-func parseNuGetPackagesConfig(content string) []string {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "<package ") {
-			continue
-		}
-		// Extract id attribute.
-		if idx := strings.Index(line, `id="`); idx >= 0 {
-			rest := line[idx+4:]
-			if end := strings.Index(rest, `"`); end >= 0 {
-				deps = append(deps, rest[:end])
-			}
-		}
-	}
-	return deps
-}
-
-// parsePackageYaml extracts dependency names from Haskell package.yaml (hpack).
-func parsePackageYaml(content string) []string {
-	var deps []string
-	inDeps := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "dependencies:" {
-			inDeps = true
-			continue
-		}
-		if inDeps && strings.HasPrefix(trimmed, "- ") {
-			dep := strings.TrimPrefix(trimmed, "- ")
-			// Strip version constraints: "base >= 4.7 && < 5" -> "base"
-			if idx := strings.IndexAny(dep, " ><=!"); idx > 0 {
-				dep = dep[:idx]
-			}
-			if dep != "" {
-				deps = append(deps, dep)
-			}
-		} else if inDeps && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
-			inDeps = false
-		}
-	}
-	return deps
-}
-
-// parseMixExsDeps extracts dependency names from Elixir mix.exs.
-func parseMixExsDeps(content string) []string {
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{:") {
-			continue
-		}
-		// {:phoenix, "~> 1.7.0"}
-		parts := strings.SplitN(line, ",", 2)
-		if len(parts) < 1 {
-			continue
-		}
-		name := strings.TrimPrefix(parts[0], "{:")
-		name = strings.TrimSpace(name)
-		if name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps
-}
-
 // ============================================================
 // Additional libyear version parsers (added in v0.5.4)
 // ============================================================
-
-// parsePomXMLVersions extracts groupId:artifactId with version from pom.xml.
-// Handles both multi-line and single-line XML formats.
-func parsePomXMLVersions(content string) []libyearDep {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []libyearDep
-	props := pomProperties(content)
-	// Process dependency blocks — works even when everything is on one line
-	// by scanning for <dependency>...</dependency> substrings.
-	rest := content
-	for {
-		start := strings.Index(rest, "<dependency>")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(rest[start:], "</dependency>")
-		if end < 0 {
-			break
-		}
-		block := rest[start : start+end+len("</dependency>")]
-		rest = rest[start+end+len("</dependency>"):]
-
-		// v0.29.56: ${…} references resolve from the pom's <properties> and
-		// project coordinates (knative/func "${quarkus.platform.group-id}",
-		// dogtagpki/pki "${project.groupId}"). A coordinate that stays
-		// unresolved is not sent to Maven Central; an unresolved version
-		// is left for normalizeParsedVersion's unpinned pathway.
-		groupID := resolvePomProperties(extractXMLValue(block, "groupId"), props)
-		artifactID := resolvePomProperties(extractXMLValue(block, "artifactId"), props)
-		version := resolvePomProperties(extractXMLValue(block, "version"), props)
-		if strings.Contains(groupID, "${") || strings.Contains(artifactID, "${") {
-			continue
-		}
-		// v0.27.44 (summary/19 P1): Maven's own scope element.
-		// test → test; provided = compile-time-only, supplied by the
-		// runtime container → build. compile/runtime/absent → runtime.
-		depScope := "runtime"
-		switch extractXMLValue(block, "scope") {
-		case "test":
-			depScope = model.ScopeTest
-		case "provided":
-			depScope = model.ScopeBuild
-		}
-		if groupID != "" && artifactID != "" {
-			name := groupID + ":" + artifactID
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: name + ":" + version, Type: depScope, Manager: "maven"})
-		}
-	}
-	return deps
-}
-
-// pomPropertyRe matches one <name>value</name> element; the closing name
-// is compared in code (RE2 has no backreferences).
-var pomPropertyRe = regexp.MustCompile(`<([A-Za-z0-9_.\-]+)>([^<]*)</([A-Za-z0-9_.\-]+)>`)
-
-// pomProperties collects a pom's own property values: every
-// <properties> element, plus project.groupId/artifactId/version (the
-// project's own coordinates, falling back to <parent>'s groupId and
-// version, as Maven inherits them) and their parent.* forms.
-func pomProperties(content string) map[string]string {
-	props := map[string]string{}
-	rest := content
-	for {
-		start := strings.Index(rest, "<properties>")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(rest[start:], "</properties>")
-		if end < 0 {
-			break
-		}
-		for _, m := range pomPropertyRe.FindAllStringSubmatch(rest[start:start+end], -1) {
-			if m[1] == m[3] {
-				if _, seen := props[m[1]]; !seen {
-					props[m[1]] = strings.TrimSpace(m[2])
-				}
-			}
-		}
-		rest = rest[start+end:]
-	}
-	parent := ""
-	top := content
-	if ps := strings.Index(content, "<parent>"); ps >= 0 {
-		if pe := strings.Index(content[ps:], "</parent>"); pe >= 0 {
-			parent = content[ps : ps+pe]
-			top = content[:ps] + content[ps+pe:]
-		}
-	}
-	// The project's own coordinates are the ones outside every nested block.
-	for _, block := range []string{"dependencyManagement", "dependencies", "build", "profiles", "reporting", "properties", "modules"} {
-		for {
-			bs := strings.Index(top, "<"+block+">")
-			if bs < 0 {
-				break
-			}
-			be := strings.Index(top[bs:], "</"+block+">")
-			if be < 0 {
-				break
-			}
-			top = top[:bs] + top[bs+be+len("</"+block+">"):]
-		}
-	}
-	for _, key := range []string{"groupId", "artifactId", "version"} {
-		if v := extractXMLValue(parent, key); v != "" {
-			props["parent."+key] = v
-			props["project.parent."+key] = v
-		}
-		v := extractXMLValue(top, key)
-		if v == "" && key != "artifactId" {
-			v = extractXMLValue(parent, key)
-		}
-		if v != "" {
-			props["project."+key] = v
-			props["pom."+key] = v
-		}
-	}
-	return props
-}
-
-// resolvePomProperties substitutes ${name} references from props. A value
-// may reference another property, so substitution repeats — at most once
-// per property, which bounds a reference cycle.
-func resolvePomProperties(v string, props map[string]string) string {
-	for range len(props) + 1 {
-		start := strings.Index(v, "${")
-		if start < 0 {
-			return v
-		}
-		end := strings.Index(v[start:], "}")
-		if end < 0 {
-			return v
-		}
-		val, ok := props[v[start+2:start+end]]
-		if !ok {
-			return v
-		}
-		v = v[:start] + val + v[start+end+1:]
-	}
-	return v
-}
-
-func extractXMLValue(line, tag string) string {
-	start := strings.Index(line, "<"+tag+">")
-	end := strings.Index(line, "</"+tag+">")
-	// The tags may appear in the WRONG ORDER — `</groupId><groupId>` is a
-	// document a repository can carry — and slicing between them without
-	// checking would panic, killing the analysis phase for that whole
-	// repository. Same class as the v0.27.99 `]` before `[` fuzz find; this
-	// one surfaced the moment parsePomXMLVersions joined the fuzz target
-	// (v0.29.57).
-	if start < 0 || end < start+len(tag)+2 {
-		return ""
-	}
-	return strings.TrimSpace(line[start+len(tag)+2 : end])
-}
-
-// parseComposerJSONVersions extracts deps with versions from composer.json.
-func parseComposerJSONVersions(path string) ([]libyearDep, error) {
-	data, err := readManifest(path)
-	if err != nil {
-		return nil, err
-	}
-	var pkg struct {
-		Require    map[string]string `json:"require"`
-		RequireDev map[string]string `json:"require-dev"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return nil, err
-	}
-	var deps []libyearDep
-	for name, version := range pkg.Require {
-		if name == "php" || strings.HasPrefix(name, "ext-") {
-			continue
-		}
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "runtime", Manager: "packagist"})
-	}
-	for name, version := range pkg.RequireDev {
-		deps = append(deps, libyearDep{Name: name, Version: cleanVersion(version), Requirement: version, Type: "dev", Manager: "packagist"})
-	}
-	return deps, nil
-}
-
-// parseMixExsVersions extracts deps with versions from Elixir mix.exs.
-func parseMixExsVersions(content string) []libyearDep {
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{:") {
-			continue
-		}
-		// {:phoenix, "~> 1.7.0"}
-		parts := strings.Split(line, ",")
-		if len(parts) < 2 {
-			continue
-		}
-		name := strings.TrimPrefix(strings.TrimSpace(parts[0]), "{:")
-		// v0.27.71: only a QUOTED second element is a version
-		// requirement ("~> 1.7.0"). Keyword options (git:, github:,
-		// path:) mark source deps with no registry version — the
-		// pre-fix code captured the option text as the version.
-		version := ""
-		if p1 := strings.TrimSpace(parts[1]); strings.HasPrefix(p1, `"`) {
-			version = cleanVersion(strings.Trim(p1, "\"'}] "))
-		}
-		// v0.27.44 (summary/19 P1): Mix's only: option restricts a dep
-		// to specific envs. only: :test → test; anything mentioning
-		// :dev → dev (only: [:dev, :test] is a dev-tooling dep that
-		// also runs in test). No only: → runtime.
-		scope := "runtime"
-		if onlyIdx := strings.Index(line, "only:"); onlyIdx >= 0 {
-			onlyPart := line[onlyIdx:]
-			switch {
-			case strings.Contains(onlyPart, ":dev"):
-				scope = model.ScopeDev
-			case strings.Contains(onlyPart, ":test"):
-				scope = model.ScopeTest
-			}
-		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "hex"})
-		}
-	}
-	return deps
-}
-
-// parseNuGetPackagesConfigVersions extracts packages with versions from packages.config.
-func parseNuGetPackagesConfigVersions(content string) []libyearDep {
-	// A declaration someone commented out is not one, and an XML comment
-	// spans lines, so the whole document is stripped before it is walked
-	// (v0.29.57 — the version inside such a block is valid-looking, so it
-	// survived normalisation and reached the purl and the OSV scan).
-	content = stripXMLComments(content)
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "<package ") && !strings.HasPrefix(line, "<Package ") {
-			continue
-		}
-		name := ""
-		version := ""
-		// Case-insensitive attribute matching: NuGet packages.config in older
-		// .NET projects frequently uses Id="..." and Version="..." (capital
-		// letters). asciiLower, not strings.ToLower: the index is used to
-		// slice the ORIGINAL line, and only a length-preserving fold keeps
-		// the two in step.
-		lower := asciiLower(line)
-		if idx := strings.Index(lower, `id="`); idx >= 0 {
-			rest := line[idx+4:]
-			if end := strings.Index(rest, `"`); end >= 0 {
-				name = rest[:end]
-			}
-		}
-		if idx := strings.Index(lower, `version="`); idx >= 0 {
-			rest := line[idx+9:]
-			if end := strings.Index(rest, `"`); end >= 0 {
-				version = rest[:end]
-			}
-		}
-		// v0.27.44 (summary/19 P1): developmentDependency="true" is the
-		// legacy packages.config marker for build-only packages.
-		scope := "runtime"
-		if strings.Contains(lower, `developmentdependency="true"`) {
-			scope = model.ScopeBuild
-		}
-		if name != "" {
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: line, Type: scope, Manager: "nuget"})
-		}
-	}
-	return deps
-}
-
-// parseBuildSbtVersions extracts deps with versions from build.sbt.
-func parseBuildSbtVersions(content string) []libyearDep {
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		// A declaration someone commented out is not one. Scala comments
-		// with `//`, and the version it carries looks valid, so such a row
-		// survived normalisation and reached the purl, the registry lookup
-		// and the OSV scan (v0.29.57).
-		line = strings.TrimSpace(stripSlashComment(line))
-		if !strings.Contains(line, "libraryDependencies") || !strings.Contains(line, "%") {
-			continue
-		}
-		parts := strings.Split(line, "\"")
-		if len(parts) >= 6 {
-			org := parts[1]
-			name := parts[3]
-			version := parts[5]
-			fullName := org + ":" + name
-			// v0.27.44 (summary/19 P1): sbt configuration after the
-			// version — `% Test` (or the quoted "test" form) → test;
-			// `% Provided` mirrors Maven provided → build;
-			// `% Optional` → optional. No configuration → runtime.
-			scope := "runtime"
-			switch {
-			case strings.Contains(line, "% Test") || strings.Contains(line, `% "test"`):
-				scope = model.ScopeTest
-			case strings.Contains(line, "% Provided") || strings.Contains(line, `% "provided"`):
-				scope = model.ScopeBuild
-			case strings.Contains(line, "% Optional") || strings.Contains(line, `% "optional"`):
-				scope = model.ScopeOptional
-			}
-			deps = append(deps, libyearDep{Name: fullName, Version: version, Requirement: line, Type: scope, Manager: "maven"})
-		}
-	}
-	return deps
-}
 
 // ============================================================
 // Additional libyear resolvers (added in v0.5.4)
@@ -4092,17 +2302,54 @@ func parseBuildSbtVersions(content string) []libyearDep {
 // serves maven-metadata.xml (the latest release and the version list)
 // and a Last-Modified header on each version's .pom, which is the
 // version's publication time — both from its CDN.
-func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveMavenLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	groupID, artifactID, ok := strings.Cut(dep.Name, ":")
 	if !ok || groupID == "" || artifactID == "" {
-		return nil, fmt.Errorf("invalid maven coordinate: %s", dep.Name)
+		return nil, fmt.Errorf("invalid maven coordinate: %s: %w", dep.Name, errRegistryCannotBeAsked)
 	}
 	if strings.Contains(dep.Name, "${") {
 		// An unresolved property reference is not a coordinate; sending it
-		// only draws a 400/404 (parsePomXMLVersions resolves what it can).
-		return nil, fmt.Errorf("maven coordinate %s has an unresolved property reference", dep.Name)
+		// only draws a 400/404 (manifest.ParsePomXMLVersions resolves what it can).
+		return nil, fmt.Errorf("maven coordinate %s has an unresolved property reference: %w", dep.Name, errRegistryCannotBeAsked)
 	}
-	artifactBase := mavenRepositoryBase + "/" + strings.ReplaceAll(groupID, ".", "/") + "/" + url.PathEscape(artifactID)
+	// v0.29.180: the configured repositories, in order. The first that has
+	// the artifact answers. "Not on a registry" needs EVERY repository to
+	// have answered that: a miss on one and a failure on another is a
+	// failed lookup, since the artifact may be on the one that did not
+	// answer (SR-5).
+	configured := mavenRepositoryBases()
+	if len(configured) == 0 {
+		return nil, fmt.Errorf("no Maven repository is configured (collection.maven_repositories is empty): %w", errRegistryCannotBeAsked)
+	}
+	// v0.29.186: the effective list, the configured repositories minus the
+	// distrusted ones, decided here at the moment of use.
+	bases := usableMavenRepositories(ctx)
+	if len(bases) == 0 {
+		return nil, errRepositoryDistrusted
+	}
+	var miss, failure error
+	for _, base := range bases {
+		row, err := resolveMavenLibyearAt(ctx, base, groupID, artifactID, dep)
+		switch {
+		case err == nil:
+			return row, nil
+		case errors.Is(err, context.Canceled) || ctx.Err() != nil:
+			return nil, err
+		case isDefinitiveRegistryMiss(err):
+			miss = err
+		case failure == nil:
+			failure = err
+		}
+	}
+	if failure != nil {
+		return nil, failure
+	}
+	return nil, miss
+}
+
+// resolveMavenLibyearAt asks one Maven repository about one artifact.
+func resolveMavenLibyearAt(ctx context.Context, base, groupID, artifactID string, dep model.LibyearDep) (*model.LibyearRow, error) {
+	artifactBase := base + "/" + strings.ReplaceAll(groupID, ".", "/") + "/" + url.PathEscape(artifactID)
 	body, err := fetchRegistryJSON(ctx, artifactBase+"/maven-metadata.xml")
 	if err != nil {
 		return nil, err
@@ -4150,7 +2397,7 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		}
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4160,14 +2407,18 @@ func resolveMavenLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
-		Purl:               buildPurl("maven", groupID+"/"+artifactID, dep.Version),
+		Purl:               pkgid.Purl("maven", groupID+"/"+artifactID, dep.Version),
 	}, nil
 }
 
 // resolvePackagistLibyear checks Packagist (PHP) for package versions.
-func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolvePackagistLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
+	// Packagist names are case-insensitive and its answer is keyed in lower
+	// case, whatever case the request used (0.29.163: a name declared with
+	// capitals read as "not found" on every analysis).
+	key := strings.ToLower(dep.Name)
 	body, err := fetchRegistryJSON(ctx,
-		fmt.Sprintf(packagistRegistryBase+"/p2/%s.json", dep.Name))
+		fmt.Sprintf(packagistRegistryBase+"/p2/%s.json", key))
 	if err != nil {
 		return nil, err
 	}
@@ -4181,15 +2432,22 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, err
 	}
-	versions := info.Packages[dep.Name]
+	versions := info.Packages[key]
 	if len(versions) == 0 {
+		// Deliberately NOT typed as "the package does not exist" (0.29.156):
+		// this is a 200 whose body held no versions for the name, which a
+		// changed response shape or a differently spelled key would produce
+		// as well. An unexpected shape is not a "no" (SR-5), so it stays a
+		// failure that says nothing and is asked again.
 		return nil, fmt.Errorf("not found on Packagist: %s", dep.Name)
 	}
 	// First entry is the latest version.
 	latest := versions[0]
 	currentDate := ""
+	onRegistry := false
 	for _, v := range versions {
-		if cleanVersion(v.Version) == dep.Version {
+		if manifest.CleanVersion(v.Version) == dep.Version {
+			onRegistry = true
 			currentDate = v.Time
 			break
 		}
@@ -4199,23 +2457,24 @@ func resolvePackagistLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRo
 		license = joinRegistryLicenseList(latest.License)
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
 		PackageManager:     "packagist",
 		CurrentVersion:     dep.Version,
-		LatestVersion:      cleanVersion(latest.Version),
+		LatestVersion:      manifest.CleanVersion(latest.Version),
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latest.Time,
 		Libyear:            calcLibyear(currentDate, latest.Time),
 		License:            license,
-		Purl:               buildPurl("composer", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("composer", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 	}, nil
 }
 
 // resolveHexLibyear checks hex.pm (Elixir/Erlang) for package versions.
-func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveHexLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(hexRegistryBase+"/api/packages/%s", dep.Name))
 	if err != nil {
@@ -4234,12 +2493,19 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		return nil, err
 	}
 	if len(info.Releases) == 0 {
+		// Deliberately NOT typed as "the package does not exist" (0.29.156):
+		// this is a 200 whose body held no versions for the name, which a
+		// changed response shape or a differently spelled key would produce
+		// as well. An unexpected shape is not a "no" (SR-5), so it stays a
+		// failure that says nothing and is asked again.
 		return nil, fmt.Errorf("not found on Hex: %s", dep.Name)
 	}
 	latest := info.Releases[0]
 	currentDate := ""
+	onRegistry := false
 	for _, r := range info.Releases {
 		if r.Version == dep.Version {
+			onRegistry = true
 			currentDate = r.InsertedAt
 			break
 		}
@@ -4249,7 +2515,7 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		license = joinRegistryLicenseList(info.Meta.Licenses)
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4260,7 +2526,8 @@ func resolveHexLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, err
 		LatestReleaseDate:  latest.InsertedAt,
 		Libyear:            calcLibyear(currentDate, latest.InsertedAt),
 		License:            license,
-		Purl:               buildPurl("hex", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("hex", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 	}, nil
 }
 
@@ -4297,7 +2564,7 @@ func nugetIsStable(v string) bool {
 // newest LISTED STABLE version, not the last entry (a prerelease:
 // Newtonsoft.Json read 14.0.1-beta2). A package with no stable version
 // falls back to its newest listed one. Pages come oldest first.
-func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveNuGetLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(nugetRegistryBase+"/v3/registration5-gz-semver2/%s/index.json",
 			strings.ToLower(dep.Name)))
@@ -4332,6 +2599,7 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 
 	latestVersion, latestDate, license := "", "", ""
 	currentDate := ""
+	onRegistry := false
 	var newestListed *nugetCatalogEntry
 	for i := range entries {
 		e := &entries[i]
@@ -4339,6 +2607,10 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		// An unlisted version is published as 1900-01-01 (review round 1:
 		// a dependency pinned to one read ~125 years stale). Its real date
 		// is unknown, so the current date stays empty for it.
+		// An unlisted version is on the registry; it only has no usable date.
+		if dep.Version != "" && strings.EqualFold(e.Version, dep.Version) {
+			onRegistry = true
+		}
 		if strings.EqualFold(e.Version, dep.Version) && !unlisted && !strings.HasPrefix(e.Published, "1900-") {
 			currentDate = e.Published
 		}
@@ -4354,7 +2626,7 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		latestVersion, latestDate, license = newestListed.Version, newestListed.Published, newestListed.LicenseExpression
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4365,7 +2637,8 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
 		License:            license,
-		Purl:               buildPurl("nuget", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("nuget", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 	}, nil
 }
 
@@ -4373,98 +2646,8 @@ func resolveNuGetLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, e
 // Dart (pub.dev) parsers and resolver (added in v0.5.4)
 // ============================================================
 
-// parsePubspecDeps extracts dependency names from Dart pubspec.yaml.
-func parsePubspecDeps(content string) []string {
-	var deps []string
-	inDeps := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "dependencies:" || trimmed == "dev_dependencies:" {
-			inDeps = true
-			continue
-		}
-		// Section ends at a top-level key (no leading whitespace).
-		if inDeps && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			inDeps = false
-		}
-		if !inDeps {
-			continue
-		}
-		// Skip sdk dependencies like "flutter: sdk: flutter".
-		if strings.Contains(trimmed, "sdk:") {
-			continue
-		}
-		// Line like "  http: ^0.13.6" — name is the key before the colon.
-		if strings.Contains(trimmed, ":") && !strings.HasPrefix(trimmed, "#") {
-			name := strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[0])
-			if name != "" && name != "flutter" && name != "flutter_test" {
-				deps = append(deps, name)
-			}
-		}
-	}
-	return deps
-}
-
-// parsePubspecVersions extracts deps with versions from Dart pubspec.yaml.
-func parsePubspecVersions(content string) []libyearDep {
-	var deps []libyearDep
-	inDeps := false
-	depType := "runtime"
-	// v0.27.71: block-style deps nest their source under the name:
-	//
-	//	my_lib:
-	//	  path: ../
-	//
-	// The pre-fix parser emitted the SUB-KEYS as deps — a package
-	// named "path" at version "../" (90 production rows), fake "git"/
-	// "url"/"ref" packages. Track the indent of the first dep line in
-	// each section; anything deeper is a sub-key, not a dep. (Name
-	// filtering would be wrong: "path" is a real pub.dev package that
-	// legitimately appears at dep level.)
-	depIndent := -1
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "dependencies:" {
-			inDeps = true
-			depType = "runtime"
-			depIndent = -1
-			continue
-		}
-		if trimmed == "dev_dependencies:" {
-			inDeps = true
-			depType = "dev"
-			depIndent = -1
-			continue
-		}
-		if inDeps && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			inDeps = false
-		}
-		if !inDeps || strings.Contains(trimmed, "sdk:") {
-			continue
-		}
-		if strings.Contains(trimmed, ":") && !strings.HasPrefix(trimmed, "#") {
-			indent := len(line) - len(strings.TrimLeft(line, " \t"))
-			if depIndent == -1 {
-				depIndent = indent
-			}
-			if indent > depIndent {
-				continue // sub-key of a block-style dep
-			}
-			parts := strings.SplitN(trimmed, ":", 2)
-			name := strings.TrimSpace(parts[0])
-			if name == "" || name == "flutter" || name == "flutter_test" {
-				continue
-			}
-			versionStr := strings.TrimSpace(parts[1])
-			version := cleanVersion(strings.Trim(versionStr, "\"' "))
-			deps = append(deps, libyearDep{Name: name, Version: version, Requirement: trimmed, Type: depType, Manager: "pub"})
-		}
-	}
-	return deps
-}
-
 // resolvePubDevLibyear checks pub.dev (Dart/Flutter) for package versions.
-func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolvePubDevLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	body, err := fetchRegistryJSON(ctx,
 		fmt.Sprintf(pubDevRegistryBase+"/api/packages/%s", dep.Name))
 	if err != nil {
@@ -4486,13 +2669,15 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 	latestVersion := info.Latest.Version
 	latestDate := info.Latest.Published
 	currentDate := ""
+	onRegistry := false
 	for _, v := range info.Versions {
 		if v.Version == dep.Version {
+			onRegistry = true
 			currentDate = v.Published
 			break
 		}
 	}
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4502,7 +2687,8 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
-		Purl:               buildPurl("pub", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("pub", dep.Name, dep.Version),
+		VersionFound:       versionFound(dep.Version, onRegistry),
 	}, nil
 }
 
@@ -4510,138 +2696,20 @@ func resolvePubDevLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, 
 // Swift (SwiftPM) parsers and resolver (added in v0.5.4)
 // ============================================================
 
-// parsePackageSwiftDeps extracts dependency names from Package.swift.
-func parsePackageSwiftDeps(content string) []string {
-	var deps []string
-	for _, line := range strings.Split(content, "\n") {
-		// See parseBuildSbt: a commented-out `.package(url:)` is not a
-		// dependency. The stripper is quote-aware because every package URL
-		// contains `//` inside its quotes.
-		line = strings.TrimSpace(stripSlashComment(line))
-		if !strings.Contains(line, ".package(url:") {
-			continue
-		}
-		// Extract repo name from URL: "https://github.com/Alamofire/Alamofire.git"
-		if name := extractSwiftPackageName(line); name != "" {
-			deps = append(deps, name)
-		}
-	}
-	return deps
-}
-
-// parsePackageSwiftVersions extracts deps with versions from Package.swift.
-func parsePackageSwiftVersions(content string) []libyearDep {
-	var deps []libyearDep
-	for _, line := range strings.Split(content, "\n") {
-		// See parseBuildSbt: a commented-out `.package(url:)` is not a
-		// dependency. The stripper is quote-aware because every package URL
-		// contains `//` inside its quotes.
-		line = strings.TrimSpace(stripSlashComment(line))
-		if !strings.Contains(line, ".package(url:") {
-			continue
-		}
-		name := extractSwiftPackageName(line)
-		if name == "" {
-			continue
-		}
-		// Extract version: from: "5.6.0", exact: "5.0.1", .upToNextMajor(from: "10.40.0")
-		version := extractSwiftVersion(line)
-		repoURL := extractSwiftRepoURL(line)
-		deps = append(deps, libyearDep{
-			Name:        name,
-			Version:     version,
-			Requirement: repoURL,
-			Type:        "runtime",
-			Manager:     "swiftpm",
-		})
-	}
-	return deps
-}
-
-// extractSwiftPackageName pulls the repo name from a .package(url:...) line.
-func extractSwiftPackageName(line string) string {
-	// Find URL between quotes after "url:"
-	urlStart := strings.Index(line, `url:`)
-	if urlStart < 0 {
-		return ""
-	}
-	rest := line[urlStart+4:]
-	// Find the quoted URL.
-	q1 := strings.IndexByte(rest, '"')
-	if q1 < 0 {
-		return ""
-	}
-	q2 := strings.IndexByte(rest[q1+1:], '"')
-	if q2 < 0 {
-		return ""
-	}
-	url := rest[q1+1 : q1+1+q2]
-	// v0.29.59: the shared Swift URL parse (parseSwiftPackageURL), so the
-	// manifest's name is the SAME repository name the Package.resolved
-	// reader stores; a non-URL value keeps the last-segment fallback.
-	if ref, ok := parseSwiftPackageURL(url); ok {
-		return ref.Repo
-	}
-	// Extract repo name: last path component, without the URL's ".git" or
-	// trailing "/" (the shared suffix rule, follow-up 8).
-	parts := strings.Split(model.NormalizeRepoGitURL(url), "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
-}
-
-// extractSwiftRepoURL pulls the git URL from a .package(url:...) line.
-func extractSwiftRepoURL(line string) string {
-	urlStart := strings.Index(line, `url:`)
-	if urlStart < 0 {
-		return ""
-	}
-	rest := line[urlStart+4:]
-	q1 := strings.IndexByte(rest, '"')
-	if q1 < 0 {
-		return ""
-	}
-	q2 := strings.IndexByte(rest[q1+1:], '"')
-	if q2 < 0 {
-		return ""
-	}
-	return rest[q1+1 : q1+1+q2]
-}
-
-// extractSwiftVersion pulls the version from patterns like:
-//
-//	from: "5.6.0", exact: "5.0.1", .upToNextMajor(from: "10.40.0")
-func extractSwiftVersion(line string) string {
-	// Try patterns in order: from: "x", exact: "x", .upToNextMajor(from: "x")
-	for _, prefix := range []string{`from: "`, `exact: "`, `.upToNextMajor(from: "`, `.upToNextMinor(from: "`} {
-		idx := strings.Index(line, prefix)
-		if idx < 0 {
-			continue
-		}
-		rest := line[idx+len(prefix):]
-		end := strings.IndexByte(rest, '"')
-		if end > 0 {
-			return rest[:end]
-		}
-	}
-	return ""
-}
-
 // resolveSwiftPMLibyear resolves a SwiftPM dependency from its GitHub
 // repository's releases. SwiftPM packages are git repositories, not a
 // registry. Requests go through the key-pooled GitHub client (v0.29.56;
 // they were anonymous, 60 an hour per IP, and failed with 403/429 in the
 // 2026-09-17 log). The version in use is looked up as a release tag, with
 // and without a leading "v", so libyear is computed instead of 0.
-func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearDep) (*db.LibyearRow, error) {
-	// v0.29.59: one shared parse (parseSwiftPackageURL). GitHub has no
+func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep model.LibyearDep) (*model.LibyearRow, error) {
+	// v0.29.59: one shared parse (manifest.ParseSwiftPackageURL). GitHub has no
 	// subgroups, so the namespace must be exactly host/owner; userinfo
 	// and a port never reach the purl.
-	ref, ok := parseSwiftPackageURL(dep.Requirement)
+	ref, ok := manifest.ParseSwiftPackageURL(dep.Requirement)
 	if !ok || ref.Host != "github.com" || ref.Namespace != ref.Host+"/"+ref.Owner {
 		// Non-GitHub SwiftPM packages can't be resolved without a registry.
-		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s", platform.RedactURLUserinfo(dep.Requirement))
+		return nil, fmt.Errorf("SwiftPM resolver only supports GitHub repos: %s: %w", platform.RedactURLUserinfo(dep.Requirement), errRegistryCannotBeAsked)
 	}
 	if gh == nil {
 		return nil, errNoGitHubClient
@@ -4676,7 +2744,7 @@ func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearD
 		}
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4690,7 +2758,7 @@ func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearD
 		// repository host and owner (pkg:swift/github.com/Owner/Repo@v);
 		// the Package.resolved writer emits the same shape, so the direct
 		// and transitive purls of one package are one purl.
-		Purl: buildPurl("swift", ref.Namespace+"/"+ref.Repo, dep.Version),
+		Purl: pkgid.Purl("swift", ref.Namespace+"/"+ref.Repo, dep.Version),
 	}, nil
 }
 
@@ -4698,75 +2766,8 @@ func resolveSwiftPMLibyear(ctx context.Context, gh githubAPIGetter, dep libyearD
 // Haskell (Hackage) parsers and resolver (added in v0.5.4)
 // ============================================================
 
-// parseHaskellPackageYamlVersions extracts deps with versions from package.yaml.
-// Version constraints like ">= 2.0" are parsed to extract the lower bound.
-func parseHaskellPackageYamlVersions(content string) []libyearDep {
-	var deps []libyearDep
-	inDeps := false
-	// v0.27.44 (summary/19 P1): a dependencies: block nested under a
-	// top-level tests: or benchmarks: section is test-only. The
-	// section tracker watches unindented `key:` lines; library:,
-	// executables:, and the top level stay runtime.
-	sectionScope := "runtime"
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && strings.HasSuffix(trimmed, ":") {
-			switch strings.TrimSuffix(trimmed, ":") {
-			case "tests", "benchmarks":
-				sectionScope = model.ScopeTest
-			default:
-				sectionScope = "runtime"
-			}
-		}
-		if trimmed == "dependencies:" {
-			inDeps = true
-			continue
-		}
-		if inDeps && strings.HasPrefix(trimmed, "- ") {
-			dep := strings.TrimPrefix(trimmed, "- ")
-			name := dep
-			version := ""
-			// Parse "base >= 4.7 && < 5" -> name="base", version="4.7"
-			if idx := strings.IndexAny(dep, " ><=!"); idx > 0 {
-				name = dep[:idx]
-				// Extract the first version number from the constraint.
-				rest := dep[idx:]
-				version = extractFirstVersion(rest)
-			}
-			if name != "" {
-				deps = append(deps, libyearDep{Name: name, Version: version, Requirement: dep, Type: sectionScope, Manager: "hackage"})
-			}
-		} else if inDeps && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
-			inDeps = false
-		}
-	}
-	return deps
-}
-
-// extractFirstVersion pulls the first semver-like number from a constraint string.
-// e.g., ">= 2.0 && < 3" -> "2.0", " ^4.7" -> "4.7"
-func extractFirstVersion(s string) string {
-	var start, end int
-	inVersion := false
-	for i, c := range s {
-		if (c >= '0' && c <= '9') || c == '.' {
-			if !inVersion {
-				start = i
-				inVersion = true
-			}
-			end = i + 1
-		} else if inVersion {
-			break
-		}
-	}
-	if inVersion {
-		return strings.TrimRight(s[start:end], ".")
-	}
-	return ""
-}
-
 // resolveHackageLibyear checks Hackage for Haskell package versions.
-func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow, error) {
+func resolveHackageLibyear(ctx context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 	// Hackage preferred-versions API returns version list. This is the
 	// one registry endpoint that needs an Accept header (it serves HTML
 	// otherwise) — passed through fetchRegistryJSON's extraArgs.
@@ -4783,6 +2784,11 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		return nil, err
 	}
 	if len(info.NormalVersion) == 0 {
+		// Deliberately NOT typed as "the package does not exist" (0.29.156):
+		// this is a 200 whose body held no versions for the name, which a
+		// changed response shape or a differently spelled key would produce
+		// as well. An unexpected shape is not a "no" (SR-5), so it stays a
+		// failure that says nothing and is asked again.
 		return nil, fmt.Errorf("no versions found on Hackage: %s", dep.Name)
 	}
 	latestVersion := info.NormalVersion[0] // First is the latest.
@@ -4814,7 +2820,7 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		}
 	}
 
-	return &db.LibyearRow{
+	return &model.LibyearRow{
 		Name:               dep.Name,
 		Requirement:        dep.Requirement,
 		Type:               dep.Type,
@@ -4824,7 +2830,7 @@ func resolveHackageLibyear(ctx context.Context, dep libyearDep) (*db.LibyearRow,
 		CurrentReleaseDate: currentDate,
 		LatestReleaseDate:  latestDate,
 		Libyear:            calcLibyear(currentDate, latestDate),
-		Purl:               buildPurl("hackage", dep.Name, dep.Version),
+		Purl:               pkgid.Purl("hackage", dep.Name, dep.Version),
 	}, nil
 }
 

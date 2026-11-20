@@ -318,6 +318,12 @@ var loserRepoIDDeletes = []string{
 	"aveloxis_data.repo_insights",
 	"aveloxis_data.repo_dependencies",
 	"aveloxis_data.repo_deps_libyear",
+	// v0.29.159: the loser's coverage record describes the loser's
+	// inventory, which goes with it; the winner keeps its own.
+	"aveloxis_data.repo_dependency_coverage",
+	// v0.29.164: the loser's notes go with its inventory.
+	"aveloxis_data.repo_inventory_notes",
+	"aveloxis_data.repo_declared_repositories",
 	"aveloxis_data.repo_deps_scorecard",
 	"aveloxis_data.repo_deps_vulnerabilities",
 	// v0.27.11 lockfile inventory + direct-dep resolutions: per-repo

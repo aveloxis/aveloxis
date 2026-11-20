@@ -1,0 +1,369 @@
+{
+  "ignore": {},
+  "rules": [
+    {
+      "name": "the schema stamp",
+      "table": "aveloxis_ops.schema_meta",
+      "mode": "may-differ",
+      "reason": "every migrate writes its own version and time"
+    },
+    {
+      "name": "maven_pom_results: created empty",
+      "table": "aveloxis_data.maven_pom_results",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.182: fetched Maven parent poms and BOMs; written when one is first fetched. The migrate creates it and writes no row"
+    },
+    {
+      "name": "maven_pom_results: its indexes",
+      "table": "aveloxis_data.maven_pom_results",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "maven_pom_results_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "maven_pom_results: its constraints",
+      "table": "aveloxis_data.maven_pom_results",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "repo_declared_repositories: created empty",
+      "table": "aveloxis_data.repo_declared_repositories",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.184: the repositories a build file declares; written by the next analysis. The migrate creates it and writes no row"
+    },
+    {
+      "name": "repo_declared_repositories: its indexes",
+      "table": "aveloxis_data.repo_declared_repositories",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_repo_declared_repositories_host",
+        "repo_declared_repositories_pkey",
+        "repo_declared_repositories_repo_id_manifest_path_repository_key"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "repo_declared_repositories: its constraints",
+      "table": "aveloxis_data.repo_declared_repositories",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "repo_dependency_coverage: created empty",
+      "table": "aveloxis_data.repo_dependency_coverage",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.159: one row per repository, how completely its dependencies were read; written by the next analysis and scan. The migrate creates it and writes no row"
+    },
+    {
+      "name": "repo_dependency_coverage: its indexes",
+      "table": "aveloxis_data.repo_dependency_coverage",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "repo_dependency_coverage_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "repo_dependency_coverage: its constraints",
+      "table": "aveloxis_data.repo_dependency_coverage",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "repo_inventory_notes: created empty",
+      "table": "aveloxis_data.repo_inventory_notes",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.164: each declared dependency that was given no inventory row, and why; written by the next analysis. The migrate creates it and writes no row"
+    },
+    {
+      "name": "repo_inventory_notes: its indexes",
+      "table": "aveloxis_data.repo_inventory_notes",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_repo_inventory_notes_repo",
+        "repo_inventory_notes_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "repo_inventory_notes: its constraints",
+      "table": "aveloxis_data.repo_inventory_notes",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "distrusted_repository_hosts: created empty",
+      "table": "aveloxis_ops.distrusted_repository_hosts",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.186: the hosts an administrator has distrusted; nothing puts one there by itself. The migrate creates it and writes no row"
+    },
+    {
+      "name": "distrusted_repository_hosts: its indexes",
+      "table": "aveloxis_ops.distrusted_repository_hosts",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "distrusted_repository_hosts_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "distrusted_repository_hosts: its constraints",
+      "table": "aveloxis_ops.distrusted_repository_hosts",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "package_repository_hosts: created empty",
+      "table": "aveloxis_ops.package_repository_hosts",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.185: the hosts Maven poms were fetched from; written at a fetch. The migrate creates it and writes no row"
+    },
+    {
+      "name": "package_repository_hosts: its indexes",
+      "table": "aveloxis_ops.package_repository_hosts",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "package_repository_hosts_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "package_repository_hosts: its constraints",
+      "table": "aveloxis_ops.package_repository_hosts",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "program_markers: created empty",
+      "table": "aveloxis_ops.program_markers",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.173: the cursor of the package-key fill; written by serve, not by the migrate. The migrate creates it and writes no row"
+    },
+    {
+      "name": "program_markers: its indexes",
+      "table": "aveloxis_ops.program_markers",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "program_markers_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "program_markers: its constraints",
+      "table": "aveloxis_ops.program_markers",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "repository_host_signals: created empty",
+      "table": "aveloxis_ops.repository_host_signals",
+      "mode": "may-differ",
+      "kinds": [
+        "added"
+      ],
+      "reason": "0.29.189: what the repository host check observed; written by serve. The migrate creates it and writes no row"
+    },
+    {
+      "name": "repository_host_signals: its indexes",
+      "table": "aveloxis_ops.repository_host_signals",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "repository_host_signals_pkey"
+      ],
+      "reason": "schema.sql creates the table with these"
+    },
+    {
+      "name": "repository_host_signals: its constraints",
+      "table": "aveloxis_ops.repository_host_signals",
+      "mode": "must-differ",
+      "kinds": [
+        "constraint-added"
+      ],
+      "reason": "the table's primary key, its checks and its foreign key where it has one"
+    },
+    {
+      "name": "repo_deps_libyear: the columns added NULL",
+      "table": "aveloxis_data.repo_deps_libyear",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "libyear_status",
+        "package_key",
+        "version_hosts",
+        "version_reason",
+        "version_source"
+      ],
+      "reason": "added NULL for every existing row (0.29.162, 0.29.172, 0.29.185, 0.29.181, 0.29.177); the next analysis writes them, and the package-key fill, which serve runs, fills package_key on rows that are not analysed again",
+      "null_only": true
+    },
+    {
+      "name": "repo_deps_libyear: manifest_path",
+      "table": "aveloxis_data.repo_deps_libyear",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "manifest_path"
+      ],
+      "reason": "0.29.160: added with the default '' (a row written before it names no manifest)"
+    },
+    {
+      "name": "repo_deps_libyear_history: the columns added NULL",
+      "table": "aveloxis_data.repo_deps_libyear_history",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "libyear_status",
+        "package_key",
+        "version_hosts",
+        "version_reason",
+        "version_source"
+      ],
+      "reason": "added NULL for every existing row (0.29.162, 0.29.172, 0.29.185, 0.29.181, 0.29.177); the next analysis writes them, and the package-key fill, which serve runs, fills package_key on rows that are not analysed again",
+      "null_only": true
+    },
+    {
+      "name": "repo_deps_libyear_history: manifest_path",
+      "table": "aveloxis_data.repo_deps_libyear_history",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "manifest_path"
+      ],
+      "reason": "0.29.160: added with the default '' (a row written before it names no manifest)"
+    },
+    {
+      "name": "findings: the columns added NULL",
+      "table": "aveloxis_data.repo_deps_vulnerabilities",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "closed_reason",
+        "decided_asked_at",
+        "decided_targets_at",
+        "entered_exposure_at"
+      ],
+      "reason": "added NULL for every existing finding (0.29.165, 0.29.171, 0.29.166): a closure before this release has no reason, and the digest falls back to first detection",
+      "null_only": true
+    },
+    {
+      "name": "lockfile packages: package_key",
+      "table": "aveloxis_data.repo_lockfile_packages",
+      "mode": "must-differ",
+      "kinds": [
+        "column-added"
+      ],
+      "columns": [
+        "package_key"
+      ],
+      "reason": "0.29.172: added NULL; written on every insert from this release, and filled on older rows by serve",
+      "null_only": true
+    },
+    {
+      "name": "the inventory's two new indexes",
+      "table": "aveloxis_data.repo_deps_libyear",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_repo_deps_libyear_package_key",
+        "idx_repo_deps_libyear_version_hosts"
+      ],
+      "reason": "0.29.172 and 0.29.187 build them CONCURRENTLY"
+    },
+    {
+      "name": "the lockfile packages' new index",
+      "table": "aveloxis_data.repo_lockfile_packages",
+      "mode": "must-differ",
+      "kinds": [
+        "index-added"
+      ],
+      "objects": [
+        "idx_repo_lockfile_packages_package_key"
+      ],
+      "reason": "0.29.172 builds it CONCURRENTLY"
+    }
+  ],
+  "verify_ok": [
+    "invalid indexes"
+  ]
+}

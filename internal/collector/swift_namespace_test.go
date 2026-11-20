@@ -6,6 +6,9 @@ package collector
 import (
 	"context"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // v0.29.59 (worklist 46): a SwiftPM purl needs its namespace — the host and
@@ -57,26 +60,6 @@ func TestPackageResolvedCarriesNamespaceFromLocation(t *testing.T) {
 	}
 }
 
-func TestPurlForPackageUsesTheNamespace(t *testing.T) {
-	if got := purlForPackage("swiftpm", "github.com/Alamofire", "Alamofire", "5.8.0"); got != "pkg:swift/github.com/Alamofire/Alamofire@5.8.0" {
-		t.Errorf("swift with namespace = %q", got)
-	}
-	if got := purlForPackage("swiftpm", "", "alamofire", "5.8.0"); got != "" {
-		t.Errorf("swift without namespace must stay unminted, got %q", got)
-	}
-	if !wireValidPurl(purlForPackage("swiftpm", "github.com/Alamofire", "Alamofire", "5.8.0")) {
-		t.Error("the namespaced swift purl must pass the wire gate")
-	}
-	// The namespace is generic: a maven group supplied separately works too,
-	// and a type that never needs one ignores an empty namespace.
-	if got := purlForPackage("maven", "org.example", "artifact", "1.0"); got != "pkg:maven/org.example/artifact@1.0" {
-		t.Errorf("maven with namespace = %q", got)
-	}
-	if got := purlForPackage("npm", "", "express", "4.18.0"); got != "pkg:npm/express@4.18.0" {
-		t.Errorf("npm = %q", got)
-	}
-}
-
 // TestSwiftDirectPurlIsHostQualified pins the direct writer to the same
 // shape, so a direct Alamofire and the Package.resolved pin for it are one
 // purl (cross-kind dedup in the scan and the SBOMs).
@@ -85,7 +68,7 @@ func TestSwiftDirectPurlIsHostQualified(t *testing.T) {
 		"/repos/Alamofire/Alamofire/releases/latest":     `{"tag_name":"5.10.2","published_at":"2024-11-14T18:00:00Z"}`,
 		"/repos/Alamofire/Alamofire/releases/tags/5.8.0": `{"tag_name":"5.8.0","published_at":"2023-09-18T18:00:00Z"}`,
 	}}
-	row, err := resolveSwiftPMLibyear(context.Background(), gh, libyearDep{
+	row, err := resolveSwiftPMLibyear(context.Background(), gh, model.LibyearDep{
 		Name: "Alamofire", Version: "5.8.0", Manager: "swiftpm",
 		Requirement: "https://github.com/Alamofire/Alamofire.git"})
 	if err != nil {
@@ -94,7 +77,7 @@ func TestSwiftDirectPurlIsHostQualified(t *testing.T) {
 	if row.Purl != "pkg:swift/github.com/Alamofire/Alamofire@5.8.0" {
 		t.Errorf("direct swift purl = %q, want the host-qualified spec shape", row.Purl)
 	}
-	if got := purlForPackage("swiftpm", "github.com/Alamofire", "Alamofire", "5.8.0"); got != row.Purl {
+	if got := pkgid.PurlForPackage("swiftpm", "github.com/Alamofire", "Alamofire", "5.8.0"); got != row.Purl {
 		t.Errorf("transitive purl %q must equal the direct purl %q so the kinds dedupe", got, row.Purl)
 	}
 }

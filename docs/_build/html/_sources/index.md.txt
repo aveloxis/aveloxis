@@ -9,9 +9,9 @@ Aveloxis is a high-performance open source community health data collection plat
 - **Postgres-backed queue** — no Redis, RabbitMQ, or Celery. Multiple instances share the same queue via `SKIP LOCKED`
 - **Git commit analysis** — bare clones + `git log --numstat` for per-file commit data, parent tracking, and Facade aggregates
 - **Contributor resolution** — resolves git commit emails to GitHub users via noreply parsing, Commits API, and Search API
-- **Dependency & complexity analysis** — scans 14 ecosystems, calculates libyear across 12 package registries, runs scc for code complexity
+- **Dependency & complexity analysis** — scans 14 ecosystems, calculates libyear across 13 package registries, runs scc for code complexity
 - **Vulnerability scanning** — OSV.dev batch API across direct AND transitive dependencies, with `introduced_by` chains, lifecycle stamps, and honest version-resolution labels
-- **SBOM generation** — CycloneDX 1.7 + SPDX 2.3 with license capture from 12 registries and real dependency graphs from 19 lockfile formats
+- **SBOM generation** — CycloneDX 1.7 + SPDX 2.3 with license capture from 13 registries and real dependency graphs from 19 lockfile formats
 - **Interactive visualizations** — weekly time-series charts, cross-project comparison with Z-score normalization, dependency license analysis
 - **REST API** — JSON endpoints for stats, time series, licenses, SBOM download, and repo search
 - **22 materialized views** — 20 8Knot-compatible analytics views, rebuilt weekly and optional (`collection.materialized_views`), plus the two Aveloxis-owned supply-chain package views on their own cadence (`collection.supply_chain_refresh_hours`)

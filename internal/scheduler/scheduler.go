@@ -692,6 +692,27 @@ func (s *Scheduler) Run(ctx context.Context) {
 	// where it left off.
 	safego.Go(s.logger, "repo-metadata-backfill", func() { s.runRepoMetadataBackfill(ctx) })
 
+	// v0.29.173: the package-key fill (summary/70, 4.2). One-shot: it
+	// walks the inventory and the lockfile packages once, to give a key to
+	// rows written before 0.29.172, and exits; a start that finds it
+	// complete does nothing. It claims no collection job. The effective
+	// step is logged here, where it is used.
+	keyFillRows := s.cfg.Collection.PackageKeyFillRowsOrDefault()
+	s.logger.Info("package-key fill", "rows_per_step", keyFillRows, "pause", packageKeyFillPause)
+	safego.Go(s.logger, "package-key-fill", func() {
+		runPackageKeyFill(ctx, s.store, s.logger, keyFillRows, packageKeyFillPause)
+	})
+
+	// v0.29.189: the repository host check (summary/70, 4.5, D14). It looks
+	// at each package repository host once an interval and records what it
+	// sees for the administrator's page. Observation only (SR-7). The
+	// effective values are logged here, where they are used.
+	hostCheck := newRepositoryHostCheck(s.store, collector.RepositoryHostProbe, s.logger, collector.RepositoryHostRegistration, collector.RepositoryHostThreatList, s.cfg.Collection)
+	s.logger.Info("repository host check", "on", hostCheck.on, "every", hostCheck.every,
+		"configured_hosts", hostCheck.configured, "declared_hosts_contacted", hostCheck.declared,
+		"registration_dates_checked", hostCheck.registration != nil, "threat_list", s.cfg.Collection.RepositoryHostThreatListURLValue())
+	safego.Go(s.logger, "repository-host-check", func() { hostCheck.run(ctx) })
+
 	// DB-health monitor: probes the database and pauses collection while it's
 	// unavailable (the nightly unattended-upgrades Postgres restart). The DB
 	// was reachable at startup (migrate succeeded), so start healthy.
@@ -1817,6 +1838,15 @@ func (s *Scheduler) runFacadeAndAnalysis(ctx context.Context, repoID int64, repo
 	if err != nil && !collector.HasBareClone(s.cfg.Collection.RepoCloneDir, repoID) {
 		s.logger.Info("skipping analysis and scorecard — the repository has no clone",
 			"repo_id", repoID)
+		// The analysis is not entered, so it cannot say that it did not
+		// refresh the dependency inventory; its attempt writer is called
+		// here. Not a failure of its own: the facade WARN already says why.
+		// Guarded like analysisGitHubAPI below: a nil *PostgresStore in the
+		// interface parameter would read as a store and panic on its first
+		// use (a scheduler built without one exists only in unit tests).
+		if s.store != nil {
+			collector.RecordAnalysisSkippedForNoClone(ctx, s.store, s.logger, repoID)
+		}
 		return
 	}
 

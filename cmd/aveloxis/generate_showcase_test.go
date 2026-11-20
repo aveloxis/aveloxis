@@ -133,11 +133,13 @@ func TestGenerateShowcaseRepoPages(t *testing.T) {
 	// Detail reads — all repo-level, none user-scoped.
 	for _, needle := range []string{
 		"GetRepoShowcaseMeta(", "GetRepoScorecard(",
-		// v0.28.5 (Copilot round): the vulnerabilities tile gates on
-		// the OSV scan STAMP, not dependency-row presence — analysis
-		// can run cycles before the first scan, and HasDependencyData
-		// rendered a fabricated clean 0 in that window.
-		"CountRepoVulnerabilityClasses(", "GetVulnScanLastRun(", // v0.29.70: exposure + unknown version
+		// 0.29.200: what the tile says about its counts is the coverage
+		// view (vulnclass.Coverage, through the statistics read), which
+		// reads the scan stamp, the coverage record and whether any
+		// finding exists. The page's own stamp read and its own "a scan
+		// ran" rule are gone; the behaviour is held by the page test below
+		// and by showcase's render tests.
+		"CountRepoVulnerabilityClasses(", "SetVulnCoverage(st.Coverage)",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("repo snapshot pages must read %s", needle)
@@ -279,7 +281,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 
 	// beta (the top repo) gets the full detail surface: description +
 	// language, a scorecard with headline, one CRITICAL vulnerability,
-	// and a completed-scan stamp (so VulnScanned=true).
+	// and a completed-scan stamp (so its coverage state is scanned).
 	if _, err := pool.Exec(ctx, `
 		UPDATE aveloxis_data.repos SET repo_description = 'Fast <script>x</script> streaming',
 		       primary_language = 'Go' WHERE repo_id = $1`, betaID); err != nil {
@@ -436,7 +438,7 @@ func TestGenerateShowcaseEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"not yet scanned", "scan pending", "No collected activity"} {
+	for _, needle := range []string{"not yet scanned", `<div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">not yet scanned</div>`, "Not yet scanned.", "No collected activity"} {
 		if !strings.Contains(string(alphaPage), needle) {
 			t.Errorf("unscanned repo page missing honest empty state %q", needle)
 		}

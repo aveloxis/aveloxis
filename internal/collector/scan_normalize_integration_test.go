@@ -80,22 +80,20 @@ func TestScanHealsMalformedPurlsEndToEnd(t *testing.T) {
 	// paired with a CLEAN current_version — normalization no-ops (the
 	// version doesn't change), so ONLY the wire gate keeps the garbage
 	// purl from 400ing the repo's entire OSV batch.
-	for _, lb := range []*db.LibyearRow{
+	if err := store.ReplaceRepoLibyear(ctx, repoID, []*model.LibyearRow{
 		{Name: "pyyaml", Requirement: `pyyaml==6.0.3 \`, PackageManager: "pypi",
 			CurrentVersion: `6.0.3 \`, Purl: `pkg:pypi/pyyaml@6.0.3 \`},
 		{Name: "serde", Requirement: "serde = { workspace = true }", PackageManager: "cargo",
 			CurrentVersion: "workspace = true", Purl: "pkg:cargo/serde@workspace = true"},
 		{Name: "tzinfo-data", Requirement: "gem 'tzinfo-data', platforms: %i[mingw]", PackageManager: "rubygems",
 			CurrentVersion: "1.2025.3", Purl: `pkg:gem/tzinfo-data@platforms: %i[mingw mswin]`},
-	} {
-		if err := store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
-			t.Fatal(err)
-		}
+	}, nil, model.InventoryCoverage{}); err != nil {
+		t.Fatal(err)
 	}
 
 	// The false positive the malformed purl produced: an ancient
 	// advisory (fixed in 5.4) recorded against a 6.x install.
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*db.VulnerabilityRow{{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{{
 		VulnID: "GHSA-fixed-in-54", PackageName: "pyyaml",
 		PackagePurl: `pkg:pypi/pyyaml@6.0.3 \`, Severity: "CRITICAL",
 		CVSSScore: 9.8, FixedVersion: "5.4", Source: "osv.dev",

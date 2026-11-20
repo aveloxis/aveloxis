@@ -22,37 +22,25 @@ package db
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/jackc/pgx/v5"
 )
-
-// VulnScanDep is one dependency as the vulnerability scan consumes it:
-// the libyear table's floor version + purl plus the RAW requirement
-// string the manifest declared ("apache-airflow>=3.0.0"), which drives
-// the v0.27.11 version_resolution classification.
-type VulnScanDep struct {
-	Name           string
-	CurrentVersion string
-	PackageManager string
-	Purl           string
-	Requirement    string
-	// Type is the dependency scope from repo_deps_libyear.type
-	// (v0.27.46, summary/19 P3) — stamped onto direct findings'
-	// dependency_scope so runtime/dev splits work for direct deps,
-	// not just transitives.
-	Type string
-}
 
 // GetRepoDepsForVulnScan returns the repo's dependencies with the raw
 // requirement string, for vulnerability purl construction. Reads
 // repo_deps_libyear (the same source the scan always used) but through
 // its own SELECT so GetRepoLibyearDeps — the libyear/SBOM contract —
 // is not modified.
-func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64) ([]VulnScanDep, error) {
+func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64) ([]model.VulnScanDep, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, current_version, package_manager,
-			COALESCE(purl, ''), COALESCE(requirement, ''), COALESCE(type, '')
+			COALESCE(purl, ''), COALESCE(requirement, ''), COALESCE(type, ''),
+			COALESCE(version_source, '')
 		FROM aveloxis_data.repo_deps_libyear
 		WHERE repo_id = $1
 		ORDER BY name`, repoID)
@@ -60,10 +48,10 @@ func (s *PostgresStore) GetRepoDepsForVulnScan(ctx context.Context, repoID int64
 		return nil, err
 	}
 	defer rows.Close()
-	var deps []VulnScanDep
+	var deps []model.VulnScanDep
 	for rows.Next() {
-		var d VulnScanDep
-		if err := rows.Scan(&d.Name, &d.CurrentVersion, &d.PackageManager, &d.Purl, &d.Requirement, &d.Type); err != nil {
+		var d model.VulnScanDep
+		if err := rows.Scan(&d.Name, &d.CurrentVersion, &d.PackageManager, &d.Purl, &d.Requirement, &d.Type, &d.VersionSource); err != nil {
 			return nil, err
 		}
 		deps = append(deps, d)
@@ -131,27 +119,6 @@ type RepoLockfileInfo struct {
 	DirectCount  int
 }
 
-// RepoLockfilePackage is one stored resolution: a lockfile-resolved
-// version of a package that matches one of the repo's DIRECT declared
-// dependencies.
-type RepoLockfilePackage struct {
-	Ecosystem       string
-	PackageName     string
-	ResolvedVersion string
-	LockfilePath    string
-	// Namespace is repo_lockfile_packages.purl_namespace (v0.29.59): the
-	// purl namespace the lockfile supplied (a SwiftPM pin's host/owner),
-	// "" where the format has none.
-	Namespace string
-	// Direct (v0.27.21 C1) — TRUE for resolutions of the repo's
-	// declared direct dependencies (the only rows written pre-C1 and
-	// with vuln_scan_transitive off); FALSE for transitive entries.
-	Direct bool
-	// Scope — 'dev' / 'runtime' / '' (unknown), carried from formats
-	// that flag it (package-lock v2/3 dev, poetry category).
-	Scope string
-}
-
 // RepoLockfileEdge is one stored parent→child dependency edge
 // (v0.27.133 C2 — the parent-chain attribution substrate). Child edges
 // are name-level; ChildConstraint is the raw declared range.
@@ -179,7 +146,19 @@ type RepoLockfileEdge struct {
 // a snapshot of the last successful analysis walk. Callers must NOT
 // invoke this when the walk itself failed.
 func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID int64,
-	inventory []*RepoLockfileInfo, packages []*RepoLockfilePackage, edges []*RepoLockfileEdge) error {
+	inventory []*RepoLockfileInfo, packages []*model.RepoLockfilePackage, edges []*RepoLockfileEdge,
+	failed []model.ManifestFailure) error {
+	// failed (0.29.176) are the lockfiles that exist and could not be read
+	// or parsed this cycle, with the rows carried for each. They are written
+	// to the coverage record in this transaction: the record describes
+	// exactly the snapshot written here.
+	failedJSON, err := json.Marshal(failed)
+	if err != nil {
+		return fmt.Errorf("encoding the failed lockfiles: %w", err)
+	}
+	if len(failed) == 0 {
+		failedJSON = nil
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -220,11 +199,12 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 			batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_packages
 					(repo_id, ecosystem, package_name, resolved_version,
-					 lockfile_path, direct, dependency_scope, purl_namespace, data_source, data_collection_date)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'analysis', NOW())
+					 lockfile_path, direct, dependency_scope, purl_namespace, data_source, data_collection_date,
+					 package_key)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'analysis', NOW(), NULLIF($9, ''))
 				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
 				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
-				p.Direct, p.Scope, p.Namespace)
+				p.Direct, p.Scope, p.Namespace, packageKeyOrEmpty(p.Ecosystem, p.PackageName))
 		}
 		for _, e := range edges {
 			batch.Queue(`
@@ -241,8 +221,82 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 				return err
 			}
 		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO aveloxis_data.repo_dependency_coverage (repo_id, lockfiles_failed, data_collection_date)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (repo_id) DO UPDATE SET lockfiles_failed = EXCLUDED.lockfiles_failed`,
+			repoID, failedJSON); err != nil {
+			return fmt.Errorf("writing the failed lockfiles to the coverage record: %w", err)
+		}
 		return tx.Commit(ctx)
 	})
+}
+
+// GetRepoLockfileRowsAtPaths returns what the current snapshot holds for the
+// lockfiles at paths: their inventory rows, their package rows (with
+// namespace, direct flag and scope) and their edges. It is what a lockfile
+// that failed this cycle keeps (0.29.176): the caller re-inserts these rows
+// through ReplaceRepoLockfileSnapshot, the same insert as fresh rows.
+func (s *PostgresStore) GetRepoLockfileRowsAtPaths(ctx context.Context, repoID int64, paths []string) ([]*RepoLockfileInfo, []*model.RepoLockfilePackage, []*RepoLockfileEdge, error) {
+	if len(paths) == 0 {
+		return nil, nil, nil, nil
+	}
+	var inv []*RepoLockfileInfo
+	irows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, lockfile_path, COALESCE(lockfile_kind, ''), COALESCE(entry_count, 0), COALESCE(direct_count, 0)
+		FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1 AND lockfile_path = ANY($2)`, repoID, paths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for irows.Next() {
+		i := &RepoLockfileInfo{}
+		if err := irows.Scan(&i.Ecosystem, &i.LockfilePath, &i.LockfileKind, &i.EntryCount, &i.DirectCount); err != nil {
+			irows.Close()
+			return nil, nil, nil, err
+		}
+		inv = append(inv, i)
+	}
+	irows.Close()
+	if err := irows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	var pkgs []*model.RepoLockfilePackage
+	prows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, package_name, resolved_version, lockfile_path,
+		       COALESCE(purl_namespace, ''), COALESCE(direct, TRUE), COALESCE(dependency_scope, '')
+		FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1 AND lockfile_path = ANY($2)`, repoID, paths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for prows.Next() {
+		p := &model.RepoLockfilePackage{}
+		if err := prows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Namespace, &p.Direct, &p.Scope); err != nil {
+			prows.Close()
+			return nil, nil, nil, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	prows.Close()
+	if err := prows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	var edges []*RepoLockfileEdge
+	erows, err := s.pool.Query(ctx, `
+		SELECT ecosystem, COALESCE(lockfile_path, ''), parent_name, COALESCE(parent_version, ''),
+		       child_name, COALESCE(child_constraint, '')
+		FROM aveloxis_data.repo_lockfile_edges WHERE repo_id = $1 AND lockfile_path = ANY($2)`, repoID, paths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer erows.Close()
+	for erows.Next() {
+		e := &RepoLockfileEdge{}
+		if err := erows.Scan(&e.Ecosystem, &e.LockfilePath, &e.ParentName, &e.ParentVersion, &e.ChildName, &e.ChildConstraint); err != nil {
+			return nil, nil, nil, err
+		}
+		edges = append(edges, e)
+	}
+	return inv, pkgs, edges, erows.Err()
 }
 
 // GetRepoLockfileEdges returns every stored dependency edge for a repo
@@ -278,7 +332,7 @@ func (s *PostgresStore) GetRepoLockfileEdges(ctx context.Context, repoID int64) 
 // analysis pass, benefit from lockfile accuracy too.
 // v0.27.21: filters to direct=TRUE — with transitive storage on, a
 // transitive entry must never reclassify a DECLARED dep as 'locked'.
-func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64) ([]model.RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version, lockfile_path, COALESCE(purl_namespace, '')
 		FROM aveloxis_data.repo_lockfile_packages
@@ -288,9 +342,9 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 		return nil, err
 	}
 	defer rows.Close()
-	var out []RepoLockfilePackage
+	var out []model.RepoLockfilePackage
 	for rows.Next() {
-		var p RepoLockfilePackage
+		var p model.RepoLockfilePackage
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Namespace); err != nil {
 			return nil, err
 		}
@@ -307,7 +361,7 @@ func (s *PostgresStore) GetRepoLockedVersions(ctx context.Context, repoID int64)
 // once, and the scope keeps any non-dev observation ("" or 'runtime'
 // beats 'dev' — a package pulled in by BOTH a dev tool and a runtime
 // dependency is runtime exposure).
-func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID int64) ([]model.RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version,
 		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END),
@@ -320,9 +374,9 @@ func (s *PostgresStore) GetRepoTransitivePackages(ctx context.Context, repoID in
 		return nil, err
 	}
 	defer rows.Close()
-	var out []RepoLockfilePackage
+	var out []model.RepoLockfilePackage
 	for rows.Next() {
-		var p RepoLockfilePackage
+		var p model.RepoLockfilePackage
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.Scope, &p.Namespace); err != nil {
 			return nil, err
 		}
@@ -437,13 +491,6 @@ func (s *PostgresStore) GetRepoLockfileCertainty(ctx context.Context, repoID int
 	return out, nil
 }
 
-// SelfAdvisoryPackage is one of the repo's OWN published packages,
-// eligible for version-unconstrained advisory scanning (v0.27.29).
-type SelfAdvisoryPackage struct {
-	Ecosystem   string // repo_distribution.ecosystem / manifest_type flavor
-	PackageName string // lowercased
-}
-
 // GetRepoSelfAdvisoryPackages returns the repo's own published
 // packages for SELF-ADVISORY scanning (v0.27.29 — the numpy/numpy
 // face-validity fix: a repo with no dependencies showed zero
@@ -464,84 +511,53 @@ type SelfAdvisoryPackage struct {
 //     ecosystem type.
 //  2. Registry evidence whose package name exactly matches the repo's
 //     name variants (the v0.27.11 4-variant heuristic).
-func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID int64) ([]SelfAdvisoryPackage, error) {
+func (s *PostgresStore) GetRepoSelfAdvisoryPackages(ctx context.Context, repoID int64) ([]model.SelfAdvisoryPackage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT m.manifest_type, LOWER(m.package_name_declared)
+		SELECT DISTINCT m.manifest_type, m.package_name_declared
 		FROM aveloxis_data.repo_distribution_manifest m
 		WHERE m.repo_id = $1 AND m.package_name_declared <> ''
 		UNION
-		SELECT DISTINCT d.ecosystem, LOWER(d.package_name)
+		SELECT DISTINCT d.ecosystem, d.package_name
 		FROM aveloxis_data.repo_distribution d
 		JOIN aveloxis_data.repos r ON r.repo_id = d.repo_id
 		WHERE d.repo_id = $1 AND d.package_name <> ''
-		  AND LOWER(d.package_name) IN (
+		  AND (LOWER(d.package_name) IN (
 			LOWER(r.repo_name),
 			LOWER(REPLACE(r.repo_name, '_', '-')),
 			LOWER(r.repo_owner || '-' || r.repo_name),
-			LOWER(REPLACE(r.repo_owner || '-' || r.repo_name, '_', '-')))`,
+			LOWER(REPLACE(r.repo_owner || '-' || r.repo_name, '_', '-')))
+		    -- 0.29.206: a Swift package is named by its repository
+		    -- (host/owner/name), which no variant above can equal. The one
+		    -- whose name is THIS repository's address is this repository's.
+		    OR (LOWER(d.ecosystem) IN ('swift', 'swiftpm')
+		        AND LOWER(d.package_name) = LOWER(regexp_replace(regexp_replace(r.repo_git, '^https?://', ''), '\.git$', '')))
+		    -- 0.29.208: a Composer package is vendor/name, which no variant
+		    -- above can equal either. The one that is THIS repository's
+		    -- owner/name is this repository's.
+		    OR (LOWER(d.ecosystem) IN ('packagist', 'composer')
+		        AND LOWER(d.package_name) = LOWER(r.repo_owner || '/' || r.repo_name)))`,
 		repoID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []SelfAdvisoryPackage
+	// The name is folded to lower case, as the query itself did until
+	// 0.29.206, for every ecosystem but those whose own-package name is
+	// case-sensitive where it is asked (pkgid.SelfNameKeepsCase lists them).
+	// The fold is here so that pkgid decides it. Two spellings that fold to
+	// one come back twice; the target builder keeps one purl of each.
+	var out []model.SelfAdvisoryPackage
 	for rows.Next() {
-		var p SelfAdvisoryPackage
+		var p model.SelfAdvisoryPackage
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName); err != nil {
 			return nil, err
+		}
+		if !pkgid.SelfNameKeepsCase(p.Ecosystem) {
+			p.PackageName = strings.ToLower(p.PackageName)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
-}
-
-// lockfileEcoFold collapses the ecosystem-vocabulary split between
-// the libyear writers' package_manager strings and the lockfile
-// roster's ecosystem strings (round 22 — previously duplicated as the
-// SBOM side's private fold while the chain walk had NONE, silently
-// dropping rubygems/packagist/swiftpm chains).
-func lockfileEcoFold(eco string) string {
-	switch strings.ToLower(eco) {
-	case "rubygems":
-		return "gem"
-	case "packagist":
-		return "composer"
-	case "swiftpm":
-		return "swift"
-	case "elixir":
-		return "hex"
-	case "dart":
-		return "pub"
-	case "golang":
-		return "go"
-	case "haskell":
-		return "hackage"
-	}
-	return strings.ToLower(eco)
-}
-
-// LockfileGraphKey is THE name-level resolution key for lockfile-graph
-// endpoints (chain attribution, SBOM dependency graphs, direct-root
-// sets): folded ecosystem + lowercased name, with PyPI's
-// underscore/dot folding (PEP 503 treats them as equivalent). Every
-// producer and consumer of graph keys must use this ONE function —
-// mismatched folding between sides silently drops valid edges.
-func LockfileGraphKey(eco, name string) string {
-	e := lockfileEcoFold(eco)
-	return e + "|" + lockfileGraphName(e, name)
-}
-
-// lockfileGraphName is the name half of LockfileGraphKey for an
-// ALREADY-FOLDED ecosystem: lowercased, trimmed, and PEP 503-folded for
-// PyPI. Split out so a SQL prefilter can be built from the same fold
-// (the exposed-repositories lockfile count, package_exposure_store.go)
-// without re-spelling it.
-func lockfileGraphName(foldedEco, name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if foldedEco == "pypi" {
-		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
-	}
-	return n
 }
 
 // DirectPackageSets is the chain walk's root set with PROVENANCE
@@ -580,7 +596,7 @@ func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int
 		if err := rows.Scan(&source, &path, &eco, &name); err != nil {
 			return out, err
 		}
-		key := LockfileGraphKey(eco, name)
+		key := pkgid.Key(eco, name)
 		if source == "declared" {
 			out.Declared[key] = true
 			continue
@@ -601,7 +617,7 @@ func (s *PostgresStore) GetRepoDirectPackageSets(ctx context.Context, repoID int
 // toolchain expansion reports incomplete — replacing the snapshot
 // with a partial closure silently shrank vuln/SBOM output and
 // false-resolved findings.
-func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) ([]*RepoLockfilePackage, []*RepoLockfileEdge, error) {
+func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) ([]*model.RepoLockfilePackage, []*RepoLockfileEdge, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT package_name, resolved_version, COALESCE(lockfile_path, ''), COALESCE(dependency_scope, '')
 		FROM aveloxis_data.repo_lockfile_packages
@@ -610,9 +626,9 @@ func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) 
 		return nil, nil, err
 	}
 	defer rows.Close()
-	var pkgs []*RepoLockfilePackage
+	var pkgs []*model.RepoLockfilePackage
 	for rows.Next() {
-		p := &RepoLockfilePackage{Ecosystem: "go", Direct: false}
+		p := &model.RepoLockfilePackage{Ecosystem: "go", Direct: false}
 		if err := rows.Scan(&p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope); err != nil {
 			return nil, nil, err
 		}
@@ -648,7 +664,7 @@ func (s *PostgresStore) GetRepoGoClosureRows(ctx context.Context, repoID int64) 
 // for the vuln scan's target dedup) let a monorepo edge attach
 // children resolved from OTHER lockfiles' same-name entries,
 // fabricating dependency relationships in both SBOM formats.
-func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, repoID int64) ([]RepoLockfilePackage, error) {
+func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, repoID int64) ([]model.RepoLockfilePackage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ecosystem, package_name, resolved_version, COALESCE(lockfile_path, ''),
 		       MIN(CASE WHEN COALESCE(dependency_scope, '') IN ('dev','test','build','optional','peer') THEN dependency_scope ELSE '' END),
@@ -661,9 +677,9 @@ func (s *PostgresStore) GetRepoTransitivePackagesWithPaths(ctx context.Context, 
 		return nil, err
 	}
 	defer rows.Close()
-	var out []RepoLockfilePackage
+	var out []model.RepoLockfilePackage
 	for rows.Next() {
-		p := RepoLockfilePackage{Direct: false}
+		p := model.RepoLockfilePackage{Direct: false}
 		if err := rows.Scan(&p.Ecosystem, &p.PackageName, &p.ResolvedVersion, &p.LockfilePath, &p.Scope, &p.Namespace); err != nil {
 			return nil, err
 		}

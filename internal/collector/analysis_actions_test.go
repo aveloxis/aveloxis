@@ -10,82 +10,16 @@ package collector
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/scantarget"
+	"github.com/aveloxis/aveloxis/internal/srctest"
+	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
-
-func TestIsWorkflowPath(t *testing.T) {
-	cases := map[string]bool{
-		"/r/.github/workflows/ci.yml":       true,
-		"/r/.github/workflows/release.yaml": true,
-		"/r/.github/workflows/nested.txt":   false,
-		"/r/.github/dependabot.yml":         false,
-		"/r/workflows/ci.yml":               false,
-		"/r/docs/ci.yml":                    false,
-	}
-	for path, want := range cases {
-		if got := isWorkflowPath(path); got != want {
-			t.Errorf("isWorkflowPath(%q) = %v, want %v", path, got, want)
-		}
-	}
-}
-
-func TestParseWorkflowUses(t *testing.T) {
-	wf := `name: CI
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: setup
-        uses: actions/setup-python@v5.1.0
-      - uses: github/codeql-action/init@8214744c546c1e5c8f03dde8fab3a7353211988d # v3.26.7
-      - uses: ./local-action
-      - uses: docker://alpine:3.19
-      - uses: actions/checkout@v4
-`
-	deps := parseWorkflowUses(wf)
-	byName := map[string]libyearDep{}
-	for _, d := range deps {
-		byName[d.Name+"@"+d.Version] = d
-	}
-	if len(deps) != 3 {
-		t.Fatalf("want 3 deps (dedup + local/docker skipped), got %d: %v", len(deps), byName)
-	}
-	if d, ok := byName["actions/checkout@v4"]; !ok || d.Type != model.ScopeBuild || d.Manager != "githubactions" {
-		t.Errorf("actions/checkout@v4 must be build-scope githubactions, got %+v", d)
-	}
-	if _, ok := byName["actions/setup-python@v5.1.0"]; !ok {
-		t.Error("versioned tag reference missing")
-	}
-	// Subdirectory actions attribute to the owning repo, SHA pin kept.
-	if d, ok := byName["github/codeql-action@8214744c546c1e5c8f03dde8fab3a7353211988d"]; !ok {
-		t.Errorf("subdir action must attribute to owner/repo with the SHA ref, got %v", byName)
-	} else if d.Requirement != "github/codeql-action/init@8214744c546c1e5c8f03dde8fab3a7353211988d" {
-		t.Errorf("requirement must keep the full uses ref, got %q", d.Requirement)
-	}
-}
-
-func TestClassifyActionRef(t *testing.T) {
-	cases := map[string]string{
-		"8214744c546c1e5c8f03dde8fab3a7353211988d": resolutionLocked,
-		"deadbeef1":  resolutionLocked, // abbreviated SHA
-		"v4.1.2":     resolutionExact,
-		"45.0.7":     resolutionExact,
-		"v4":         resolutionUnpinned,
-		"main":       resolutionUnpinned,
-		"release-v2": resolutionUnpinned,
-	}
-	for ref, want := range cases {
-		if got := classifyActionRef(ref); got != want {
-			t.Errorf("classifyActionRef(%q) = %q, want %q", ref, got, want)
-		}
-	}
-}
 
 // tj-actions/changed-files shape: introduced 0, fixed 46.0.1.
 func tjActionsAffected() []osvAffected {
@@ -156,14 +90,14 @@ func TestCompareVersionish(t *testing.T) {
 }
 
 func TestActionTargetUsesEcosystemQueryForm(t *testing.T) {
-	dep := db.VulnScanDep{
+	dep := model.VulnScanDep{
 		Name: "tj-actions/changed-files", CurrentVersion: "45.0.7",
 		PackageManager: "githubactions",
 		Purl:           "pkg:githubactions/tj-actions/changed-files@45.0.7",
 		Requirement:    "tj-actions/changed-files@45.0.7",
 		Type:           model.ScopeBuild,
 	}
-	targets := vulnScanTargets(dep, nil)
+	targets := scantarget.DirectTargets(dep, nil)
 	if len(targets) != 1 {
 		t.Fatalf("want 1 target, got %d", len(targets))
 	}
@@ -171,10 +105,10 @@ func TestActionTargetUsesEcosystemQueryForm(t *testing.T) {
 	if tgt.OSVQueryEcosystem != "GitHub Actions" || tgt.OSVQueryName != dep.Name {
 		t.Errorf("actions target must carry the {name, ecosystem} query form, got %+v", tgt)
 	}
-	if tgt.Scope != model.ScopeBuild || tgt.Kind != dependencyKindDirect {
+	if tgt.Scope != model.ScopeBuild || tgt.Kind != model.DependencyKindDirect {
 		t.Errorf("actions target must be direct + build scope, got kind=%q scope=%q", tgt.Kind, tgt.Scope)
 	}
-	if tgt.Resolution != resolutionExact {
+	if tgt.Resolution != versionuse.Exact {
 		t.Errorf("dotted tag must classify exact, got %q", tgt.Resolution)
 	}
 
@@ -182,7 +116,7 @@ func TestActionTargetUsesEcosystemQueryForm(t *testing.T) {
 	// purl and the purl form for everything else.
 	req := buildOSVBatchRequest(
 		[]string{tgt.Purl, "pkg:pypi/flask@2.0.0"},
-		map[string]vulnScanTarget{tgt.Purl: tgt},
+		map[string]model.VulnScanTarget{tgt.Purl: tgt},
 	)
 	if req.Queries[0].Package.Purl != "" || req.Queries[0].Package.Ecosystem != "GitHub Actions" {
 		t.Errorf("actions query must use name/ecosystem, got %+v", req.Queries[0].Package)
@@ -197,18 +131,30 @@ func TestActionTargetUsesEcosystemQueryForm(t *testing.T) {
 // with NoLibyear (a fabricated 0.0 libyear would read as "perfectly
 // fresh" and leak into the snapshot headline).
 func TestActionsInventoryIsKnobGated(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
+	// Behaviour, through the roster (0.29.153; this read analysis.go for the
+	// guard within 400 characters of the call): a workflow's actions are
+	// declared only with the knob on.
+	path := filepath.Join(t.TempDir(), ".github", "workflows", "ci.yml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code := string(src)
-	at := strings.Index(code, "parseWorkflowUses(")
-	if at < 0 {
-		t.Fatal("scanLibyear must call parseWorkflowUses")
+	if err := os.WriteFile(path, []byte("jobs:\n  b:\n    steps:\n      - uses: actions/checkout@v4\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	window := code[max(0, at-400):at]
-	if !strings.Contains(window, "ac.GitHubActionsDeps") {
-		t.Error("the workflow walk hook must be gated on ac.GitHubActionsDeps")
+	walk := manifest.NewWalk(filepath.Dir(path), nil)
+	if deps, err := walk.Declared(path, manifest.Options{}); err != nil || len(deps) != 0 {
+		t.Errorf("knob off: a workflow declared %+v (%v); want nothing", deps, err)
+	}
+	if deps, err := walk.Declared(path, manifest.Options{DevBuildDeps: true}); err != nil || len(deps) != 0 {
+		t.Errorf("the dev/build knob alone: a workflow declared %+v (%v); want nothing", deps, err)
+	}
+	if deps, err := walk.Declared(path, manifest.Options{GitHubActionsDeps: true}); err != nil || len(deps) != 1 || deps[0].Name != "actions/checkout" || deps[0].Manager != "githubactions" {
+		t.Errorf("knob on: a workflow declared %+v (%v); want actions/checkout", deps, err)
+	}
+	// And the walk hands the collector's knobs to the roster.
+	code := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) scanLibyear("))
+	if !strings.Contains(code, "manifest.Options{DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps}") {
+		t.Error("scanLibyear must pass ac.DevBuildDeps and ac.GitHubActionsDeps to the roster as manifest.Options")
 	}
 	if !strings.Contains(code, "NoLibyear:      true") && !strings.Contains(code, "NoLibyear: true") {
 		t.Error("the githubactions resolver case must set NoLibyear — actions have no registry timeline")

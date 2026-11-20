@@ -224,7 +224,7 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 			// WARN to look at, not a verdict.
 			query: `SELECT COUNT(*), COALESCE((array_agg(r.repo_id ORDER BY r.repo_id DESC))[1:5]::text, '{}')
 				FROM aveloxis_data.repos r
-				WHERE r.platform_id IN (1, 2) AND r.repo_git ~* '` + forgeAccountPageRegex() + `'`,
+				WHERE r.platform_id IN (1, 2) AND r.repo_git ~* ` + sqlLiteral(forgeAccountPageRegex()),
 			bad: "%d GitHub or GitLab repository rows have a URL under the forge's own account pages (a sign-in page stored as a redirect target before 0.29.146, unless the namespace is real) — look at each row's repo_git; the upgrade guide's 0.29.146 entry has the steps — e.g. repo_id %s",
 			ok:  "no GitHub or GitLab repository row is stored under the forge's account pages",
 		},
@@ -517,7 +517,7 @@ func (s *PostgresStore) verifyBatchSingleAgreement(ctx context.Context, sample i
 				got = fmt.Sprintf("%d/%d/%d", b.Vulnerabilities, b.CriticalVulns, b.VulnsVersionUnknown)
 			}
 			return VerifyResult{Check: "batch vs single stats", Severity: "FAIL",
-				Detail: fmt.Sprintf("repo %d: batch says %s, single says %d/%d/%d (exposure/critical/version unknown) — the two dashboard paths disagree (the pre-v0.27.36 bug shape)",
+				Detail: fmt.Sprintf("repo %d: batch says %s, single says %d/%d/%d (exposure/critical/version not determined) — the two dashboard paths disagree (the pre-v0.27.36 bug shape)",
 					id, got, single.Exposure, single.Critical, single.UnknownVersion)}
 		}
 	}

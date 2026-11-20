@@ -20,16 +20,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestResolveLibyearCachedCoalescesConcurrentMisses(t *testing.T) {
-	cache := newTTLCache[*db.LibyearRow](time.Minute)
+	cache := newTTLCache[*model.LibyearRow](time.Minute)
 
 	var calls int32
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	resolve := func(_ context.Context, dep libyearDep) (*db.LibyearRow, error) {
+	resolve := func(_ context.Context, dep model.LibyearDep) (*model.LibyearRow, error) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			close(entered)
 		}
@@ -38,17 +38,17 @@ func TestResolveLibyearCachedCoalescesConcurrentMisses(t *testing.T) {
 		// Requirement and Type onto the row they build. That is what makes
 		// the per-caller copy below load-bearing: a coalesced answer was
 		// built for ONE caller's requirement text.
-		return &db.LibyearRow{Name: dep.Name, CurrentVersion: dep.Version, LatestVersion: "9.9.9",
+		return &model.LibyearRow{Name: dep.Name, CurrentVersion: dep.Version, LatestVersion: "9.9.9",
 			Requirement: dep.Requirement, Type: dep.Type}, nil
 	}
 
-	dep := func(i int) libyearDep {
-		return libyearDep{Name: "serde", Version: "1.0", Manager: "cargo",
+	dep := func(i int) model.LibyearDep {
+		return model.LibyearDep{Name: "serde", Version: "1.0", Manager: "cargo",
 			Requirement: fmt.Sprintf("req-%d", i), Type: map[bool]string{true: "runtime", false: "dev"}[i%2 == 0]}
 	}
 
 	const n = 8
-	rows := make([]*db.LibyearRow, n)
+	rows := make([]*model.LibyearRow, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 
@@ -111,10 +111,10 @@ func TestResolveLibyearCachedCoalescesConcurrentMisses(t *testing.T) {
 // panic cost one job; after it, one panic could wedge the fleet on that
 // dependency.
 func TestResolveLibyearCachedReleasesTheKeyOnPanic(t *testing.T) {
-	cache := newTTLCache[*db.LibyearRow](time.Minute)
-	dep := libyearDep{Name: "serde", Version: "1.0", Manager: "cargo"}
+	cache := newTTLCache[*model.LibyearRow](time.Minute)
+	dep := model.LibyearDep{Name: "serde", Version: "1.0", Manager: "cargo"}
 
-	panicking := func(context.Context, libyearDep) (*db.LibyearRow, error) { panic("resolver blew up") }
+	panicking := func(context.Context, model.LibyearDep) (*model.LibyearRow, error) { panic("resolver blew up") }
 	func() {
 		defer func() {
 			if recover() == nil {
@@ -129,8 +129,8 @@ func TestResolveLibyearCachedReleasesTheKeyOnPanic(t *testing.T) {
 	go func() {
 		defer close(done)
 		row, err := resolveLibyearCached(context.Background(), cache, dep,
-			func(_ context.Context, d libyearDep) (*db.LibyearRow, error) {
-				return &db.LibyearRow{Name: d.Name, LatestVersion: "2.0", Requirement: d.Requirement, Type: d.Type}, nil
+			func(_ context.Context, d model.LibyearDep) (*model.LibyearRow, error) {
+				return &model.LibyearRow{Name: d.Name, LatestVersion: "2.0", Requirement: d.Requirement, Type: d.Type}, nil
 			})
 		if err != nil || row == nil || row.LatestVersion != "2.0" {
 			t.Errorf("second caller got (%+v, %v), want the fresh answer", row, err)

@@ -9,9 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // TestNuGetResolverReadsTheSemVer2HivePagesAndStableLatest — 2026-09-23
@@ -62,7 +63,7 @@ func TestNuGetResolverReadsTheSemVer2HivePagesAndStableLatest(t *testing.T) {
 	nugetRegistryBase = srv.URL
 	defer func() { nugetRegistryBase = old }()
 
-	row, err := resolveNuGetLibyear(context.Background(), libyearDep{Name: "Example.Big", Version: "1.0.0", Manager: "nuget"})
+	row, err := resolveNuGetLibyear(context.Background(), model.LibyearDep{Name: "Example.Big", Version: "1.0.0", Manager: "nuget"})
 	if err != nil {
 		t.Fatalf("resolve: %v (requests: %v)", err, hits)
 	}
@@ -76,7 +77,7 @@ func TestNuGetResolverReadsTheSemVer2HivePagesAndStableLatest(t *testing.T) {
 		t.Errorf("current date = %q, want 1.0.0's — found only by fetching the non-inlined page", row.CurrentReleaseDate)
 	}
 
-	row, err = resolveNuGetLibyear(context.Background(), libyearDep{Name: "Example.Unlisted", Version: "1.0.0", Manager: "nuget"})
+	row, err = resolveNuGetLibyear(context.Background(), model.LibyearDep{Name: "Example.Unlisted", Version: "1.0.0", Manager: "nuget"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestNuGetResolverReadsTheSemVer2HivePagesAndStableLatest(t *testing.T) {
 		t.Errorf("a pin on an unlisted version has an unknown date, not NuGet's 1900 placeholder: %q", row.CurrentReleaseDate)
 	}
 
-	row, err = resolveNuGetLibyear(context.Background(), libyearDep{Name: "Example.Pre", Version: "0.1.0-preview.1", Manager: "nuget"})
+	row, err = resolveNuGetLibyear(context.Background(), model.LibyearDep{Name: "Example.Pre", Version: "0.1.0-preview.1", Manager: "nuget"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +99,9 @@ func TestNuGetResolverReadsTheSemVer2HivePagesAndStableLatest(t *testing.T) {
 // resolve, a package with non-inlined pages yields a latest version and a
 // current date, and Newtonsoft.Json's latest is stable.
 func TestNuGetResolverLiveCanary(t *testing.T) {
-	if os.Getenv("AVELOXIS_TEST_NETWORK") != "1" {
-		t.Skip("set AVELOXIS_TEST_NETWORK=1 to query nuget.org")
-	}
+	skipUnlessNetwork(t)
 	ctx := context.Background()
-	for _, dep := range []libyearDep{
+	for _, dep := range []model.LibyearDep{
 		{Name: "Microsoft.SemanticKernel.Agents.OpenAI", Version: "1.30.0-alpha", Manager: "nuget"},
 		{Name: "Azure.Core.Experimental", Version: "0.1.0-preview.30", Manager: "nuget"},
 		{Name: "System.Text.Json", Version: "6.0.0", Manager: "nuget"},
@@ -141,7 +140,7 @@ func TestNPMResolverToleratesAnUnpublishedTimeEntry(t *testing.T) {
 	old := npmRegistryBase
 	npmRegistryBase = srv.URL
 	defer func() { npmRegistryBase = old }()
-	row, err := resolveNPMLibyear(context.Background(), libyearDep{Name: "left-pad", Version: "1.0.0", Manager: "npm"})
+	row, err := resolveNPMLibyear(context.Background(), model.LibyearDep{Name: "left-pad", Version: "1.0.0", Manager: "npm"})
 	if err != nil {
 		t.Fatalf("an unpublish record must not fail the package: %v", err)
 	}

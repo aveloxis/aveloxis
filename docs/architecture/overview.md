@@ -43,7 +43,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
   │                                                     │
   │  ┌───────────────────┐  ┌────────────────────────┐ │
   │  │ aveloxis_data     │  │ aveloxis_ops           │ │
-  │  │ 109 tables        │  │ 52 tables              │ │
+  │  │ 113 tables        │  │ 56 tables              │ │
   │  │ 22 matviews       │  │ - collection_queue     │ │
   │  │ - repos           │  │ - staging (JSONB)      │ │
   │  │ - issues          │  │ - collection_status    │ │
@@ -71,7 +71,7 @@ Aveloxis is a Go-based open source community health data collection pipeline tha
 
 Aveloxis uses four PostgreSQL schemas to separate collected data, ScanCode results, operational state, and Augur compatibility.
 
-### `aveloxis_data` (109 tables + 22 materialized views)
+### `aveloxis_data` (113 tables + 22 materialized views)
 
 All collected open source community health data:
 
@@ -97,7 +97,7 @@ Plus 22 materialized views: 20 for 8Knot compatibility when `collection.material
 
 ScanCode per-file license and copyright detections: `scancode_scans` + `scancode_file_results`, each with a `_history` twin. Written by the decoupled scancode worker pool (180-day cadence per repo).
 
-### `aveloxis_ops` (52 tables)
+### `aveloxis_ops` (56 tables)
 
 Operational and orchestration tables:
 
@@ -156,7 +156,7 @@ Staging -> Processing (phase 2)
 ├──────────────────┬───────────────────┤
 │ Facade (phase 3) │ Analysis (phase 4)│
 │  git clone/fetch │  Dependency scan  │
-│  git log parse   │  Libyear (12 reg.) │
+│  git log parse   │  Libyear (13 reg.) │
 │  Commit parents  │  Code complexity  │
 │  Affiliations    │  (scc)            │
 │  Aggregates      │                   │
@@ -231,15 +231,23 @@ aveloxis/
       facade.go           # Git clone + log parsing
       commit_resolver.go  # Git email -> GitHub user resolution
       breadth.go          # Contributor breadth worker
-      analysis.go         # Dependencies, libyear, scc
+      analysis.go         # The dependency and libyear walks, registry resolvers, scc
       noreply.go          # GitHub noreply email parser
       prelim.go           # Redirect detection and duplicate checking
+    manifest/             # What a build declares: one reader per manifest format
+    pkgid/                # A package's purl and its matching key
+    versionuse/           # Which version of a declared dependency is in use, and how that is known
+    scantarget/           # A repository's vulnerability scan targets, built from its stored rows
+    linking/              # What a scan's answers mean for stored findings: written, kept, closed
+    vulnclass/            # What kind of finding a stored vulnerability is
+    textclean/            # The one sanitizer for stored text
+    hostguard/            # Per-host circuit breaker
     config/               # JSON config loading with defaults
     db/                   # Database layer
       postgres.go         # All upsert methods
       staging.go          # JSONB staging writer and processor
       migrate.go          # Schema migration
-      schema.sql          # Full DDL (165 tables)
+      schema.sql          # Full DDL (173 tables)
       matviews.sql        # the 20 8Knot materialized views (the two supply-chain views are built from supply_chain_views.go)
       contributors.go     # Contributor resolver with cache
       affiliations.go     # Email domain -> org resolver

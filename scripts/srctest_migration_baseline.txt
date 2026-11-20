@@ -22,7 +22,6 @@ internal/collector/enrich_batch_test.go mustReadEnrichSource
 internal/collector/facade_cancel_abort_test.go facadeFunctionBody
 internal/collector/identity_capture_test.go mustRead
 internal/collector/lockfile_parser_test.go readLockFixture
-internal/collector/manifest_corpus_test.go parseCorpusFile
 internal/collector/scancode_worker_test.go readScancodeWorkerSource
 internal/collector/scancode_worker_test.go scancodeMethodBody
 internal/collector/stage_flush_test.go extractFuncBody

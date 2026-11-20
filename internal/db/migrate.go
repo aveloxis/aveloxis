@@ -2873,7 +2873,74 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// name, so the history table must have every column it names. Depends on
 	// stage 1's adds of license and purl to the current table only in
 	// subject; it reads neither.
+	// v0.29.160 (summary/70, 4.7): the manifest a dependency was declared in,
+	// which a failed manifest's rows are carried by. Onto the current table
+	// and, in the same step, the history table (ensureLibyearHistoryColumns).
 	ensureLibyearHistoryColumns(ctx, pg, logger, errs)
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "manifest_path", "TEXT DEFAULT ''")
+	// v0.29.161 (summary/70, 4.7): the scan half of the coverage record. The
+	// table was created by 0.29.159 without these, so a fleet that ran that
+	// release gains them here (schema.sql's CREATE is a no-op there).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "last_scan_attempt_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_outcome", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_partial", "BOOLEAN")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_sent", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_dropped", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "dependencies_unknown", "BOOLEAN")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "first_scan_at", "TIMESTAMPTZ")
+	// v0.29.162 (summary/70, 4.2): why a row has a libyear or lacks one. The
+	// history table's copy is added by ensureLibyearHistoryColumns above,
+	// which adds every column the rotation copies.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "libyear_status", "TEXT")
+	// v0.29.165 (summary/70, section 3): why a finding closed, when the
+	// closure is not a fix. NULL on an open finding, on a closure with no
+	// reason, and on every row closed before that release.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "closed_reason", "TEXT")
+	// v0.29.166 (summary/70, 4.3): when a finding entered exposure. No
+	// backfill: the digest reads first detection where it is NULL.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "entered_exposure_at", "TIMESTAMPTZ")
+	// v0.29.172 (summary/70, 4.2): the package key on the inventory and the
+	// lockfile packages, and a lookup index on each. The columns come first
+	// (SR-8: an existing fleet no-ops the CREATE TABLE, so the index's
+	// column needs its own guard ahead of it); the indexes are built
+	// CONCURRENTLY here and are not in schema.sql (SR-2).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "package_key", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "package_key", "TEXT")
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_libyear_package_key",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_libyear_package_key
+		 ON aveloxis_data.repo_deps_libyear (package_key)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_lockfile_packages_package_key",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_lockfile_packages_package_key
+		 ON aveloxis_data.repo_lockfile_packages (package_key)`)
+	// v0.29.171 (summary/70, 4.2 and 5.4): the decision guards. No backfill:
+	// NULL means "never decided under the rule", and any answer acts.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "decided_asked_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "decided_targets_at", "TIMESTAMPTZ")
+	// v0.29.168 (summary/70, 4.2 and 4.7): what a scan could not get an
+	// answer for, and what it left open because of that.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_rejected", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_closures_held", "INTEGER")
+	// v0.29.181 (summary/70, 4.5): why a Maven dependency has no version.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_reason", "TEXT")
+	// v0.29.177 (summary/70, 4.3): where an inventory row's version came from.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_source", "TEXT")
+	// v0.29.185 (summary/70, 4.5, D14): which hosts a version and a tree
+	// depend on.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_hosts", "TEXT[]")
+	// v0.29.187: "which rows came through this host?" is asked by the
+	// administrator's page over the whole inventory. Partial (most rows
+	// have no hosts) and migration-owned (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_libyear_version_hosts",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_libyear_version_hosts
+		 ON aveloxis_data.repo_deps_libyear USING GIN (version_hosts)
+		 WHERE version_hosts IS NOT NULL`)
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "maven_tree_hosts", "JSONB")
+	// v0.29.183 (summary/70, 4.5): Maven trees not read whole.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "maven_trees_not_whole", "JSONB")
+	// v0.29.176 (summary/70, 4.3): lockfiles that failed and kept their rows.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_failed", "JSONB")
+	// v0.29.169: targets whose OSV answer was longer than the page cap.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_truncated", "INTEGER")
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by
@@ -2928,7 +2995,7 @@ func ginTrgmOpsSchema(ctx context.Context, pg *PostgresStore) string {
 // embedded double quotes, so it is safe to interpolate into DDL. Used to
 // qualify the gin_trgm_ops operator class with its discovered schema.
 func quoteIdent(ident string) string {
-	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+	return pgx.Identifier{ident}.Sanitize() // the same text, by the one quoter the write-policy reader knows (0.29.212)
 }
 
 func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
@@ -3971,7 +4038,7 @@ func toolVersionDefaultExpr(v string) string {
 func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	expectedDefault := toolVersionDefaultExpr(ToolVersion)
 	rows, err := pg.pool.Query(ctx, `
-		SELECT table_schema || '.' || table_name
+		SELECT table_schema, table_name
 		FROM information_schema.columns
 		WHERE column_name = 'tool_version'
 		  AND table_schema IN ('aveloxis_data', 'aveloxis_ops')
@@ -3985,14 +4052,17 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
+		var schema, name string
+		if err := rows.Scan(&schema, &name); err != nil {
 			logger.Warn("tool_version default sweep: scan failed", "error", err)
 			continue
 		}
+		// The catalog's names, quoted as identifiers (0.29.212: they were
+		// put into the statement as they came).
+		table := schema + "." + name
 		if _, err := pg.pool.Exec(ctx, fmt.Sprintf(
 			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT %s`,
-			table, toolVersionDefaultExpr(ToolVersion))); err != nil {
+			quotedIdentifier(schema, name), toolVersionDefaultExpr(ToolVersion))); err != nil {
 			logger.Warn("tool_version default sweep: alter failed", "table", table, "error", err)
 		}
 	}
@@ -4324,6 +4394,13 @@ func ensureLibyearHistoryColumns(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "tool_version", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_source", "TEXT DEFAULT ''")
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_collection_date", "TIMESTAMPTZ DEFAULT NOW()")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "manifest_path", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "libyear_status", "TEXT")
+	// v0.29.172: through rotation only. No index, no fill; older rows NULL.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "package_key", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_source", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_reason", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_hosts", "TEXT[]")
 }
 
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for
@@ -4955,11 +5032,14 @@ func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *sl
 	if pg.supplyChainMode == MatviewsRebuild {
 		// Round 2 finding 1: a re-create that did not run (a probe
 		// error) or did not land (rolled back) leaves the PREVIOUS views
-		// served; `aveloxis migrate` is the only path that applies a
+		// in place; `aveloxis migrate` is the only path that applies a
 		// changed definition, so this is an ERROR the deploy checklist
 		// greps for ("supply-chain view") AND the migrate's own failure
-		// (round 3: the exit code tells the truth too).
-		logger.Error("supply-chain view re-create had errors — the previous views (if any) are still served; fix the cause and re-run `aveloxis migrate`", "error", err)
+		// (round 3: the exit code tells the truth too). "In place" is not
+		// "served": a previous view that lacks a column this build reads
+		// cannot answer, and its readers aggregate live until the
+		// re-create lands (fleetViewCannotAnswer, 0.29.208).
+		logger.Error("supply-chain view re-create had errors — the previous views (if any) stay in place, and a reader the previous definition cannot answer aggregates live (slower); fix the cause and re-run `aveloxis migrate`", "error", err)
 		return fmt.Errorf("supply-chain views: %w", err)
 	}
 	logger.Warn("supply-chain view creation had errors — the API aggregates live for the absent view until a migrate builds it", "error", err)

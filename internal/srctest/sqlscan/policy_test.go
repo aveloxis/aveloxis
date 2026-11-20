@@ -217,3 +217,59 @@ func TestCheckFailsClosedOnAListInADoBlock(t *testing.T) {
 		t.Errorf("want one fail-closed violation in migrate.go's DO block, got %#v", rep.Violations)
 	}
 }
+
+func TestExprConformsEarliestOfStoredAndIncoming(t *testing.T) {
+	plain := stmtFor(`UPDATE aveloxis_data.repo_deps_vulnerabilities SET x = 1`)
+	const col = "first_detected_at"
+	for _, ok := range []string{
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at)`,
+		`LEAST(EXCLUDED.first_detected_at, repo_deps_vulnerabilities.first_detected_at)`,
+		`LEAST(first_detected_at, $3)`,
+	} {
+		if conforms, _ := exprConforms(plain, ok, col, EarliestOfStoredAndIncoming); !conforms {
+			t.Errorf("%s must conform", ok)
+		}
+	}
+	for _, bad := range []string{
+		`EXCLUDED.first_detected_at`, // incoming overwrites
+		`GREATEST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at)`,          // moves later
+		`LEAST(EXCLUDED.first_detected_at, EXCLUDED.first_detected_at)`,                              // ignores the stored value
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, repo_deps_vulnerabilities.last_seen_at)`, // not the incoming value
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at, NOW())`,
+		`NOW()`,
+	} {
+		if conforms, _ := exprConforms(plain, bad, col, EarliestOfStoredAndIncoming); conforms {
+			t.Errorf("%s must NOT conform", bad)
+		}
+	}
+}
+
+func TestExprConformsKeepCarryOrNow(t *testing.T) {
+	plain := stmtFor(`UPDATE aveloxis_data.repo_deps_vulnerabilities SET x = 1`)
+	const col = "entered_exposure_at"
+	for _, ok := range []string{
+		`CASE WHEN NOT (COALESCE(EXCLUDED.dependency_kind, '') <> 'self') THEN repo_deps_vulnerabilities.entered_exposure_at
+		      WHEN repo_deps_vulnerabilities.resolved_at IS NULL AND (x) THEN repo_deps_vulnerabilities.entered_exposure_at
+		      WHEN $22::boolean THEN $23::timestamptz ELSE NOW() END`,
+		`CASE WHEN a THEN entered_exposure_at ELSE now() END`,
+		// A keyword inside parentheses is part of a condition, not structure.
+		`CASE WHEN (CASE WHEN a THEN b ELSE c END) THEN entered_exposure_at ELSE NOW() END`,
+	} {
+		if conforms, _ := exprConforms(plain, ok, col, KeepCarryOrNow); !conforms {
+			t.Errorf("%s must conform", ok)
+		}
+	}
+	for _, bad := range []string{
+		`NOW()`, // unconditional: every re-observation would move it
+		`CASE WHEN a THEN entered_exposure_at END`,                               // no ELSE: NULLs the rest
+		`CASE WHEN a THEN EXCLUDED.first_detected_at ELSE NOW() END`,             // another column's value
+		`CASE WHEN a THEN repo_deps_vulnerabilities.last_seen_at ELSE NOW() END`, // another stored column
+		`CASE WHEN a THEN NULL ELSE NOW() END`,
+		`CASE WHEN a THEN CASE WHEN b THEN NOW() ELSE NULL END ELSE NOW() END`, // nested result
+		`COALESCE(CASE WHEN a THEN entered_exposure_at ELSE NOW() END, NOW())`,
+	} {
+		if conforms, _ := exprConforms(plain, bad, col, KeepCarryOrNow); conforms {
+			t.Errorf("%s must NOT conform", bad)
+		}
+	}
+}

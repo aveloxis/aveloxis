@@ -264,7 +264,7 @@ Results are stored in `repo_dependencies`.
 
 ### Libyear calculation
 
-For each versioned dependency, queries its package registry to compare the current version against the latest — 12 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases). Examples:
+For each versioned dependency, queries its package registry to compare the current version against the latest — 13 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases), CRAN (via crandb). Examples:
 
 | Registry | URL |
 |---|---|

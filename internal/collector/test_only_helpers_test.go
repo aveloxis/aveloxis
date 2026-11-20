@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/manifest"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/spdx"
 )
 
@@ -19,7 +21,7 @@ import (
 
 // parseCargoVersions parses one lone Cargo manifest: its own directory is
 // the only workspace root in scope (scanLibyear passes one index for the
-// whole clone instead). The rules are parseCargoVersionsIn's:
+// whole clone instead). The rules are manifest.ParseCargoVersionsIn's:
 // parseCargoVersions extracts crates.io deps from Cargo.toml through the
 // shared table scanner (manifest_toml.go).
 //
@@ -30,8 +32,11 @@ import (
 // alternative-registry-sourced deps are not crates.io packages, and a
 // path dep counts only with the version it is published as, so none of
 // them is looked up on crates.io.
-func parseCargoVersions(path string) []libyearDep {
-	return parseCargoVersionsIn(newCargoWorkspaceIndex(filepath.Dir(path), nil), path)
+func parseCargoVersions(path string) []model.LibyearDep {
+	// Through the roster, as the walk reads it: a fresh walk rooted at the
+	// file's own directory.
+	deps, _ := manifest.NewWalk(filepath.Dir(path), nil).Declared(path, manifest.Options{})
+	return deps
 }
 
 // sccLanguage is scc's per-language JSON record; production decodes the

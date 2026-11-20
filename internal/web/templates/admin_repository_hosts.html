@@ -1,0 +1,97 @@
+{{/*
+  admin_repository_hosts — the package repository hosts (0.29.188;
+  summary/70, 4.5, D14): the hosts Maven poms are fetched from, what depends
+  on each, and the distrust / restore actions (each a link to its own
+  confirm page, D-19). Takes Distrusted, Configured and Others
+  (repositoryHostView rows). Needs .Session.
+*/}}
+{{define "admin_repository_hosts"}}
+{{template "head" (dict "Title" "Repository hosts")}}
+{{template "nav" .}}
+<div class="breadcrumb"><a href="/dashboard">Home</a>{{template "adminLinks" .}}<span class="sep">/</span><span class="current">Repository hosts</span></div>
+<div class="container">
+{{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+
+<div class="card">
+<h2>Needs a decision</h2>
+<p class="muted">Hosts the periodic check saw something about. A signal is a reason to look, never a verdict: nothing here distrusts a host by itself. Distrust the host, or mark the signal as seen.</p>
+{{template "repositoryHostRows" (dict "Hosts" .Attention "Empty" "Nothing needs a decision." "CSRF" .CSRF)}}
+</div>
+
+<div class="card">
+<h2>Distrusted</h2>
+<p class="muted">Nothing is fetched from these hosts and nothing they served earlier is used. A dependency whose version came through one has no version, and says why.</p>
+{{template "repositoryHostRows" (dict "Hosts" .Distrusted "Empty" "No host is distrusted." "CSRF" .CSRF)}}
+</div>
+
+<div class="card">
+<h2>Configured</h2>
+<p class="muted">The repositories of <code>collection.maven_repositories</code>, asked for every Maven parent, BOM and release date.</p>
+{{template "repositoryHostRows" (dict "Hosts" .Configured "Empty" "No repository is configured." "CSRF" .CSRF)}}
+</div>
+
+<div class="card">
+<h2>Declared by collected repositories</h2>
+<p class="muted">Hosts a collected repository's own pom named, which have answered at least once.</p>
+{{template "repositoryHostRows" (dict "Hosts" .Others "Empty" "No other host has answered." "CSRF" .CSRF)}}
+</div>
+</div>
+</body></html>
+{{end}}
+
+{{/*
+  repositoryHostRows — one table of hosts. Takes Hosts, Empty (the sentence
+  for none) and CSRF (for the mark-as-seen form of a host with a new signal).
+*/}}
+{{define "repositoryHostRows"}}
+{{if .Hosts}}
+<table class="tbl-stack">
+<thead><tr><th>Host</th><th>First answered</th><th>Last answered</th><th>Stored results</th><th>Repositories</th><th>Current findings</th><th>Maven trees</th><th>Action</th></tr></thead>
+<tbody>
+{{range .Hosts}}
+<tr>
+<td data-label="Host">{{.Host}}{{if .Distrusted}}<br><span class="muted">distrusted {{.DistrustedOn}} by {{.DistrustedBy}}{{if .Note}}: {{.Note}}{{end}}</span>{{end}}{{range .Signals}}<br><span class="form-msg">{{.}}</span>{{end}}{{if .NotKnown}}<br><span class="muted">not known at the last look: {{range $i, $w := .NotKnown}}{{if $i}}; {{end}}{{$w}}{{end}}</span>{{end}}</td>
+<td data-label="First answered">{{.FirstAnswered}}</td>
+<td data-label="Last answered">{{.LastAnswered}}</td>
+<td data-label="Stored results">{{.Impact.StoredResults}}</td>
+<td data-label="Repositories">{{.Impact.Repositories}}</td>
+<td data-label="Current findings">{{.Impact.Findings}}</td>
+<td data-label="Maven trees">{{.Impact.Trees}}</td>
+<td data-label="Action">{{if .Distrusted}}<a href="/admin/repository-hosts/restore?host={{.Host}}" class="btn">Restore</a>{{else}}<a href="/admin/repository-hosts/distrust?host={{.Host}}" class="btn btn-reject">Distrust</a>{{if .Attention}}<form method="POST" action="/admin/repository-hosts/dismiss" class="form-row"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="host" value="{{.Host}}"><button type="submit" class="btn">Mark as seen</button></form>{{end}}{{end}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{else}}<p class="empty">{{.Empty}}</p>{{end}}
+{{end}}
+
+{{/*
+  admin_repository_host_distrust — the confirm step of a distrust: what it
+  will do (Effects, sentences), an optional note, and the POST that does it.
+  Needs .Session and .CSRF.
+*/}}
+{{define "admin_repository_host_distrust"}}
+{{template "head" (dict "Title" "Distrust a repository host")}}
+{{template "nav" .}}
+<div class="breadcrumb"><a href="/dashboard">Home</a>{{template "adminLinks" .}}<span class="sep">/</span><a href="/admin/repository-hosts">Repository hosts</a><span class="sep">/</span><span class="current">Distrust</span></div>
+<div class="container">
+<div class="card confirm-box">
+<h2>Distrust {{.Host}}?</h2>
+<p>From now on nothing is fetched from this host and nothing it served earlier is used. This takes effect as each repository is next analysed.</p>
+<ul>
+{{range .Effects}}<li>{{.}}</li>{{end}}
+</ul>
+<p class="muted">A finding closed this way is recorded as "version no longer known", not as fixed. Restoring the host brings the versions back at the next analysis.</p>
+<form method="POST" action="/admin/repository-hosts/distrust" class="form-stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<input type="hidden" name="host" value="{{.Host}}">
+<label>Why (optional)<input type="text" name="note" maxlength="{{.MaxNote}}"></label>
+<div class="form-row">
+<button type="submit" class="btn btn-danger">Distrust</button>
+<a href="/admin/repository-hosts" class="btn">Cancel</a>
+</div>
+</form>
+</div>
+</div>
+</body></html>
+{{end}}

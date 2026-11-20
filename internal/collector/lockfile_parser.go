@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +45,11 @@ type LockfileEntry struct {
 	// (v0.29.59, worklist 46). Empty where the format has none; such an
 	// entry of a namespace-required type never becomes a purl.
 	Namespace string
+	// Ecosystem (0.29.205) overrides the lockfile's ecosystem for this one
+	// entry. Empty for every format but renv.lock, the one lockfile that
+	// holds packages of two ecosystems: a Bioconductor package is recorded
+	// as "bioconductor", never as the CRAN package of its name (SR-6).
+	Ecosystem string
 	// Scope (v0.27.21 C1) — 'dev' when the format flags the entry as
 	// development-only (package-lock v2/3 `dev`, poetry `category`),
 	// '' otherwise (unknown/runtime). Refined per-format extraction is
@@ -71,6 +77,12 @@ type LockfileResult struct {
 	Entries     []LockfileEntry
 	Edges       []LockfileEdge // parent→child edges; empty for edge-less formats (documented per format)
 	DirectKnown bool           // whether Direct flags are meaningful for this format
+	// v0.29.175: entries whose "version" was not a version. Aliased were
+	// recorded under their real package; NotRegistry (a git or URL source)
+	// and NotAVersion (a requirement string) were left out.
+	Aliased     int
+	NotRegistry int
+	NotAVersion int
 }
 
 // parsedLockfileData is a parser's raw output before roster metadata is
@@ -79,6 +91,9 @@ type parsedLockfileData struct {
 	Entries     []LockfileEntry
 	Edges       []LockfileEdge
 	DirectKnown bool
+	// NotRegistry counts the entries a parser left out because the file
+	// itself says they are not from a registry (renv.lock's Source).
+	NotRegistry int
 }
 
 type lockfileSpec struct {
@@ -113,6 +128,7 @@ var lockfileKinds = map[string]lockfileSpec{
 	"packages.lock.json": {ecosystem: "nuget", parse: parseDotnetPackagesLock},
 	"gradle.lockfile":    {ecosystem: "maven", parse: parseGradleLockfile},
 	"stack.yaml.lock":    {ecosystem: "hackage", parse: parseStackYamlLock},
+	"renv.lock":          {ecosystem: "cran", parse: parseRenvLock},
 }
 
 // ParseLockfile dispatches on the roster filename. Unknown kinds are
@@ -135,19 +151,106 @@ func ParseLockfile(kind string, data []byte) (*LockfileResult, error) {
 	res.Entries = parsed.Entries
 	res.Edges = parsed.Edges
 	res.DirectKnown = parsed.DirectKnown
+	res.NotRegistry = parsed.NotRegistry
+	settleLockedVersions(res)
 	return res, nil
 }
 
-// lockfileMatchKey normalizes a package name for matching lockfile
-// entries against declared manifest dependencies. Lowercased for every
-// ecosystem; PyPI additionally folds '_' and '.' to '-' (PEP 503:
-// flask_sqlalchemy == flask.sqlalchemy == flask-sqlalchemy).
-func lockfileMatchKey(ecosystem, name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if ecosystem == "pypi" {
-		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
+// settleLockedVersions is the one pass, after every parser, over what a
+// lockfile wrote in its version field when that is not a version (v0.29.175;
+// summary/70, 4.3). The parsers store the field as written.
+//
+//   - An npm alias ("npm:strip-ansi@6.0.1" under the name "strip-ansi-cjs")
+//     is recorded under the real name and version. The alias is a name the
+//     lockfile invented; scanned under it, the real package was never
+//     checked. Edges that name the alias as parent follow it.
+//   - A git or URL source ("github:owner/repo#commit", "git+https://...",
+//     "file:", "link:", "workspace:") is not the registry package of that
+//     name (SR-6): no entry, counted.
+//   - A requirement string (">= 2.3.0") is not a locked version: no entry,
+//     counted.
+func settleLockedVersions(res *LockfileResult) {
+	type renamed struct{ name, version string }
+	aliases := map[string]renamed{} // "alias\x00version as written" -> the real package
+	kept := res.Entries[:0:0]
+	for _, e := range res.Entries {
+		if real, version, ok := npmAliasTarget(res.Ecosystem, e.Version); ok {
+			aliases[e.Name+"\x00"+e.Version] = renamed{real, version}
+			e.Name, e.Version = real, version
+			res.Aliased++
+		}
+		switch {
+		case isNonRegistrySource(e.Version):
+			res.NotRegistry++
+			continue
+		case !isLockedVersion(e.Version):
+			res.NotAVersion++
+			continue
+		}
+		kept = append(kept, e)
 	}
-	return ecosystem + "|" + n
+	res.Entries = kept
+	for i, ed := range res.Edges {
+		if r, ok := aliases[ed.ParentName+"\x00"+ed.ParentVersion]; ok {
+			res.Edges[i].ParentName, res.Edges[i].ParentVersion = r.name, r.version
+		}
+	}
+}
+
+// npmAliasTarget reads "npm:<name>@<version>": the real package an npm alias
+// stands for. The name may be scoped ("npm:@scope/name@1.0.0"), so the
+// version starts at the LAST '@'.
+func npmAliasTarget(ecosystem, v string) (name, version string, ok bool) {
+	rest, isAlias := strings.CutPrefix(v, "npm:")
+	if ecosystem != "npm" || !isAlias {
+		return "", "", false
+	}
+	at := strings.LastIndexByte(rest, '@')
+	if at <= 0 || at == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:at], rest[at+1:], true
+}
+
+// nonRegistrySourcePrefixes are how a lockfile writes a dependency that does
+// not come from its registry.
+var nonRegistrySourcePrefixes = []string{
+	"github:", "gitlab:", "bitbucket:", "gist:", "git+", "git:", "git@",
+	"file:", "link:", "workspace:", "portal:", "patch:", "npm:",
+}
+
+// isNonRegistrySource reports whether a version field names a source, not a
+// version: one of the prefixes above, or any URL. (A registry tarball URL of
+// the package itself was already read as its version by npmLockVersion; a
+// URL that reaches here is another package's tarball or another host's
+// file. A leftover "npm:" is an alias that could not be read.)
+func isNonRegistrySource(v string) bool {
+	if strings.Contains(v, "://") {
+		return true
+	}
+	for _, p := range nonRegistrySourcePrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLockedVersion reports whether a version field is one version, as a
+// lockfile locks it, and not a requirement: it is not empty, does not start
+// with a comparison or range operator or a bracket, and holds no space, no
+// "||" and no wildcard on its own. It deliberately does not ask for digits:
+// a Composer "dev-master" is what that lockfile locked.
+func isLockedVersion(v string) bool {
+	if v == "" || v == "*" || strings.ContainsAny(v, " \t") || strings.Contains(v, "||") {
+		return false
+	}
+	switch v[0] {
+	case '<', '>', '=', '~', '^', '[', '(', '*':
+		return false
+	}
+	// "!=" is a requirement; "1!2.0" (a Python epoch) is a version.
+	return !strings.HasPrefix(v, "!")
 }
 
 // ============================================================
@@ -284,8 +387,8 @@ func parseYarnLockV1(data []byte) (parsedLockfileData, error) {
 			firstKey := strings.TrimSpace(strings.Split(header, ",")[0])
 			firstKey = strings.Trim(firstKey, `"`)
 			// name@range — the name may itself start with @scope/, and the
-			// range may be a URL or file: reference (splitNPMSpec).
-			currentName, _, _ = splitNPMSpec(firstKey)
+			// range may be a URL or file: reference (manifest.SplitNPMSpec).
+			currentName, _, _ = manifest.SplitNPMSpec(firstKey)
 			currentVersion = ""
 			inDeps = false
 			continue
@@ -339,7 +442,7 @@ func parseYarnBerry(data []byte) (parsedLockfileData, error) {
 				inDeps, flushable = false, false
 				continue
 			}
-			currentName, _, _ = splitNPMSpec(firstKey)
+			currentName, _, _ = manifest.SplitNPMSpec(firstKey)
 			inDeps = false
 			flushable = currentName != "" && !isWorkspace
 			continue
@@ -577,27 +680,6 @@ func npmLockVersion(name, v string) string {
 	return v
 }
 
-// splitNPMSpec splits an npm package reference "name@ref" (a yarn
-// selector, a bun tuple head). A package name's only '@' is a scope's, at
-// position 0, so the name ends at the first '@' after it; the ref may
-// itself contain '@' (tarball URLs, yarn patch: references). ok is false
-// when there is no ref.
-//
-// v0.29.56: the parsers cut at the LAST '@', storing names such as
-// "@pkgr/utils@https://registry.npmjs.org/" and
-// "@npmcli/config@patch:@npmcli/config@npm%3A10.7.1#~/.yarn/patches/".
-func splitNPMSpec(spec string) (name, ref string, ok bool) {
-	if len(spec) < 2 {
-		return "", "", false
-	}
-	at := strings.IndexByte(spec[1:], '@')
-	if at < 0 {
-		return "", "", false
-	}
-	at++
-	return spec[:at], spec[at+1:], true
-}
-
 // parseBunLock handles Bun ≥1.2's TEXT lockfile (bun.lock) — JSONC:
 // JSON with comments and trailing commas. The binary bun.lockb is
 // detect-only (see the roster). Direct deps come from the root
@@ -639,7 +721,7 @@ func parseBunLock(data []byte) (parsedLockfileData, error) {
 		if err := json.Unmarshal(tuple[0], &spec); err != nil {
 			continue
 		}
-		name, version, ok := splitNPMSpec(spec)
+		name, version, ok := manifest.SplitNPMSpec(spec)
 		if !ok {
 			continue
 		}

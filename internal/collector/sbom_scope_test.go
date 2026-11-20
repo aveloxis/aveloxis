@@ -17,6 +17,7 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func scopeFixtureDeps() []db.SBOMDep {
@@ -170,76 +171,6 @@ func TestModelScopeMappings(t *testing.T) {
 	}
 }
 
-func TestVulnScanTargetsCarryScope(t *testing.T) {
-	dep := db.VulnScanDep{
-		Name: "pytest", CurrentVersion: "7.4.0", PackageManager: "pypi",
-		Purl: "pkg:pypi/pytest@7.4.0", Requirement: "==7.4.0", Type: model.ScopeDev,
-	}
-	targets := vulnScanTargets(dep, nil)
-	if len(targets) == 0 {
-		t.Fatal("no targets")
-	}
-	for _, tgt := range targets {
-		if tgt.Scope != model.ScopeDev {
-			t.Errorf("direct target scope %q, want dev — findings' dependency_scope must work for direct deps", tgt.Scope)
-		}
-	}
-	// v0.27.51: runtime deps stamp the WORD explicitly.
-	dep.Type = "runtime"
-	for _, tgt := range vulnScanTargets(dep, nil) {
-		if tgt.Scope != model.ScopeRuntime {
-			t.Errorf("runtime dep target scope %q, want 'runtime' (v0.27.51 StoredScope convention)", tgt.Scope)
-		}
-	}
-}
-
-// TestMergeDirectTargetRuntimeWinsCollision pins the local-canary
-// catch (2026-07-21, pipenv/setuptools): when the same purl is
-// reachable from a non-runtime AND a runtime declaration, the target
-// scope must fold to runtime (the empty string) regardless of iteration order — a
-// non-runtime first-writer was re-stamping runtime findings off the
-// headline and out of the digest.
-func TestMergeDirectTargetRuntimeWinsCollision(t *testing.T) {
-	m := map[string]vulnScanTarget{}
-	var purls []string
-	buildFirst := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: model.ScopeBuild}
-	runtimeSecond := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: model.ScopeRuntime}
-	purls = mergeDirectTarget(m, purls, buildFirst)
-	purls = mergeDirectTarget(m, purls, runtimeSecond)
-	if len(purls) != 1 {
-		t.Fatalf("collision must not duplicate the purl list, got %d", len(purls))
-	}
-	if got := m["pkg:pypi/setuptools@67"].Scope; !model.IsRuntimeScope(got) {
-		t.Errorf("runtime declaration must win the scope fold, got %q", got)
-	}
-	// Reverse order: runtime first stays runtime.
-	m2 := map[string]vulnScanTarget{}
-	purls2 := mergeDirectTarget(m2, nil, runtimeSecond)
-	purls2 = mergeDirectTarget(m2, purls2, buildFirst)
-	if len(purls2) != 1 || !model.IsRuntimeScope(m2["pkg:pypi/setuptools@67"].Scope) {
-		t.Error("runtime-first must stay runtime on later non-runtime collision")
-	}
-	// v0.27.51: a LEGACY ''-scope target (pre-word rows in flight)
-	// must fold identically to the explicit word.
-	m4 := map[string]vulnScanTarget{}
-	legacyRuntime := vulnScanTarget{Purl: "pkg:pypi/setuptools@67", Scope: ""}
-	_ = mergeDirectTarget(m4, nil, buildFirst)
-	_ = mergeDirectTarget(m4, nil, legacyRuntime)
-	if got := m4["pkg:pypi/setuptools@67"].Scope; !model.IsRuntimeScope(got) {
-		t.Errorf("legacy '' runtime must win the fold too (IsRuntimeScope contract), got %q", got)
-	}
-	// Two non-runtime declarations keep the first scope (no runtime
-	// evidence — nothing to fold toward).
-	m3 := map[string]vulnScanTarget{}
-	dev := vulnScanTarget{Purl: "pkg:npm/x@1", Scope: model.ScopeDev}
-	test := vulnScanTarget{Purl: "pkg:npm/x@1", Scope: model.ScopeTest}
-	_ = mergeDirectTarget(m3, nil, dev)
-	_ = mergeDirectTarget(m3, nil, test)
-	if got := m3["pkg:npm/x@1"].Scope; got != model.ScopeDev {
-		t.Errorf("non-runtime collision keeps the first scope, got %q", got)
-	}
-}
-
 // TestOSVBatchChunking pins the local-canary catch #3 (2026-07-21):
 // OSV caps querybatch at 1000 queries; react-router's pnpm transitive
 // closure exceeded it and the whole scan 400'd ("too many queries").
@@ -268,11 +199,7 @@ func TestOSVBatchChunking(t *testing.T) {
 		t.Errorf("chunking must preserve order, last = %s", chunks[2][499])
 	}
 	// The scan's miss path must actually use the cap.
-	src, err := os.ReadFile("vulnerability.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "chunkStrings(missPurls, osvBatchMaxQueries)") {
+	if !strings.Contains(srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers("), "start += osvBatchMaxQueries" /* behaviour: TestNoBatchExceedsOSVsLimit */) {
 		t.Error("ScanVulnerabilities' miss path must chunk at osvBatchMaxQueries — OSV 400s beyond 1000 queries per batch")
 	}
 }

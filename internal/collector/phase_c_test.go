@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
+	"github.com/aveloxis/aveloxis/internal/scantarget"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -114,8 +117,18 @@ func TestScanRoutesThroughCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
+	// 0.29.168: the query half moved into the fetcher, which reads the
+	// cache through lookupQuery (GetQuery plus a cached rejection).
+	fetch := srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers(")
+	for _, needle := range []string{"cache.lookupQuery(", "cache.putAnswer(", "cache.putRejectedQuery("} {
+		if !strings.Contains(fetch, needle) {
+			t.Errorf("fetchOSVQueryAnswers must route OSV queries through the C0 cache — missing %s", needle)
+		}
+	}
+	if !strings.Contains(s, "fetchOSVQueryAnswers(ctx, cache, ") {
+		t.Error("ScanVulnerabilities must ask through fetchOSVQueryAnswers with the scan's cache")
+	}
 	for _, needle := range []string{
-		"cache.GetQuery(", "cache.PutQuery(",
 		"cache.GetDetail(", "cache.PutDetail(",
 	} {
 		if !strings.Contains(s, needle) {
@@ -151,8 +164,8 @@ func TestPurlForPackageMapping(t *testing.T) {
 		{"npm", "x", "", ""},
 	}
 	for _, tc := range cases {
-		if got := purlForPackage(tc.eco, "", tc.name, tc.ver); got != tc.want {
-			t.Errorf("purlForPackage(%q,%q,%q) = %q, want %q", tc.eco, tc.name, tc.ver, got, tc.want)
+		if got := pkgid.PurlForPackage(tc.eco, "", tc.name, tc.ver); got != tc.want {
+			t.Errorf("pkgid.PurlForPackage(%q,%q,%q) = %q, want %q", tc.eco, tc.name, tc.ver, got, tc.want)
 		}
 	}
 }
@@ -246,13 +259,19 @@ func TestScanLockfilesTransitiveGate(t *testing.T) {
 // constructor stamps dependency_kind='direct' — a target without a
 // kind would store the empty string and read as a pre-C1 row forever.
 func TestVulnScanTargetsCarryKind(t *testing.T) {
-	src, err := os.ReadFile("vuln_targets.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(src), "Kind:        dependencyKindDirect,"); got < 3 {
-		t.Errorf("all three direct-target constructors (go / locked / floor) must stamp "+
-			"dependencyKindDirect; found %d", got)
+	// Behaviour (0.29.154; this counted a struct-literal line in the source):
+	// a Go dependency, a lockfile resolution and a floor all yield direct
+	// targets.
+	locked := map[string][]string{pkgid.MatchKey("npm", "lodash"): {"4.17.21"}}
+	for _, d := range []model.VulnScanDep{
+		{Name: "github.com/pkg/errors", PackageManager: "go", CurrentVersion: "v0.9.1", Purl: "pkg:golang/github.com/pkg/errors@v0.9.1"},
+		{Name: "lodash", PackageManager: "npm", CurrentVersion: "4.17.20", Purl: "pkg:npm/lodash@4.17.20"},
+		{Name: "express", PackageManager: "npm", CurrentVersion: "4.17.1", Requirement: "^4.17.1", Purl: "pkg:npm/express@4.17.1"},
+	} {
+		targets := scantarget.DirectTargets(d, locked)
+		if len(targets) != 1 || targets[0].Kind != model.DependencyKindDirect {
+			t.Errorf("%s: targets %+v; want one, of kind direct", d.Name, targets)
+		}
 	}
 }
 
@@ -261,17 +280,12 @@ func TestVulnScanTargetsCarryKind(t *testing.T) {
 // would flip resolved_at back and forth across scans — the v0.27.11
 // lesson).
 func TestTransitiveScanFailsClosed(t *testing.T) {
-	src, err := os.ReadFile("vulnerability.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	idx := strings.Index(s, "GetRepoTransitivePackages")
-	if idx < 0 {
-		t.Fatal("scan must read transitive targets from the TABLE (heal-vulnerabilities parity)")
-	}
-	window := s[idx:min(idx+400, len(s))]
-	if !strings.Contains(window, "return nil,") {
-		t.Error("a transitive-read error must fail the scan, not fail open")
+	// The read, and failing closed on its error, are scantarget.Build's
+	// (TestBuildFailsClosedOnEveryRead there drives each read's failure).
+	// What is the scan's is to return Build's error and go no further.
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func ScanVulnerabilities("))
+	wiring := regexp.MustCompile(`set, err := scantarget\.Build\(ctx, store, repoID, transitive\)\s*if err != nil \{\s*return nil, err\s*\}`)
+	if !wiring.MatchString(body) {
+		t.Error("ScanVulnerabilities must build its targets with scantarget.Build(ctx, store, repoID, transitive) and return its error")
 	}
 }

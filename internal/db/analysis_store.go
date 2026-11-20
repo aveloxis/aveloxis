@@ -10,30 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 	"github.com/jackc/pgx/v5"
 )
-
-// LibyearRow is a row for the repo_deps_libyear table.
-// Also used as input for SBOM generation.
-type LibyearRow struct {
-	Name               string
-	Requirement        string
-	Type               string // "runtime", "dev"
-	PackageManager     string // "npm", "pypi", "go", "cargo", "rubygems"
-	CurrentVersion     string
-	LatestVersion      string
-	CurrentReleaseDate string
-	LatestReleaseDate  string
-	Libyear            float64
-	License            string // SPDX license identifier (e.g., "MIT", "Apache-2.0")
-	Purl               string // Package URL (e.g., "pkg:npm/express@4.18.0")
-	// NoLibyear (v0.27.47, summary/19 P4) stores libyear as NULL —
-	// for ecosystems with no registry timeline (GitHub Actions). A
-	// fabricated 0.0 would read as "perfectly fresh" and leak into
-	// the upstream-dependencies snapshot, which filters libyear IS
-	// NOT NULL.
-	NoLibyear bool
-}
 
 // RepoLaborRow is a row for the repo_labor table.
 type RepoLaborRow struct {
@@ -55,6 +34,12 @@ type RepoForSBOM struct {
 	Owner   string
 	GitURL  string
 	License string
+	// Coverage (0.29.199) is what is known about whether the repository's
+	// dependencies were read and checked, as of this read: the generator
+	// writes it into the document as its coverage marker. GetRepoForSBOM
+	// always sets it; a caller that builds the struct by hand may leave it
+	// nil, and the document then carries no marker.
+	Coverage *vulnclass.CoverageView
 }
 
 // SBOMDep is a dependency row with license and purl for SBOM generation.
@@ -86,6 +71,22 @@ func (s *PostgresStore) GetRepoForSBOM(ctx context.Context, repoID int64) (*Repo
 		// generator returns this error as is (PR #218 review A7).
 		return nil, fmt.Errorf("repo %d: %w", repoID, err)
 	}
+	// The coverage marker's inputs. A failed read fails the generation, as
+	// the generator's other reads do: the API keeps an export until the
+	// repository changes, so a document without its marker must not be
+	// produced (SR-5).
+	inputs, err := s.GetRepoCoverageInputs(ctx, []int64{repoID})
+	if err != nil {
+		return nil, fmt.Errorf("repo %d: %w", repoID, err)
+	}
+	counts, err := s.CountRepoVulnerabilityClasses(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("repo %d: %w", repoID, err)
+	}
+	in := inputs[repoID]
+	in.CurrentExposure = counts.Exposure
+	view := vulnclass.Coverage(in)
+	r.Coverage = &view
 	return r, nil
 }
 
@@ -227,32 +228,56 @@ func (s *PostgresStore) ReplaceRepoLaborSnapshot(ctx context.Context, repoID int
 	})
 }
 
-// InsertRepoDependency inserts a dependency into repo_dependencies.
-func (s *PostgresStore) InsertRepoDependency(ctx context.Context, repoID int64, depName string, depCount int, depLanguage string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_dependencies
-			(repo_id, dep_name, dep_count, dep_language,
-			 tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())`,
-		repoID, depName, depCount, depLanguage)
-	return err
+// RepoDependency is one row of the name inventory (repo_dependencies): a
+// dependency name, the language label its manifest is filed under, and in
+// how many manifests of that language it was declared.
+type RepoDependency struct {
+	Language string
+	Name     string
+	Count    int
 }
 
-// InsertRepoLibyear inserts a libyear dependency record.
-func (s *PostgresStore) InsertRepoLibyear(ctx context.Context, repoID int64, row *LibyearRow) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO aveloxis_data.repo_deps_libyear
-			(repo_id, name, requirement, type, package_manager,
-			 current_version, latest_version, current_release_date, latest_release_date,
-			 libyear, license, purl, tool_source, data_source, data_collection_date)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-			CASE WHEN $13::bool THEN NULL::float8 ELSE $10::float8 END,
-			$11, $12,
-			'aveloxis-analysis', 'package registry', NOW())`,
-		repoID, row.Name, row.Requirement, row.Type, row.PackageManager,
-		row.CurrentVersion, row.LatestVersion, row.CurrentReleaseDate, row.LatestReleaseDate,
-		row.Libyear, row.License, row.Purl, row.NoLibyear)
-	return err
+// repoDependenciesReplaceBatchSize is how many rows go to the server in one
+// round trip inside ReplaceRepoDependencies' transaction.
+const repoDependenciesReplaceBatchSize = 500
+
+// ReplaceRepoDependencies replaces a repository's name inventory WHOLE, in
+// one transaction: the current rows are deleted and deps become the
+// snapshot, or nothing changes. It is the only writer of repo_dependencies,
+// which is a snapshot with no history table.
+//
+// Before 0.29.158 the table was cleared in one statement and each row
+// inserted in its own, so a failure part-way left it half-filled. The caller
+// walks the clone BEFORE calling this, so a clone that cannot be read never
+// reaches it and the previous snapshot stands.
+func (s *PostgresStore) ReplaceRepoDependencies(ctx context.Context, repoID int64, deps []RepoDependency) error {
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM aveloxis_data.repo_dependencies WHERE repo_id = $1`, repoID); err != nil {
+			return fmt.Errorf("deleting the previous dependency snapshot: %w", err)
+		}
+		for start := 0; start < len(deps); start += repoDependenciesReplaceBatchSize {
+			batch := &pgx.Batch{}
+			for _, d := range deps[start:min(start+repoDependenciesReplaceBatchSize, len(deps))] {
+				batch.Queue(`
+					INSERT INTO aveloxis_data.repo_dependencies
+						(repo_id, dep_name, dep_count, dep_language,
+						 tool_source, data_source, data_collection_date)
+					VALUES ($1, $2, $3, $4, 'aveloxis-analysis', 'file scan', NOW())`,
+					repoID, d.Name, d.Count, d.Language)
+			}
+			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+				return fmt.Errorf("inserting the new dependency snapshot: %w", err)
+			}
+		}
+		return tx.Commit(ctx)
+	})
 }
 
 // ScorecardRow is one row of a scorecard set handed to ReplaceScorecard.

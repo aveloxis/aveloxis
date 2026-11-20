@@ -12,12 +12,18 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/manifest"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
+	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
 
 // parsedLockfile pairs a repo-relative path with its parse result.
@@ -31,11 +37,18 @@ type parsedLockfile struct {
 // WARN and is skipped — the walk itself never fails. Same traversal
 // rules as the manifest walks in analysis.go: symlinks rejected,
 // vendor/node_modules/.git skipped.
-func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
+func collectLockfiles(workDir string, logger *slog.Logger) lockfileSet {
 	var out []parsedLockfile
+	var failed []model.ManifestFailure
 	// v0.27.36: a root-stat failure means zero lockfiles with no signal.
 	walkErr := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if path == workDir {
+				// The root itself: nothing is known about this
+				// repository's lockfiles (0.29.176). Swallowed, this read
+				// as "it has none" and the snapshot was replaced empty.
+				return err
+			}
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -64,25 +77,38 @@ func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 			out = append(out, parsedLockfile{Path: rel, Result: res})
 			return nil
 		}
-		// Through readManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
+		// Through manifest.ReadManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
 		// is decoded like its manifest, not failed whole (SR-17).
-		data, readErr := readManifest(path)
+		data, readErr := manifest.ReadManifest(path)
 		if readErr != nil {
-			logger.Warn("failed to read lockfile", "path", rel, "error", readErr)
+			logger.Warn("failed to read lockfile — its previous rows are kept", "path", rel, "error", readErr)
+			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedRead})
 			return nil
 		}
 		res, parseErr := ParseLockfile(base, data)
 		if parseErr != nil {
-			logger.Warn("failed to parse lockfile — skipping", "path", rel, "error", parseErr)
+			logger.Warn("failed to parse lockfile — its previous rows are kept", "path", rel, "error", parseErr)
+			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedParse})
 			return nil
 		}
 		out = append(out, parsedLockfile{Path: rel, Result: res})
 		return nil
 	})
 	if walkErr != nil {
-		logger.Warn("lockfile walk failed — lockfile inventory may be incomplete", "dir", workDir, "error", walkErr)
+		logger.Warn("lockfile walk failed — the stored lockfile snapshot is left as it is", "dir", workDir, "error", walkErr)
 	}
-	return out
+	return lockfileSet{Parsed: out, Failed: failed, WalkErr: walkErr}
+}
+
+// lockfileSet is what one walk of a clone found: the lockfiles that parsed,
+// those that exist and could not be read or parsed, and the walk's own
+// error when it could not read the clone's root. It is collected once,
+// ahead of the libyear phase (parsing only; nothing is stored), and handed
+// to the lockfile phase.
+type lockfileSet struct {
+	Parsed  []parsedLockfile
+	Failed  []model.ManifestFailure
+	WalkErr error
 }
 
 // scanLockfiles is Phase 2b of AnalyzeRepo: walk + parse lockfiles,
@@ -94,8 +120,13 @@ func collectLockfiles(workDir string, logger *slog.Logger) []parsedLockfile {
 // Multi-lockfile repos: a package resolving to DIFFERENT versions in
 // different lockfiles is legitimate (two apps in one monorepo) — all
 // distinct (package, version) pairs are kept.
-func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, workDir string, result *AnalysisResult) error {
-	parsed := collectLockfiles(workDir, ac.logger)
+func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, workDir string, locks lockfileSet, result *AnalysisResult) error {
+	if locks.WalkErr != nil {
+		// Nothing is known about the lockfiles: the snapshot is not
+		// replaced (SR-5: an unreadable clone is not "no lockfiles").
+		return fmt.Errorf("lockfile walk failed (snapshot NOT replaced): %w", locks.WalkErr)
+	}
+	parsed := locks.Parsed
 
 	deps, err := ac.store.GetRepoDepsForVulnScan(ctx, repoID)
 	if err != nil {
@@ -103,12 +134,25 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	}
 	declared := make(map[string]bool, len(deps))
 	for _, d := range deps {
-		declared[lockfileMatchKey(d.PackageManager, d.Name)] = true
+		declared[pkgid.MatchKey(d.PackageManager, d.Name)] = true
 	}
 
 	var inventory []*db.RepoLockfileInfo
-	var packages []*db.RepoLockfilePackage
+	var packages []*model.RepoLockfilePackage
 	var edges []*db.RepoLockfileEdge
+	// v0.29.175: entries whose "version" was not a version, over every
+	// lockfile of the repository; one line, not one per entry.
+	var aliased, notRegistry, notAVersion int
+	for _, pl := range parsed {
+		aliased += pl.Result.Aliased
+		notRegistry += pl.Result.NotRegistry
+		notAVersion += pl.Result.NotAVersion
+	}
+	if aliased+notRegistry+notAVersion > 0 {
+		ac.logger.Info("lockfile entries whose version field is not a version",
+			"repo_id", repoID, "npm_aliases_recorded_under_the_real_package", aliased,
+			"git_or_url_sources_left_out", notRegistry, "requirement_strings_left_out", notAVersion)
+	}
 	for _, pl := range parsed {
 		res := pl.Result
 		// v0.27.133 C2: dependency edges — the attribution substrate —
@@ -141,7 +185,9 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 			if e.Direct {
 				directFlagged++
 			}
-			if !declared[lockfileMatchKey(res.Ecosystem, e.Name)] {
+			// By the entry's own ecosystem: a Bioconductor entry is not the
+			// resolution of a declared CRAN dependency of its name.
+			if !declared[pkgid.MatchKey(entryEcosystem(res, e), e.Name)] {
 				// v0.27.21 C1: with vuln_scan_transitive on, the FULL
 				// entry set is stored (direct=FALSE rows are the
 				// transitive closure the vuln scan targets). Knob off:
@@ -154,8 +200,8 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 					continue
 				}
 				seen[key] = true
-				packages = append(packages, &db.RepoLockfilePackage{
-					Ecosystem:       res.Ecosystem,
+				packages = append(packages, &model.RepoLockfilePackage{
+					Ecosystem:       entryEcosystem(res, e),
 					PackageName:     e.Name,
 					ResolvedVersion: e.Version,
 					LockfilePath:    pl.Path,
@@ -171,8 +217,8 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 			}
 			seen[key] = true
 			matched++
-			packages = append(packages, &db.RepoLockfilePackage{
-				Ecosystem:       res.Ecosystem,
+			packages = append(packages, &model.RepoLockfilePackage{
+				Ecosystem:       entryEcosystem(res, e),
 				PackageName:     e.Name,
 				ResolvedVersion: e.Version,
 				LockfilePath:    pl.Path,
@@ -233,7 +279,44 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		}
 	}
 
-	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges); err != nil {
+	// A lockfile that exists and failed this cycle keeps its previous
+	// answer (0.29.176; summary/70, 4.3). The replace below removes every
+	// lockfile row of the repository, so the failed paths' rows are read
+	// first and re-inserted through the same insert as fresh rows. Only the
+	// parsed columns are old: the direct flag comes from THIS cycle's
+	// declared set, by the same filter as a fresh row (an old flag would
+	// leave a removed declaration's row targeted by nothing, or add a
+	// floor-version target beside the locked one). A failed read of the
+	// previous rows fails the phase: the snapshot stands (SR-5).
+	failed := append([]model.ManifestFailure(nil), locks.Failed...)
+	if len(failed) > 0 {
+		paths := make([]string, len(failed))
+		for i, f := range failed {
+			paths[i] = f.Path
+		}
+		prevInv, prevPkgs, prevEdges, perr := ac.store.GetRepoLockfileRowsAtPaths(ctx, repoID, paths)
+		if perr != nil {
+			return fmt.Errorf("lockfiles failed and their previous rows could not be read (snapshot NOT replaced): %w", perr)
+		}
+		carried := map[string]int{}
+		for _, p := range prevPkgs {
+			p.Direct = declared[pkgid.MatchKey(p.Ecosystem, p.PackageName)]
+			if !p.Direct && !ac.TransitiveLockfiles {
+				continue
+			}
+			carried[p.LockfilePath]++
+			packages = append(packages, p)
+		}
+		inventory = append(inventory, prevInv...)
+		if ac.TransitiveLockfiles {
+			edges = append(edges, prevEdges...)
+		}
+		for i := range failed {
+			failed[i].RowsCarried = carried[failed[i].Path]
+		}
+	}
+
+	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges, failed); err != nil {
 		return err
 	}
 	if len(inventory) > 0 {
@@ -257,4 +340,68 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	result.Lockfiles = len(inventory)
 	result.LockfilePackages = len(packages)
 	return nil
+}
+
+// lockfilesInUse is what the libyear phase reads to give an inventory row
+// its locked version (0.29.177): every lockfile that parsed this cycle, and,
+// for one that exists and failed, the rows it keeps from the previous
+// snapshot (0.29.176), so a row does not fall back from its locked version
+// to the declared one for as long as the lockfile is broken. If those
+// previous rows cannot be read the failed lockfiles are simply not offered:
+// their dependencies report the declared version this cycle, and the scan's
+// targets, which come from the lockfile table, are unaffected.
+func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, locks lockfileSet) []versionuse.Lockfile {
+	byPath := map[string]*versionuse.Lockfile{}
+	var order []string
+	add := func(path, ecosystem, name, version string) {
+		lf := byPath[path]
+		if lf == nil {
+			lf = &versionuse.Lockfile{Path: path, Ecosystem: ecosystem, Versions: map[string][]string{}}
+			byPath[path] = lf
+			order = append(order, path)
+		}
+		if name == "" {
+			return
+		}
+		key := pkgid.MatchKey(ecosystem, name)
+		if !slices.Contains(lf.Versions[key], version) {
+			lf.Versions[key] = append(lf.Versions[key], version)
+		}
+	}
+	for _, pl := range locks.Parsed {
+		add(pl.Path, pl.Result.Ecosystem, "", "")
+		for _, e := range pl.Result.Entries {
+			// An entry of another ecosystem (renv.lock's Bioconductor
+			// packages) locks no dependency of the lockfile's: the CRAN
+			// dependency of that name is another package (SR-6).
+			if entryEcosystem(pl.Result, e) != pl.Result.Ecosystem {
+				continue
+			}
+			add(pl.Path, pl.Result.Ecosystem, e.Name, e.Version)
+		}
+	}
+	if len(locks.Failed) > 0 {
+		paths := make([]string, len(locks.Failed))
+		for i, f := range locks.Failed {
+			paths[i] = f.Path
+		}
+		_, prev, _, err := ac.store.GetRepoLockfileRowsAtPaths(ctx, repoID, paths)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				ac.logger.Warn("the previous rows of lockfiles that failed could not be read — their dependencies report the declared version this cycle",
+					"repo_id", repoID, "lockfiles", len(paths), "error", err)
+			}
+		}
+		for _, p := range prev {
+			if p.Ecosystem == bioconductorEcosystem {
+				continue // as above, for a carried row
+			}
+			add(p.LockfilePath, p.Ecosystem, p.PackageName, p.ResolvedVersion)
+		}
+	}
+	out := make([]versionuse.Lockfile, 0, len(order))
+	for _, p := range order {
+		out = append(out, *byPath[p])
+	}
+	return out
 }

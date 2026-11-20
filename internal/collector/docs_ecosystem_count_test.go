@@ -6,7 +6,7 @@ package collector
 // v0.27.23 — docs claimed "15 ecosystems" in 8 places while the code
 // had 14 distinct language labels; README.md:789 stated 15 and then
 // enumerated exactly 14 in the same sentence. This tripwire computes
-// the count FROM the manifestFiles map and fails the build when any
+// the count FROM the manifest.ManifestFiles map and fails the build when any
 // doc's "<N> ecosystems" phrase disagrees — the same pattern as
 // TestDocsMatviewCountsMatchSchema / TestDocsTableCountsMatchSchema.
 
@@ -15,27 +15,23 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/manifest"
 )
 
-// ecosystemLabelCount parses the manifestFiles literal in analysis.go
-// and returns (distinct labels, filename entries). Self-checks in the
-// caller guard against regex rot silently passing.
+// ecosystemLabelCount counts the manifest roster's kinds that the name
+// inventory files under a language: (distinct languages, kinds).
 func ecosystemLabelCount(t *testing.T) (labels int, entries int) {
 	t.Helper()
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	block := regexp.MustCompile(`(?s)manifestFiles = map\[string\]string\{.*?\n\}`).Find(src)
-	if block == nil {
-		t.Fatal("cannot locate the manifestFiles map literal in analysis.go")
-	}
-	pairs := regexp.MustCompile(`"([^"]+)":\s*"([^"]+)"`).FindAllStringSubmatch(string(block), -1)
 	seen := map[string]bool{}
-	for _, p := range pairs {
-		seen[p[2]] = true
+	for _, k := range manifest.Roster() {
+		if k.Language == "" || k.Name == "*.csproj" {
+			continue // the table this replaced had fixed names only
+		}
+		seen[k.Language] = true
+		entries++
 	}
-	return len(seen), len(pairs)
+	return len(seen), entries
 }
 
 func TestDocsEcosystemCountsMatchCode(t *testing.T) {

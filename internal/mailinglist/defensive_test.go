@@ -41,52 +41,28 @@ func TestPacerDecaysTowardMinOnSuccess(t *testing.T) {
 	}
 }
 
-func TestBreakerTripsAtThresholdAndRecovers(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	b := NewBreaker(3, 1*time.Hour)
-	b.now = func() time.Time { return now }
-
-	if b.IsOpen() {
-		t.Fatal("breaker should start closed")
+// The breaker's own behaviour is tested in internal/hostguard. What is this
+// package's is the defaults NewBreaker applies.
+func TestNewBreakerAppliesTheMailingListDefaults(t *testing.T) {
+	b := NewBreaker(0, 0)
+	for i := 1; i < DefaultCircuitThreshold; i++ {
+		if b.RecordTransientFailure() {
+			t.Fatalf("tripped at failure %d, below the default threshold %d", i, DefaultCircuitThreshold)
+		}
 	}
-	// Two failures: still closed.
-	if tripped := b.RecordTransientFailure(); tripped {
-		t.Error("should not trip on first failure")
+	if !b.RecordTransientFailure() {
+		t.Fatalf("failure %d must trip a breaker built with the default threshold", DefaultCircuitThreshold)
 	}
-	b.RecordTransientFailure()
-	if b.IsOpen() {
-		t.Fatal("breaker should be closed below threshold")
-	}
-	// Third failure trips it.
-	if tripped := b.RecordTransientFailure(); !tripped {
-		t.Error("third failure should trip the breaker")
-	}
-	if !b.IsOpen() || b.Healthy() {
-		t.Fatal("breaker should be open after reaching threshold")
-	}
-	// Still open before the pause elapses.
-	now = now.Add(59 * time.Minute)
 	if !b.IsOpen() {
-		t.Error("breaker should still be open before pause elapses")
-	}
-	// After the pause it allows a probe (closed).
-	now = now.Add(2 * time.Minute)
-	if b.IsOpen() {
-		t.Error("breaker should reopen for a probe after the pause elapses")
+		t.Error("a breaker built with the default pause must be open right after it trips")
 	}
 }
 
-func TestBreakerSuccessResets(t *testing.T) {
-	b := NewBreaker(3, time.Hour)
+// A caller's own values are kept.
+func TestNewBreakerKeepsTheCallersValues(t *testing.T) {
+	b := NewBreaker(2, time.Hour)
 	b.RecordTransientFailure()
-	b.RecordTransientFailure()
-	b.RecordSuccess() // clean probe/result resets the counter
-	// Two more failures should NOT trip (counter was reset).
-	b.RecordTransientFailure()
-	if tripped := b.RecordTransientFailure(); tripped {
-		t.Error("counter must reset on success — 2 failures after reset must not trip a threshold-3 breaker")
-	}
-	if b.IsOpen() {
-		t.Error("breaker should be closed")
+	if !b.RecordTransientFailure() {
+		t.Error("a threshold of 2 must trip at the second failure")
 	}
 }

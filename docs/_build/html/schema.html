@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.147 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.211 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=0d5eebe3"></script>
+      <script src="_static/documentation_options.js?v=dc51b6c9"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -317,6 +317,7 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="guide/web-gui.html#search">Search</a></li>
@@ -338,10 +339,22 @@
 <li class="toctree-l2"><a class="reference internal" href="guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -790,9 +803,9 @@
 <li class="toctree-l1"><a class="reference internal" href="architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -994,9 +1007,13 @@
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/analysis.html#execution">Execution</a></li>
@@ -1054,13 +1071,14 @@
 <li class="toctree-l2"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1646,6 +1664,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1715,6 +1737,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#jira-staging">jira_staging</a></li>
@@ -5845,6 +5877,36 @@ preserved (SR-6). See the identity chapter in
 <td><p>Analysis phase</p></td>
 <td><p>Libyear score (years between current and latest).</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">manifest_path</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The manifest that declared the dependency, relative to the clone’s root with forward slashes (<code class="docutils literal notranslate"><span class="pre">svc/package.json</span></code>). Empty on a row written before 0.29.160. When that manifest later cannot be read or parsed, its rows are carried into the next inventory by this path.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">libyear_status</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Why the row has a libyear or lacks one (0.29.162): <code class="docutils literal notranslate"><span class="pre">resolved</span></code> (the registry answered and libyear was computed), <code class="docutils literal notranslate"><span class="pre">no_version</span></code> (no version could be worked out), <code class="docutils literal notranslate"><span class="pre">no_release_date</span></code> (the package is known; no date for the version), <code class="docutils literal notranslate"><span class="pre">not_on_registry</span></code> (the registry says there is no such package), <code class="docutils literal notranslate"><span class="pre">cannot_be_asked</span></code> (an invalid coordinate or an unsupported host), <code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code> (no answer this cycle; asked again at the next analysis), <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code> (the ecosystem has no registry timeline: GitHub Actions). NULL on a row written before 0.29.162. A dependency whose lookup fails keeps its row since that release, with <code class="docutils literal notranslate"><span class="pre">libyear</span></code> NULL.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package_key</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The package’s key (0.29.172): the ecosystem folded to one spelling (<code class="docutils literal notranslate"><span class="pre">rubygems</span></code> and <code class="docutils literal notranslate"><span class="pre">gem</span></code> are <code class="docutils literal notranslate"><span class="pre">gem</span></code>, <code class="docutils literal notranslate"><span class="pre">swiftpm</span></code> is <code class="docutils literal notranslate"><span class="pre">swift</span></code>, <code class="docutils literal notranslate"><span class="pre">packagist</span></code> is <code class="docutils literal notranslate"><span class="pre">composer</span></code>), `</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">version_source</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Where <code class="docutils literal notranslate"><span class="pre">current_version</span></code> came from when it is not the declaration’s own (0.29.177). <code class="docutils literal notranslate"><span class="pre">locked</span></code>: the nearest lockfile in the manifest’s own directory, or the closest directory above it, resolves the dependency to exactly this version, and the row reports it (with <code class="docutils literal notranslate"><span class="pre">purl</span></code> at it, and <code class="docutils literal notranslate"><span class="pre">libyear</span></code> measured from it). <code class="docutils literal notranslate"><span class="pre">locked-several</span></code>: the nearest lockfiles resolve it to more than one version, or two lockfiles sit equally near and both hold it; <code class="docutils literal notranslate"><span class="pre">current_version</span></code> is still the declared one, and the vulnerability scan checks every locked version. <code class="docutils literal notranslate"><span class="pre">managed</span></code> (0.29.178): a Maven dependency declared with no version, whose version comes from <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> in its own pom, a parent pom in the repository, or a BOM those import that is in the repository. NULL: the version is the lowest the declaration allows, as before. <code class="docutils literal notranslate"><span class="pre">requirement</span></code> is always the declaration as written. Go modules and GitHub Actions are never <code class="docutils literal notranslate"><span class="pre">locked</span></code>: a Go module’s version is the one <code class="docutils literal notranslate"><span class="pre">go.mod</span></code> states and an action is known by its ref.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">version_reason</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Why a Maven dependency has no version, when its pom gives it none and a parent pom or BOM that might manage it could not be obtained (0.29.181): <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> (the parent or BOM is on no repository that is read, or was never asked for because it is a snapshot, a version range, or a coordinate a request cannot be built from), <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code> (it is not known whether a repository has it: one did not answer and nothing is stored, or declared repositories were left unconsulted because the analysis had waited on them as long as it may or because the build declares more than one lookup consults; the first two are retried at the next analysis, the last is the same each time), <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code> (the repository that holds it may not be fetched from). NULL when the dependency has a version, or declares none and nothing that could manage it is missing.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">version_hosts</span></code></p></td>
+<td><p>TEXT[]</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The package repository hosts whose fetched poms this version was worked out through (0.29.185): the hosts of the parent poms in the dependency’s chain that were fetched, and of the BOM that supplied the version and its chain. A parent from one host and a BOM from another gives two. NULL when the version came from the repository’s own files. It is what says which dependencies a repository host’s answers touch.</p></td>
+</tr>
 <tr class="row-odd"><td><p></p></td>
 <td><p></p></td>
 <td><p></p></td>
@@ -5854,6 +5916,355 @@ preserved (SR-6). See the identity chapter in
 </table>
 </section>
 <hr class="docutils" />
+<section id="repo-declared-repositories">
+<h4>repo_declared_repositories<a class="headerlink" href="#repo-declared-repositories" title="Link to this heading"></a></h4>
+<p>The package repositories a repository’s own build files name (0.29.184): a pom’s
+<code class="docutils literal notranslate"><span class="pre">&lt;repositories&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">&lt;pluginRepositories&gt;</span></code>, and from 0.29.195 the entries of a Gradle
+<code class="docutils literal notranslate"><span class="pre">repositories</span> <span class="pre">{</span> <span class="pre">}</span></code> block (a build file’s, a <code class="docutils literal notranslate"><span class="pre">buildscript</span></code>’s, and a settings file’s
+<code class="docutils literal notranslate"><span class="pre">pluginManagement</span></code> and <code class="docutils literal notranslate"><span class="pre">dependencyResolutionManagement</span></code>). Replaced whole at each analysis; one row per
+manifest, address and use. Every declared repository is recorded, whether or not it is
+ever asked for anything.</p>
+<p>A repository with no <code class="docutils literal notranslate"><span class="pre">not_fetched_reason</span></code> may be asked for a parent pom or BOM that the
+configured repositories do not have, when <code class="docutils literal notranslate"><span class="pre">collection.declared_repository_fetch</span></code> is on
+(the default).</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">declared_repository_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Database</p></td>
+<td><p>Row id.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The repository whose build file declares it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">manifest_path</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The build file, relative to the clone.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repository_url</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The address, with no trailing slash and never with credentials: an address that carried a user name or password is recorded without them. For an address that could not be read (built from a variable), the text as written.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The address’s host, lower case; empty when the address could not be read. Indexed.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">used_for</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dependencies</span></code> or <code class="docutils literal notranslate"><span class="pre">plugins</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">not_fetched_reason</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Why it is never fetched from: <code class="docutils literal notranslate"><span class="pre">not_https</span></code>, <code class="docutils literal notranslate"><span class="pre">credentials_in_url</span></code>, <code class="docutils literal notranslate"><span class="pre">unreadable</span></code>, <code class="docutils literal notranslate"><span class="pre">plugins_only</span></code>, or for a Gradle entry <code class="docutils literal notranslate"><span class="pre">local</span></code> (<code class="docutils literal notranslate"><span class="pre">mavenLocal()</span></code>), <code class="docutils literal notranslate"><span class="pre">flat_dir</span></code>, <code class="docutils literal notranslate"><span class="pre">ivy</span></code>, <code class="docutils literal notranslate"><span class="pre">shut_down</span></code> (<code class="docutils literal notranslate"><span class="pre">jcenter()</span></code>). NULL: it may be.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Database</p></td>
+<td><p>When the row was written.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="maven-pom-results">
+<h4>maven_pom_results<a class="headerlink" href="#maven-pom-results" title="Link to this heading"></a></h4>
+<p>What a Maven repository said about one pom (0.29.182). A Maven dependency declared with no
+version takes it from <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> in a parent pom or an imported BOM; when that
+pom is not in the repository being analysed it is fetched from the repositories in
+<code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code>, in order, and the answer is kept here. One row per
+serving repository and coordinate; the rows are not per analysed repository, and one row
+serves every repository that inherits from the same pom.</p>
+<p>Stored answers are used before any request is made. A pom that was obtained is never
+fetched again. A repository’s “I have none” is asked again after a day. A lookup that got
+no answer is not stored, and when asking again fails, the stored answer stands: a
+repository’s bad hour does not change a dependency’s version.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repository_url</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The repository that answered, as configured.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">group_id</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The pom’s group.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">artifact_id</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The pom’s artifact.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">version</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The pom’s version.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">found</span></code></p></td>
+<td><p>BOOLEAN</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>TRUE: the pom was obtained. FALSE: the repository answered that it has none.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">extract</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>For a pom that was obtained: its coordinates, its parent, its properties and its <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> entries. The pom document itself is not kept. NULL for a miss.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fetched_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When the repository gave this answer.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">expires_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When the answer is due to be asked again. NULL for a pom that was obtained.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="repo-inventory-notes">
+<h4>repo_inventory_notes<a class="headerlink" href="#repo-inventory-notes" title="Link to this heading"></a></h4>
+<p>A declared dependency that was given no row in <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code>, and why (0.29.164). The table is replaced per repository at each analysis, in the same transaction as the inventory, so it always describes the inventory stored beside it. When a manifest cannot be read or parsed, its notes are carried forward with its rows.</p>
+<p>A note is a record. By itself it closes no vulnerability finding and keeps none open.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">note_id</span></code></p></td>
+<td><p>BIGSERIAL (PK)</p></td>
+<td><p>Auto-generated</p></td>
+<td><p>Primary key.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT (FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kind</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Why the dependency has no row: <code class="docutils literal notranslate"><span class="pre">non_registry</span></code> (it comes from a local path, a workspace, git or a URL, so it is not the registry package of the same name), <code class="docutils literal notranslate"><span class="pre">name_rejected</span></code> (the declared name is not a package name: it fails its ecosystem’s name grammar, holds a byte that cannot be stored, or is too long; the registry is not asked about it), <code class="docutils literal notranslate"><span class="pre">no_namespace</span></code> (no purl can be built: a Maven or Gradle coordinate with no group, for example).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package_manager</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Package manager of the manifest that declared it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">name</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The declared name, cleaned of bytes that cannot be stored and cut to 2,704 bytes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package_key</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p>The package key of the stored name (`ecosystem</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">purl</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p>The purl the dependency would have had, when one can be built and stored unchanged. Empty otherwise, and always for <code class="docutils literal notranslate"><span class="pre">non_registry</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">manifest_path</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The manifest that declared it, relative to the clone’s root.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;aveloxis-analysis&quot;</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_version</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p>Aveloxis version that wrote the row.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">data_source</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;manifest&quot;</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Computed</p></td>
+<td><p>When the note was written.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="repo-dependency-coverage">
+<h4>repo_dependency_coverage<a class="headerlink" href="#repo-dependency-coverage" title="Link to this heading"></a></h4>
+<p>What Aveloxis knows about how completely it has read one repository’s dependencies (0.29.159). One row per repository. A repository with no row, or with <code class="docutils literal notranslate"><span class="pre">analysed_at</span></code> NULL, has not been analysed since 0.29.159, and its stored <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code> rows are taken as its inventory, as before.</p>
+<p>The analysis columns are written in the same transaction that replaces the repository’s <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code> rows, so they always describe the inventory stored beside them. The two attempt columns are written by their own statement, when an analysis did not replace the inventory. The scan columns are written by the vulnerability scan, in one statement of its own, on every scan attempt that is not interrupted by a shutdown.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_id</span></code></p></td>
+<td><p>BIGINT (PK, FK -&gt; repos)</p></td>
+<td><p>Computed</p></td>
+<td><p>Repository.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">analysed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When the dependency inventory was last replaced whole. NULL: not since 0.29.159.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">manifests_found</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Manifest files found in the clone (files a manifest kind reads declarations from).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">manifests_parsed</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>How many of those were read and parsed.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">manifests_failed</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The manifests that could not be read or parsed: <code class="docutils literal notranslate"><span class="pre">[{&quot;path&quot;,</span> <span class="pre">&quot;kind&quot;,</span> <span class="pre">&quot;reason&quot;,</span> <span class="pre">&quot;rows_carried&quot;}]</span></code>, the path relative to the clone’s root, the reason <code class="docutils literal notranslate"><span class="pre">read</span></code> or <code class="docutils literal notranslate"><span class="pre">parse</span></code>, and how many of the manifest’s previous inventory rows were carried into this inventory because it failed (0.29.160). <code class="docutils literal notranslate"><span class="pre">[]</span></code> when none.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_failed</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase (lockfiles)</p></td>
+<td><p>The lockfiles that exist and could not be read or parsed at the last lockfile phase (0.29.176), as <code class="docutils literal notranslate"><span class="pre">manifests_failed</span></code>: <code class="docutils literal notranslate"><span class="pre">path</span></code>, <code class="docutils literal notranslate"><span class="pre">kind</span></code>, <code class="docutils literal notranslate"><span class="pre">reason</span></code> and <code class="docutils literal notranslate"><span class="pre">rows_carried</span></code>, the number of that lockfile’s previous package rows that were kept. A lockfile that fails keeps its previous rows for as long as it exists and fails, so its dependencies’ locked versions and its transitive packages do not vanish. NULL when none failed.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">maven_trees_not_whole</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The Maven trees that hold <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> entries and were not read whole at the last analysis (0.29.183): <code class="docutils literal notranslate"><span class="pre">root</span></code> (the tree’s root-most pom) and <code class="docutils literal notranslate"><span class="pre">reason</span></code> (a pom of the tree could not be read or parsed, a parent or an imported BOM could not be obtained, a BOM import matches more than one pom, or <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> sits inside a profile). Such a tree’s managed entries are still inventoried as dependencies. NULL when every such tree was read whole.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maven_tree_hosts</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The Maven trees whose parent and BOM chains used fetched poms, with the hosts they came from (0.29.185): <code class="docutils literal notranslate"><span class="pre">root</span></code> and <code class="docutils literal notranslate"><span class="pre">hosts</span></code>. A tree can depend on a host with no dependency row saying so (its parent was fetched and every version in it is explicit), so the tree’s hosts are recorded for the tree. NULL when no tree used a fetched pom.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dependencies_declared</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Dependencies the parsed manifests declared.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dependencies_without_row</span></code></p></td>
+<td><p>JSONB</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>How many declared dependencies were given no <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code> row, by reason: <code class="docutils literal notranslate"><span class="pre">non_registry</span></code>, <code class="docutils literal notranslate"><span class="pre">name_rejected</span></code>, <code class="docutils literal notranslate"><span class="pre">no_namespace</span></code> (the kinds of <code class="docutils literal notranslate"><span class="pre">repo_inventory_notes</span></code>, which names each one). <code class="docutils literal notranslate"><span class="pre">{}</span></code> when every one has a row.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_attempt_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When an analysis last did NOT replace the inventory. Later than <code class="docutils literal notranslate"><span class="pre">analysed_at</span></code> means the inventory is older than the last attempt to refresh it.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>Why: <code class="docutils literal notranslate"><span class="pre">clone_unavailable</span></code>, <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code> or <code class="docutils literal notranslate"><span class="pre">replace_failed</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_scan_attempt_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>When a vulnerability scan was last ATTEMPTED, whatever came of it (0.29.161). Not <code class="docutils literal notranslate"><span class="pre">repos.vuln_scan_last_run</span></code>, which is the last completed scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_outcome</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>What came of that scan: <code class="docutils literal notranslate"><span class="pre">sent</span></code> (targets were sent and answered), <code class="docutils literal notranslate"><span class="pre">nothing_to_send</span></code> (the repository declares nothing to check), <code class="docutils literal notranslate"><span class="pre">unsendable</span></code> (nothing could be sent), <code class="docutils literal notranslate"><span class="pre">unanswered</span></code> (0.29.208: targets were sent and OSV gave no complete answer for any of them), <code class="docutils literal notranslate"><span class="pre">inventory_incomplete</span></code> (nothing has ever said what the repository depends on, so nothing was closed or claimed) or <code class="docutils literal notranslate"><span class="pre">failed</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_partial</span></code></p></td>
+<td><p>BOOLEAN</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>TRUE when the outcome is <code class="docutils literal notranslate"><span class="pre">sent</span></code> and the scan’s picture is not whole: the step that closes findings no longer reported failed, or (0.29.168) OSV refused to answer a dependency’s query, or a finding was left open because an answer for its package was not complete.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_targets_sent</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>Targets sent to OSV. NULL when the scan failed before its targets were built.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_targets_dropped</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>Targets dropped before sending because OSV would have refused them. NULL as above.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_targets_rejected</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>Sent targets whose query OSV refused (0.29.168). Such a target has no answer: its findings are neither refreshed nor closed. NULL when the scan stopped before its answers were in, and on rows written before 0.29.168.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_targets_truncated</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>Sent targets whose answer from OSV was not read to its end (0.29.169): longer than a page cap set in <code class="docutils literal notranslate"><span class="pre">collection.osv_pages_per_query</span></code>, or, from 0.29.201, ended because OSV repeated a page token. The advisories that were read are recorded; nothing is closed for such a target. NULL when the scan stopped before its answers were in, and on rows written before 0.29.169.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_closures_held</span></code></p></td>
+<td><p>INTEGER</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>Open findings the scan neither reported nor closed, because an answer for their package was not complete (0.29.168). NULL as above.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dependencies_unknown</span></code></p></td>
+<td><p>BOOLEAN</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>TRUE when the scan found no stored inventory rows, no lockfile rows and no completed analysis: nothing is known about the repository’s dependencies, and no dependency finding is closed.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">first_scan_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Vulnerability scan</p></td>
+<td><p>When the repository was first scanned. Written once, and only for a repository first scanned by 0.29.161 or later; NULL for good on every other.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tool_source</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;aveloxis-analysis&quot;</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tool_version</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p>Aveloxis version that wrote the row.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">data_source</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Computed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;analysis&quot;</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">data_collection_date</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Computed</p></td>
+<td><p>When the analysis columns were last written.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
 <section id="repo-deps-scorecard">
 <h4>repo_deps_scorecard<a class="headerlink" href="#repo-deps-scorecard" title="Link to this heading"></a></h4>
 <p>OpenSSF Scorecard check results for a repository.</p>
@@ -8060,6 +8471,216 @@ minutes for a kernel fork). Author identity at read time: the columns below, in 
 <hr class="docutils" />
 <section id="aveloxis-ops-schema">
 <h2>aveloxis_ops Schema<a class="headerlink" href="#aveloxis-ops-schema" title="Link to this heading"></a></h2>
+<section id="package-repository-hosts-v0-29-185">
+<h3>Package repository hosts (v0.29.185)<a class="headerlink" href="#package-repository-hosts-v0-29-185" title="Link to this heading"></a></h3>
+<section id="package-repository-hosts">
+<h4>package_repository_hosts<a class="headerlink" href="#package-repository-hosts" title="Link to this heading"></a></h4>
+<p>Every package repository host a pom was asked of and that answered: the configured
+Maven repositories, and the ones collected repositories’ build files declare. One row per
+host. It is the list a later release watches for signs that a host has been abandoned.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>The host, lower case, with its port when it has one.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">first_fetched_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When the host first answered a request for a pom. Set once.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_answered_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase</p></td>
+<td><p>When it last answered (with a pom, or that it has none). Moves at most once per analysis that asks it. An analysis served from stored answers asks nothing and moves nothing.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="repository-host-signals">
+<h4>repository_host_signals<a class="headerlink" href="#repository-host-signals" title="Link to this heading"></a></h4>
+<p>What the periodic repository host check last saw of each package repository host
+(0.29.189), one row per host and kind of check. The check is observation only: nothing
+reads this table to act, and a host is distrusted only by an administrator. <code class="docutils literal notranslate"><span class="pre">kind</span></code> is
+<code class="docutils literal notranslate"><span class="pre">unresolvable</span></code> (the name no longer resolves), <code class="docutils literal notranslate"><span class="pre">refused_address</span></code> (it resolves to an address
+the outbound-address rule refuses), <code class="docutils literal notranslate"><span class="pre">certificate</span></code> (its certificate is not valid for it)
+or, from 0.29.190, <code class="docutils literal notranslate"><span class="pre">registered_later</span></code> (its domain was registered after the first fetch
+from it), or, from 0.29.191, <code class="docutils literal notranslate"><span class="pre">threat_list</span></code> (it, or a domain above it, is on the configured
+threat list: a hint, never a verdict). A look that could not tell never replaces a definitive answer.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Repository host check</p></td>
+<td><p>The host, lower case, with its port when it has one.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kind</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Repository host check</p></td>
+<td><p>What was looked for.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">state</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Repository host check</p></td>
+<td><p>The last definitive answer: <code class="docutils literal notranslate"><span class="pre">signal</span></code> or <code class="docutils literal notranslate"><span class="pre">clear</span></code>; <code class="docutils literal notranslate"><span class="pre">unknown</span></code> when no look has yet been able to tell.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">detail</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Repository host check</p></td>
+<td><p>Why, for a signal (at most 300 characters).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">since</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Repository host check</p></td>
+<td><p>When the current <code class="docutils literal notranslate"><span class="pre">state</span></code> began. It does not move while the same answer repeats.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">checked_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Repository host check</p></td>
+<td><p>The last look.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unknown_since</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Repository host check</p></td>
+<td><p>Set while the most recent look could not tell (a timeout, a refused connection); NULL after a definitive answer.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unknown_detail</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Repository host check</p></td>
+<td><p>Why that look could not tell.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dismissed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Administrator</p></td>
+<td><p>When an administrator marked the signal as seen. A signal is on the attention list while <code class="docutils literal notranslate"><span class="pre">since</span></code> is later than this.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dismissed_by</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Administrator</p></td>
+<td><p>Who.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="distrusted-repository-hosts">
+<h4>distrusted_repository_hosts<a class="headerlink" href="#distrusted-repository-hosts" title="Link to this heading"></a></h4>
+<p>The package repository hosts an operator has decided not to use (0.29.186). Nothing is
+fetched from a host listed here, and nothing it served earlier is used: a dependency
+whose version came through it has no version at its repository’s next analysis, with
+<code class="docutils literal notranslate"><span class="pre">version_reason</span></code> <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>. The writer of <code class="docutils literal notranslate"><span class="pre">maven_pom_results</span></code> refuses
+a row for a listed host in its own statement. Only an administrator adds or removes a
+row; nothing distrusts a host by itself.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">host</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>Administrator</p></td>
+<td><p>The host, lower case, with its port when it has one.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">distrusted_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Administrator</p></td>
+<td><p>When.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">distrusted_by</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Administrator</p></td>
+<td><p>Who.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">note</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Administrator</p></td>
+<td><p>Why, in their words.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="background-walks-v0-29-173">
+<h3>Background walks (v0.29.173)<a class="headerlink" href="#background-walks-v0-29-173" title="Link to this heading"></a></h3>
+<section id="program-markers">
+<h4>program_markers<a class="headerlink" href="#program-markers" title="Link to this heading"></a></h4>
+<p>One row per background walk that runs to an end and must not start over. The
+first is the package-key fill, with one row per table it walks
+(<code class="docutils literal notranslate"><span class="pre">package-key-fill:repo_deps_libyear</span></code>, <code class="docutils literal notranslate"><span class="pre">package-key-fill:repo_lockfile_packages</span></code>):
+it gives a package key to dependency rows written before 0.29.172, in
+<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>, a step at a time. A stopped <code class="docutils literal notranslate"><span class="pre">serve</span></code> resumes at <code class="docutils literal notranslate"><span class="pre">cursor_id</span></code>; a
+row with <code class="docutils literal notranslate"><span class="pre">completed_at</span></code> set is finished and is never walked again.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Column</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Populated by</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">marker</span></code></p></td>
+<td><p>TEXT (PK)</p></td>
+<td><p>The walk</p></td>
+<td><p>Which walk, and over what.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cursor_id</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>The walk</p></td>
+<td><p>The largest surrogate key visited so far.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bound_id</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>The walk, at its first step</p></td>
+<td><p>The largest surrogate key the table had when the walk began. Rows above it were written after the walk began and need nothing from it.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rows_done</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>The walk</p></td>
+<td><p>Rows visited that could be handled (for the fill: keyed, or already keyed).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rows_skipped</span></code></p></td>
+<td><p>BIGINT</p></td>
+<td><p>The walk</p></td>
+<td><p>Rows visited that could not (for the fill: no ecosystem or no name, left with no key).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">started_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>The walk</p></td>
+<td><p>When it began.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">updated_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>The walk</p></td>
+<td><p>When it last advanced.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">completed_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>The walk</p></td>
+<td><p>When the cursor reached the bound. NULL while it is running or stopped.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
 <section id="jira-collection-state-v0-29-0">
 <h3>Jira collection state (v0.29.0)<a class="headerlink" href="#jira-collection-state-v0-29-0" title="Link to this heading"></a></h3>
 <section id="jira-project-serve">

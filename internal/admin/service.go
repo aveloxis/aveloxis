@@ -143,6 +143,16 @@ type Store interface {
 	tokenStore
 	capacityStore
 	collectionStore
+	repositoryHostStore
+}
+
+// repositoryHostStore is the package repository hosts' storage (0.29.187).
+type repositoryHostStore interface {
+	ListRepositoryHosts(ctx context.Context, also []string) ([]db.RepositoryHost, error)
+	PreviewRepositoryHostDistrust(ctx context.Context, host string) (db.RepositoryHostImpact, error)
+	DistrustAndPurgeRepositoryHost(ctx context.Context, host, by, note string) (db.RepositoryHostImpact, bool, error)
+	RestoreRepositoryHost(ctx context.Context, host string) (bool, error)
+	DismissRepositoryHostSignals(ctx context.Context, host, by string) (int, error)
 }
 
 // tokenStore, capacityStore and collectionStore are the console's

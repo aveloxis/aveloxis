@@ -100,6 +100,7 @@ var canaryProfileRepos = []string{
 	"https://github.com/sbt/sbt",                 // Scala: build.sbt % Test/Provided (deps split across .scala files are a KNOWN line-parser limit — the canary shows what's actually caught)
 	"https://github.com/JamesNK/Newtonsoft.Json", // .NET: csproj PackageReference → nuget
 	"https://github.com/commercialhaskell/stack", // Haskell: package.yaml (hpack) tests: sections → hackage
+	"https://github.com/r-lib/commonmark",        // R: DESCRIPTION → cran (crandb), 0.29.204
 }
 
 // phase 3 (AVELOXIS_CANARY_TRANSITIVE=1): expanded + transitive —

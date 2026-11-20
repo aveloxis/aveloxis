@@ -83,7 +83,7 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 	//   3. requests, == pinned → exact.
 	//   4. a Go dep → locked by construction.
 	selfPurl := fmt.Sprintf("pkg:pypi/%s@3.0.0", repoName)
-	for _, lb := range []*db.LibyearRow{
+	if err := store.ReplaceRepoLibyear(ctx, repoID, []*model.LibyearRow{
 		{Name: repoName, Requirement: repoName + ">=3.0.0", PackageManager: "pypi",
 			CurrentVersion: "3.0.0", Purl: selfPurl},
 		{Name: "flask", Requirement: "flask>=2.0.0", PackageManager: "pypi",
@@ -92,25 +92,23 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 			CurrentVersion: "2.31.0", Purl: "pkg:pypi/requests@2.31.0"},
 		{Name: "golang.org/x/text", Requirement: "golang.org/x/text v0.3.0", PackageManager: "go",
 			CurrentVersion: "v0.3.0", Purl: "pkg:golang/golang.org/x/text@v0.3.0"},
-	} {
-		if err := store.InsertRepoLibyear(ctx, repoID, lb); err != nil {
-			t.Fatal(err)
-		}
+	}, nil, model.InventoryCoverage{}); err != nil {
+		t.Fatal(err)
 	}
 
 	// The committed lockfile resolved flask at 2.5.0.
 	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
 		[]*db.RepoLockfileInfo{{Ecosystem: "pypi", LockfilePath: "poetry.lock",
 			LockfileKind: "poetry.lock", EntryCount: 12, DirectCount: 1}},
-		[]*db.RepoLockfilePackage{{Ecosystem: "pypi", PackageName: "flask", Direct: true,
-			ResolvedVersion: "2.5.0", LockfilePath: "poetry.lock"}}, nil); err != nil {
+		[]*model.RepoLockfilePackage{{Ecosystem: "pypi", PackageName: "flask", Direct: true,
+			ResolvedVersion: "2.5.0", LockfilePath: "poetry.lock"}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// A historical self-dep finding from a pre-v0.27.11 scan. No
 	// migration exists for these ON PURPOSE: the next complete scan
 	// omits the self-dep purl and the v0.27.4 lifecycle resolves it.
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*db.VulnerabilityRow{{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{{
 		VulnID: "GHSA-selfdep", PackageName: repoName, PackagePurl: selfPurl,
 		Severity: "CRITICAL", CVSSScore: 9.8, Source: "osv.dev",
 	}}); err != nil {
@@ -205,7 +203,7 @@ func TestVulnScanAccuracyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byID := map[string]*db.VulnerabilityRow{}
+	byID := map[string]*model.VulnerabilityRow{}
 	for _, r := range rows {
 		byID[r.VulnID] = r
 	}

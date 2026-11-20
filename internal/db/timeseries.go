@@ -168,9 +168,42 @@ func normalizeLicense(license string) string {
 // githubactions exclusion applies in BOTH scopes — those rows carry no
 // license data, and counting them as 'Unknown' would pollute the
 // compliance view (runtime already excludes them via type='build').
+// v0.29.162: a row the registry did not answer for (libyear_status
+// not_on_registry, cannot_be_asked or lookup_failed) that has no license is
+// outside the universe for the same reason: nothing was asked about its
+// license, so "Unknown" would be a claim about a question never put. Before
+// that release such a dependency had no row at all, so the bucket does not
+// grow. A row with no status recorded, and a Go row that has its license
+// from the forge, stay in.
 const licenseRowUniverseSQL = `
 		  AND ($2 = FALSE OR COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))
-		  AND package_manager <> 'githubactions'`
+		  AND package_manager <> 'githubactions'
+		  AND NOT (COALESCE(libyear_status, '') IN ('not_on_registry', 'cannot_be_asked', 'lookup_failed')
+		           AND TRIM(COALESCE(license, '')) = '')`
+
+// licenseLeftOutSQL selects the rows the licence universe leaves out because
+// the registry was never asked about their licence: the last clause of
+// licenseRowUniverseSQL, the other way round. GitHub Actions rows are left
+// out of the universe too, and are NOT counted here: they have no licence
+// data by nature, and a count of them would say nothing about coverage.
+const licenseLeftOutSQL = `
+		  AND ($2 = FALSE OR COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))
+		  AND package_manager <> 'githubactions'
+		  AND (COALESCE(libyear_status, '') IN ('not_on_registry', 'cannot_be_asked', 'lookup_failed')
+		       AND TRIM(COALESCE(license, '')) = '')`
+
+// CountRepoLicenseRowsLeftOut is how many of a repository's dependencies
+// are outside the licences table under the same scope filter, because the
+// registry did not answer for them and nothing gave them a licence
+// (0.29.198; the licences answer's left_out). The table's "Unknown" bucket
+// is a licence that was looked for and not found; these were not looked
+// for.
+func (s *PostgresStore) CountRepoLicenseRowsLeftOut(ctx context.Context, repoID int64, runtimeOnly bool) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM aveloxis_data.repo_deps_libyear
+		WHERE repo_id = $1`+licenseLeftOutSQL, repoID, runtimeOnly).Scan(&n)
+	return n, err
+}
 
 // GetRepoLicensesScoped returns a summary of dependency licenses for a
 // repo, with counts and OSI compliance indicators; dependencies with no

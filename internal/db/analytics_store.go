@@ -176,11 +176,18 @@ var metricSeriesSQL = map[string]string{
 		GROUP BY 1 ORDER BY 1`,
 }
 
+// seriesBuckets are the buckets a series can be asked in, each mapped to
+// the date_trunc unit it is (0.29.212): a reader takes the unit from the
+// map, never from its caller, so that what reaches a statement's text is
+// one of these values whatever was asked for.
+var seriesBuckets = map[string]string{"week": "week", "month": "month"}
+
 // MetricWeeklySeries returns the bucketed series for one base
 // temporal metric over a repo-id set. bucket ∈ week|month (validated
 // here as defense in depth — it is interpolated into SQL).
 func (s *PostgresStore) MetricWeeklySeries(ctx context.Context, repoIDs []int64, metric, bucket string, since, until time.Time) ([]WeeklyPoint, error) {
-	if bucket != "week" && bucket != "month" {
+	unit, ok := seriesBuckets[bucket]
+	if !ok {
 		return nil, fmt.Errorf("invalid bucket %q", bucket)
 	}
 	q, ok := metricSeriesSQL[metric]
@@ -215,7 +222,7 @@ func (s *PostgresStore) MetricWeeklySeries(ctx context.Context, repoIDs []int64,
 		}
 		args = []any{live, since, until, daily} // never nil: ANY(NULL) and $1 || NULL are NULL, not empty
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(q, bucket), args...)
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(q, unit), args...)
 	if err != nil {
 		return nil, fmt.Errorf("metric %s: %w", metric, err)
 	}
@@ -262,6 +269,12 @@ func (s *PostgresStore) LaborInvestmentSnapshot(ctx context.Context, repoIDs []i
 	}}, nil
 }
 
+// libyearUnknownSQL selects a dependency row whose libyear is not known and
+// could be: no libyear, and a status other than "no timeline" (the one
+// status that means there is nothing to measure). One spelling, for every
+// aggregate that says how many unknowns it skipped.
+const libyearUnknownSQL = `(libyear IS NULL AND COALESCE(libyear_status, '') <> 'no_timeline')`
+
 // UpstreamDependenciesSnapshot: direct-dependency count + median
 // libyear staleness from the latest libyear pass.
 func (s *PostgresStore) UpstreamDependenciesSnapshot(ctx context.Context, repoIDs []int64) (SnapshotValue, error) {
@@ -275,24 +288,35 @@ func (s *PostgresStore) UpstreamDependenciesSnapshot(ctx context.Context, repoID
 	// BUMP: pre-v0.27.46 the headline counted all deps.
 	var runtimeCount, devCount float64
 	var runtimeMedian, devMedian *float64
+	var runtimeUnknown, devUnknown int
 	var asOf *time.Time
+	// 0.29.198: the counts and medians are over the rows that HAVE a
+	// libyear, as before; the rows that should have one and do not are
+	// counted beside them (libyear_unknown), in the same runtime and
+	// development split, so the aggregate says how many it skipped. A row
+	// with no timeline to measure against (a GitHub Action) is not an
+	// unknown: there is nothing to know.
 	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FILTER (WHERE COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))::float,
-		       COUNT(*) FILTER (WHERE COALESCE(type, '') IN ('dev','test','build','optional','peer'))::float,
+		SELECT COUNT(*) FILTER (WHERE libyear IS NOT NULL AND COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))::float,
+		       COUNT(*) FILTER (WHERE libyear IS NOT NULL AND COALESCE(type, '') IN ('dev','test','build','optional','peer'))::float,
 		       percentile_cont(0.5) WITHIN GROUP (ORDER BY libyear)
-		           FILTER (WHERE COALESCE(type, '') NOT IN ('dev','test','build','optional','peer')),
+		           FILTER (WHERE libyear IS NOT NULL AND COALESCE(type, '') NOT IN ('dev','test','build','optional','peer')),
 		       percentile_cont(0.5) WITHIN GROUP (ORDER BY libyear)
-		           FILTER (WHERE COALESCE(type, '') IN ('dev','test','build','optional','peer')),
-		       MAX(data_collection_date)
+		           FILTER (WHERE libyear IS NOT NULL AND COALESCE(type, '') IN ('dev','test','build','optional','peer')),
+		       MAX(data_collection_date) FILTER (WHERE libyear IS NOT NULL),
+		       COUNT(*) FILTER (WHERE `+libyearUnknownSQL+` AND COALESCE(type, '') NOT IN ('dev','test','build','optional','peer')),
+		       COUNT(*) FILTER (WHERE `+libyearUnknownSQL+` AND COALESCE(type, '') IN ('dev','test','build','optional','peer'))
 		FROM aveloxis_data.repo_deps_libyear
-		WHERE repo_id = ANY($1) AND libyear IS NOT NULL`, repoIDs).
-		Scan(&runtimeCount, &devCount, &runtimeMedian, &devMedian, &asOf)
+		WHERE repo_id = ANY($1)`, repoIDs).
+		Scan(&runtimeCount, &devCount, &runtimeMedian, &devMedian, &asOf, &runtimeUnknown, &devUnknown)
 	if err != nil {
 		return SnapshotValue{}, err
 	}
 	d := map[string]any{
-		"total_count": runtimeCount + devCount,
-		"dev_count":   devCount,
+		"total_count":         runtimeCount + devCount,
+		"dev_count":           devCount,
+		"libyear_unknown":     runtimeUnknown,
+		"dev_libyear_unknown": devUnknown,
 	}
 	if runtimeMedian != nil {
 		d["median_libyear"] = *runtimeMedian

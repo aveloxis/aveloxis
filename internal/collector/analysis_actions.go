@@ -33,97 +33,12 @@
 package collector
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/db"
-	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
-
-// isWorkflowPath reports whether path is a GitHub Actions workflow
-// file (.github/workflows/*.yml|yaml).
-func isWorkflowPath(path string) bool {
-	dir := filepath.ToSlash(filepath.Dir(path))
-	if !strings.HasSuffix(dir, ".github/workflows") {
-		return false
-	}
-	return strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml")
-}
-
-// parseWorkflowUses extracts action references from a workflow file.
-// `uses: owner/repo@ref` and `uses: owner/repo/subdir@ref` both
-// attribute to owner/repo (the repository carries the advisories);
-// local (./...) and docker:// references are skipped — they are not
-// marketplace actions.
-func parseWorkflowUses(content string) []libyearDep {
-	var deps []libyearDep
-	seen := map[string]bool{}
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		trimmed = strings.TrimPrefix(trimmed, "- ")
-		if !strings.HasPrefix(trimmed, "uses:") {
-			continue
-		}
-		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "uses:"))
-		// Strip trailing comments and quotes.
-		if idx := strings.Index(ref, "#"); idx >= 0 {
-			ref = strings.TrimSpace(ref[:idx])
-		}
-		ref = strings.Trim(ref, `"' `)
-		if ref == "" || strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "docker://") {
-			continue
-		}
-		name, version, found := strings.Cut(ref, "@")
-		if !found || name == "" || version == "" {
-			continue
-		}
-		// Subdirectory actions attribute to the owning repository.
-		parts := strings.Split(name, "/")
-		if len(parts) < 2 {
-			continue
-		}
-		name = parts[0] + "/" + parts[1]
-		key := name + "@" + version
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		deps = append(deps, libyearDep{
-			Name: name, Version: version, Requirement: ref,
-			Type: model.ScopeBuild, Manager: "githubactions",
-		})
-	}
-	return deps
-}
-
-// classifyActionRef maps a pinned ref onto the version_resolution
-// vocabulary: full commit SHAs are 'locked' (immutable), dotted
-// version tags are 'exact', and floating refs (major-only tags,
-// branch names) are 'unpinned'.
-func classifyActionRef(ref string) string {
-	if isHexSHA(ref) {
-		return resolutionLocked
-	}
-	if strings.Contains(ref, ".") {
-		return resolutionExact
-	}
-	return resolutionUnpinned
-}
-
-// isHexSHA reports whether ref looks like a git commit SHA
-// (7–40 lowercase hex chars — the abbreviated-through-full range).
-func isHexSHA(ref string) bool {
-	if len(ref) < 7 || len(ref) > 40 {
-		return false
-	}
-	for _, c := range ref {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
 
 // actionRefAffected evaluates a pinned action ref against an
 // advisory's ECOSYSTEM ranges for the given action name. The policy,
@@ -142,14 +57,14 @@ func isHexSHA(ref string) bool {
 //   - non-numeric ref (branch names: main) → floats to latest:
 //     affected only when the advisory has NO fix at all.
 func actionRefAffected(ref string, affected []osvAffected, actionName string) bool {
-	if isHexSHA(ref) {
+	if versionuse.IsHexSHA(ref) {
 		return false
 	}
 	v := strings.TrimPrefix(ref, "v")
 	numeric := len(v) > 0 && v[0] >= '0' && v[0] <= '9'
 	fullVersion := numeric && strings.Contains(v, ".")
 	for _, aff := range affected {
-		if !strings.EqualFold(aff.Package.Ecosystem, "GitHub Actions") ||
+		if !strings.EqualFold(aff.Package.Ecosystem, osvActionsEcosystem) ||
 			!strings.EqualFold(aff.Package.Name, actionName) {
 			continue
 		}

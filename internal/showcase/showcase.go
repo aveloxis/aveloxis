@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 // CollectionCard is one collection on the showcase index.
@@ -114,20 +116,31 @@ type RepoPageData struct {
 	ScorecardAsOf    string // YYYY-MM-DD or ""
 	ScorecardChecks  []RepoScorecardRow
 
-	// Vulnerability posture. VulnScanned=false means no OSV scan has
-	// completed for this repo (the repos.vuln_scan_last_run stamp is
-	// NULL and no findings exist) — the page says "pending", never
-	// "0 vulnerabilities" (a fabricated clean bill). v0.28.5 (Copilot
-	// round): dependency-row presence is NOT the gate — analysis can
-	// run cycles before the first OSV scan does.
-	VulnScanned  bool
+	// Vulnerability posture (0.29.200; summary/70, 4.8). The counts are the
+	// store's; what is said about them is decided by vulnclass.Coverage, the
+	// function the API and the signed-in page use, through SetVulnCoverage.
+	// The page never works out for itself whether a scan ran: its earlier
+	// rule counted neither closed nor own-package findings and disagreed
+	// with the other surfaces.
 	VulnTotal    int
 	VulnCritical int
 	// VulnUnknownVersion (v0.29.70) counts the advisories of dependencies
-	// that declare no version — not in VulnTotal (exposure unknown), but
-	// said on the page so a repository never reads as clean when it is
-	// merely unknown.
+	// that declare no version: not in VulnTotal (the version is not
+	// determined), and said on the page so a repository never reads as
+	// clean when it is merely not known.
 	VulnUnknownVersion int
+	// VulnCountBlank: the tile shows a dash, because a 0 would claim a
+	// check that did not happen. VulnClean: "no open vulnerabilities" may
+	// be said. VulnState is the coverage line under the count,
+	// VulnSecondLine what is beside it ("" for none), VulnAbsence what the
+	// posture sentence says where it cannot say "no open vulnerabilities".
+	// All five are set by SetVulnCoverage, which the generator always
+	// calls; with no view it sets "coverage not known".
+	VulnCountBlank bool
+	VulnClean      bool
+	VulnState      string
+	VulnSecondLine string
+	VulnAbsence    string
 
 	// ActivityChart is the static weekly-activity SVG (v0.27.80,
 	// trailing 12 months) in the signed-in grammar: commits + issues +
@@ -332,6 +345,14 @@ func comma(s string) string {
 var funcs = template.FuncMap{
 	"comma":    func(n int64) string { return comma(fmt.Sprintf("%d", n)) },
 	"commaInt": func(n int) string { return comma(fmt.Sprintf("%d", n)) },
+	// sentence starts a wording as a sentence: its first letter upper
+	// case. The wordings are lower case because they are also labels.
+	"sentence": func(s string) string {
+		if s == "" {
+			return s
+		}
+		return strings.ToUpper(s[:1]) + s[1:]
+	},
 	// scoreClass maps an OpenSSF Scorecard score to its color chip
 	// class — the same thresholds the GUI uses (v0.27.4 operator
 	// decision): >=6 green, >=2.5 yellow, <2.5 red, negative = N/A.
@@ -419,4 +440,18 @@ func BuildSitemap(baseURL string, staticPages, blogPages, slugs, repoSlugs []str
 	}
 	b.WriteString("</urlset>\n")
 	return []byte(b.String())
+}
+
+// SetVulnCoverage fills the page's coverage fields from the one decision. A
+// nil view (the coverage could not be decided) reads as not known: a count
+// of zero is blank and a count that is not stays.
+func (d *RepoPageData) SetVulnCoverage(v *vulnclass.CoverageView) {
+	d.VulnState = vulnclass.CoverageLine(v)
+	d.VulnSecondLine = vulnclass.CoverageSecondLineText(v)
+	d.VulnAbsence = vulnclass.CoverageAbsenceClause(v)
+	if v == nil {
+		d.VulnCountBlank, d.VulnClean = d.VulnTotal == 0, false
+		return
+	}
+	d.VulnCountBlank, d.VulnClean = v.CountBlank, v.CleanResult
 }

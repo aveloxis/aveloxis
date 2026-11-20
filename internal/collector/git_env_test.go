@@ -60,22 +60,3 @@ func TestAnalysisCloneSetsLFSSkip(t *testing.T) {
 			"ScanCode only need text source files, not binary LFS objects")
 	}
 }
-
-// TestUTF16BOMDetection verifies that parseDependencyFile detects UTF-16
-// BOM and transcodes to UTF-8 before parsing. Some Windows-created
-// requirements.txt files are UTF-16LE encoded.
-func TestUTF16BOMDetection(t *testing.T) {
-	src, err := os.ReadFile("analysis.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := string(src)
-
-	// Must detect the UTF-16 BOM bytes (\xff\xfe or \xfe\xff).
-	if !strings.Contains(code, "0xff") && !strings.Contains(code, "0xfe") &&
-		!strings.Contains(code, "utf16") && !strings.Contains(code, "UTF16") {
-		t.Error("analysis.go must detect UTF-16 BOM in manifest files and transcode " +
-			"to UTF-8 before parsing — Windows-created requirements.txt files with " +
-			"UTF-16LE encoding produce null bytes that PostgreSQL rejects")
-	}
-}

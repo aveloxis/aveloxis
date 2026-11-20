@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/hostguard"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -501,6 +503,85 @@ type CollectionConfig struct {
 	// would overflow) → refused at load. SupplyChainRefreshInterval is
 	// the ONE default layer (SR-10).
 	SupplyChainRefreshHours *int `json:"supply_chain_refresh_hours,omitempty"`
+
+	// OSVRejectedQueriesPerBatch (0.29.168) is how many queries OSV may
+	// refuse in one batch of a vulnerability scan before the scan fails. A
+	// refused query (a purl OSV will not parse) is taken out and the rest
+	// of the batch is sent again, so each one costs one more request of up
+	// to 1,000 queries. Absent: DefaultOSVRejectedQueriesPerBatch. 0: none
+	// is isolated and the first refusal fails the scan (the behaviour
+	// before 0.29.168). Negative, or above the 1,000 queries of a batch,
+	// is refused at load. Read through OSVRejectedQueryCap.
+	OSVRejectedQueriesPerBatch *int `json:"osv_rejected_queries_per_batch,omitempty"`
+
+	// OSVPagesPerQuery (0.29.169) is how many pages of one query's answer
+	// a vulnerability scan reads. OSV cuts an answer at about 1,000
+	// advisories and hands back a token for the rest; a query with no
+	// version (a GitHub Action, the repository's own published package, a
+	// dependency declared with none) returns its package's whole history
+	// and can run to several pages. Absent or 0: no cap, every answer is
+	// read to its end (the default since 0.29.201). A number caps it: an
+	// answer longer than that many pages is recorded as incomplete, what
+	// was read is kept and nothing is closed for that package. Negative,
+	// or above MaxOSVPagesPerQuery, is refused at load. Read through
+	// OSVPagesPerQueryOrDefault.
+	OSVPagesPerQuery *int `json:"osv_pages_per_query,omitempty"`
+
+	// PackageKeyFillRows (0.29.173) is the number of rows one step of the
+	// package-key fill visits. The fill runs once per database, in `serve`:
+	// it gives a package key to dependency rows written before 0.29.172 in
+	// repositories that are not analysed again, one step a second. Absent:
+	// DefaultPackageKeyFillRows. 0 turns the fill off. Negative, or above
+	// MaxPackageKeyFillRows, is refused at load. Read through
+	// PackageKeyFillRowsOrDefault.
+	PackageKeyFillRows *int `json:"package_key_fill_rows,omitempty"`
+	// RepositoryHostCheckHours (0.29.189; summary/70, 4.5, D14) is how often
+	// serve looks at each package repository host for signs that it has
+	// been abandoned or taken over (it no longer resolves, it resolves to
+	// an address the outbound-address rule refuses, its certificate is not
+	// valid). The check only records what it sees for the administrator's
+	// Repository hosts page; it never distrusts a host. nil is
+	// DefaultRepositoryHostCheckHours; 0 turns the check off; negative, or
+	// above MaxSupplyChainRefreshHours, is refused at load. Read through
+	// RepositoryHostCheckInterval.
+	RepositoryHostCheckHours *int `json:"repository_host_check_hours,omitempty"`
+	// RepositoryHostRegistrationCheck (0.29.190) is whether the repository
+	// host check also asks each host's domain registry, through the public
+	// registration-data service (RDAP), when the domain was registered: a
+	// date later than Aveloxis's first fetch from the host is the direct
+	// sign of a name that lapsed and was registered by someone else. It
+	// contacts IANA's bootstrap file and the registries it names, never the
+	// host, and discloses each domain only to the registry that already
+	// holds it. nil is on. Read through RepositoryHostRegistrationCheckValue.
+	RepositoryHostRegistrationCheck *bool `json:"repository_host_registration_check,omitempty"`
+	// RepositoryHostThreatListURL (0.29.191) is a public list of host names
+	// reported as malicious, one per line (a hosts-file line is read too).
+	// The repository host check downloads it whole once a pass and matches
+	// the repository hosts against it locally, so no host is disclosed to
+	// the list's publisher. A hit is a hint, never a verdict. nil is
+	// DefaultRepositoryHostThreatListURL; an empty string turns the signal
+	// off; anything but an https URL with no credentials, query or fragment
+	// is refused at load. Read through RepositoryHostThreatListURLValue.
+	RepositoryHostThreatListURL *string `json:"repository_host_threat_list_url,omitempty"`
+
+	// MavenRepositories (0.29.180) are the Maven repositories asked about a
+	// Maven dependency, in order: its age, and (in a later release of the
+	// vulnerability program) a parent pom or BOM that is not in the
+	// repository being analysed. Each is an https URL with no credentials
+	// and no query. Their hosts are trusted by name under the
+	// outbound-address rule, as the fixed registries are. Absent:
+	// DefaultMavenRepositories. An explicit empty list: none is asked.
+	// Read through MavenRepositoryList.
+	MavenRepositories *[]string `json:"maven_repositories,omitempty"`
+
+	// DeclaredRepositoryFetch (0.29.184; operator decision N1) is whether a
+	// Maven repository that a collected repository's own build files
+	// declare is asked for a parent pom or BOM the configured repositories
+	// do not have. It sends an identifying User-Agent and the coordinates
+	// asked for to hosts that collected repositories choose. Absent: on.
+	// Off: no such host is contacted; what one already served stays stored
+	// and is still used. Read through DeclaredRepositoryFetchValue.
+	DeclaredRepositoryFetch *bool `json:"declared_repository_fetch,omitempty"`
 
 	// ActivityHistoryWindowDays is the span of each GitHub
 	// contributionsCollection window the v0.27.58 daily-history
@@ -1788,6 +1869,35 @@ func (c *Config) validate() error {
 	if t := int64(c.HTTPTimeoutSeconds); t <= 0 || t > MaxHTTPTimeoutSeconds {
 		return fmt.Errorf("http_timeout_seconds is %d — use a number of seconds between 1 and %d, or omit it for the %v default", c.HTTPTimeoutSeconds, MaxHTTPTimeoutSeconds, httpserver.DefaultTimeout)
 	}
+	if c.Collection.MavenRepositories != nil {
+		for i, raw := range *c.Collection.MavenRepositories {
+			if err := validateMavenRepositoryURL(raw); err != nil {
+				// The value is not echoed: it may hold a credential.
+				return fmt.Errorf("collection.maven_repositories[%d] %w", i, err)
+			}
+		}
+	}
+	if u := c.Collection.RepositoryHostThreatListURL; u != nil && strings.TrimSpace(*u) != "" {
+		if err := validateMavenRepositoryURL(*u); err != nil {
+			return fmt.Errorf("collection.repository_host_threat_list_url %s — use an https URL of a list of host names, or an empty string to turn the threat-list signal off", err)
+		}
+	}
+	if h := c.Collection.RepositoryHostCheckHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
+		return fmt.Errorf("collection.repository_host_check_hours is %d — use a number of hours between 1 and %d, 0 for no check, or omit it for the default of %d",
+			*h, MaxSupplyChainRefreshHours, DefaultRepositoryHostCheckHours)
+	}
+	if n := c.Collection.PackageKeyFillRows; n != nil && (*n < 0 || *n > MaxPackageKeyFillRows) {
+		return fmt.Errorf("collection.package_key_fill_rows is %d — use a number of rows between 1 and %d, 0 to turn the fill off, or omit it for the default of %d",
+			*n, MaxPackageKeyFillRows, DefaultPackageKeyFillRows)
+	}
+	if n := c.Collection.OSVPagesPerQuery; n != nil && (*n < 0 || *n > MaxOSVPagesPerQuery) {
+		return fmt.Errorf("collection.osv_pages_per_query is %d — use a number of pages between 1 and %d to cap an answer, or 0 (or omit it) to read every answer to its end",
+			*n, MaxOSVPagesPerQuery)
+	}
+	if n := c.Collection.OSVRejectedQueriesPerBatch; n != nil && (*n < 0 || *n > MaxOSVRejectedQueriesPerBatch) {
+		return fmt.Errorf("collection.osv_rejected_queries_per_batch is %d — use a number between 0 (isolate none: the first query OSV refuses fails the scan) and %d (the queries in one batch), or omit it for the default of %d",
+			*n, MaxOSVRejectedQueriesPerBatch, DefaultOSVRejectedQueriesPerBatch)
+	}
 	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
@@ -1996,6 +2106,174 @@ func (c *CollectionConfig) MaterializedViewsValue() bool {
 		return true
 	}
 	return *c.MaterializedViews
+}
+
+// DefaultOSVRejectedQueriesPerBatch is ten times the most refused queries
+// any repository's batch has had in production (one each, four repositories,
+// 2026-09-22 log): room for a repository with several malformed purls,
+// while a repository whose every purl is refused costs eleven requests per
+// batch, not a thousand. MaxOSVRejectedQueriesPerBatch is OSV's own limit on
+// the queries in one batch: no batch can have more to isolate.
+const (
+	DefaultOSVRejectedQueriesPerBatch = 10
+	MaxOSVRejectedQueriesPerBatch     = 1000
+)
+
+// DefaultMavenRepositories: Maven Central, and the Jenkins project's public
+// repository, where Jenkins plugins and their parents are published and
+// Central does not carry them (summary/69's sample).
+var DefaultMavenRepositories = []string{"https://repo1.maven.org/maven2", "https://repo.jenkins-ci.org/public"}
+
+// DeclaredRepositoryFetchValue is the effective value: on unless set off.
+// The single default layer.
+func (c *CollectionConfig) DeclaredRepositoryFetchValue() bool {
+	return c.DeclaredRepositoryFetch == nil || *c.DeclaredRepositoryFetch
+}
+
+// MavenRepositoryList is the effective list of Maven repositories, each
+// with no trailing slash. The single default layer.
+func (c *CollectionConfig) MavenRepositoryList() []string {
+	if c.MavenRepositories == nil {
+		return append([]string(nil), DefaultMavenRepositories...)
+	}
+	out := make([]string, 0, len(*c.MavenRepositories))
+	for _, raw := range *c.MavenRepositories {
+		out = append(out, strings.TrimRight(strings.TrimSpace(raw), "/"))
+	}
+	return out
+}
+
+// MavenRepositoryHosts are the hosts of the effective list (a host is never
+// a secret, a URL may be), each in hostguard's one spelling, WITH its port
+// when it has one other than the default: the console lists them, the
+// daily check looks at them and a distrust decision names them, and each
+// must mean the host the fetch path asks (it used to drop the port, so
+// distrusting `nexus.corp` did nothing to `nexus.corp:8443`).
+func (c *CollectionConfig) MavenRepositoryHosts() []string {
+	var out []string
+	for _, raw := range c.MavenRepositoryList() {
+		if h := hostguard.OfURL(raw); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// validateMavenRepositoryURL is the load-time rule for one configured
+// repository. Its errors do not repeat the value.
+func validateMavenRepositoryURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("is not a URL")
+	}
+	switch {
+	case u.Scheme != "https":
+		return errors.New("must be an https URL")
+	case u.User != nil:
+		return errors.New("must not carry credentials (a user name or a password in the URL)")
+	case u.Hostname() == "":
+		return errors.New("has no host")
+	case u.RawQuery != "" || u.Fragment != "":
+		return errors.New("must not carry a query or a fragment")
+	}
+	if addr, perr := netip.ParseAddr(u.Hostname()); perr == nil {
+		a := addr.Unmap().WithZone("")
+		if a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+			return errors.New("names a link-local address, which is never reached")
+		}
+	}
+	return nil
+}
+
+// DefaultPackageKeyFillRows: one step is one round trip of at most this many
+// single-row updates by primary key, and the loop takes one step a second,
+// so the default bounds the fill at 1,000 such updates a second; ten million
+// rows take under three hours. MaxPackageKeyFillRows keeps one step's
+// transaction, which holds the marker's lock, to a size that commits in well
+// under the second between steps.
+const (
+	DefaultPackageKeyFillRows = 1000
+	MaxPackageKeyFillRows     = 50000
+)
+
+// PackageKeyFillRowsOrDefault is the effective step of the package-key fill;
+// 0 means off. The single default layer.
+func (c *CollectionConfig) PackageKeyFillRowsOrDefault() int {
+	if c.PackageKeyFillRows == nil {
+		return DefaultPackageKeyFillRows
+	}
+	return *c.PackageKeyFillRows
+}
+
+// DefaultOSVPagesPerQuery is 0, no cap: an answer is read to its end
+// (operator, 2026-11-19: "read for as long as you can, don't limit to 10
+// pages until we have a production measurement"; 0.29.169 to 0.29.200 had a
+// provisional 10). A page holds about 1,000 advisories (OSV's documented
+// cut). A cap may be set once the longest answer in production is known;
+// MaxOSVPagesPerQuery bounds an explicit cap at a thousand requests for one
+// query.
+const (
+	DefaultOSVPagesPerQuery = 0
+	MaxOSVPagesPerQuery     = 1000
+)
+
+// OSVPagesPerQueryOrDefault is the effective page cap. The single default
+// layer.
+func (c *CollectionConfig) OSVPagesPerQueryOrDefault() int {
+	if c.OSVPagesPerQuery == nil {
+		return DefaultOSVPagesPerQuery
+	}
+	return *c.OSVPagesPerQuery
+}
+
+// OSVRejectedQueryCap is the effective number of refused queries one batch
+// may isolate: absent → the default; an explicit 0 → none. The single
+// default layer.
+func (c *CollectionConfig) OSVRejectedQueryCap() int {
+	if c.OSVRejectedQueriesPerBatch == nil {
+		return DefaultOSVRejectedQueriesPerBatch
+	}
+	return *c.OSVRejectedQueriesPerBatch
+}
+
+// RepositoryHostRegistrationCheckValue is the effective value: on unless set
+// off.
+func (c *CollectionConfig) RepositoryHostRegistrationCheckValue() bool {
+	return c.RepositoryHostRegistrationCheck == nil || *c.RepositoryHostRegistrationCheck
+}
+
+// DefaultRepositoryHostThreatListURL is the Phishing.Database project's list
+// of active phishing domains (summary/70, 4.5): public, plain text, one host
+// name per line.
+const DefaultRepositoryHostThreatListURL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
+
+// RepositoryHostThreatListURLValue is the effective list: the default when
+// the setting is absent, none ("") when it is set empty.
+func (c *CollectionConfig) RepositoryHostThreatListURLValue() string {
+	if c.RepositoryHostThreatListURL == nil {
+		return DefaultRepositoryHostThreatListURL
+	}
+	return strings.TrimSpace(*c.RepositoryHostThreatListURL)
+}
+
+// DefaultRepositoryHostCheckHours: once a day. What the check looks for (a
+// lapsed name, a certificate left to expire) changes over days, and a day
+// is the cadence serve's other daily housekeeping already runs at
+// (SupplyChainRefreshInterval).
+const DefaultRepositoryHostCheckHours = 24
+
+// RepositoryHostCheckInterval is the effective cadence of the repository
+// host check and whether it runs at all: absent, the default; an explicit
+// 0, off; n, n hours. The single default layer.
+func (c *CollectionConfig) RepositoryHostCheckInterval() (time.Duration, bool) {
+	h := DefaultRepositoryHostCheckHours
+	if c.RepositoryHostCheckHours != nil {
+		h = *c.RepositoryHostCheckHours
+	}
+	if h <= 0 {
+		return 0, false
+	}
+	return time.Duration(h) * time.Hour, true
 }
 
 // SupplyChainRefreshInterval is the effective cadence of the scheduler's

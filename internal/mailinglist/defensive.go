@@ -6,6 +6,8 @@ package mailinglist
 import (
 	"sync"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/hostguard"
 )
 
 // Defensive collection primitives (v0.25.7, design §8). Apache + lore
@@ -79,63 +81,18 @@ func (p *Pacer) OnSuccess() {
 	p.cur = next
 }
 
-// Breaker is a per-source circuit breaker (mirrors the v0.25.0 ecosyste.ms
-// pattern). N consecutive transient failures open it for a pause window;
-// a probe after the pause closes it on success. Rate-limit (429) signals
-// must NOT be fed here — the source is healthy, just throttling; those go
-// to the Pacer. Only 5xx / transport errors feed the breaker.
-type Breaker struct {
-	mu          sync.Mutex
-	threshold   int
-	pause       time.Duration
-	consecutive int
-	openUntil   time.Time
-	now         func() time.Time // injectable for tests
-}
-
-// NewBreaker builds a breaker; threshold/pause fall back to defaults.
-func NewBreaker(threshold int, pause time.Duration) *Breaker {
+// NewBreaker builds the breaker for one archive source with the mailing-list
+// defaults applied to a threshold or pause that is not positive. The breaker
+// itself is hostguard's (it lived here until a second user appeared); the
+// defaults are this package's, which is why this function stayed. Rate-limit
+// (429) answers must not be fed to it: the source is healthy and throttling,
+// and those go to the Pacer. Only 5xx answers and transport errors do.
+func NewBreaker(threshold int, pause time.Duration) *hostguard.Breaker {
 	if threshold <= 0 {
 		threshold = DefaultCircuitThreshold
 	}
 	if pause <= 0 {
 		pause = DefaultCircuitPause
 	}
-	return &Breaker{threshold: threshold, pause: pause, now: time.Now}
-}
-
-// IsOpen reports whether the breaker is currently tripped.
-func (b *Breaker) IsOpen() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.now().Before(b.openUntil)
-}
-
-// Healthy is the dispatcher-pause signal (design §8): when false, the
-// worker stops claiming new lists until the source recovers.
-func (b *Breaker) Healthy() bool { return !b.IsOpen() }
-
-// RecordSuccess resets the failure counter and closes the breaker.
-func (b *Breaker) RecordSuccess() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.consecutive = 0
-	b.openUntil = time.Time{}
-}
-
-// RecordTransientFailure increments the consecutive-failure counter and
-// trips the breaker once it reaches the threshold. Returns true if this
-// call tripped it (so the caller can log the transition once).
-func (b *Breaker) RecordTransientFailure() (tripped bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.consecutive++
-	if b.consecutive >= b.threshold && b.openUntil.IsZero() {
-		b.openUntil = b.now().Add(b.pause)
-		return true
-	}
-	if b.consecutive >= b.threshold {
-		b.openUntil = b.now().Add(b.pause)
-	}
-	return false
+	return hostguard.NewBreaker(threshold, pause, time.Now)
 }

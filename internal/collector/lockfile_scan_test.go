@@ -47,7 +47,13 @@ func TestCollectLockfilesWalk(t *testing.T) {
 	})
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	got := collectLockfiles(root, logger)
+	set := collectLockfiles(root, logger)
+	got := set.Parsed
+	// v0.29.176: the lockfile that does not parse is REPORTED, with its
+	// kind and the reason, so the lockfile phase can keep its previous rows.
+	if len(set.Failed) != 1 || set.Failed[0].Path != filepath.Join("broken", "pnpm-lock.yaml") || set.Failed[0].Kind != "pnpm-lock.yaml" {
+		t.Errorf("failed = %+v; want the one broken lockfile", set.Failed)
+	}
 
 	paths := map[string]string{}
 	for _, pl := range got {
@@ -77,7 +83,7 @@ func TestCollectLockfilesDetectsBunLockb(t *testing.T) {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	got := collectLockfiles(root, logger)
+	got := collectLockfiles(root, logger).Parsed
 	if len(got) != 1 || got[0].Result.Kind != "bun.lockb" || len(got[0].Result.Entries) != 0 {
 		t.Fatalf("bun.lockb must be inventoried (kind marker, zero entries): %+v", got)
 	}
@@ -108,7 +114,7 @@ func TestScanLockfilesWiring(t *testing.T) {
 	for _, needle := range []string{
 		"ReplaceRepoLockfileSnapshot(", // one-tx snapshot replace
 		"GetRepoDepsForVulnScan(",      // declared direct deps
-		"lockfileMatchKey(",            // ecosystem-aware name matching
+		"pkgid.MatchKey(",              // ecosystem-aware name matching
 	} {
 		if !strings.Contains(string(scan), needle) {
 			t.Errorf("scanLockfiles must use %s", needle)

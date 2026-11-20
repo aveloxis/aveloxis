@@ -69,7 +69,7 @@ func TestIncompleteGoExpansionPreservesPriorClosure(t *testing.T) {
 
 	// The PRIOR snapshot: one Go transitive package + one edge (a
 	// healthy earlier run's closure).
-	prior := []*db.RepoLockfilePackage{{
+	prior := []*model.RepoLockfilePackage{{
 		Ecosystem: "go", PackageName: "golang.org/x/text",
 		ResolvedVersion: "v0.14.0", LockfilePath: "go.mod", Direct: false,
 	}}
@@ -78,7 +78,7 @@ func TestIncompleteGoExpansionPreservesPriorClosure(t *testing.T) {
 		ParentName: "example.com/app", ParentVersion: "v1.0.0",
 		ChildName: "golang.org/x/text", ChildConstraint: "v0.14.0",
 	}}
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, prior, priorEdges); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, prior, priorEdges, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +94,7 @@ func TestIncompleteGoExpansionPreservesPriorClosure(t *testing.T) {
 
 	ac := NewAnalysisCollector(store, logger, t.TempDir())
 	ac.TransitiveLockfiles = true
-	if err := ac.scanLockfiles(ctx, repoID, workDir, &AnalysisResult{}); err != nil {
+	if err := ac.scanLockfiles(ctx, repoID, workDir, collectLockfiles(workDir, ac.logger), &AnalysisResult{}); err != nil {
 		t.Fatalf("scanLockfiles: %v", err)
 	}
 
@@ -156,11 +156,11 @@ func TestGoModuleRemovalClearsStaleClosure(t *testing.T) {
 		}
 	})
 
-	prior := []*db.RepoLockfilePackage{{
+	prior := []*model.RepoLockfilePackage{{
 		Ecosystem: "go", PackageName: "golang.org/x/dead",
 		ResolvedVersion: "v0.1.0", LockfilePath: "go.mod", Direct: false,
 	}}
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, prior, nil); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, prior, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestGoModuleRemovalClearsStaleClosure(t *testing.T) {
 
 	ac := NewAnalysisCollector(store, logger, t.TempDir())
 	ac.TransitiveLockfiles = true
-	if err := ac.scanLockfiles(ctx, repoID, workDir, &AnalysisResult{}); err != nil {
+	if err := ac.scanLockfiles(ctx, repoID, workDir, collectLockfiles(workDir, ac.logger), &AnalysisResult{}); err != nil {
 		t.Fatalf("scanLockfiles: %v", err)
 	}
 

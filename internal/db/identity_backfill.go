@@ -351,10 +351,11 @@ func (s *PostgresStore) BackfillClosedByFromEvents(ctx context.Context, batchSiz
 	}
 	if dryRun {
 		cand := fmt.Sprintf(closedByCandidates, "")
-		q := `SELECT COUNT(DISTINCT e.issue_id)` + strings.TrimPrefix(cand, `
+		counted := `SELECT COUNT(DISTINCT e.issue_id)` + strings.TrimPrefix(cand, `
 	SELECT DISTINCT ON (issue_id) e.issue_id, e.cntrb_id`)
-		// Strip the ORDER BY — COUNT doesn't need it.
-		q = strings.Replace(q, "ORDER BY issue_id, e.created_at DESC", "", 1)
+		// Strip the ORDER BY — COUNT doesn't need it. (Two names, so that
+		// the write-policy reader follows each value: 0.29.212.)
+		q := strings.Replace(counted, "ORDER BY issue_id, e.created_at DESC", "", 1)
 		var n int64
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return 0, fmt.Errorf("dry-run count closed_by: %w", err)

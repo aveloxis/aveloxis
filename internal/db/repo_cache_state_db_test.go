@@ -267,18 +267,18 @@ func TestRepoCacheStateMovesWithTheDataWrite(t *testing.T) {
 			[]*ScancodeFileRow{{Path: "LICENSE", DetectedLicenseExpressionSPDX: "MIT"}})
 		return err
 	})
-	row := &VulnerabilityRow{VulnID: "GHSA-avrcsdata", PackageName: "flask", PackagePurl: "pkg:pypi/flask@2.0.0",
+	row := &model.VulnerabilityRow{VulnID: "GHSA-avrcsdata", PackageName: "flask", PackagePurl: "pkg:pypi/flask@2.0.0",
 		Severity: "HIGH", Source: "osv.dev"}
-	moves("a vulnerability insert", func() error { return store.InsertVulnerabilityBatch(ctx, id, []*VulnerabilityRow{row}) })
+	moves("a vulnerability insert", func() error { return store.InsertVulnerabilityBatch(ctx, id, []*model.VulnerabilityRow{row}) })
 	moves("a vulnerability resolution", func() error {
-		n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil)
+		n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil, false, nil, model.DecisionGuard{})
 		if err == nil && n != 1 {
 			t.Errorf("resolved %d rows, want 1", n)
 		}
 		return err
 	})
 	before := fp()
-	if n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil); err != nil || n != 0 {
+	if n, err := store.MarkStaleVulnerabilitiesResolved(ctx, id, nil, nil, false, nil, model.DecisionGuard{}); err != nil || n != 0 {
 		t.Fatalf("a resolution with nothing to resolve: %d, %v", n, err)
 	}
 	if fp() != before {
@@ -319,7 +319,7 @@ func TestSingleVulnerabilityInsertMovesTheCacheState(t *testing.T) {
 		return m[id].Fingerprint()
 	}
 	before := fp()
-	if err := store.InsertVulnerability(ctx, id, &VulnerabilityRow{VulnID: "GHSA-avrcsone", PackageName: "p",
+	if err := store.InsertVulnerability(ctx, id, &model.VulnerabilityRow{VulnID: "GHSA-avrcsone", PackageName: "p",
 		PackagePurl: "pkg:npm/p@1.0.0", Severity: "HIGH", Source: "osv.dev"}); err != nil {
 		t.Fatal(err)
 	}

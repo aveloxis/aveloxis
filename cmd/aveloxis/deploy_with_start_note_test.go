@@ -108,14 +108,22 @@ func TestAdHocLadderBuildersAreTheReviewedThree(t *testing.T) {
 func TestStartNotesGoThroughWithStartNote(t *testing.T) {
 	// Package-scope lookups (N26): the subject is found wherever it lives,
 	// and the negative needle covers every non-test file of the package.
-	const loop = `if out[i].cmd == "aveloxis start all" {`
-	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func withStartNote("))
+	// 0.29.207: the loop is withNoteOn's (a note can go on the stop step
+	// too), and withStartNote is that helper for the start step. The old
+	// spelling of the loop, with the command written into it, is nowhere.
+	const loop = `if out[i].cmd == cmd {`
+	const oldLoop = `if out[i].cmd == "aveloxis start all" {`
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func withNoteOn("))
 	if strings.Count(body, loop) != 1 || !strings.Contains(body, "panic(") {
-		t.Error("withStartNote must find the step by its command, once, and panic when none matches")
+		t.Error("withNoteOn must find the step by its command, once, and panic when none matches")
+	}
+	start := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func withStartNote("))
+	if !strings.Contains(start, `return withNoteOn(prev, "aveloxis start all", note)`) {
+		t.Error("withStartNote must be withNoteOn for the start step, and nothing else")
 	}
 	src := srctest.StripGoComments(srctest.PackageSource(t, "cmd/aveloxis", 10))
-	if n := strings.Count(src, loop) - 1; n != 0 {
-		t.Errorf("%d copy(ies) of the start-note loop outside withStartNote; build those ladders with withStartNote(prev, note)", n)
+	if n := strings.Count(src, loop) - 1 + strings.Count(src, oldLoop); n != 0 {
+		t.Errorf("%d copy(ies) of the note loop outside withNoteOn; build those ladders with withStartNote(prev, note) or withNoteOn", n)
 	}
 	srctest.MinCount(t, "withStartNote call sites", strings.Count(src, " = withStartNote("), 25)
 }

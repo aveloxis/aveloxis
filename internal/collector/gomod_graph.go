@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // goModGraphTimeout bounds the WHOLE repo's toolchain expansion —
@@ -59,7 +61,7 @@ const goModGraphTimeout = 5 * time.Minute
 // match keys (the direct set — its members are never written as
 // transitive rows).
 func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, workDir string, declared map[string]bool) (
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
+	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
 	// v0.27.152 (round 31, suppressed): discover modules BEFORE the
 	// toolchain check. Zero go.mod files is a DEFINITIVELY complete
 	// (empty) expansion regardless of whether go is installed — with
@@ -140,7 +142,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 }
 
 func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, goBin, workDir, dir string, declared map[string]bool,
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
+	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*model.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
@@ -187,11 +189,11 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 			continue // main module or blank
 		}
 		name, version := fields[0], fields[1]
-		if declared[lockfileMatchKey("go", name)] || seenPkg[name+"@"+version] {
+		if declared[pkgid.MatchKey("go", name)] || seenPkg[name+"@"+version] {
 			continue // declared deps are the direct set, already scanned
 		}
 		seenPkg[name+"@"+version] = true
-		packages = append(packages, &db.RepoLockfilePackage{
+		packages = append(packages, &model.RepoLockfilePackage{
 			Ecosystem:       "go",
 			PackageName:     name,
 			ResolvedVersion: version,

@@ -8,7 +8,7 @@ package db
 //
 // calcLibyear returns 0 when a release date is missing, and until v0.29.57
 // that 0 was stored as if it meant "up to date". The resolver now stores
-// NULL instead (markUnknownLibyear), but only as each repository is
+// NULL instead (the collector's settleLibyear), but only as each repository is
 // re-analysed — on chaoss.tv that is roughly a fortnight, and two of the ten
 // days before 2026-09-17 did no analysis at all.
 //

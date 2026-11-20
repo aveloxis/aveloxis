@@ -30,6 +30,7 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func loadSchema(t *testing.T, name string) map[string]any {
@@ -93,7 +94,7 @@ func sbomSeedInputs() (*db.RepoForSBOM, []db.SBOMDep, *db.ScancodeForSBOM) {
 // paths too: a transitive component/package plus a real edge.
 func sbomSeedGraph() *sbomGraph {
 	return &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "pypi", PackageName: "werkzeug", ResolvedVersion: "2.3.7"},
 		},
 		Edges: []db.RepoLockfileEdge{
@@ -109,6 +110,14 @@ func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateCycloneDX: %v", err)
 	}
+	assertCycloneDXSchemaConstraints(t, schema, raw)
+}
+
+// assertCycloneDXSchemaConstraints runs the schema-derived checks over one
+// CycloneDX document built from the seed inputs: the bare document and the
+// one annotated with vulnerability findings both go through it.
+func assertCycloneDXSchemaConstraints(t *testing.T, schema map[string]any, raw []byte) map[string]any {
+	t.Helper()
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("generated CDX is not valid JSON: %v", err)
@@ -207,6 +216,7 @@ func TestCycloneDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	if !containsExpression(doc) {
 		t.Error("seeded 'Apache-2.0 AND MIT' produced no expression entry — the licenseChoice branch under test never executed")
 	}
+	return doc
 }
 
 func containsExpression(node any) bool {
@@ -237,6 +247,12 @@ func TestSPDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateSPDX: %v", err)
 	}
+	assertSPDXSchemaConstraints(t, schema, raw)
+}
+
+// assertSPDXSchemaConstraints is assertCycloneDXSchemaConstraints for SPDX.
+func assertSPDXSchemaConstraints(t *testing.T, schema map[string]any, raw []byte) map[string]any {
+	t.Helper()
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("generated SPDX is not valid JSON: %v", err)
@@ -291,4 +307,5 @@ func TestSPDXSatisfiesOfficialSchemaConstraints(t *testing.T) {
 			}
 		}
 	}
+	return doc
 }

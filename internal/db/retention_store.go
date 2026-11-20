@@ -136,7 +136,8 @@ SELECT date_trunc('%s', first_ts AT TIME ZONE 'UTC') AS bucket,
 // contribution of each contributor. threshold is the minimum total
 // action count that makes a contributor "repeat" (8Knot default: 4).
 func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs []int64, bucket string, since, until time.Time, threshold int) (driveBy, repeat []WeeklyPoint, err error) {
-	if bucket != "week" && bucket != "month" {
+	unit, ok := seriesBuckets[bucket]
+	if !ok {
 		return nil, nil, fmt.Errorf("invalid bucket %q", bucket)
 	}
 	if threshold < 1 {
@@ -161,7 +162,7 @@ func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs 
 			live = complementOf(repoIDs, served)
 		}
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, bucket), repoIDs, since, until, threshold, live, daily)
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, unit), repoIDs, since, until, threshold, live, daily)
 	if err != nil {
 		return nil, nil, fmt.Errorf("contributor retention: %w", err)
 	}

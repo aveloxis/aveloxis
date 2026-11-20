@@ -331,6 +331,18 @@ func enumerateColumns(ctx context.Context, pool colFillQuerier, schemas []string
 	return cols, rows.Err()
 }
 
+// populatedCountsSQL counts, for one table, the rows in which each of its
+// columns is populated (populatedPredicate, by the column's data type).
+// The names are the catalog's and are quoted as SQL quotes an identifier;
+// a data type only chooses the predicate.
+func populatedCountsSQL(schema, table string, columns, dataTypes []string) string {
+	exprs := make([]string, len(columns))
+	for i := range columns {
+		exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quotedIdentifier(columns[i]), dataTypes[i]))
+	}
+	return fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(exprs, ", "), quotedIdentifier(schema, table))
+}
+
 // populatedCounts computes the populated count for every column, ONE
 // single-scan query per table (all of a table's columns aggregated in
 // one pass).
@@ -344,14 +356,11 @@ func populatedCounts(ctx context.Context, pool colFillQuerier, cols []columnRef)
 	out := map[string]int64{}
 	for _, tableCols := range byTable {
 		schema, table := tableCols[0].schema, tableCols[0].table
-		exprs := make([]string, len(tableCols))
+		columns, dataTypes := make([]string, len(tableCols)), make([]string, len(tableCols))
 		for i, c := range tableCols {
-			exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quotedIdentifier(c.column), c.dataType))
+			columns[i], dataTypes[i] = c.column, c.dataType
 		}
-		// Identifiers come from information_schema, quoted as SQL quotes
-		// an identifier (0.29.211: Go's %q was used, which writes a double
-		// quote inside a name as \", and that is not SQL's quoting).
-		q := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(exprs, ", "), quotedIdentifier(schema, table))
+		q := populatedCountsSQL(schema, table, columns, dataTypes)
 		row := pool.QueryRow(ctx, q)
 		dests := make([]any, len(tableCols))
 		vals := make([]int64, len(tableCols))

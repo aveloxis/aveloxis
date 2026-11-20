@@ -28,7 +28,22 @@ func TestRepoGroupConsolidationFailsClosedOnAFailedRepoint(t *testing.T) {
 	base := strings.Index(body, "errsBeforeRepoint := len(*errs)")
 	firstRepoint := strings.Index(body, "repoint repos.repo_group_id to canonical group")
 	gate := strings.Index(body, "if len(*errs) > errsBeforeRepoint {")
-	dmDelete := strings.Index(body, "dm_repo_group_annual")
+	// 0.29.212: the dm_ deletes are the list repoGroupLoserRowTables, run
+	// through repoGroupLoserRowsDeleteSQL (so that the write-policy check
+	// runs each). The anchor is the loop that runs them, and the list is
+	// checked to be the dm_ tables it was.
+	dmDelete := strings.Index(body, "for i, tbl := range repoGroupLoserRowTables {")
+	if dmDelete >= 0 && !strings.Contains(body[dmDelete:], "repoGroupLoserRowsDeleteSQL(i))") {
+		dmDelete = -1
+	}
+	if len(repoGroupLoserRowTables) == 0 {
+		t.Fatal("repoGroupLoserRowTables is empty: the dm_ deletes this pin orders are gone")
+	}
+	for _, tbl := range repoGroupLoserRowTables {
+		if !strings.HasPrefix(tbl, "aveloxis_data.dm_repo_group_") {
+			t.Errorf("repoGroupLoserRowTables holds %s: the deletes gated here are the dm_repo_group_ aggregates", tbl)
+		}
+	}
 	loserDelete := strings.Index(body, "delete consolidated loser repo_groups rows")
 
 	for _, a := range []struct {

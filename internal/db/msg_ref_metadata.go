@@ -68,6 +68,19 @@ var msgRefDataSourceTargets = []struct {
 	{"aveloxis_data.pull_request_review_message_ref", "pr_review_msg_ref_id"},
 }
 
+// msgRefDataSourceMaxSQL and msgRefDataSourceWindowSQLAt are the bound and
+// the window statement for the i-th of msgRefDataSourceTargets: functions
+// of the index, so that the write-policy check runs them for every member.
+func msgRefDataSourceMaxSQL(i int) string {
+	t := msgRefDataSourceTargets[i]
+	return fmt.Sprintf(`SELECT COALESCE(MAX(%s), 0) FROM %s`, t.PK, t.Table)
+}
+
+func msgRefDataSourceWindowSQLAt(i int) string {
+	t := msgRefDataSourceTargets[i]
+	return MsgRefDataSourceWindowSQL(t.Table, t.PK)
+}
+
 // MsgRefDataSourceWindowSQL is the per-window UPDATE, instantiated per
 // target table ($1 = exclusive lower PK bound, $2 = inclusive upper).
 // The COALESCE(...) = "" filter makes re-runs no-ops.
@@ -153,11 +166,11 @@ func ensureMsgRefMetadata(ctx context.Context, pg *PostgresStore, logger *slog.L
 		 ON aveloxis_data.pull_request_review_message_ref (pr_review_id, msg_id)`)
 
 	// Step 3: data_source backfills from messages (keyset windows).
-	for _, t := range msgRefDataSourceTargets {
+	for i, t := range msgRefDataSourceTargets {
 		if err := runKeysetWindows(ctx, pg, logger,
 			"v0.27.15 backfill "+t.Table+".data_source from messages",
-			fmt.Sprintf(`SELECT COALESCE(MAX(%s), 0) FROM %s`, t.PK, t.Table),
-			MsgRefDataSourceWindowSQL(t.Table, t.PK)); err != nil {
+			msgRefDataSourceMaxSQL(i),
+			msgRefDataSourceWindowSQLAt(i)); err != nil {
 			logger.Error("migration step failed", "error", err)
 			*errs = append(*errs, err)
 		}

@@ -25,6 +25,60 @@ import (
 // comfortable size for the planner and the retry loop.
 const commitBatchChunk = 500
 
+// commitBatchInsertSQL is UpsertCommitBatch's statement for a chunk of rows
+// rows: one row of 22 placeholders each. A function of the count, so that
+// no text reaches it and the write-policy check can run it.
+func commitBatchInsertSQL(rows int) string {
+	var sb strings.Builder
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		base := i * 22
+		sb.WriteByte('(')
+		for p := 1; p <= 22; p++ {
+			if p > 1 {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, "$%d", base+p)
+		}
+		sb.WriteByte(')')
+	}
+	return `
+			INSERT INTO aveloxis_data.commits
+				(repo_id, cmt_commit_hash, cmt_author_name, cmt_author_raw_email,
+				 cmt_author_email, cmt_author_date, cmt_author_affiliation,
+				 cmt_committer_name, cmt_committer_raw_email, cmt_committer_email,
+				 cmt_committer_date, cmt_committer_affiliation,
+				 cmt_added, cmt_removed, cmt_whitespace, cmt_filename,
+				 cmt_date_attempted, cmt_committer_timestamp, cmt_author_timestamp,
+				 cmt_author_platform_username,
+				 tool_source, data_source)
+			VALUES ` + sb.String() + `
+			ON CONFLICT (repo_id, cmt_commit_hash, cmt_filename) DO NOTHING`
+}
+
+// commitMessageBatchUpsertSQL is UpsertCommitMessageBatch's statement for a
+// chunk of rows rows.
+func commitMessageBatchUpsertSQL(rows int) string {
+	var sb strings.Builder
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,'aveloxis-facade','git')", i*3+1, i*3+2, i*3+3)
+	}
+	return `
+			INSERT INTO aveloxis_data.commit_messages
+				(repo_id, cmt_msg, cmt_hash, tool_source, data_source)
+			VALUES ` + sb.String() + `
+			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
+				cmt_msg = EXCLUDED.cmt_msg,
+				tool_version = EXCLUDED.tool_version,
+				data_collection_date = NOW()
+			WHERE commit_messages.cmt_msg IS DISTINCT FROM EXCLUDED.cmt_msg`
+}
+
 // UpsertCommitBatch inserts commit-file rows in multi-row chunks.
 // ON CONFLICT (repo_id, cmt_commit_hash, cmt_filename) DO NOTHING is
 // intra-statement-duplicate safe, so callers need not dedup. It returns the
@@ -40,22 +94,9 @@ func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.
 		}
 		chunk := commits[start:end]
 
-		var sb strings.Builder
 		args := make([]any, 0, len(chunk)*22)
 		now := time.Now()
-		for i, c := range chunk {
-			if i > 0 {
-				sb.WriteByte(',')
-			}
-			base := i * 22
-			sb.WriteByte('(')
-			for p := 1; p <= 22; p++ {
-				if p > 1 {
-					sb.WriteByte(',')
-				}
-				fmt.Fprintf(&sb, "$%d", base+p)
-			}
-			sb.WriteByte(')')
+		for _, c := range chunk {
 			args = append(args,
 				c.RepoID, c.Hash, c.AuthorName, c.AuthorRawEmail,
 				c.AuthorEmail, c.AuthorDate, c.AuthorAffiliation,
@@ -68,18 +109,7 @@ func (s *PostgresStore) UpsertCommitBatch(ctx context.Context, commits []*model.
 			)
 		}
 
-		sql := `
-			INSERT INTO aveloxis_data.commits
-				(repo_id, cmt_commit_hash, cmt_author_name, cmt_author_raw_email,
-				 cmt_author_email, cmt_author_date, cmt_author_affiliation,
-				 cmt_committer_name, cmt_committer_raw_email, cmt_committer_email,
-				 cmt_committer_date, cmt_committer_affiliation,
-				 cmt_added, cmt_removed, cmt_whitespace, cmt_filename,
-				 cmt_date_attempted, cmt_committer_timestamp, cmt_author_timestamp,
-				 cmt_author_platform_username,
-				 tool_source, data_source)
-			VALUES ` + sb.String() + `
-			ON CONFLICT (repo_id, cmt_commit_hash, cmt_filename) DO NOTHING`
+		sql := commitBatchInsertSQL(len(chunk))
 
 		var chunkInserted int64
 		if err := s.withRetry(ctx, func(ctx context.Context) error {
@@ -123,13 +153,8 @@ func (s *PostgresStore) UpsertCommitMessageBatch(ctx context.Context, msgs []*mo
 		}
 		chunk := deduped[start:end]
 
-		var sb strings.Builder
 		args := make([]any, 0, len(chunk)*3)
-		for i, m := range chunk {
-			if i > 0 {
-				sb.WriteByte(',')
-			}
-			fmt.Fprintf(&sb, "($%d,$%d,$%d,'aveloxis-facade','git')", i*3+1, i*3+2, i*3+3)
+		for _, m := range chunk {
 			args = append(args, m.RepoID, SanitizeText(m.Message), m.Hash)
 		}
 
@@ -140,15 +165,7 @@ func (s *PostgresStore) UpsertCommitMessageBatch(ctx context.Context, msgs []*mo
 		// text was last WRITTEN, not last seen; nothing reads
 		// commit_messages.data_collection_date as "last seen". Same guard
 		// as UpsertCommitMessage in postgres.go.
-		sql := `
-			INSERT INTO aveloxis_data.commit_messages
-				(repo_id, cmt_msg, cmt_hash, tool_source, data_source)
-			VALUES ` + sb.String() + `
-			ON CONFLICT (repo_id, cmt_hash) DO UPDATE SET
-				cmt_msg = EXCLUDED.cmt_msg,
-				tool_version = EXCLUDED.tool_version,
-				data_collection_date = NOW()
-			WHERE commit_messages.cmt_msg IS DISTINCT FROM EXCLUDED.cmt_msg`
+		sql := commitMessageBatchUpsertSQL(len(chunk))
 
 		if err := s.withRetry(ctx, func(ctx context.Context) error {
 			_, err := s.pool.Exec(ctx, sql, args...)

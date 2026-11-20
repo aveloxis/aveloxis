@@ -125,25 +125,33 @@ func TestExpressionIndexTableWithoutStatistics(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
+	// 0.29.212: the table comes back as its schema and its name, and
+	// analyzeTableSQL quotes them (the database quoted them before, with
+	// quote_ident). What is pinned is unchanged: which table is named, and
+	// that the statement made for it is one PostgreSQL runs on a name with
+	// a capital and a space. The ANALYZE below is the store's own.
 	for _, c := range []struct {
 		index, want string
 	}{
 		{"plain_idx", ""},
-		{"expr_idx", scratch + `."T x"`},
+		{"expr_idx", "T x"},
 		{"no_such_idx", ""},
 	} {
-		got, err := expressionIndexTableWithoutStatistics(ctx, store, scratch, c.index)
+		gotSchema, got, err := expressionIndexTableWithoutStatistics(ctx, store, scratch, c.index)
 		if err != nil {
 			t.Fatalf("%s: %v", c.index, err)
 		}
-		if got != c.want {
-			t.Errorf("%s: got table %q, want %q", c.index, got, c.want)
+		if got != c.want || (got != "" && gotSchema != scratch) {
+			t.Errorf("%s: got table %q in %q, want %q in %q", c.index, got, gotSchema, c.want, scratch)
 		}
 	}
-	if _, err := store.pool.Exec(ctx, `ANALYZE `+scratch+`."T x"`); err != nil {
+	if got := analyzeTableSQL(scratch, "T x"); got != `ANALYZE "`+scratch+`"."T x"` {
+		t.Errorf("analyzeTableSQL = %s", got)
+	}
+	if _, err := store.pool.Exec(ctx, analyzeTableSQL(scratch, "T x")); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := expressionIndexTableWithoutStatistics(ctx, store, scratch, "expr_idx"); err != nil || got != "" {
+	if _, got, err := expressionIndexTableWithoutStatistics(ctx, store, scratch, "expr_idx"); err != nil || got != "" {
 		t.Errorf("an analyzed expression index: got (%q, %v), want nothing to do", got, err)
 	}
 }

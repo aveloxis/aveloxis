@@ -52,12 +52,19 @@ var perfWaveIndexDDL = []struct{ name, sql string }{
 		 ON aveloxis_ops.staging (created_at) WHERE processed`},
 }
 
+// perfWaveIndexSQL is the CREATE INDEX statement for the i-th of perfWaveIndexDDL: a function of the
+// index, so that the write-policy check runs it for every member.
+func perfWaveIndexSQL(i int) string {
+	idx := perfWaveIndexDDL[i]
+	return idx.sql
+}
+
 func ensurePerfWaveIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range perfWaveIndexDDL {
+	for i, idx := range perfWaveIndexDDL {
 		schema := "aveloxis_data"
 		if idx.name == "idx_staging_processed_created" {
 			schema = "aveloxis_ops"
 		}
-		execCreateIndexConcurrently(ctx, pg, logger, errs, schema, idx.name, idx.sql)
+		execCreateIndexConcurrently(ctx, pg, logger, errs, schema, idx.name, perfWaveIndexSQL(i))
 	}
 }

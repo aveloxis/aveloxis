@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestNoSourceOrFixtureIsGitIgnored(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".git")); errors.Is(err, fs.ErrNotExist) {
 		t.Skip("not a git work tree (a source archive): the ignore rules cannot be asked")
 	}
-	inside := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	inside := gitIn(root, "rev-parse", "--is-inside-work-tree")
 	if out, err := inside.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "true" {
 		t.Fatalf("git cannot read this checkout (%v): %s", err, out)
 	}
@@ -51,40 +52,55 @@ func TestNoSourceOrFixtureIsGitIgnored(t *testing.T) {
 	// missed a nested one), and not --exclude-standard, because a
 	// developer's global ignore file or .git/info/exclude says nothing
 	// about what a commit will hold.
+	gitignore, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs := scratchConfigNames(string(gitignore))
 	out, err := ignoredFiles(root, "cmd", "internal", "scripts")
 	if err != nil {
 		t.Fatalf("git ls-files: %v", err)
 	}
 	for _, f := range out {
-		if f != "" && !ignoredOnPurpose(f) {
+		if f != "" && !ignoredOnPurpose(f, configs) {
 			t.Errorf("%s is ignored by .gitignore: it will not be committed, and whatever builds with it or reads it fails on every other checkout. Add an exception for it to .gitignore, or delete it if it is left over from a run", f)
 		}
 	}
 	// The fixtures of cmd/aveloxis/testdata are re-admitted by name; the
 	// ones the tests read must be among them.
 	for _, fixture := range []string{"cmd/aveloxis/testdata/expect-0.29.207.json", "cmd/aveloxis/testdata/deploy_ladder_digests.txt"} {
-		if err := exec.Command("git", "-C", root, "check-ignore", "-q", "--no-index", fixture).Run(); err == nil {
+		if err := gitIn(root, "check-ignore", "-q", "--no-index", fixture).Run(); err == nil {
 			t.Errorf("%s is ignored by .gitignore", fixture)
 		}
 	}
 	// The rule is alive: a JSON file outside every exception IS ignored.
-	if err := exec.Command("git", "-C", root, "check-ignore", "-q", "internal/some-scratch-config.json").Run(); err != nil {
+	if err := gitIn(root, "check-ignore", "-q", "internal/some-scratch-config.json").Run(); err != nil {
 		t.Errorf("a scratch JSON file under internal/ is not ignored (%v): the ignore rule this test guards the exceptions of has changed", err)
 	}
 }
 
-// scratchConfigNames are the configuration files .gitignore names one by
-// one: the only ignored files allowed beside the data-test fixtures. A
-// name merely SHAPED like one (aveloxis.expect.json, fixture.config.json)
-// is a fixture that was not re-admitted.
-var scratchConfigNames = map[string]bool{
-	"aveloxis.json": true, "db.config.json": true, "aveloxis.chaoss.tv.json": true, "aveloxis.kate.json": true, "aveloxis.runlocal.json": true,
+// scratchConfigNames are the configuration files the repository's
+// .gitignore names one by one (a line that is a bare *.json file name, no
+// wildcard, no directory): the only ignored files allowed beside the
+// data-test fixtures. They are READ from .gitignore, so the two cannot
+// differ (round 5: a hand-kept copy here held five of the nine). A name
+// merely SHAPED like one (aveloxis.expect.json, fixture.config.json) is a
+// fixture that was not re-admitted.
+func scratchConfigNames(gitignore string) map[string]bool {
+	names := map[string]bool{}
+	for _, line := range strings.Split(gitignore, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, ".json") && !strings.ContainsAny(line, "*?[!/# ") {
+			names[line] = true
+		}
+	}
+	return names
 }
 
 // ignoredOnPurpose reports whether an ignored file under cmd/, internal/ or
 // scripts/ is one the repository means to ignore. Everything else fails the
 // test above.
-func ignoredOnPurpose(path string) bool {
+func ignoredOnPurpose(path string, configs map[string]bool) bool {
 	base := filepath.Base(path)
 	inTestdata := strings.Contains("/"+path, "/testdata/")
 	switch {
@@ -100,12 +116,16 @@ func ignoredOnPurpose(path string) bool {
 	// A scratch configuration beside the data-test fixtures, by its exact
 	// name.
 	case strings.HasPrefix(path, "cmd/aveloxis/testdata/") && !strings.Contains(strings.TrimPrefix(path, "cmd/aveloxis/testdata/"), "/"):
-		return scratchConfigNames[base]
+		return configs[base]
 	}
 	return false
 }
 
 func TestIgnoredOnPurpose(t *testing.T) {
+	configs := scratchConfigNames("# comment\n*.json\n!internal/x/testdata/*.json\naveloxis.json\naveloxis.runlocal.json \ndb.config.json\nsummary/**\naveloxis-shadow-rest.json\ndir/inner.json\n")
+	if len(configs) != 4 || !configs["aveloxis.json"] || !configs["aveloxis.runlocal.json"] || !configs["db.config.json"] || !configs["aveloxis-shadow-rest.json"] {
+		t.Fatalf("scratchConfigNames = %v; want the four bare file names", configs)
+	}
 	for path, want := range map[string]bool{
 		"internal/somepackage/coverage.go":                       false, // round 2's High (the file was vulnclass's)
 		"internal/manifest/testdata/manifest_corpus/golden.json": false, // round 1's
@@ -128,17 +148,34 @@ func TestIgnoredOnPurpose(t *testing.T) {
 		"internal/db/notes.json":                     false,
 		"cmd/aveloxis/aveloxis.json":                 false, // a configuration belongs at the root, not in a source directory
 	} {
-		if got := ignoredOnPurpose(path); got != want {
+		if got := ignoredOnPurpose(path, configs); got != want {
 			t.Errorf("ignoredOnPurpose(%q) = %v, want %v", path, got, want)
 		}
 	}
+}
+
+// gitLocationVars are the environment variables that make git read another
+// repository than the one `-C` names.
+var gitLocationVars = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"}
+
+// gitIn is a git command that acts on the repository at root and no other:
+// `-C root`, with the caller's location variables removed.
+func gitIn(root string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(gitLocationVars, name) {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	return cmd
 }
 
 // ignoredFiles lists the files under dirs that the repository's .gitignore
 // files ignore: every one in the tree, a nested one included.
 func ignoredFiles(root string, dirs ...string) ([]string, error) {
 	args := append([]string{"-C", root, "ls-files", "--others", "--ignored", "--exclude-per-directory=.gitignore", "--"}, dirs...)
-	out, err := exec.Command("git", args...).Output()
+	out, err := gitIn(root, args[2:]...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +196,10 @@ func TestIgnoredFilesReadsNestedIgnoreFiles(t *testing.T) {
 		t.Skip("git is not installed: the ignore rules cannot be asked")
 	}
 	dir := t.TempDir()
-	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+	// Run from a git hook, GIT_DIR and GIT_WORK_TREE point at the
+	// caller's repository and a bare git command here would act on it
+	// (round 5): every git command of this file goes through gitIn.
+	if out, err := gitIn(dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
 	for path, body := range map[string]string{

@@ -1021,6 +1021,32 @@ func schemeless(u string) string {
 	return u
 }
 
+// repoURLColumns are the URL columns of a repository's rows that hold its
+// path, which a rename rewrites.
+var repoURLColumns = []struct {
+	table  string
+	column string
+}{
+	{"aveloxis_data.issues", "issue_url"},
+	{"aveloxis_data.issues", "html_url"},
+	{"aveloxis_data.pull_requests", "pr_url"},
+	{"aveloxis_data.pull_requests", "pr_html_url"},
+	{"aveloxis_data.pull_requests", "pr_diff_url"},
+	{"aveloxis_data.pull_request_reviews", "html_url"},
+	{"aveloxis_data.review_comments", "html_url"},
+	{"aveloxis_data.releases", "release_url"},
+}
+
+// repoURLRewriteSQL is the rewrite of the i-th of repoURLColumns. It is a
+// function of the index so that the write-policy check can run it for
+// every member (column_write_policy_test.go).
+func repoURLRewriteSQL(i int) string {
+	u := repoURLColumns[i]
+	return fmt.Sprintf(
+		`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
+		u.table, u.column, u.column, u.column)
+}
+
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
@@ -1075,23 +1101,8 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		}
 
 		// Bulk-update all URL columns that contain the old path.
-		updates := []struct {
-			table  string
-			column string
-		}{
-			{"aveloxis_data.issues", "issue_url"},
-			{"aveloxis_data.issues", "html_url"},
-			{"aveloxis_data.pull_requests", "pr_url"},
-			{"aveloxis_data.pull_requests", "pr_html_url"},
-			{"aveloxis_data.pull_requests", "pr_diff_url"},
-			{"aveloxis_data.pull_request_reviews", "html_url"},
-			{"aveloxis_data.review_comments", "html_url"},
-			{"aveloxis_data.releases", "release_url"},
-		}
-		for _, u := range updates {
-			if _, err := tx.Exec(ctx, fmt.Sprintf(
-				`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
-				u.table, u.column, u.column, u.column),
+		for i, u := range repoURLColumns {
+			if _, err := tx.Exec(ctx, repoURLRewriteSQL(i),
 				oldPath, newPath, repoID); err != nil {
 				return fmt.Errorf("rename %s.%s: %w", u.table, u.column, err)
 			}

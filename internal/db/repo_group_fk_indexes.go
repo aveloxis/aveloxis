@@ -45,14 +45,20 @@ var repoGroupFKCoveredElsewhere = map[string]coveredFK{
 	"repo_groups_list_serve": {column: "repo_group_id", indexName: "idx_rgls_group_email"},
 }
 
+// repoGroupFKIndexSQL is the CREATE INDEX statement for the i-th of repoGroupFKIndexes: a function of the
+// index, so that the write-policy check runs it for every member.
+func repoGroupFKIndexSQL(i int) string {
+	idx := repoGroupFKIndexes[i]
+	return fmt.Sprintf(
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
+		idx.indexName, idx.table, idx.column,
+	)
+}
+
 func ensureRepoGroupFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range repoGroupFKIndexes {
-		sql := fmt.Sprintf(
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
-			idx.indexName, idx.table, idx.column,
-		)
+	for i, idx := range repoGroupFKIndexes {
 		execCreateIndexConcurrently(ctx, pg, logger, errs,
-			"aveloxis_data", idx.indexName, sql)
+			"aveloxis_data", idx.indexName, repoGroupFKIndexSQL(i))
 	}
 }
 

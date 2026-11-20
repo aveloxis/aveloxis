@@ -61,24 +61,53 @@ func supplyChainViewDefs() []supplyChainView {
 	}
 }
 
+// The three statements that (re-)create the i-th of supplyChainViewDefs:
+// functions of the index, so that the write-policy check runs them for
+// every view.
+func supplyChainViewDropSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.%s CASCADE", v.name)
+}
+
+func supplyChainViewCreateSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("CREATE MATERIALIZED VIEW aveloxis_data.%s AS %s", v.name, v.body)
+}
+
+func supplyChainViewIndexSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("CREATE UNIQUE INDEX idx_%s_pkg ON aveloxis_data.%s %s", v.name, v.name, v.index)
+}
+
+// The two refresh statements for the i-th of SupplyChainViewNames.
+func supplyChainRefreshConcurrentlySQL(i int) string {
+	name := "aveloxis_data." + SupplyChainViewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name)
+}
+
+func supplyChainRefreshSQL(i int) string {
+	name := "aveloxis_data." + SupplyChainViewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name)
+}
+
 // createSupplyChainView drops and re-creates one view with its unique
 // index in ONE transaction, so a failing CREATE leaves the previous view
 // and its data in place (the 8Knot batch has the same property for the
 // opposite reason: one statement batch, all or nothing).
-func createSupplyChainView(ctx context.Context, pg *PostgresStore, v supplyChainView) error {
+func createSupplyChainView(ctx context.Context, pg *PostgresStore, dropSQL, createSQL, indexSQL string) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
-	for _, stmt := range []string{
-		fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.%s CASCADE", v.name),
-		fmt.Sprintf("CREATE MATERIALIZED VIEW aveloxis_data.%s AS %s", v.name, v.body),
-		fmt.Sprintf("CREATE UNIQUE INDEX idx_%s_pkg ON aveloxis_data.%s %s", v.name, v.name, v.index),
-	} {
-		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(ctx, dropSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, createSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, indexSQL); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -93,12 +122,12 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 		return fmt.Errorf("probing for supply-chain views: %w", err)
 	}
 	var failed []error
-	for _, v := range supplyChainViewDefs() {
+	for i, v := range supplyChainViewDefs() {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		start := time.Now()
-		if err := createSupplyChainView(ctx, pg, v); err != nil {
+		if err := createSupplyChainView(ctx, pg, supplyChainViewDropSQL(i), supplyChainViewCreateSQL(i), supplyChainViewIndexSQL(i)); err != nil {
 			logCreateFailure(logger, v.name, present[v.name], err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
@@ -140,7 +169,7 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 	}
 	builtCount := 0
 	var failed []error
-	for _, v := range supplyChainViewDefs() {
+	for i, v := range supplyChainViewDefs() {
 		if present[v.name] {
 			continue
 		}
@@ -148,7 +177,7 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 			return false, ctx.Err()
 		}
 		start := time.Now()
-		if err := createSupplyChainView(ctx, pg, v); err != nil {
+		if err := createSupplyChainView(ctx, pg, supplyChainViewDropSQL(i), supplyChainViewCreateSQL(i), supplyChainViewIndexSQL(i)); err != nil {
 			logCreateFailure(logger, v.name, false, err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
@@ -198,11 +227,11 @@ func RefreshSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slo
 		return nil
 	}
 	var failed []error
-	for _, name := range SupplyChainViewNames {
+	for i, name := range SupplyChainViewNames {
 		if !present[name] {
 			continue
 		}
-		if err := refreshMatview(ctx, pg, logger, "aveloxis_data."+name); err != nil {
+		if err := refreshMatview(ctx, pg, logger, "aveloxis_data."+name, supplyChainRefreshConcurrentlySQL(i), supplyChainRefreshSQL(i)); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

@@ -208,13 +208,20 @@ func TestAGradleLookupCostsTheLayersItPasses(t *testing.T) {
 		fmt.Fprintf(&file, "  implementation \"g:a%d:$deep\"\n", i)
 	}
 	file.WriteString("}\n")
-	shallow := readGradleBuild(file.String(), (*gradleVars)(nil).push(map[string]string{"deep": "1.0"}, nil))
-	deep := readGradleBuild(file.String(), outer)
+	// The layers are the WALK's work (review round 5, M5-7): the file's own
+	// count is the same under both scopes, so whether it is inside its own
+	// bound does not depend on where it is read.
+	walkShallow, walkDeep := &gradleWalkWork{limit: 1 << 40}, &gradleWalkWork{limit: 1 << 40}
+	shallow := readGradleBuildWith(file.String(), (*gradleVars)(nil).push(map[string]string{"deep": "1.0"}, nil), nil, walkShallow)
+	deep := readGradleBuildWith(file.String(), outer, nil, walkDeep)
 	if len(deep.decls) != lookups || deep.decls[0].version != "1.0" {
 		t.Fatalf("%d declarations, first %+v", len(deep.decls), deep.decls)
 	}
-	if extra := deep.work - shallow.work; extra < lookups*layers {
-		t.Errorf("under %d layers the file cost %d more than under one; %d lookups through them are at least %d", layers, extra, lookups, lookups*layers)
+	if extra := walkDeep.used - walkShallow.used; extra < lookups*layers {
+		t.Errorf("under %d layers the walk was charged %d more than under one; %d lookups through them are at least %d", layers, extra, lookups, lookups*layers)
+	}
+	if deep.work != shallow.work {
+		t.Errorf("the file's own work is %d under %d layers and %d under one: its bound must be a fact about its text", deep.work, layers, shallow.work)
 	}
 }
 

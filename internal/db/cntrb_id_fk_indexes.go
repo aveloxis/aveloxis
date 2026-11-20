@@ -53,6 +53,16 @@ var cntrbIDFKIndexes = []cntrbIDFKIndex{
 	{"pull_requests", "author_id", "idx_pull_requests_author_id"},
 }
 
+// cntrbIDFKIndexSQL is the CREATE INDEX statement for the i-th of cntrbIDFKIndexes: a function of the
+// index, so that the write-policy check runs it for every member.
+func cntrbIDFKIndexSQL(i int) string {
+	idx := cntrbIDFKIndexes[i]
+	return fmt.Sprintf(
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
+		idx.indexName, idx.table, idx.column,
+	)
+}
+
 // ensureCntrbIDFKIndexes is the v0.22.6 migration step that adds
 // a btree index on every unindexed FK column pointing at
 // aveloxis_data.contributors(cntrb_id). Uses
@@ -74,12 +84,8 @@ var cntrbIDFKIndexes = []cntrbIDFKIndex{
 // rows). Operators can run `aveloxis migrate` and let it run; the
 // CONCURRENTLY flag prevents the build from blocking writes.
 func ensureCntrbIDFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range cntrbIDFKIndexes {
-		sql := fmt.Sprintf(
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
-			idx.indexName, idx.table, idx.column,
-		)
+	for i, idx := range cntrbIDFKIndexes {
 		execCreateIndexConcurrently(ctx, pg, logger, errs,
-			"aveloxis_data", idx.indexName, sql)
+			"aveloxis_data", idx.indexName, cntrbIDFKIndexSQL(i))
 	}
 }

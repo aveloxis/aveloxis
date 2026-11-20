@@ -257,10 +257,39 @@ const gradleWorkFactor = pomChainLimit
 // byte: some three minutes for every 8 MiB of Gradle files a walk reads,
 // whatever the files share, where the file's factor as the walk's gave
 // seventeen seconds. One number does not give both a tenfold margin for
-// that honest build and a bound of seconds; the margin was chosen. Making
-// a reading cheaper (a script tokenised once for the walk) would lower
-// both and is not done.
+// that honest build and a bound of seconds; the margin was chosen.
+//
+// Round 5 made that a bound in fact: every unit is charged where bytes are
+// touched (the bytes tokenised, gradleScanBytes; the tokens passed,
+// gradleTokensPerUnit; the tokens of each statement; the layers of the
+// scope a lookup passes), so no reading costs time and no units, and a
+// script that is applied is tokenised once for the walk and read again from
+// its tokens (gradleTree.scan). TestTheUnitsOfBothWalksAreUnitsOfTime
+// measures each of those at its dearest: 15 to 41 ns a unit, so the three
+// minutes above is the bound with room, and walkBackstopFloor's clock is
+// set at ten times it.
 const gradleWalkFactor = 10 * gradleWorkFactor
+
+// gradleScanBytes is how many bytes of a file are tokenised for one unit,
+// and gradleTokensPerUnit how many of its tokens a pass over them steps
+// through for one: what makes a reading's units a measure of its TIME
+// whatever the file holds (review round 5: units were counted for the
+// tokens of statements, so blank lines and comments cost time and nothing;
+// 600 projects applying an 8 MiB script of them took 44 s for 0.02% of the
+// walk's allowance).
+//
+// PROVISIONAL (summary/71, section 8). Their derivation is a measurement
+// (TestEveryByteTokenisedIsCharged logs it): tokenising is dearest for a
+// file of line ends, a token each, at about 14 ns a byte, and cheapest for
+// comments, under 1 ns; a unit of the reader's other work is about 60 ns
+// (gradleWalkFactor). Four bytes to the unit is the power of two at which
+// the dearest tokenising costs no more per unit than that. A pass over
+// tokens that are not part of a statement (line ends) is a comparison each,
+// a few nanoseconds: sixteen to the unit.
+const (
+	gradleScanBytes     = 4
+	gradleTokensPerUnit = 16
+)
 
 // errGradleWorkBound: reading the file passed gradleWorkFactor.
 var errGradleWorkBound = errors.New("the build file is not one this reader can read within its bound (gradleWorkFactor); nothing was taken from it")
@@ -282,6 +311,18 @@ func (b *gradleBuild) spend(n int) {
 		b.overBound = true
 	}
 	if b.shared != nil && charge > 0 && !b.shared.spend(charge) {
+		b.overBound, b.walkBound = true, true
+	}
+}
+
+// spendWalk records n units that are the walk's and not the file's: work
+// whose amount depends on where the file is read, not on its text (the
+// layers of the scope a lookup passes). A file's own bound is a fact about
+// the file (review round 5: charged to the file, the layers put a script
+// inside its bound under a shallow scope and past it under a deep one, and
+// which projects were refused depended on the order they were read in).
+func (b *gradleBuild) spendWalk(n int) {
+	if b.shared != nil && n > 0 && !b.shared.spend(n) {
 		b.overBound, b.walkBound = true, true
 	}
 }
@@ -408,10 +449,16 @@ func (l *gradleLibs) get(name string) ([]gradleDecl, bool) {
 // and are reported so, by name.
 type gradleWalkWork struct {
 	used, limit int
+	// acct is the walk's account: its clock is looked at here, where the
+	// work is charged (the backstop).
+	acct *walkAccount
 }
 
 func (w *gradleWalkWork) spend(n int) bool {
 	w.used += n
+	if w.acct != nil && w.acct.tick(n) {
+		return false
+	}
 	return w.used <= w.limit
 }
 
@@ -452,9 +499,22 @@ func readGradleBuild(content string, outer *gradleVars) *gradleBuild {
 // readGradleBuildWith is readGradleBuild with the catalogues' accessors and
 // the walk's work counter (nil outside a tree).
 func readGradleBuildWith(content string, outer *gradleVars, libs *gradleLibs, shared *gradleWalkWork) *gradleBuild {
+	return readGradleTokens(gradleTokens(content), len(content), true, outer, libs, shared)
+}
+
+// readGradleTokens reads a build file of size bytes from its tokens.
+// tokenised says they were made for this reading (and not kept from an
+// earlier one of the same walk): the bytes are then charged.
+func readGradleTokens(toks []gradleTok, size int, tokenised bool, outer *gradleVars, libs *gradleLibs, shared *gradleWalkWork) *gradleBuild {
 	b := &gradleBuild{outer: outer, own: map[string]string{}, conflicted: map[string]bool{}, libs: libs,
-		reads: map[string]gradleRead{}, shared: shared, workLimit: gradleWorkFactor * (len(content) + 1)}
-	toks := gradleTokens(content)
+		reads: map[string]gradleRead{}, shared: shared, workLimit: gradleWorkFactor * (size + 1)}
+	// The bytes tokenised, and the two passes over the tokens: charged
+	// before either is made, whatever the tokens are.
+	units := 2 * (len(toks) / gradleTokensPerUnit)
+	if tokenised {
+		units += size / gradleScanBytes
+	}
+	b.spend(units)
 	// Two passes: the assignments first, so a variable assigned below its
 	// use (or in a later ext block) is known when the declarations are read.
 	b.walk(toks, false)
@@ -1111,7 +1171,7 @@ func (b *gradleBuild) lookup(expr string) (string, bool) {
 		return v, true
 	}
 	v, ok, layers := b.outer.get(name)
-	b.spend(layers)
+	b.spendWalk(layers)
 	if _, seen := b.reads[name]; !seen {
 		b.reads[name] = gradleRead{value: v, ok: ok}
 	}

@@ -40,6 +40,38 @@ var assignmentBackfillTables = []struct {
 	{"pull_request_reviewers", "pr_reviewer_id", "platform_reviewer_id"},
 }
 
+// The three statements of BackfillAssignmentIdentities for the i-th of
+// assignmentBackfillTables: functions of the index, so that the
+// write-policy check runs them for every member.
+func assignmentBackfillCountSQL(i int) string {
+	t := assignmentBackfillTables[i]
+	return fmt.Sprintf(`
+				SELECT COUNT(*)
+				FROM aveloxis_data.%s a
+				JOIN aveloxis_data.repos r USING (repo_id)
+				JOIN aveloxis_data.contributor_identities ci
+				  ON ci.platform_id = r.platform_id AND ci.platform_user_id = a.%s
+				WHERE a.cntrb_id IS NULL AND a.%s <> 0`, t.table, t.platCol, t.platCol)
+}
+
+func assignmentBackfillMaxSQL(i int) string {
+	t := assignmentBackfillTables[i]
+	return fmt.Sprintf(
+		`SELECT COALESCE(MAX(%s), 0) FROM aveloxis_data.%s`, t.pk, t.table)
+}
+
+func assignmentBackfillUpdateSQL(i int) string {
+	t := assignmentBackfillTables[i]
+	return fmt.Sprintf(`
+				UPDATE aveloxis_data.%[1]s a
+				SET cntrb_id = ci.cntrb_id
+				FROM aveloxis_data.repos r, aveloxis_data.contributor_identities ci
+				WHERE a.repo_id = r.repo_id
+				  AND ci.platform_id = r.platform_id AND ci.platform_user_id = a.%[3]s
+				  AND a.cntrb_id IS NULL AND a.%[3]s <> 0
+				  AND a.%[2]s > $1 AND a.%[2]s <= $2`, t.table, t.pk, t.platCol)
+}
+
 // BackfillAssignmentIdentities fills cntrb_id on the three
 // assignment-class tables by joining the stored platform user id
 // against contributor_identities. Returns rows updated. dryRun
@@ -50,16 +82,10 @@ func (s *PostgresStore) BackfillAssignmentIdentities(ctx context.Context, batchS
 		batchSize = 100000
 	}
 	var total int64
-	for _, t := range assignmentBackfillTables {
+	for i, t := range assignmentBackfillTables {
 		if dryRun {
 			var n int64
-			err := s.pool.QueryRow(ctx, fmt.Sprintf(`
-				SELECT COUNT(*)
-				FROM aveloxis_data.%s a
-				JOIN aveloxis_data.repos r USING (repo_id)
-				JOIN aveloxis_data.contributor_identities ci
-				  ON ci.platform_id = r.platform_id AND ci.platform_user_id = a.%s
-				WHERE a.cntrb_id IS NULL AND a.%s <> 0`, t.table, t.platCol, t.platCol)).Scan(&n)
+			err := s.pool.QueryRow(ctx, assignmentBackfillCountSQL(i)).Scan(&n)
 			if err != nil {
 				return total, fmt.Errorf("dry-run count %s: %w", t.table, err)
 			}
@@ -68,21 +94,13 @@ func (s *PostgresStore) BackfillAssignmentIdentities(ctx context.Context, batchS
 			continue
 		}
 		var maxID int64
-		if err := s.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT COALESCE(MAX(%s), 0) FROM aveloxis_data.%s`, t.pk, t.table)).Scan(&maxID); err != nil {
+		if err := s.pool.QueryRow(ctx, assignmentBackfillMaxSQL(i)).Scan(&maxID); err != nil {
 			return total, fmt.Errorf("max id %s: %w", t.table, err)
 		}
 		var tableTotal int64
 		window := int64(batchSize)
 		for lo := int64(0); lo < maxID; lo += window {
-			tag, err := s.pool.Exec(ctx, fmt.Sprintf(`
-				UPDATE aveloxis_data.%[1]s a
-				SET cntrb_id = ci.cntrb_id
-				FROM aveloxis_data.repos r, aveloxis_data.contributor_identities ci
-				WHERE a.repo_id = r.repo_id
-				  AND ci.platform_id = r.platform_id AND ci.platform_user_id = a.%[3]s
-				  AND a.cntrb_id IS NULL AND a.%[3]s <> 0
-				  AND a.%[2]s > $1 AND a.%[2]s <= $2`, t.table, t.pk, t.platCol),
+			tag, err := s.pool.Exec(ctx, assignmentBackfillUpdateSQL(i),
 				lo, lo+window)
 			if err != nil {
 				return total, fmt.Errorf("backfill %s window %d: %w", t.table, lo, err)
@@ -354,7 +372,7 @@ func (s *PostgresStore) BackfillClosedByFromEvents(ctx context.Context, batchSiz
 		counted := `SELECT COUNT(DISTINCT e.issue_id)` + strings.TrimPrefix(cand, `
 	SELECT DISTINCT ON (issue_id) e.issue_id, e.cntrb_id`)
 		// Strip the ORDER BY — COUNT doesn't need it. (Two names, so that
-		// the write-policy reader follows each value: 0.29.212.)
+		// the write-policy reader follows each value: 0.29.211.)
 		q := strings.Replace(counted, "ORDER BY issue_id, e.created_at DESC", "", 1)
 		var n int64
 		if err := s.pool.QueryRow(ctx, q).Scan(&n); err != nil {
@@ -421,9 +439,9 @@ type SweepIssue struct {
 	Number  int
 }
 
-// IssuesNeedingClosedBySweep returns closed GitHub issues with no
-// closer, ordered by repo so the sweep batches per repository.
-func (s *PostgresStore) IssuesNeedingClosedBySweep(ctx context.Context, limit int64) ([]SweepIssue, error) {
+// closedBySweepSQL is IssuesNeedingClosedBySweep's statement, with a LIMIT
+// when limit is above zero.
+func closedBySweepSQL(limit int64) string {
 	q := `
 		SELECT i.issue_id, i.repo_id, r.repo_owner, r.repo_name, i.issue_number
 		FROM aveloxis_data.issues i
@@ -435,7 +453,13 @@ func (s *PostgresStore) IssuesNeedingClosedBySweep(ctx context.Context, limit in
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
 	}
-	rows, err := s.pool.Query(ctx, q)
+	return q
+}
+
+// IssuesNeedingClosedBySweep returns closed GitHub issues with no
+// closer, ordered by repo so the sweep batches per repository.
+func (s *PostgresStore) IssuesNeedingClosedBySweep(ctx context.Context, limit int64) ([]SweepIssue, error) {
+	rows, err := s.pool.Query(ctx, closedBySweepSQL(limit))
 	if err != nil {
 		return nil, err
 	}

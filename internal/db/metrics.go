@@ -667,12 +667,28 @@ func (s *PostgresStore) ContributorsNew(ctx context.Context, repoID int64, perio
 // (LatestCount, SnapshotSeries): the one allowlist that keeps the column
 // name out of the SQL text's reach.
 //
-// Each name maps to the column it is (0.29.212): a reader takes the column
+// Each name maps to the column it is (0.29.211): a reader takes the column
 // from the map, never from its caller, so that what reaches the statement's
 // text is one of these values whatever was asked for.
 var snapshotColumns = map[string]string{
 	"star_count": "star_count", "fork_count": "fork_count", "watcher_count": "watcher_count",
 	"commit_count": "commit_count", "issues_count": "issues_count", "pr_count": "pr_count",
+}
+
+// latestCountSQL is LatestCount's statement for a column that is a key of
+// snapshotColumns; any other is refused here, before a statement exists.
+func latestCountSQL(column string) (string, error) {
+	col, ok := snapshotColumns[column]
+	if !ok {
+		return "", fmt.Errorf("invalid column: %s", column)
+	}
+	return fmt.Sprintf(`
+		SELECT COALESCE(ri.%s, 0), r.repo_name
+		FROM aveloxis_data.repo_info ri
+		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
+		WHERE ri.repo_id = $1
+		ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
+		LIMIT 1`, col), nil
 }
 
 // SnapshotSeries returns one repo_info count over time: the history rows
@@ -716,19 +732,13 @@ func (s *PostgresStore) SnapshotSeries(ctx context.Context, repoID int64, column
 
 // LatestCount returns the most recent value for a repo_info integer column.
 func (s *PostgresStore) LatestCount(ctx context.Context, repoID int64, column string) (int, string, error) {
-	col, ok := snapshotColumns[column]
-	if !ok {
-		return 0, "", fmt.Errorf("invalid column: %s", column)
+	stmt, err := latestCountSQL(column)
+	if err != nil {
+		return 0, "", err
 	}
 	var count int
 	var name string
-	err := s.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT COALESCE(ri.%s, 0), r.repo_name
-		FROM aveloxis_data.repo_info ri
-		JOIN aveloxis_data.repos r ON ri.repo_id = r.repo_id
-		WHERE ri.repo_id = $1
-		ORDER BY ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
-		LIMIT 1`, col), repoID).Scan(&count, &name)
+	err = s.pool.QueryRow(ctx, stmt, repoID).Scan(&count, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No repo_info snapshot yet (repo not collected) — zero, not 500.
 		return 0, "", nil

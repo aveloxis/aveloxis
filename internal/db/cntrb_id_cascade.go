@@ -58,6 +58,29 @@ var cntrbIDChildFKs = []cntrbIDChildFK{
 	{"jira_identities", "cntrb_id", "jira_identities_cntrb_id_fkey"},
 }
 
+// cntrbFKCascadeSQL and cntrbFKValidateSQL are the two statements of
+// ensureOnUpdateCascadeOnCntrbIDFKs for the i-th of cntrbIDChildFKs:
+// functions of the index, so that the write-policy check runs them for
+// every member.
+func cntrbFKCascadeSQL(i int) string {
+	fk := cntrbIDChildFKs[i]
+	return fmt.Sprintf(`
+			ALTER TABLE aveloxis_data.%s
+			DROP CONSTRAINT IF EXISTS %s,
+			ADD CONSTRAINT %s
+			FOREIGN KEY (%s) REFERENCES aveloxis_data.contributors(cntrb_id)
+			ON UPDATE CASCADE NOT VALID
+		`, fk.table, fk.constraint, fk.constraint, fk.column)
+}
+
+func cntrbFKValidateSQL(i int) string {
+	fk := cntrbIDChildFKs[i]
+	return fmt.Sprintf(`
+			ALTER TABLE aveloxis_data.%s
+			VALIDATE CONSTRAINT %s
+		`, fk.table, fk.constraint)
+}
+
 // ensureOnUpdateCascadeOnCntrbIDFKs is the v0.22.1 idempotent
 // migration step that adds ON UPDATE CASCADE to every FK pointing
 // at aveloxis_data.contributors(cntrb_id). Required prerequisite
@@ -98,7 +121,7 @@ var cntrbIDChildFKs = []cntrbIDChildFK{
 // fail-closed contract — serve startup refuses to proceed if any
 // step fails.
 func ensureOnUpdateCascadeOnCntrbIDFKs(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, fk := range cntrbIDChildFKs {
+	for i, fk := range cntrbIDChildFKs {
 		var updateRule string
 		err := pg.pool.QueryRow(ctx, `
 			SELECT update_rule
@@ -131,18 +154,9 @@ func ensureOnUpdateCascadeOnCntrbIDFKs(ctx context.Context, pg *PostgresStore, l
 		}
 
 		label := fmt.Sprintf("v0.22.1 ON UPDATE CASCADE on aveloxis_data.%s.%s", fk.table, fk.column)
-		execMigrationStep(ctx, pg, logger, errs, label, fmt.Sprintf(`
-			ALTER TABLE aveloxis_data.%s
-			DROP CONSTRAINT IF EXISTS %s,
-			ADD CONSTRAINT %s
-			FOREIGN KEY (%s) REFERENCES aveloxis_data.contributors(cntrb_id)
-			ON UPDATE CASCADE NOT VALID
-		`, fk.table, fk.constraint, fk.constraint, fk.column))
+		execMigrationStep(ctx, pg, logger, errs, label, cntrbFKCascadeSQL(i))
 
 		validateLabel := fmt.Sprintf("v0.22.1 VALIDATE CONSTRAINT %s", fk.constraint)
-		execMigrationStep(ctx, pg, logger, errs, validateLabel, fmt.Sprintf(`
-			ALTER TABLE aveloxis_data.%s
-			VALIDATE CONSTRAINT %s
-		`, fk.table, fk.constraint))
+		execMigrationStep(ctx, pg, logger, errs, validateLabel, cntrbFKValidateSQL(i))
 	}
 }

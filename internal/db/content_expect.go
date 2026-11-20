@@ -117,6 +117,12 @@ func (r ContentRule) covers(kind string) bool {
 	return slices.Contains(r.Kinds, kind)
 }
 
+// contentNotNullCountSQL counts the rows of a table whose column is not
+// NULL; the names are quoted.
+func contentNotNullCountSQL(schema, table, col string) string {
+	return `SELECT COUNT(*) FROM ` + pgx.Identifier{schema, table}.Sanitize() + ` WHERE ` + pgx.Identifier{col}.Sanitize() + ` IS NOT NULL`
+}
+
 // CheckContent holds the row report and the schema-object differences
 // against the rules. released and newPool evaluate the rules' Where
 // predicates and NullOnly checks. A data problem a rule cannot judge (a
@@ -201,7 +207,7 @@ func (e *ContentExpectations) CheckContent(ctx context.Context, released, newPoo
 					seenObjects[i][col] = true
 					if r.NullOnly {
 						var n int64
-						if err := cols.pool.QueryRow(ctx, `SELECT COUNT(*) FROM `+pgx.Identifier{t.Schema, t.Table}.Sanitize()+` WHERE `+pgx.Identifier{col}.Sanitize()+` IS NOT NULL`).Scan(&n); err != nil {
+						if err := cols.pool.QueryRow(ctx, contentNotNullCountSQL(t.Schema, t.Table, col)).Scan(&n); err != nil {
 							return nil, fmt.Errorf("%s.%s null check: %w", name, col, err)
 						}
 						if n > 0 {

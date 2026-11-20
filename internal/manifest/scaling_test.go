@@ -778,8 +778,14 @@ func TestARealShapedMavenBuildIsFarFromTheWorkBound(t *testing.T) {
 	}
 	// And the one pass that drops the dead imports from the list, charged
 	// at pomCompactPerUnit entries a unit.
-	if most := 301*40 + nowhere + (40+nowhere)/pomCompactPerUnit; used > most {
-		t.Errorf("%d looks counted; 301 dependencies against 40 BOMs and %d imports that lead nowhere, each looked for once, are at most %d", used, nowhere, most)
+	// (The looks alone: the units also hold the bytes of the keys those
+	// looks built and hashed, a unit for every pomLookBytes of them, which
+	// for coordinates of twenty-odd bytes is a few percent more.)
+	if most := 301*40 + nowhere + (40+nowhere)/pomCompactPerUnit; w.pom.looks > most {
+		t.Errorf("%d looks counted; 301 dependencies against 40 BOMs and %d imports that lead nowhere, each looked for once, are at most %d", w.pom.looks, nowhere, most)
+	}
+	if used > w.pom.looks*11/10 {
+		t.Errorf("%d units for %d looks: short coordinates cost more than a tenth of their looks in bytes", used, w.pom.looks)
 	}
 	// And once found to lead nowhere they are not even passed over: they
 	// leave the pom's list of imports. (Passing them costs too little for

@@ -86,6 +86,9 @@ type Walk struct {
 	cargo  *cargoWorkspaceIndex
 	pom    *pomTree
 	gradle *gradleTree
+	// acct is the walk's one account of what its build-tree readers keep,
+	// ask and take (walkAccount); the two trees hold the same one.
+	acct *walkAccount
 }
 
 // NewWalk starts a pass over the clone rooted at root. A nil logger is
@@ -93,6 +96,9 @@ type Walk struct {
 func NewWalk(root string, logger *slog.Logger) *Walk {
 	w := &Walk{cargo: newCargoWorkspaceIndex(root, logger), pom: newPomTree(root, logger), gradle: newGradleTree(root, logger)}
 	w.gradle.pom = w.pom
+	w.acct = newWalkAccount(logger)
+	w.pom.acct, w.gradle.acct = w.acct, w.acct
+	w.gradle.withAccount()
 	return w
 }
 

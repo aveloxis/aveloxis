@@ -76,6 +76,19 @@ const (
 		WHERE lockfile_pkg_id = $1 AND package_key IS NULL`
 )
 
+// packageKeyFillMarkerSQL is the statement that writes the fill's marker
+// with its bound, for a table packageKeyFillSQL accepts.
+func packageKeyFillMarkerSQL(table PackageKeyFillTable) (string, error) {
+	boundSQL, _, _, err := packageKeyFillSQL(table)
+	if err != nil {
+		return "", err
+	}
+	return `
+			INSERT INTO aveloxis_ops.program_markers (marker, bound_id)
+			VALUES ($1, (` + boundSQL + `))
+			ON CONFLICT (marker) DO NOTHING`, nil
+}
+
 func packageKeyFillSQL(table PackageKeyFillTable) (bound, page, write string, err error) {
 	switch table {
 	case PackageKeyFillInventory:
@@ -128,7 +141,7 @@ func (s *PostgresStore) GetPackageKeyFillProgress(ctx context.Context, table Pac
 // The marker's cursor is the resume state: the next step, in this process or
 // the next, begins where the last committed one ended.
 func (s *PostgresStore) FillPackageKeysStep(ctx context.Context, table PackageKeyFillTable, batch int) (done bool, err error) {
-	boundSQL, pageSQL, writeSQL, err := packageKeyFillSQL(table)
+	_, pageSQL, writeSQL, err := packageKeyFillSQL(table)
 	if err != nil {
 		return false, err
 	}
@@ -153,10 +166,11 @@ func (s *PostgresStore) FillPackageKeysStep(ctx context.Context, table PackageKe
 		// the end of that index, so it is left as one statement (review
 		// round 1, declined: reading it only when the marker is absent
 		// would be a second statement and a window between the two).
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO aveloxis_ops.program_markers (marker, bound_id)
-			VALUES ($1, (`+boundSQL+`))
-			ON CONFLICT (marker) DO NOTHING`, marker); err != nil {
+		markerSQL, err := packageKeyFillMarkerSQL(table)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, markerSQL, marker); err != nil {
 			return err
 		}
 		var cursor, bound int64

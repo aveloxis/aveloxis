@@ -55,20 +55,9 @@ type GapHealCandidate struct {
 // predicate and the reported gap size so they can never disagree.
 const nativeGatheredIssuesSQL = `GREATEST(COALESCE(q.last_issues, 0) - sy.synth, 0)`
 
-func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
-	// Review 2026-08-30 #3: q.last_issues is COUNT(*) INCLUDING the
-	// mail-projected Jira synthetics (negative platform_issue_id), so an
-	// Apache repo's cached count outruns the forge's meta count and a
-	// genuine NATIVE gap is masked. The sy lateral subtracts the live
-	// synthetic count (cheap via the partial idx_issues_synthetic_repo);
-	// PRs have no synthetic population and stay as-is.
-	// Round 15 (Copilot, suppressed ×2): the drain-side activity
-	// refresh is best-effort (round 10), so the cached count can LAG
-	// the live synthetic population — an unclamped subtraction went
-	// negative and made even a zero-issue forge repo a candidate (and
-	// the reported gap size counted phantom missing issues). Clamp
-	// the derived native count at zero and coalesce the cache; ONE
-	// spelling for the predicate and the size (SR-17).
+// gapHealCandidatesSQL is GetGapHealCandidates' statement: the repositories
+// with a gap, or (all) every collected one.
+func gapHealCandidatesSQL(all bool) string {
 	gapPredicate := `AND (COALESCE(ri.issues_count, 0) > ` + nativeGatheredIssuesSQL + ` OR COALESCE(ri.pr_count, 0) > COALESCE(q.last_prs, 0))`
 	if all {
 		gapPredicate = ""
@@ -78,10 +67,10 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 	// stamped-but-empty cohort) must not vanish from the --all sweep,
 	// whose force-list mode needs no metadata counts. Normal gap mode
 	// still excludes them naturally (0 > last_* is never true).
-	rows, err := s.pool.Query(ctx, `
+	return `
 		SELECT q.repo_id, r.repo_owner, r.repo_name, r.platform_id,
 		       COALESCE(ri.issues_count, 0), COALESCE(ri.pr_count, 0),
-		       GREATEST(COALESCE(ri.issues_count, 0) - `+nativeGatheredIssuesSQL+`, 0) + GREATEST(COALESCE(ri.pr_count, 0) - COALESCE(q.last_prs, 0), 0)
+		       GREATEST(COALESCE(ri.issues_count, 0) - ` + nativeGatheredIssuesSQL + `, 0) + GREATEST(COALESCE(ri.pr_count, 0) - COALESCE(q.last_prs, 0), 0)
 		FROM aveloxis_ops.collection_queue q
 		JOIN aveloxis_data.repos r ON r.repo_id = q.repo_id
 		LEFT JOIN LATERAL (
@@ -99,9 +88,26 @@ func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID in
 		WHERE q.last_collected IS NOT NULL
 		  AND q.repo_id > $1
 		  AND r.platform_id IN (1, 2)
-		  `+gapPredicate+`
+		  ` + gapPredicate + `
 		ORDER BY q.repo_id
-		LIMIT $2`, afterRepoID, limit)
+		LIMIT $2`
+}
+
+func (s *PostgresStore) GetGapHealCandidates(ctx context.Context, afterRepoID int64, limit int, all bool) ([]GapHealCandidate, error) {
+	// Review 2026-08-30 #3: q.last_issues is COUNT(*) INCLUDING the
+	// mail-projected Jira synthetics (negative platform_issue_id), so an
+	// Apache repo's cached count outruns the forge's meta count and a
+	// genuine NATIVE gap is masked. The sy lateral subtracts the live
+	// synthetic count (cheap via the partial idx_issues_synthetic_repo);
+	// PRs have no synthetic population and stay as-is.
+	// Round 15 (Copilot, suppressed ×2): the drain-side activity
+	// refresh is best-effort (round 10), so the cached count can LAG
+	// the live synthetic population — an unclamped subtraction went
+	// negative and made even a zero-issue forge repo a candidate (and
+	// the reported gap size counted phantom missing issues). Clamp
+	// the derived native count at zero and coalesce the cache; ONE
+	// spelling for the predicate and the size (SR-17).
+	rows, err := s.pool.Query(ctx, gapHealCandidatesSQL(all), afterRepoID, limit)
 	if err != nil {
 		return nil, err
 	}

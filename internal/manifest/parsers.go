@@ -1519,10 +1519,29 @@ var gemClosedOnItsLine = regexp.MustCompile(`^(if|unless|case|while|until|begin|
 // line, so a second gem was dropped, `else` hid the other arm, `gem(` was
 // not seen, and a modifier after `end` left the block open to the end of
 // the file.
+//
+// Round 5: a `case` whose arms are on the line (`case X when 'a' then gem
+// 'x' when 'b' then gem 'y' end`) is such a block, and its `when ... then`
+// separates statements as `elsif ... then` does; a `;` may follow the `do`
+// (`group :x do; gem 'a'; end`); and blocks nested on one line close with
+// one `end` each, none of which is part of the last declaration (its
+// requirement was stored as `gem 'n', '1.0' end`).
+//
+// gemOneLineBraces is the same block written with braces (`group(:test) {
+// gem 'a'; gem 'b' }`). Only a block keyword opens one: a brace after `gem`
+// is a hash of its options.
 var (
-	gemOneLine      = regexp.MustCompile(`^(?:if|unless|group|platforms?|path|git|github|gitlab|bitbucket|source|install_if|env)\b.*?\b(?:then|do)\s+(?:\|[^|]*\|\s*)?(gem\b.*?)[\s;]+end(?:\s+(?:if|unless|while|until)\b.*)?$`)
-	gemOneLineSplit = regexp.MustCompile(`\s*;\s*|\s+(?:else|elsif\b.*?\bthen)\s+`)
-	maskedLiteral   = regexp.MustCompile(`"` + quotedMark + `([0-9]+)"`)
+	gemOneLine       = regexp.MustCompile(`^(?:if|unless|case|group|platforms?|path|git|github|gitlab|bitbucket|source|install_if|env)\b.*?\b(?:then|do)[\s;]+(?:\|[^|]*\|\s*)?(gem\b.*?)(?:[\s;]+end)+(?:\s+(?:if|unless|while|until)\b.*)?$`)
+	gemOneLineBraces = regexp.MustCompile(`^(?:group|platforms?|path|git|github|gitlab|bitbucket|source|install_if|env)\b[^{]*\{\s*(?:\|[^|]*\|\s*)?(gem\b.*?)[\s;]*\}$`)
+	// gemOnOpeningLine: gems after the `do` or `then` of a block that stays
+	// open (`group :test do gem 'a'; gem 'b'`, closed lines later).
+	gemOnOpeningLine = regexp.MustCompile(`^(?:if|unless|group|platforms?|path|git|github|gitlab|bitbucket|source|install_if|env)\b.*?\b(?:then|do)[\s;]+(?:\|[^|]*\|\s*)?(gem\b.*)$`)
+	gemOneLineSplit  = regexp.MustCompile(`\s*;\s*|\s+(?:else|elsif\b.*?\bthen|when\b.*?\bthen)\s+`)
+	// gemBlockEnd: the line that closes a block, with or without a
+	// statement modifier (`end if ENV['CI']`: round 5, such an `end` closed
+	// nothing and the group ran to the end of the file).
+	gemBlockEnd   = regexp.MustCompile(`^end(?:\s+(?:if|unless|while|until)\b.*)?$`)
+	maskedLiteral = regexp.MustCompile(`"` + quotedMark + `([0-9]+)"`)
 )
 
 // gemSourceValue reads the address a `source` block or option names.
@@ -1629,7 +1648,7 @@ func ParseGemfileVersions(path string) []model.LibyearDep {
 			if len(groupStack) > 0 {
 				b = groupStack[len(groupStack)-1]
 			}
-			if strings.HasPrefix(line, "group ") {
+			if strings.HasPrefix(line, "group ") || strings.HasPrefix(line, "group(") {
 				b.scope = gemGroupScope(line)
 			}
 			if gemSourceBlock.MatchString(opener) && !(strings.HasPrefix(opener, "source") && gemSourceIsRubygems(line)) {
@@ -1686,26 +1705,42 @@ func ParseGemfileVersions(path string) []model.LibyearDep {
 		if i := strings.Index(masked, "#"); i >= 0 {
 			masked = strings.TrimSpace(masked[:i])
 		}
-		if m := gemOneLine.FindStringSubmatch(masked); m != nil {
-			in := block()
+		m := gemOneLine.FindStringSubmatch(masked)
+		if m == nil {
+			m = gemOneLineBraces.FindStringSubmatch(masked)
+		}
+		// addEach reads the gems of a masked run of statements, each as
+		// written: every literal back in its place.
+		addEach := func(statements string, in *gemBlock) {
 			literals := quotedLiteral.FindAllString(line, -1)
-			for _, statement := range gemOneLineSplit.Split(m[1], -1) {
-				// The statement as written: each literal back in its place.
+			for _, statement := range gemOneLineSplit.Split(statements, -1) {
 				add(maskedLiteral.ReplaceAllStringFunc(statement, func(mark string) string {
 					n, err := strconv.Atoi(mark[1+len(quotedMark) : len(mark)-1])
 					if err != nil || n >= len(literals) {
 						return mark
 					}
 					return literals[n]
-				}), &in)
+				}), in)
+			}
+		}
+		if m != nil {
+			in := block()
+			addEach(m[1], &in)
+			continue
+		}
+		// A line that opens a block and goes on with a gem (`path 'x' do
+		// gem 'a'`) opens it as one that ends with `do` does: unseen, its
+		// `end` closed the block around it.
+		onOpening := gemOnOpeningLine.FindStringSubmatch(masked)
+		if (strings.HasPrefix(line, "group ") || gemBlockOpens.MatchString(opener) || onOpening != nil) && !gemClosedOnItsLine.MatchString(opener) {
+			groupStack = append(groupStack, block())
+			// Gems on the opening line itself are in the block it opens.
+			if onOpening != nil {
+				addEach(onOpening[1], &groupStack[len(groupStack)-1])
 			}
 			continue
 		}
-		if (strings.HasPrefix(line, "group ") || gemBlockOpens.MatchString(opener)) && !gemClosedOnItsLine.MatchString(opener) {
-			groupStack = append(groupStack, block())
-			continue
-		}
-		if opener == "end" && len(groupStack) > 0 {
+		if gemBlockEnd.MatchString(opener) && len(groupStack) > 0 {
 			groupStack = groupStack[:len(groupStack)-1]
 			continue
 		}
@@ -2537,7 +2572,9 @@ var mixSourceOption = regexp.MustCompile(`[\s,](path|git|github|in_umbrella):`)
 func parseMixExsVersions(content string) []model.LibyearDep {
 	var deps []model.LibyearDep
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
+		// A list written with the comma in front (`, {:b, "~> 2.0"}`) holds
+		// the same tuples (round 5: every one but the first was unread).
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ","))
 		if !strings.HasPrefix(line, "{:") {
 			continue
 		}
@@ -2561,6 +2598,12 @@ func parseMixExsVersions(content string) []model.LibyearDep {
 			} else {
 				// (A requirement with a comma in it: its first bound.)
 				version = CleanVersion(strings.Trim(p1, "\"'}] "))
+			}
+			// A requirement built by interpolation (`"~> #{@version}"`) is
+			// worked out when the build runs: what is written is no version
+			// (round 5: `#{@version}` was stored as one).
+			if strings.Contains(p1, "#{") {
+				version = ""
 			}
 		}
 		// v0.27.44 (summary/19 P1): Mix's only: option restricts a dep
@@ -2736,6 +2779,10 @@ func parsePubspecVersions(content string) []model.LibyearDep {
 	// hostedAt is the indentation of an open `hosted:` block of the last
 	// dependency (-1 for none): its `url:` says which server.
 	hostedAt := -1
+	// versionAt is the indentation of a `version:` key of the last
+	// dependency that had no value on its line (-1 for none): the value is
+	// the next line, written deeper (round 5).
+	versionAt := -1
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "dependencies:" {
@@ -2759,6 +2806,16 @@ func parsePubspecVersions(content string) []model.LibyearDep {
 			continue
 		}
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if versionAt >= 0 && trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			at := versionAt
+			versionAt = -1
+			if last >= 0 && indent > at {
+				if deps[last].Version == "" {
+					deps[last].Version = CleanVersion(yamlScalar(trimmed))
+				}
+				continue
+			}
+		}
 		if last >= 0 && indent > depIndent && !strings.HasPrefix(trimmed, "#") {
 			switch {
 			case hostedAt >= 0 && indent > hostedAt:
@@ -2780,6 +2837,9 @@ func parsePubspecVersions(content string) []model.LibyearDep {
 				// had none.
 				if key, value, ok := strings.Cut(trimmed, ":"); ok && strings.TrimSpace(key) == "version" && deps[last].Version == "" {
 					deps[last].Version = CleanVersion(yamlScalar(value))
+					if strings.TrimSpace(yamlScalar(value)) == "" {
+						versionAt = indent
+					}
 				}
 			}
 		} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {

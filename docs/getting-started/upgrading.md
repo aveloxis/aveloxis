@@ -166,9 +166,10 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 **0.29.211 is the fixes from the fourth review; no schema change and no configuration change.** What changes on a fleet:
 
-- **A Maven build whose imported BOM cannot be obtained stays "not whole"**, whatever else its poms hold and in whatever order they are read. (0.29.210, which no fleet ran, judged such a pom whole once it had two dependencies with no version.)
+- **A Maven build whose imported BOM cannot be obtained stays "not whole"**, whatever else its poms hold and in whatever order they are read. (0.29.210, which no fleet ran, judged such a pom whole once it had two dependencies with no version, and dropped its managed entries as unused.)
 - **Large honest builds are read.** A Maven reactor whose parent manages its own modules by reference, and a Gradle build whose modules share a large applied script, were refused by 0.29.210's bounds. The bound on a whole Gradle tree is ten times the bound on one file: a deliberately pathological tree can hold one worker for about three minutes per 8 MiB of Gradle files before the rest are reported unreadable.
 - **Memory while reading a build** no longer grows with modules times imports, or with directories times shared scripts.
+- **The manifest readers can run on several workers at once.** (0.29.210 had two counters shared between them.)
 - **More manifest forms are read:** one-line Gemfile blocks with several gems, an `else` arm, `gem(...)` or a modifier after `end`; a `pubspec.yaml` dependency written as a block with its version on its own line. A `mix.exs` comment after a dependency no longer ends up in its version.
 - **The migrate** quotes the table names in its tool-version defaults and deferrable-constraint statements. The statements are otherwise the same.
 

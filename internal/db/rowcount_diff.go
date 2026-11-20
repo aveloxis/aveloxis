@@ -152,6 +152,12 @@ func RowCountDiff(ctx context.Context, released, newPool *pgxpool.Pool, schemas 
 	return report, nil
 }
 
+// tableRowCountSQL counts one table's rows; the names are the catalog's,
+// quoted.
+func tableRowCountSQL(schema, name string) string {
+	return "SELECT COUNT(*) FROM " + quotedIdentifier(schema, name)
+}
+
 // tableRowCounts enumerates base tables in the given schemas and
 // returns a map of "schema.table" → row count. Excludes views and
 // materialized views — derived data isn't a meaningful regression
@@ -190,7 +196,7 @@ func tableRowCounts(ctx context.Context, pool *pgxpool.Pool, schemas []string) (
 		// SQL quotes an identifier (quotedIdentifier; 0.29.211: Go's %q
 		// was used, which is not SQL's quoting for a name that holds a
 		// double quote).
-		q := "SELECT COUNT(*) FROM " + quotedIdentifier(t.schema, t.name)
+		q := tableRowCountSQL(t.schema, t.name)
 		if err := pool.QueryRow(ctx, q).Scan(&n); err != nil {
 			return nil, fmt.Errorf("count %s.%s: %w", t.schema, t.name, err)
 		}

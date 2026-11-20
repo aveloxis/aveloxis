@@ -73,6 +73,8 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 		return res
 	}
 	t := w.pom
+	t.acct.enter()
+	defer t.acct.leave()
 	t.indexTree()
 
 	// Union-find over pom paths.
@@ -135,21 +137,36 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 				// times the imports they inherit is not linear in what was
 				// read. Past the walk's allowance the tree is not known to
 				// be whole, and its entries stay inventoried.
-				bg, okG := pass.interp(c, e.group)
-				ba, okA := pass.interp(c, e.artifact)
-				bv, okV := pass.interp(c, e.version)
-				if !okG || !okA || !okV || !pass.spend(1) {
-					gapOf[p] = "its BOM imports could not all be looked at within the reader's bound"
+				bg, ba, bv, ok := importCoordinates(pass, c, e)
+				if !ok {
+					gapOf[p] = mavenGapBound
 					break imports
 				}
-				bom, ambiguous := t.byCoordinates(bg, ba, bv)
+				bom, ambiguous := t.byCoordinates(pass, bg, ba, bv)
 				switch {
 				case ambiguous:
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
 				case bom == nil:
-					remote, _ := t.remotePom(bg, ba, bv, c.declared())
+					// Asked through the one counted path. An import whose
+					// coordinates hold a reference is another coordinate in
+					// each pom that inherits it, and is asked for each (a
+					// module that sets the property otherwise does import
+					// another BOM) while the walk's allowance of requests
+					// lasts; nothing is kept per pom and import beyond what
+					// the walk's account has room for (review round 5: 199 KB
+					// of poms kept 29,240 answers, 223 MB, and 194 KB asked
+					// the source 199,651 times).
+					notAsked := t.acct.askRefused
+					remote, _ := t.remotePom(pass, bg, ba, bv, c.declaredFor)
 					if remote == nil {
 						gapOf[p] = "an imported BOM could not be obtained"
+						if pass.tripped {
+							gapOf[p] = mavenGapBound
+							break imports
+						}
+						if t.acct.askRefused != notAsked {
+							gapOf[p] = mavenGapRequests
+						}
 						continue
 					}
 					bomChain, _, _ := t.chainWhole(remote)
@@ -172,6 +189,12 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 	for _, p := range gapped {
 		if root := find(p); treeGap[root] == "" {
 			treeGap[root] = gapOf[p]
+		}
+	}
+	if t.acct.fired {
+		// Nothing read after the backstop is known to be whole.
+		for _, p := range t.pomFiles {
+			treeGap[find(p)] = mavenGapBackstop
 		}
 	}
 
@@ -225,6 +248,28 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 	sort.Slice(res.TreeHosts, func(i, j int) bool { return res.TreeHosts[i].Root < res.TreeHosts[j].Root })
 	return res
 }
+
+// importCoordinates is what the import e is in the effective model c, for
+// the pass over the whole tree. ok is false when the walk's allowance did not
+// cover working it out: the interpolation of any of the three, or the look.
+// A coordinate that was not interpolated is not a coordinate, and is not
+// looked for.
+func importCoordinates(pass *pomBudget, c *pomContext, e pomManaged) (bg, ba, bv string, ok bool) {
+	bg, okG := pass.interp(c, e.group)
+	ba, okA := pass.interp(c, e.artifact)
+	bv, okV := pass.interp(c, e.version)
+	if !okG || !okA || !okV || !pass.spend(1) {
+		return "", "", "", false
+	}
+	return bg, ba, bv, true
+}
+
+// Why a tree is not whole when it is the reader's own bounds that say so.
+const (
+	mavenGapBound    = "its BOM imports could not all be looked at within the reader's bound"
+	mavenGapRequests = "its BOM imports could not all be asked about within the walk's allowance of requests"
+	mavenGapBackstop = "the walk's wall-clock backstop ended the reading of its poms"
+)
 
 // rootMost names a tree by its shallowest pom, relative to the clone.
 func (t *pomTree) rootMost(members []string, fallback string) string {

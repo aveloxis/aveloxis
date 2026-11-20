@@ -152,17 +152,37 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
-	body := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
+	fn := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
+	// 0.29.212: the consolidation's statements are the list
+	// dedupListServeSteps, which the function runs in order through
+	// dedupListServeStepSQL (so that the write-policy check runs each).
+	// What is pinned is unchanged, and read where the text now stands: the
+	// function's body together with that list and the constant it names.
+	values := srctest.PackageValues(t, srctest.StripGoComments(src))
+	steps, members := values["dedupListServeSteps"], values["dedupListServeMembers"]
+	if steps == "" || members == "" {
+		t.Fatal("dedupListServeSteps or dedupListServeMembers was not found in email_message_fk_indexes.go: re-anchor this pin")
+	}
+	run := "for i, st := range dedupListServeSteps {\n\t\ttag, err := tx.Exec(ctx, dedupListServeStepSQL(i), ids, winners)"
+	if !strings.Contains(fn, run) || strings.Count(srctest.StripGoComments(src), "dedupListServeSteps") != 3 {
+		t.Error("dedupRepoGroupsListServeTx must run every step of dedupListServeSteps, in the list's order, on its tx; and nothing else may name the list (its declaration, the builder's index, this loop)")
+	}
+	body := fn + "\n" + strings.ReplaceAll(steps, "` + dedupListServeMembers + `", strings.Trim(members, "`")) + "\n" + members
 	for _, needle := range []string{"FOR UPDATE", "dupListPartitionsSQL", "WHERE copies > 1", "unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)", "repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)", "PARTITION BY w.winner, st.message_id_header", "ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id", "GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month)"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("dedupRepoGroupsListServeTx must contain %s", needle)
 		}
 	}
-	if strings.Contains(body, "execMigrationStep(") || strings.Contains(body, "pg.pool.") {
+	if strings.Contains(fn, "execMigrationStep(") || strings.Contains(fn, "pg.pool.") {
 		t.Error("every statement must run on the caller's tx (a partial failure must roll the whole pass back)")
 	}
 	if strings.Contains(body, "COALESCE(rgls_email, '') <> ''") {
 		t.Error("empty-string addresses must be deduplicated too — only NULLs are distinct under the UNIQUE")
+	}
+	// The lock is taken in the function before the loop that runs the
+	// steps; the steps' order is the list's.
+	if l, r := strings.Index(fn, "FOR UPDATE"), strings.Index(fn, run); l < 0 || r < 0 || l > r {
+		t.Error("the frozen members must be locked FOR UPDATE before the first step runs")
 	}
 	lock := strings.Index(body, "FOR UPDATE")
 	del := strings.Index(body, `"staging_duplicates_deleted"`)

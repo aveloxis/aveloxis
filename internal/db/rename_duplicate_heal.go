@@ -23,6 +23,42 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// renameHealSteps are the statements that fold a never-collected duplicate
+// into the row it was renamed to, in order. A package-level list, so that
+// the write-policy check runs every statement through renameHealStepSQL.
+var renameHealSteps = []struct {
+	label       string
+	sql         string
+	needsWinner bool
+}{
+	// Both repos rows first, in id order (Copilot PR #252, third review):
+	// the gone writers go repos row → queue row, and the duplicate can
+	// gain no episode between the carry below and its delete.
+	{"lock repository rows", lockRepoRowsSQL, true},
+	// One statement each — delete + insert on one snapshot (repo_gone.go):
+	// a link a user adds to the duplicate while the heal runs is moved, or
+	// refused at the commit by the duplicate's delete (the fail-safe), never
+	// deleted unseen by the insert.
+	{"repoint user_repo_stars", repointStarsSQL, true},
+	{"repoint user_repos", repointGroupLinksSQL, true},
+	{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
+	{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
+	{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},
+	// Copilot PR #252 (second review): a never-collected duplicate can
+	// still have gone episodes (probed 404 once, re-added, then redirected
+	// here); the repos delete would cascade them away silently. Carried
+	// to the winner like the dedup merge's (carryGoneHistorySQL: an open
+	// one ends at the first sign the upstream was reachable after it
+	// began, else closed by this heal on a reachable winner or folded
+	// into a gone winner's open episode; the winner's cache state
+	// stamped when anything changed), under the row locks above.
+	{"repoint repo_gone_history", carryGoneHistorySQL, true},
+	{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
+}
+
+// renameHealStepSQL is the statement of the i-th of renameHealSteps.
+func renameHealStepSQL(i int) string { return renameHealSteps[i].sql }
+
 // HealRenamedDuplicate repoints user_repos + user_repo_stars from the
 // never-collected duplicate onto the collected winner and deletes the
 // duplicate's queue/status/staging/repos rows, all in one transaction.
@@ -81,36 +117,7 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 		// Repoint the user-facing links (insert-then-delete: both tables'
 		// PKs include repo_id, so a user already linked/starred on the
 		// winner just no-ops the insert).
-		steps := []struct {
-			label       string
-			sql         string
-			needsWinner bool
-		}{
-			// Both repos rows first, in id order (Copilot PR #252, third review):
-			// the gone writers go repos row → queue row, and the duplicate can
-			// gain no episode between the carry below and its delete.
-			{"lock repository rows", lockRepoRowsSQL, true},
-			// One statement each — delete + insert on one snapshot (repo_gone.go):
-			// a link a user adds to the duplicate while the heal runs is moved, or
-			// refused at the commit by the duplicate's delete (the fail-safe), never
-			// deleted unseen by the insert.
-			{"repoint user_repo_stars", repointStarsSQL, true},
-			{"repoint user_repos", repointGroupLinksSQL, true},
-			{"delete dup status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, false},
-			{"delete dup staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, false},
-			{"delete dup queue row", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, false},
-			// Copilot PR #252 (second review): a never-collected duplicate can
-			// still have gone episodes (probed 404 once, re-added, then redirected
-			// here); the repos delete would cascade them away silently. Carried
-			// to the winner like the dedup merge's (carryGoneHistorySQL: an open
-			// one ends at the first sign the upstream was reachable after it
-			// began, else closed by this heal on a reachable winner or folded
-			// into a gone winner's open episode; the winner's cache state
-			// stamped when anything changed), under the row locks above.
-			{"repoint repo_gone_history", carryGoneHistorySQL, true},
-			{"delete dup repos row", `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, false},
-		}
-		for _, st := range steps {
+		for i, st := range renameHealSteps {
 			args := []any{dupRepoID}
 			switch {
 			case st.label == "lock repository rows":
@@ -120,7 +127,7 @@ func (s *PostgresStore) HealRenamedDuplicate(ctx context.Context, dupRepoID, win
 			case st.needsWinner:
 				args = append(args, winnerRepoID)
 			}
-			if _, err := tx.Exec(ctx, st.sql, args...); err != nil {
+			if _, err := tx.Exec(ctx, renameHealStepSQL(i), args...); err != nil {
 				if isFKViolation(err) {
 					// Some child table holds rows for the "never-collected"
 					// duplicate — fail safe: keep it, legacy skip applies.

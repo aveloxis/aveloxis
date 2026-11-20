@@ -25,26 +25,15 @@
 // prefix from every non-test file, which covers this subpackage
 // transitively.
 //
-// Known blind spots (documented, not hidden):
-//   - Statements sees single backtick literals only. SQL assembled in Go
-//     is read by Assemble (assemble.go, 0.29.203), and what Assemble cannot
-//     read is reported, not passed: a consumer that judges writes calls
-//     both, and CheckUnreadable for the remainder;
-//   - dollar quotes: splitStatements tracks only anonymous $$ blocks (the
-//     corpus's only kind, migrate.go's DO blocks), not $tag$...$tag$;
-//     extractExpr tracks no dollar quote ('…' only); the multiple-column SET
-//     reader (setListMember) tracks both through quotedEnd, and reads a
-//     dollar-quoted body right after DO or AS as SQL — not a body after
-//     DO LANGUAGE x, a single-quoted DO or AS body, or dynamic SQL in an
-//     EXECUTE (none in the corpus; round 10 of 0.29.123);
-//   - the SET-LHS anchor inherits the flagship's documented assumption
-//     that WHERE predicates join with AND (never commas), so `, col =`
-//     cannot false-match a predicate;
-//   - a MERGE INTO statement is found by FindWrites (v0.29.94), but
-//     WritesColumn sees only its WHEN MATCHED THEN UPDATE SET arm; a
-//     WHEN NOT MATCHED THEN INSERT (col) list is a write it cannot see.
-//     The corpus has no MERGE today; the first one extends the matcher
-//     in the same change, with its table's policy test as the proof.
+// THE WRITE-POLICY CHECK does not use this file's text matchers
+// (0.29.212). It reads SQL arguments through strict.go and statements
+// through the tokeniser and reader of lex.go and parse.go; doc.go states
+// what that check guarantees. What remains here serves the other source
+// tripwires (which tables a literal writes, which columns have a writer):
+// Statements, FindWrites, WritesColumn and SetExprs read single backtick
+// literals with patterns, and their known limits are those of patterns:
+// only anonymous $$ blocks are tracked when splitting, a MERGE's INSERT
+// arm is not seen, and SQL comments must be stripped first.
 package sqlscan
 
 import (
@@ -60,6 +49,9 @@ import (
 type Stmt struct {
 	File string
 	SQL  string
+	// write is the one write of the statement a policy is being judged
+	// on (Check sets it); nil elsewhere.
+	write *Write
 }
 
 // Statements extracts every SQL statement from the backtick string
@@ -605,28 +597,57 @@ func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-// WhereGuardsEmpty reports whether the statement's text, after a
-// top-level WHERE, guards the column to its empty state — the shape
-// that legitimizes a bare `SET col = $N` as fill-empty-only
-// (SetPlatformRepoIDIfEmptySeen, internal/db/repo_forge_id.go):
-//
-//	WHERE ... COALESCE(col, '') = ''
-//	WHERE ... col IS NULL
-//
-// An optional single qualifier (alias.col) is accepted. Documented
-// blind spot: the search does not distinguish the outer statement's
-// WHERE from a subquery's — acceptable for the house-written corpus,
-// and a guard in a subquery still expresses the fill-empty intent for
-// every shape the fixtures cover.
+// WhereGuardsEmpty reports whether the write being judged lets it touch
+// only rows whose col is empty: the shape that makes a bare `SET col = $N`
+// a fill of the empty state. What counts is Write.GuardsEmpty's (parse.go):
+// one of the conditions joined by AND at the top of that write's own WHERE,
+// never one in a string, under OR or NOT, or in a subquery.
 func (s Stmt) WhereGuardsEmpty(col string) bool {
-	whereRe := regexp.MustCompile(`(?is)\bWHERE\b`)
-	loc := whereRe.FindStringIndex(s.SQL)
-	if loc == nil {
+	if s.write != nil {
+		return s.write.GuardsEmpty(col)
+	}
+	// Asked of a whole statement: every UPDATE in it that assigns col
+	// must carry the guard, and one must exist.
+	ws, err := ParseWrites(s.SQL)
+	if err != nil {
 		return false
 	}
-	tail := s.SQL[loc[1]:]
-	q := `(?:[a-z_]+\.)?` + regexp.QuoteMeta(col)
-	coalesceRe := regexp.MustCompile(`(?is)\bCOALESCE\(\s*` + q + `\s*,\s*''\s*\)\s*=\s*''`)
-	isNullRe := regexp.MustCompile(`(?is)\b` + q + `\s+IS\s+NULL\b`)
-	return coalesceRe.MatchString(tail) || isNullRe.MatchString(tail)
+	found := false
+	for _, w := range ws {
+		for _, it := range w.Sets {
+			if it.Column == col {
+				if !w.GuardsEmpty(col) {
+					return false
+				}
+				found = true
+			}
+		}
+	}
+	return found
+}
+
+// plainHead finds a write's head whose table is written with double quotes
+// around names that need none (lower case, no special character): to
+// PostgreSQL `"aveloxis_data"."repos"` is aveloxis_data.repos, and the
+// text matchers of this file spell a table the plain way. (The policy
+// check does not use them: it reads names as tokens, parse.go.)
+var plainHead = regexp.MustCompile(`((?i:INSERT\s+INTO|UPDATE(?:\s+ONLY)?|MERGE\s+INTO)\s+)("?[a-z_][a-z0-9_]*"?(?:\."?[a-z_][a-z0-9_]*"?)?)`)
+
+// plainWriteHead rewrites such heads without the quotes. A quoted name
+// with a capital or any other character is a different name, and is left
+// as written.
+func plainWriteHead(sql string) string {
+	if !strings.Contains(sql, `"`) {
+		return sql
+	}
+	return plainHead.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := plainHead.FindStringSubmatch(m)
+		name := sub[2]
+		for _, part := range strings.Split(name, ".") {
+			if strings.HasPrefix(part, `"`) != strings.HasSuffix(part, `"`) {
+				return m // a quote that does not close here: not a plain name
+			}
+		}
+		return sub[1] + strings.ReplaceAll(name, `"`, "")
+	})
 }

@@ -407,6 +407,238 @@ const repointStarsSQL = `
 			SELECT user_id, $2 FROM moved
 			ON CONFLICT DO NOTHING`
 
+// dedupPairSteps are the statements that move the loser's rows onto the
+// winner, in order, each under the name dedupOnePair logs and reports it
+// by. The arguments each takes are dedupOnePair's (stepArgs, by the same
+// name). A package-level list, so that the write-policy check runs every
+// statement through dedupPairStepSQL.
+var dedupPairSteps = []struct {
+	label string
+	sql   string
+}{
+	// One statement each (delete + insert on one snapshot; repo_gone.go).
+	{"repoint user_repos", repointGroupLinksSQL},
+	// v0.27.4: per-user stars are links like user_repos — repoint so
+	// a user who starred either case variant keeps their star.
+	{"repoint user_repo_stars", repointStarsSQL},
+	{"delete loser collection_queue", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`},
+	{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`},
+	{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`},
+	{"repoint mailing_list_staging", `UPDATE aveloxis_ops.mailing_list_staging SET repo_id = $2 WHERE repo_id = $1`},
+	// v0.29.62: a forge-ID change is a fact about the upstream
+	// repository both variants point at, and an adopted one is the
+	// operator's record — repoint it, then drop the duplicates. When
+	// the winner already holds the same change the two MERGE (v0.29.63,
+	// round-2 #12 on v0.29.62: DO NOTHING deleted an adoption made on
+	// the loser); the span covers both observations.
+	//
+	// First, for a case-variant pair, the winner's EMPTY forge ID is
+	// filled from the loser's — fill-empty-only, the policy every
+	// platform_repo_id writer follows (v0.29.63 review round 3: the
+	// winner is the oldest row and often has none; both rows name the
+	// same URL). A rename pair skips the fill (IsRename).
+	//
+	// Then the loser's adoptions (adopted_at, adopted_by and note
+	// together) carry only when the winner now stores what the LOSER
+	// stored, or stores nothing: the moves are then true of the winner,
+	// or at least nothing it stores contradicts them yet. The empty
+	// case is a rename pair's (no fill), where dropping to pending
+	// discarded the operator's record for good (v0.29.64 review
+	// round 1). Otherwise "adopted" would claim a move that never
+	// happened on this row (round 1; round 4 found "unless the winner
+	// stores the old ID" carrying a chain's later link onto a winner at
+	// its start, which the Adopt button could then never finish). Such
+	// changes arrive PENDING and are adopted in order. Dedup never
+	// overwrites a stored forge ID.
+	//
+	// Accepted residual (v0.29.65 review round 2, declined): if the
+	// rename winner's first scan then fills a DIFFERENT forge ID (the
+	// old URL held another repository before the rename), the page
+	// shows an adoption whose new ID the row never stored, and only
+	// SQL undoes it. That needs an adoption, a later delete-recreate
+	// and a rename at the old URL; the alternative discards the
+	// adoption on every rename.
+	//
+	// The fill step: $2 is empty (and the step writes nothing) when the
+	// loser has no stored forge ID, and for every rename pair.
+	{"fill winner's empty forge ID", `
+			UPDATE aveloxis_data.repos SET platform_repo_id = $2
+			 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = '' AND $2 <> ''`},
+	{"repoint repo_forge_id_changes", `
+			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
+				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
+				 observed_private, tool_source, tool_version, data_source, data_collection_date)
+			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
+			       CASE WHEN carries THEN l.adopted_at END,
+			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
+			       CASE WHEN carries THEN l.note ELSE '' END,
+			       -- 0.29.140 (Copilot PR #252, third review): the listing's
+			       -- visibility moves with the observation; on a conflict the
+			       -- LATER observation's answer wins (below).
+			       l.observed_private,
+			       -- The moved row keeps its provenance (PR #212 review: an
+			       -- INSERT without these restamped it with this binary and NOW()).
+			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
+			  FROM aveloxis_data.repo_forge_id_changes l
+			  CROSS JOIN LATERAL (
+			      SELECT l.adopted_at IS NOT NULL AND EXISTS (
+			          SELECT 1 FROM aveloxis_data.repos w
+			           WHERE w.repo_id = $2 AND COALESCE(w.platform_repo_id, '') IN ('', $3)) AS carries) k
+			 WHERE l.repo_id = $1
+			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
+				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
+				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
+				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
+				observed_private  = CASE WHEN EXCLUDED.last_observed_at > c.last_observed_at THEN EXCLUDED.observed_private
+				                         WHEN EXCLUDED.last_observed_at < c.last_observed_at THEN c.observed_private
+				                         ELSE COALESCE(c.observed_private, EXCLUDED.observed_private) END,
+				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
+				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
+				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`},
+	{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`},
+	// 0.29.140: the loser's gone episodes are observations about the
+	// same upstream — carried to the winner. The invariant "an open
+	// episode ⇔ the row's current gone state" holds across the merge
+	// (round 2 F1): the loser's OPEN episode arrives CLOSED by this
+	// merge when the winner is reachable (no stamp), and folds into the
+	// winner's open episode when the winner is gone itself — one outage
+	// seen twice, starting at the earlier observation — unless either
+	// row holds evidence the upstream was reachable after it began,
+	// which ends it there (Copilot PR #252, sixteenth review, and its two
+	// L10 passes; carryGoneHistorySQL).
+	// Copilot PR #252: the carry below reads the winner's gone state; a
+	// clearer beside this transaction (prelim, the recheck, an adoption)
+	// updates that same repos row, so the row lock taken first
+	// serialises them — the winner's state the carry reads is the state
+	// it commits against.
+	{"repoint repo_gone_history", carryGoneHistorySQL},
+	{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`},
+
+	// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
+	// tables are globally unique — the pair shares ONE row, owned by
+	// whichever variant collected first. Unique keys exclude repo_id,
+	// so the repoint can't conflict.
+	{"repoint messages", `UPDATE aveloxis_data.messages SET repo_id = $2 WHERE repo_id = $1`},
+	{"repoint email_message.repo_id", `UPDATE aveloxis_data.email_message SET repo_id = $2 WHERE repo_id = $1`},
+	{"repoint email_message.signaled_repo_id", `UPDATE aveloxis_data.email_message SET signaled_repo_id = $2 WHERE signaled_repo_id = $1`},
+	{"repoint commit_comment_ref", `UPDATE aveloxis_data.commit_comment_ref SET repo_id = $2 WHERE repo_id = $1`},
+	// contributor_repo is DELIBERATELY not touched (v0.25.34). It is
+	// the breadth worker's observational record of each contributor's
+	// GitHub-WIDE event stream: its repo_git values overwhelmingly
+	// reference repos Aveloxis does not track, it has no FK to repos,
+	// and its stable repo key is the numeric gh_repo_id (case-immune).
+	// The v0.25.32 repoint rewrote observational history AND
+	// sequential-scanned the 51M-row table once per pair.
+	{"migrate foundation_membership", `
+			INSERT INTO aveloxis_ops.foundation_membership (foundation, status, project_name, homepage_url, repo_url)
+			SELECT foundation, status, project_name, homepage_url, $2
+			FROM aveloxis_ops.foundation_membership WHERE repo_url = $1
+			ON CONFLICT DO NOTHING`},
+	{"delete loser foundation_membership", `DELETE FROM aveloxis_ops.foundation_membership WHERE repo_url = $1`},
+
+	// --- Step 2b: email_message links into the loser's issue/PR/
+	// review trees (mailing-list projection, v0.25.7). Remap each
+	// link to the winner's equivalent row by platform ID so the
+	// bridge survives the merge; clear any leftover links whose
+	// winner equivalent doesn't exist (their NO-ACTION-deferred FKs
+	// would otherwise fail the transaction at COMMIT once the loser
+	// rows are deleted).
+	{"remap email_message issue links", `
+			UPDATE aveloxis_data.email_message em
+			SET linked_issue_id = wi.issue_id
+			FROM aveloxis_data.issues li
+			JOIN aveloxis_data.issues wi
+			  ON wi.repo_id = $2 AND wi.platform_issue_id = li.platform_issue_id
+			WHERE em.linked_issue_id = li.issue_id AND li.repo_id = $1`},
+	{"clear unmapped email_message issue links", `
+			UPDATE aveloxis_data.email_message SET linked_issue_id = NULL
+			WHERE linked_issue_id IN (SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1)`},
+	{"remap email_message PR links", `
+			UPDATE aveloxis_data.email_message em
+			SET linked_pull_request_id = wp.pull_request_id
+			FROM aveloxis_data.pull_requests lp
+			JOIN aveloxis_data.pull_requests wp
+			  ON wp.repo_id = $2 AND wp.platform_pr_id = lp.platform_pr_id
+			WHERE em.linked_pull_request_id = lp.pull_request_id AND lp.repo_id = $1`},
+	{"clear unmapped email_message PR links", `
+			UPDATE aveloxis_data.email_message SET linked_pull_request_id = NULL
+			WHERE linked_pull_request_id IN (SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1)`},
+	{"remap email_message review links", `
+			UPDATE aveloxis_data.email_message em
+			SET linked_pr_review_id = wr.pr_review_id
+			FROM aveloxis_data.pull_request_reviews lr
+			JOIN aveloxis_data.pull_request_reviews wr
+			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
+			WHERE em.linked_pr_review_id = lr.pr_review_id AND lr.repo_id = $1`},
+	{"clear unmapped email_message review links", `
+			UPDATE aveloxis_data.email_message SET linked_pr_review_id = NULL
+			WHERE linked_pr_review_id IN (SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`},
+
+	// --- Step 2c: cross-repo review links (v0.25.33). Review
+	// comments used to resolve their parent review via a
+	// globally-scoped FindReviewDBID (repo-scoped since v0.25.33),
+	// so WINNER-owned bridge rows can point at LOSER-owned
+	// pull_request_reviews rows — the 2026-07-08 production failure
+	// (SQLSTATE 23503 on review_comments_pr_review_id_fkey). Remap
+	// every bridge row (ANY repo_id) from a loser review to the
+	// winner's copy of the same review; delete the leftovers with no
+	// winner equivalent. No bridge may still reference a loser
+	// review when Step 4 deletes them.
+	//
+	// v0.27.49 COLLISION GUARD: the original v0.25.33 note said
+	// "neither table has a unique key involving pr_review_id, so
+	// the remaps cannot conflict" — TRUE then, FALSE since
+	// v0.27.15 created uq_pr_review_msg_ref (pr_review_id,
+	// msg_id). Both copies of a duplicated repo share the SAME
+	// messages rows (UNIQUE platform_msg_id/platform_id/msg_kind),
+	// so the winner usually ALREADY holds the (winner_review,
+	// msg) link the remap would create → 23505 (the 2026-07-22
+	// reconcile-repos failure wave). The msg_ref remap now skips
+	// rows whose winner-equivalent link exists; the blanket
+	// delete below removes them (the winner already has that
+	// link — dropping the loser's copy loses nothing).
+	// review_comments' uniques don't involve pr_review_id, so its
+	// remap stays unguarded.
+	{"remap cross-repo review_comments", `
+			UPDATE aveloxis_data.review_comments rc SET pr_review_id = wr.pr_review_id
+			FROM aveloxis_data.pull_request_reviews lr
+			JOIN aveloxis_data.pull_request_reviews wr
+			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
+			WHERE rc.pr_review_id = lr.pr_review_id AND lr.repo_id = $1`},
+	{"delete unmappable review_comments cross-links", `
+			DELETE FROM aveloxis_data.review_comments WHERE pr_review_id IN
+			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`},
+	{"remap cross-repo pull_request_review_message_ref", `
+			UPDATE aveloxis_data.pull_request_review_message_ref mr SET pr_review_id = wr.pr_review_id
+			FROM aveloxis_data.pull_request_reviews lr
+			JOIN aveloxis_data.pull_request_reviews wr
+			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
+			WHERE mr.pr_review_id = lr.pr_review_id AND lr.repo_id = $1
+			  AND NOT EXISTS (
+			      SELECT 1 FROM aveloxis_data.pull_request_review_message_ref x
+			      WHERE x.pr_review_id = wr.pr_review_id AND x.msg_id = mr.msg_id)`},
+	{"delete unmappable pull_request_review_message_ref cross-links", `
+			DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE pr_review_id IN
+			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`},
+}
+
+// dedupPairStepSQL is the statement of the i-th of dedupPairSteps.
+func dedupPairStepSQL(i int) string { return dedupPairSteps[i].sql }
+
+// The statements of dedupOnePair's three delete passes, for the i-th of
+// their lists.
+func loserJoinDeleteSQL(i int) string { return loserJoinDeletes[i].sql }
+
+func loserRepoIDDeleteSQL(i int) string {
+	table := loserRepoIDDeletes[i]
+	return fmt.Sprintf(`DELETE FROM %s WHERE repo_id = $1`, table)
+}
+
+func loserHygieneDeleteSQL(i int) string {
+	table := loserHygieneDeletes[i]
+	return fmt.Sprintf(`DELETE FROM %s WHERE repo_id = $1`, table)
+}
+
 // dedupOnePair merges one loser into its winner inside a single
 // transaction. Statement order matters — most child FKs are ON DELETE
 // RESTRICT, which checks immediately even though the constraints are
@@ -498,244 +730,67 @@ func dedupOnePair(ctx context.Context, store *PostgresStore, pair RepoDupPair) e
 	// repo_id), no FK on repo_id) so every group that referenced either
 	// variant keeps the repo; queue/status/staging rows are loser-scoped
 	// bookkeeping and go away.
-	steps := []struct {
-		label string
-		sql   string
-		args  []any
-	}{
-		// One statement each (delete + insert on one snapshot; repo_gone.go).
-		{"repoint user_repos", repointGroupLinksSQL, []any{pair.LoserID, pair.WinnerID}},
-		// v0.27.4: per-user stars are links like user_repos — repoint so
-		// a user who starred either case variant keeps their star.
-		{"repoint user_repo_stars", repointStarsSQL, []any{pair.LoserID, pair.WinnerID}},
-		{"delete loser collection_queue", `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, []any{pair.LoserID}},
-		{"delete loser collection_status", `DELETE FROM aveloxis_ops.collection_status WHERE repo_id = $1`, []any{pair.LoserID}},
-		{"delete loser staging", `DELETE FROM aveloxis_ops.staging WHERE repo_id = $1`, []any{pair.LoserID}},
-		{"repoint mailing_list_staging", `UPDATE aveloxis_ops.mailing_list_staging SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		// v0.29.62: a forge-ID change is a fact about the upstream
-		// repository both variants point at, and an adopted one is the
-		// operator's record — repoint it, then drop the duplicates. When
-		// the winner already holds the same change the two MERGE (v0.29.63,
-		// round-2 #12 on v0.29.62: DO NOTHING deleted an adoption made on
-		// the loser); the span covers both observations.
-		//
-		// First, for a case-variant pair, the winner's EMPTY forge ID is
-		// filled from the loser's — fill-empty-only, the policy every
-		// platform_repo_id writer follows (v0.29.63 review round 3: the
-		// winner is the oldest row and often has none; both rows name the
-		// same URL). A rename pair skips the fill (IsRename).
-		//
-		// Then the loser's adoptions (adopted_at, adopted_by and note
-		// together) carry only when the winner now stores what the LOSER
-		// stored, or stores nothing: the moves are then true of the winner,
-		// or at least nothing it stores contradicts them yet. The empty
-		// case is a rename pair's (no fill), where dropping to pending
-		// discarded the operator's record for good (v0.29.64 review
-		// round 1). Otherwise "adopted" would claim a move that never
-		// happened on this row (round 1; round 4 found "unless the winner
-		// stores the old ID" carrying a chain's later link onto a winner at
-		// its start, which the Adopt button could then never finish). Such
-		// changes arrive PENDING and are adopted in order. Dedup never
-		// overwrites a stored forge ID.
-		//
-		// Accepted residual (v0.29.65 review round 2, declined): if the
-		// rename winner's first scan then fills a DIFFERENT forge ID (the
-		// old URL held another repository before the rename), the page
-		// shows an adoption whose new ID the row never stored, and only
-		// SQL undoes it. That needs an adoption, a later delete-recreate
-		// and a rename at the old URL; the alternative discards the
-		// adoption on every rename.
-		//
-		// The fill step: $2 is empty (and the step writes nothing) when the
-		// loser has no stored forge ID, and for every rename pair.
-		{"fill winner's empty forge ID", `
-			UPDATE aveloxis_data.repos SET platform_repo_id = $2
-			 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = '' AND $2 <> ''`, []any{pair.WinnerID, fillForgeID}},
-		{"repoint repo_forge_id_changes", `
-			INSERT INTO aveloxis_data.repo_forge_id_changes AS c
-				(repo_id, old_forge_id, new_forge_id, first_observed_at, last_observed_at, forge_created_at, adopted_at, adopted_by, note,
-				 observed_private, tool_source, tool_version, data_source, data_collection_date)
-			SELECT $2, l.old_forge_id, l.new_forge_id, l.first_observed_at, l.last_observed_at, l.forge_created_at,
-			       CASE WHEN carries THEN l.adopted_at END,
-			       CASE WHEN carries THEN l.adopted_by ELSE '' END,
-			       CASE WHEN carries THEN l.note ELSE '' END,
-			       -- 0.29.140 (Copilot PR #252, third review): the listing's
-			       -- visibility moves with the observation; on a conflict the
-			       -- LATER observation's answer wins (below).
-			       l.observed_private,
-			       -- The moved row keeps its provenance (PR #212 review: an
-			       -- INSERT without these restamped it with this binary and NOW()).
-			       l.tool_source, l.tool_version, l.data_source, l.data_collection_date
-			  FROM aveloxis_data.repo_forge_id_changes l
-			  CROSS JOIN LATERAL (
-			      SELECT l.adopted_at IS NOT NULL AND EXISTS (
-			          SELECT 1 FROM aveloxis_data.repos w
-			           WHERE w.repo_id = $2 AND COALESCE(w.platform_repo_id, '') IN ('', $3)) AS carries) k
-			 WHERE l.repo_id = $1
-			ON CONFLICT (repo_id, old_forge_id, new_forge_id) DO UPDATE SET
-				first_observed_at = LEAST(c.first_observed_at, EXCLUDED.first_observed_at),
-				last_observed_at  = GREATEST(c.last_observed_at, EXCLUDED.last_observed_at),
-				forge_created_at  = COALESCE(c.forge_created_at, EXCLUDED.forge_created_at),
-				observed_private  = CASE WHEN EXCLUDED.last_observed_at > c.last_observed_at THEN EXCLUDED.observed_private
-				                         WHEN EXCLUDED.last_observed_at < c.last_observed_at THEN c.observed_private
-				                         ELSE COALESCE(c.observed_private, EXCLUDED.observed_private) END,
-				adopted_at = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_at ELSE c.adopted_at END,
-				adopted_by = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.adopted_by ELSE c.adopted_by END,
-				note       = CASE WHEN c.adopted_at IS NULL THEN EXCLUDED.note ELSE c.note END`, []any{pair.LoserID, pair.WinnerID, loserForgeID}},
-		{"delete loser repo_forge_id_changes", `DELETE FROM aveloxis_data.repo_forge_id_changes WHERE repo_id = $1`, []any{pair.LoserID}},
-		// 0.29.140: the loser's gone episodes are observations about the
-		// same upstream — carried to the winner. The invariant "an open
-		// episode ⇔ the row's current gone state" holds across the merge
-		// (round 2 F1): the loser's OPEN episode arrives CLOSED by this
-		// merge when the winner is reachable (no stamp), and folds into the
-		// winner's open episode when the winner is gone itself — one outage
-		// seen twice, starting at the earlier observation — unless either
-		// row holds evidence the upstream was reachable after it began,
-		// which ends it there (Copilot PR #252, sixteenth review, and its two
-		// L10 passes; carryGoneHistorySQL).
-		// Copilot PR #252: the carry below reads the winner's gone state; a
-		// clearer beside this transaction (prelim, the recheck, an adoption)
-		// updates that same repos row, so the row lock taken first
-		// serialises them — the winner's state the carry reads is the state
-		// it commits against.
-		{"repoint repo_gone_history", carryGoneHistorySQL, []any{pair.LoserID, pair.WinnerID, GoneSourceDedup}},
-		{"delete loser repo_gone_history", `DELETE FROM aveloxis_data.repo_gone_history WHERE repo_id = $1`, []any{pair.LoserID}},
-
-		// --- Step 2: shared-copy repoints (UPDATE, never DELETE). These
-		// tables are globally unique — the pair shares ONE row, owned by
-		// whichever variant collected first. Unique keys exclude repo_id,
-		// so the repoint can't conflict.
-		{"repoint messages", `UPDATE aveloxis_data.messages SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"repoint email_message.repo_id", `UPDATE aveloxis_data.email_message SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"repoint email_message.signaled_repo_id", `UPDATE aveloxis_data.email_message SET signaled_repo_id = $2 WHERE signaled_repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"repoint commit_comment_ref", `UPDATE aveloxis_data.commit_comment_ref SET repo_id = $2 WHERE repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		// contributor_repo is DELIBERATELY not touched (v0.25.34). It is
-		// the breadth worker's observational record of each contributor's
-		// GitHub-WIDE event stream: its repo_git values overwhelmingly
-		// reference repos Aveloxis does not track, it has no FK to repos,
-		// and its stable repo key is the numeric gh_repo_id (case-immune).
-		// The v0.25.32 repoint rewrote observational history AND
-		// sequential-scanned the 51M-row table once per pair.
-		{"migrate foundation_membership", `
-			INSERT INTO aveloxis_ops.foundation_membership (foundation, status, project_name, homepage_url, repo_url)
-			SELECT foundation, status, project_name, homepage_url, $2
-			FROM aveloxis_ops.foundation_membership WHERE repo_url = $1
-			ON CONFLICT DO NOTHING`, []any{pair.LoserGit, pair.WinnerGit}},
-		{"delete loser foundation_membership", `DELETE FROM aveloxis_ops.foundation_membership WHERE repo_url = $1`, []any{pair.LoserGit}},
-
-		// --- Step 2b: email_message links into the loser's issue/PR/
-		// review trees (mailing-list projection, v0.25.7). Remap each
-		// link to the winner's equivalent row by platform ID so the
-		// bridge survives the merge; clear any leftover links whose
-		// winner equivalent doesn't exist (their NO-ACTION-deferred FKs
-		// would otherwise fail the transaction at COMMIT once the loser
-		// rows are deleted).
-		{"remap email_message issue links", `
-			UPDATE aveloxis_data.email_message em
-			SET linked_issue_id = wi.issue_id
-			FROM aveloxis_data.issues li
-			JOIN aveloxis_data.issues wi
-			  ON wi.repo_id = $2 AND wi.platform_issue_id = li.platform_issue_id
-			WHERE em.linked_issue_id = li.issue_id AND li.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"clear unmapped email_message issue links", `
-			UPDATE aveloxis_data.email_message SET linked_issue_id = NULL
-			WHERE linked_issue_id IN (SELECT issue_id FROM aveloxis_data.issues WHERE repo_id = $1)`, []any{pair.LoserID}},
-		{"remap email_message PR links", `
-			UPDATE aveloxis_data.email_message em
-			SET linked_pull_request_id = wp.pull_request_id
-			FROM aveloxis_data.pull_requests lp
-			JOIN aveloxis_data.pull_requests wp
-			  ON wp.repo_id = $2 AND wp.platform_pr_id = lp.platform_pr_id
-			WHERE em.linked_pull_request_id = lp.pull_request_id AND lp.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"clear unmapped email_message PR links", `
-			UPDATE aveloxis_data.email_message SET linked_pull_request_id = NULL
-			WHERE linked_pull_request_id IN (SELECT pull_request_id FROM aveloxis_data.pull_requests WHERE repo_id = $1)`, []any{pair.LoserID}},
-		{"remap email_message review links", `
-			UPDATE aveloxis_data.email_message em
-			SET linked_pr_review_id = wr.pr_review_id
-			FROM aveloxis_data.pull_request_reviews lr
-			JOIN aveloxis_data.pull_request_reviews wr
-			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
-			WHERE em.linked_pr_review_id = lr.pr_review_id AND lr.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"clear unmapped email_message review links", `
-			UPDATE aveloxis_data.email_message SET linked_pr_review_id = NULL
-			WHERE linked_pr_review_id IN (SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
-
-		// --- Step 2c: cross-repo review links (v0.25.33). Review
-		// comments used to resolve their parent review via a
-		// globally-scoped FindReviewDBID (repo-scoped since v0.25.33),
-		// so WINNER-owned bridge rows can point at LOSER-owned
-		// pull_request_reviews rows — the 2026-07-08 production failure
-		// (SQLSTATE 23503 on review_comments_pr_review_id_fkey). Remap
-		// every bridge row (ANY repo_id) from a loser review to the
-		// winner's copy of the same review; delete the leftovers with no
-		// winner equivalent. No bridge may still reference a loser
-		// review when Step 4 deletes them.
-		//
-		// v0.27.49 COLLISION GUARD: the original v0.25.33 note said
-		// "neither table has a unique key involving pr_review_id, so
-		// the remaps cannot conflict" — TRUE then, FALSE since
-		// v0.27.15 created uq_pr_review_msg_ref (pr_review_id,
-		// msg_id). Both copies of a duplicated repo share the SAME
-		// messages rows (UNIQUE platform_msg_id/platform_id/msg_kind),
-		// so the winner usually ALREADY holds the (winner_review,
-		// msg) link the remap would create → 23505 (the 2026-07-22
-		// reconcile-repos failure wave). The msg_ref remap now skips
-		// rows whose winner-equivalent link exists; the blanket
-		// delete below removes them (the winner already has that
-		// link — dropping the loser's copy loses nothing).
-		// review_comments' uniques don't involve pr_review_id, so its
-		// remap stays unguarded.
-		{"remap cross-repo review_comments", `
-			UPDATE aveloxis_data.review_comments rc SET pr_review_id = wr.pr_review_id
-			FROM aveloxis_data.pull_request_reviews lr
-			JOIN aveloxis_data.pull_request_reviews wr
-			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
-			WHERE rc.pr_review_id = lr.pr_review_id AND lr.repo_id = $1`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete unmappable review_comments cross-links", `
-			DELETE FROM aveloxis_data.review_comments WHERE pr_review_id IN
-			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
-		{"remap cross-repo pull_request_review_message_ref", `
-			UPDATE aveloxis_data.pull_request_review_message_ref mr SET pr_review_id = wr.pr_review_id
-			FROM aveloxis_data.pull_request_reviews lr
-			JOIN aveloxis_data.pull_request_reviews wr
-			  ON wr.repo_id = $2 AND wr.platform_review_id = lr.platform_review_id
-			WHERE mr.pr_review_id = lr.pr_review_id AND lr.repo_id = $1
-			  AND NOT EXISTS (
-			      SELECT 1 FROM aveloxis_data.pull_request_review_message_ref x
-			      WHERE x.pr_review_id = wr.pr_review_id AND x.msg_id = mr.msg_id)`, []any{pair.LoserID, pair.WinnerID}},
-		{"delete unmappable pull_request_review_message_ref cross-links", `
-			DELETE FROM aveloxis_data.pull_request_review_message_ref WHERE pr_review_id IN
-			(SELECT pr_review_id FROM aveloxis_data.pull_request_reviews WHERE repo_id = $1)`, []any{pair.LoserID}},
+	stepArgs := map[string][]any{
+		"repoint user_repos":                                            {pair.LoserID, pair.WinnerID},
+		"repoint user_repo_stars":                                       {pair.LoserID, pair.WinnerID},
+		"delete loser collection_queue":                                 {pair.LoserID},
+		"delete loser collection_status":                                {pair.LoserID},
+		"delete loser staging":                                          {pair.LoserID},
+		"repoint mailing_list_staging":                                  {pair.LoserID, pair.WinnerID},
+		"fill winner's empty forge ID":                                  {pair.WinnerID, fillForgeID},
+		"repoint repo_forge_id_changes":                                 {pair.LoserID, pair.WinnerID, loserForgeID},
+		"delete loser repo_forge_id_changes":                            {pair.LoserID},
+		"repoint repo_gone_history":                                     {pair.LoserID, pair.WinnerID, GoneSourceDedup},
+		"delete loser repo_gone_history":                                {pair.LoserID},
+		"repoint messages":                                              {pair.LoserID, pair.WinnerID},
+		"repoint email_message.repo_id":                                 {pair.LoserID, pair.WinnerID},
+		"repoint email_message.signaled_repo_id":                        {pair.LoserID, pair.WinnerID},
+		"repoint commit_comment_ref":                                    {pair.LoserID, pair.WinnerID},
+		"migrate foundation_membership":                                 {pair.LoserGit, pair.WinnerGit},
+		"delete loser foundation_membership":                            {pair.LoserGit},
+		"remap email_message issue links":                               {pair.LoserID, pair.WinnerID},
+		"clear unmapped email_message issue links":                      {pair.LoserID},
+		"remap email_message PR links":                                  {pair.LoserID, pair.WinnerID},
+		"clear unmapped email_message PR links":                         {pair.LoserID},
+		"remap email_message review links":                              {pair.LoserID, pair.WinnerID},
+		"clear unmapped email_message review links":                     {pair.LoserID},
+		"remap cross-repo review_comments":                              {pair.LoserID, pair.WinnerID},
+		"delete unmappable review_comments cross-links":                 {pair.LoserID},
+		"remap cross-repo pull_request_review_message_ref":              {pair.LoserID, pair.WinnerID},
+		"delete unmappable pull_request_review_message_ref cross-links": {pair.LoserID},
 	}
-	for _, st := range steps {
-		if err := exec(st.label, st.sql, st.args...); err != nil {
+	for i, st := range dedupPairSteps {
+		args, ok := stepArgs[st.label]
+		if !ok {
+			return fmt.Errorf("dedup step %q has no arguments", st.label)
+		}
+		if err := exec(st.label, dedupPairStepSQL(i), args...); err != nil {
 			return err
 		}
 	}
 
 	// --- Step 3: grandchildren without a repo_id column, join-deleted
 	// before their parents.
-	for _, jd := range loserJoinDeletes {
-		if err := exec("join-delete "+jd.label, jd.sql, pair.LoserID); err != nil {
+	for i, jd := range loserJoinDeletes {
+		if err := exec("join-delete "+jd.label, loserJoinDeleteSQL(i), pair.LoserID); err != nil {
 			return err
 		}
 	}
 
 	// --- Step 4: the loser's per-repo duplicated child data,
 	// leaves-first.
-	for _, table := range loserRepoIDDeletes {
+	for i, table := range loserRepoIDDeletes {
 		if err := exec("delete "+table,
-			fmt.Sprintf(`DELETE FROM %s WHERE repo_id = $1`, table), pair.LoserID); err != nil {
+			loserRepoIDDeleteSQL(i), pair.LoserID); err != nil {
 			return err
 		}
 	}
 
 	// --- Step 5: no-FK hygiene deletes (aggregates, history snapshots,
 	// scancode results, network exports).
-	for _, table := range loserHygieneDeletes {
+	for i, table := range loserHygieneDeletes {
 		if err := exec("delete "+table,
-			fmt.Sprintf(`DELETE FROM %s WHERE repo_id = $1`, table), pair.LoserID); err != nil {
+			loserHygieneDeleteSQL(i), pair.LoserID); err != nil {
 			return err
 		}
 	}

@@ -261,26 +261,40 @@ instead of ad-hoc regexes:
   the assignments that belong to a write of `table`: one statement can write
   two tables (a data-modifying CTE and the statement proper). A column written
   by its quoted name (`SET "col" = …`) is that column.
-- `sqlscan.Assemble(files)` (v0.29.203) — the statements that are ASSEMBLED
-  in Go: a constant joined to a clause, `fmt.Sprintf` with `%s` / `%[n]s`, a
-  one-line builder function, `strings.Join` over a fixed list, a local given
-  fixed values (one statement per value; a value under `if x.flag` follows the
-  flag when `x` is a loop's element), and a statement in a `range` loop over a
-  fixed list (one per element). It returns what it read whole and what it
-  could not, with the reason.
-- `sqlscan.CheckUnreadable(unread, registry, fills, exceptions)` — what
-  becomes of each expression that could not be read: a `Fill` supplies the
-  real values of its unread parts, taken from the variable the code reads; a
-  statement whose unread parts stand only in a row-choosing clause (`WHERE`,
-  `FROM`) or inside the parentheses of one column's value is handed on with
-  them; anything else that writes a registered table, or whose table is itself
-  unread, is a violation.
+- `sqlscan.StrictArguments(root, files, env)` (v0.29.212) — every SQL argument
+  of a package, found by type (a call of a database-library function that runs
+  SQL, by object) and classified. There is no evaluator of Go: an argument is
+  read only as a compiler constant; a listed pure function (`fmt.Sprintf`,
+  `strings.Join/Repeat/Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix`,
+  `+`) on compiler constants, by calling it; text built by one of the store's
+  own functions on constants, by running that function (`Env`); fixed text
+  with an integer in it, made with the real `fmt.Sprintf` for several numbers;
+  fixed text whose gaps are a helper's parameters, filled with the constants
+  every caller passes; or a helper's parameter handed on untouched, read at
+  its callers. Anything else is a hole.
+- `sqlscan.CheckSites(args, sites, pins, tests)` — every hole must be
+  registered. An EXECUTED registration names the store's builder function and
+  its inputs, and the check runs the real builder for each input; a finite
+  domain names the test showing an input outside it gives no statement, and
+  an open one may put what varies into the text only through
+  `pgx.Identifier` or a registered quoting helper. A FROZEN registration (a
+  digest of the source the text is made of) is the last resort.
+- `sqlscan.ParseWrites(sql)` — the writes of a statement, read from tokens
+  (`lex.go` is a tokeniser for PostgreSQL's lexical rules). `sqlscan.Check`
+  judges with it and denies by default: a statement not read to its end, a
+  target with no schema that assigns a registered column's name, and a write
+  through a view over a registered table are violations.
+- `sqlscan.StrictReferences(root, files)` — references to something that runs
+  SQL which no reading of arguments covers (a runner taken as a value, rows
+  written with no text, a library type that carries SQL arriving from or
+  leaving to other code).
 - `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
   (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
 
-Known blind spots are documented in the package doc (tagged dollar-quotes
-untracked; the reading of assembled SQL is by syntax, with no type
-information, and reports where it cannot be sure). The flagship consumer is
+What the write-policy check guarantees, and what it does not, is stated in
+`internal/srctest/sqlscan/doc.go`. The text matchers above (`Statements`,
+`FindWrites`, `WritesColumn`, `SetExprs`) remain for the other source
+tripwires, whose flagship consumer is
 `internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
 (same zero-violation pass on the real corpus; fake-column and stale-allowlist
 mutations flag identically).
@@ -299,13 +313,17 @@ fixture in the engine's suite, and re-red-verified against the live registry.
 An SQL argument of a call that runs SQL in `internal/db` (reads included) is
 read whole by the check, or it is registered, or `TestNoProtectedWriteGoesUnread`
 fails. Nothing decides that an unread part "cannot matter". Triage, in this
-order: write the statement so that every part is fixed text (a constant, a
-builder called with constants, a loop over a list written out) | give the real
-values of its parts in `columnWriteFills`, from the variable the code reads |
-list its declaration under a *shape* (a pattern its whole text must match: a
-read, a savepoint, a schema change, a batch insert's rows) | last, and only
-with the maintainer's decision, an exception with its reason. A fill, a shape
-or an exception names the DECLARATION the statement stands in, never its file.
+order: write the statement as a constant (a value belongs in a placeholder) |
+build it with one named function of the store from string constants, and add
+that function to `columnWriteEnv` | register the function in
+`columnWriteBuilders` with its inputs: the index of each member of a fixed
+list (`indexedBuilders`), every key of a map it looks its input up in
+(`keyedBuilders`), every combination of its bools (`boolBuilders`), or the
+constants its callers pass | last, and only with the maintainer's decision, a
+frozen registration with its reason. Source pins elsewhere in `internal/db`
+hold some statements' text in place (the page-cache writer registry, the
+shutdown and dedup pins): moving such text into a builder means re-anchoring
+that pin in the same change.
 An exported function that hands a parameter to a statement call is refused:
 SQL does not enter the store from outside it.
 

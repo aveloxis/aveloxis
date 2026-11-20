@@ -184,7 +184,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"mergeOnePair":                      {"fleet", "merge-cntrb-collisions"},
 	"upsertOneContributor":              {"fleet", "contributor rows"},
 	"BackfillIssueExternalKeys":         {"unread", "issues.external_key"},
-	"packageKeyFillSQL":                 {"unread", "repo_deps_libyear.package_key, repo_lockfile_packages.package_key (0.29.173: no cached answer reads the key)"},
+	"FillPackageKeysStep":               {"unread", "through packageKeyFillSQL (a statement builder, followed since 0.29.212): repo_deps_libyear.package_key, repo_lockfile_packages.package_key (0.29.173: no cached answer reads the key)"},
 	"MarkActivityCheckedBatch":          {"unread", "contributors.gh_activity_checked_at"},
 	"MarkHistoryBackfilled":             {"unread", "contributors.gh_history_backfilled_at, gh_history_failed_at"},
 	"MarkHistoryFetchFailed":            {"unread", "contributors.gh_history_failed_at"},
@@ -359,6 +359,47 @@ func sqlOf(part string, values map[string]string) string {
 	return b.String()
 }
 
+// statementBuilderParts adds the body of every registered statement
+// builder to values, under the builder's name, and returns which functions
+// they are.
+func statementBuilderParts(t *testing.T, stripped map[string]string, values map[string]string) map[string]bool {
+	t.Helper()
+	registered := columnWriteBuilders(t)
+	is := map[string]bool{}
+	for _, src := range stripped {
+		for fn, part := range srctest.FuncParts(t, src) {
+			if _, ok := registered[fn]; ok && fn != srctest.PackageLevel {
+				is[fn] = true
+				values[fn] += "\n" + part
+			}
+		}
+	}
+	for name := range registered {
+		if !is[name] && !strings.Contains(name, ".") {
+			t.Errorf("the statement builder %s is registered with the write-policy check and is no function of internal/db", name)
+		}
+	}
+	return is
+}
+
+// A writer that takes its statement from a builder is the writer of what
+// the builder's text writes: the property the registry is about (which
+// function writes which table) follows the call.
+func TestSQLOfFollowsAStatementBuilder(t *testing.T) {
+	values := map[string]string{
+		"thingSteps":   "[]step{{`DELETE FROM aveloxis_data.commits WHERE repo_id = $1`}}",
+		"thingStepSQL": "func thingStepSQL(i int) string { return thingSteps[i].sql }",
+		"otherSQL":     "func otherSQL() string { return `DELETE FROM aveloxis_data.messages` }",
+	}
+	got := sqlOf("func Heal() { for i := range thingSteps2 { exec(thingStepSQL(i)) } }", values)
+	if !strings.Contains(got, "DELETE FROM aveloxis_data.commits") {
+		t.Errorf("a statement taken from a builder must be read where the builder is called: %q", got)
+	}
+	if strings.Contains(got, "aveloxis_data.messages") {
+		t.Errorf("a builder the function never calls must not be read: %q", got)
+	}
+}
+
 func TestSQLOfFollowsNamedStatements(t *testing.T) {
 	values := map[string]string{
 		"upsertThingSQL": "`INSERT INTO aveloxis_data.messages (a) VALUES ($1)`",
@@ -390,9 +431,17 @@ func TestPageCacheTableWritersAreCovered(t *testing.T) {
 			values[n] = v
 		}
 	}
+	// A statement BUILDER (a function registered with the write-policy
+	// check, columnWriteBuilders: it returns a statement's text and runs
+	// nothing) is not a writer. The writer is the function that calls it,
+	// and that function's statements include the builder's text: the
+	// builder's body stands among the values a name is followed to, exactly
+	// as a named constant does (0.29.212: an extraction of SQL text into a
+	// builder then needs no edit here).
+	isBuilder := statementBuilderParts(t, stripped, values)
 	for name, src := range stripped {
 		for fn, part := range srctest.FuncParts(t, src) {
-			if fn == srctest.PackageLevel {
+			if fn == srctest.PackageLevel || isBuilder[fn] {
 				continue
 			}
 			bodies[fn] += part

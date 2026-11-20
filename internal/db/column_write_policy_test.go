@@ -20,11 +20,14 @@ package db
 import (
 	"context"
 	"fmt"
+	"go/build"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,75 +199,6 @@ var columnWriteExceptions = []sqlscan.Exception{
 		Reason: "one-time repair of a value that is not a date (year before 1970); the condition is in the statement and the whole statement is matched"},
 }
 
-// columnWriteFills gives the real values of the parts of a write that the
-// reader of assembled statements (sqlscan.Assemble) cannot follow, so that
-// every instance is checked as a whole statement. The rows come from the
-// variable the code itself reads: a value added there is checked with no
-// one remembering to. v0.29.203 (summary/71, the 0.29.166 item).
-func columnWriteFills(t testing.TB) []sqlscan.Fill {
-	carried := strings.Join(libyearCarriedColumns, ", ")
-	return []sqlscan.Fill{
-		{Decl: "replaceLibyearDeleteAndCarrySQL", Match: "WITH gone AS ( DELETE FROM aveloxis_data.repo_deps_libyear",
-			Values: [][]string{{carried, carried, carried}},
-			Reason: "the three parts are one value, strings.Join(libyearCarriedColumns, \", \"), which a function computes from libyearRotatedColumns at start; the row is that variable"},
-
-		// 0.29.208 (review round 1): the SQL argument of a call that writes
-		// is read whatever its form, and one with no fixed text at all is a
-		// violation. These are the store's: each is given the VALUES it
-		// takes, from the code itself, so that each is checked whole.
-		{Decl: "PostgresStore.ReplaceRepoLibyear", Match: sqlscan.Unknown, Arg: "rotateLibyearInsertSQL",
-			Values: [][]string{{rotateLibyearInsertSQL}},
-			Reason: "the argument is the package variable rotateLibyearInsertSQL, which a function computes once at start; the row is that variable"},
-		{Decl: "CreateMaterializedViews", Match: sqlscan.Unknown, Arg: "matviewsSQL",
-			Values: [][]string{{matviewsSQL}},
-			Reason: "the argument is matviews.sql, embedded; the row is the embedded text"},
-		{Decl: "RunMigrations", Match: sqlscan.Unknown, Arg: "schemaSQL",
-			Values: [][]string{{schemaSQL}},
-			Reason: "the argument is schema.sql, embedded; the row is the embedded text"},
-		{Decl: "RunMigrations", Match: sqlscan.Unknown, Arg: "viewsSQL",
-			Values: [][]string{{viewsSQL}},
-			Reason: "the argument is views.sql, embedded; the row is the embedded text"},
-		// 0.29.210 (review round 3, deny by default): every SQL argument
-		// that is not read whole is registered, a read included, and no
-		// part of a statement is judged harmless. These are the ones that
-		// can be given their values.
-		{Decl: "PostgresStore.ReplaceRepoLibyear", Match: sqlscan.Unknown, Arg: "replaceLibyearDeleteAndCarrySQL",
-			Values: [][]string{{replaceLibyearDeleteAndCarrySQL}},
-			Reason: "the argument is the package variable replaceLibyearDeleteAndCarrySQL (a DELETE ... RETURNING and an INSERT, run through Query for its rows); the row is that variable"},
-		{Decl: "clearOnlySQL", Match: "WITH cleared AS",
-			Values: goneClearPredicatesOf(t, clearOnlySQL),
-			Reason: "the part is the predicate clearOnlySQL is called with: c.sideline + c.guard of a goneClear whose build it is; the rows are those of every goneClear literal in the source that builds with it"},
-		{Decl: "resurrectSQL", Match: "WITH cleared AS",
-			Values: goneClearPredicatesOf(t, resurrectSQL),
-			Reason: "the part is the predicate resurrectSQL is called with: c.sideline + c.guard of a goneClear whose build it is; the rows are those of every goneClear literal in the source that builds with it"},
-		{Decl: "clearInTxUnderRowLock", Match: "SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 AND (" + sqlscan.Unknown + ") FOR NO KEY UPDATE",
-			Values: goneClearSidelines(t),
-			Reason: "the part is c.sideline of the goneClear a caller passes; the rows are the sidelines of every goneClear literal in the source"},
-		{Decl: "clearInTxUnderRowLock", Match: sqlscan.Unknown, Arg: "sql",
-			Values: goneClearStatements(t),
-			Reason: "the argument is the local sql, which is c.build(c.sideline + c.guard) for the goneClear a caller passes (TestTheGoneClearStatementIsBuiltOnce pins that one definition); the rows are that expression for every goneClear literal in the store's source, read from the source itself (goneClearsInSource), and nothing changes a goneClear after it is written (TestAGoneClearIsNeverChangedAfterItIsWritten)"},
-	}
-}
-
-// goneClearPredicatesOf are the predicates (sideline + guard) of the
-// goneClear literals in the source that build with build, one row each.
-func goneClearPredicatesOf(t testing.TB, build func(string) string) [][]string {
-	const probe = "\x00probe\x00"
-	seen := map[string]bool{}
-	var out [][]string
-	for _, c := range goneClearsInSource(t) {
-		if c.build(probe) != build(probe) {
-			continue
-		}
-		if p := c.sideline + c.guard; !seen[p] {
-			seen[p] = true
-			out = append(out, []string{p})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
-	return out
-}
-
 // goneClearSidelines are the sidelines of the goneClear literals the row
 // lock gates on (those not locked always).
 func goneClearSidelines(t testing.TB) [][]string {
@@ -283,9 +217,9 @@ func goneClearSidelines(t testing.TB) [][]string {
 // packageKeyFillTablesChecked are the tables the package-key fill walks.
 var packageKeyFillTablesChecked = []PackageKeyFillTable{PackageKeyFillInventory, PackageKeyFillLockfile}
 
-// packageKeyFillSQL's statements are read whole since 0.29.212 (the reader
-// follows the call and takes each return); this keeps the function to one
-// return per table and the refusal.
+// packageKeyFillSQL's statements are judged as the function's own results
+// for these tables (columnWriteSites runs it); this keeps the function to
+// one return per table and the refusal.
 func TestPackageKeyFillTablesAreTheFilledOnes(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func packageKeyFillSQL("))
 	if n := strings.Count(body, "case "); n != len(packageKeyFillTablesChecked) {
@@ -308,7 +242,7 @@ func TestPackageKeyFillTablesAreTheFilledOnes(t *testing.T) {
 // else (review round 2: `writeSQL = rewrite(writeSQL)` passed every pin).
 func TestThePackageKeyFillWriteIsTheFunctionsResult(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) FillPackageKeysStep("))
-	if strings.Count(body, "boundSQL, pageSQL, writeSQL, err := packageKeyFillSQL(table)") != 1 {
+	if strings.Count(body, "_, pageSQL, writeSQL, err := packageKeyFillSQL(table)") != 1 {
 		t.Error("FillPackageKeysStep must take its three statements once, from packageKeyFillSQL(table): the write-policy fill checks that function's results")
 	}
 	if m := regexp.MustCompile(`\bwriteSQL\s*(\+=|=[^=])|&writeSQL\b`).FindString(body); m != "" {
@@ -321,37 +255,6 @@ func TestThePackageKeyFillWriteIsTheFunctionsResult(t *testing.T) {
 	}
 	if strings.Count(body, "b.Queue(writeSQL, ") != 1 || strings.Count(body, "writeSQL") != 2 {
 		t.Error("FillPackageKeysStep must use writeSQL once, as the statement it queues")
-	}
-}
-
-// Every name a fill stands for is given its value ONCE, and nothing else can
-// give it another: by the type checker's OBJECT, not by the name's
-// spelling (0.29.211). A fill says "this argument is that value"; the
-// checks above pinned that for one of the names by matching text in one
-// function, and review round 4 changed each of the others after its
-// definition (`pageSQL = f(pageSQL)`; `replaceLibyearDeleteAndCarrySQL =
-// f(x)` in another function) with every check green.
-func TestEveryFilledNameIsGivenItsValueOnce(t *testing.T) {
-	root, files := srctest.Root(t), srctest.PackageFiles(t, "internal/db", 30)
-	for _, c := range []struct{ decl, name, how, value string }{
-		{"PostgresStore.FillPackageKeysStep", "boundSQL", "declared", "packageKeyFillSQL(table)"},
-		{"PostgresStore.FillPackageKeysStep", "pageSQL", "declared", "packageKeyFillSQL(table)"},
-		{"PostgresStore.FillPackageKeysStep", "writeSQL", "declared", "packageKeyFillSQL(table)"},
-		{"clearInTxUnderRowLock", "sql", "declared", "c.build(c.sideline + c.guard)"},
-		{"PostgresStore.ReplaceRepoLibyear", "rotateLibyearInsertSQL", "declared", ""},
-		{"PostgresStore.ReplaceRepoLibyear", "replaceLibyearDeleteAndCarrySQL", "declared", ""},
-		{"CreateMaterializedViews", "matviewsSQL", "declared", ""},
-		{"RunMigrations", "schemaSQL", "declared", ""},
-		{"RunMigrations", "viewsSQL", "declared", ""},
-	} {
-		got, err := sqlscan.Givings(root, files, c.decl, c.name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 1 || got[0].How != c.how || (c.value != "" && got[0].Value != c.value) {
-			t.Errorf("%s: %s is given a value at %+v; the write-policy fill for it holds only if it is %s once%s, and nothing else can change it",
-				c.decl, c.name, got, c.how, map[bool]string{true: " as " + c.value, false: ""}[c.value != ""])
-		}
 	}
 }
 
@@ -398,8 +301,29 @@ func TestTheReadsThatTakeARequestValueRefuseAnUnknownOne(t *testing.T) {
 	if _, _, err := s.ContributorRetentionSeries(ctx, []int64{1}, "week; DROP TABLE x", time.Time{}, time.Time{}, 1); err == nil {
 		t.Error("ContributorRetentionSeries took a bucket that is neither week nor month")
 	}
-	if _, err := s.MetricWeeklySeries(ctx, []int64{1}, "commits", "day", time.Time{}, time.Time{}); err == nil {
-		t.Error("MetricWeeklySeries took a bucket that is neither week nor month")
+	// Each call is wrong in ONE input, the one under test; the others are
+	// values the function accepts, taken from the lists it reads (0.29.212,
+	// S5-1: the metric here was "commits", which is no key of
+	// metricSeriesSQL, so the call failed on the metric whatever the
+	// bucket check did, and removing the bucket check failed nothing).
+	metrics := make([]string, 0, len(metricSeriesSQL))
+	for m := range metricSeriesSQL {
+		metrics = append(metrics, m)
+	}
+	sort.Strings(metrics)
+	if len(metrics) == 0 {
+		t.Fatal("metricSeriesSQL has no metric: nothing valid to call MetricWeeklySeries with")
+	}
+	if _, ok := seriesBuckets["week"]; !ok {
+		t.Fatal(`"week" is not one of seriesBuckets: the metric case below would fail on its bucket`)
+	}
+	if _, ok := seriesBuckets["day"]; ok {
+		t.Fatal(`"day" is one of seriesBuckets: the bucket case below tests nothing`)
+	}
+	for _, metric := range metrics {
+		if _, err := s.MetricWeeklySeries(ctx, []int64{1}, metric, "day", time.Time{}, time.Time{}); err == nil {
+			t.Errorf("MetricWeeklySeries(%q) took a bucket that is neither week nor month", metric)
+		}
 	}
 	if _, err := s.MetricWeeklySeries(ctx, []int64{1}, "no-such-metric", "week", time.Time{}, time.Time{}); err == nil {
 		t.Error("MetricWeeklySeries took a metric that has no statement")
@@ -494,7 +418,7 @@ func TestTheGoneClearStatementIsBuiltOnce(t *testing.T) {
 	// replaced, review round 3), declared again in an inner block, appended
 	// to; and its address.
 	gives := regexp.MustCompile(`(?m)(^|[\s,;{(])sql\b\s*(,[^=\n]*)?(:=|\+=|=[^=])`).FindAllString(body, -1)
-	if strings.Count(body, "sql := c.build(c.sideline + c.guard)") != 1 || len(gives) != 1 || strings.Contains(body, "&sql") {
+	if strings.Count(body, "sql := goneClearSQL(c)") != 1 || len(gives) != 1 || strings.Contains(body, "&sql") {
 		t.Errorf("clearInTxUnderRowLock must give its statement once, as c.build(c.sideline + c.guard): the write-policy fill checks that expression's values (it is given a value %d times: %q)", len(gives), gives)
 	}
 }
@@ -580,261 +504,435 @@ func TestAGoneClearIsNeverChangedAfterItIsWritten(t *testing.T) {
 	}
 }
 
-// columnWriteUnreadableExceptions is the last resort for a write the
-// reader cannot follow, cannot judge on its fixed text and cannot be given
-// its values. There is none, and one is added only with the operator's
-// decision (2026-11-19: "ensure robustness and data integrity").
-//
-// 0.29.210: under deny-by-default a READ whose text this reader cannot
-// assemble is registered too. Each below is one SQL argument, named as
-// written, with what a person found when they read how it is built. None
-// is a write, and none could be given as a fill: the statement is chosen
-// or composed at run time from the package's own constants.
-var columnWriteUnreadableExceptions = []sqlscan.UnreadableException{
-	// SQL TEXT FROM OUTSIDE THE PROCESS. An exception is the only
-	// registration that covers a part of no verified kind (0.29.212), and
-	// each says where that text comes from.
-	{Decl: "ContentExpectations.wherePassing", Match: "SELECT jsonb_build_object(", Call: 1, Of: 1,
-		Source: "the data-test rules file: the JSON key `where` of a rule (LoadContentExpectations), written by the operator who runs data-test",
-		Reason: "BY DESIGN: r.Where is a predicate an operator writes in the rules file, and it is put into this SELECT's WHERE as written. It can hold any SQL a predicate can. What bounds it: the statement runs inside contentQuery's transaction, which is READ ONLY and pinned to UTC (content_diff.go), so it cannot write; and the rules file is read by the data-test command only, never by serve, web or api. Every other part of the statement is of a verified kind (an identifier, a quoted literal, a list built in a loop)"},
-	{Decl: "execCreateIndexConcurrently", Match: "ANALYZE " + sqlscan.Unknown, Call: 4, Of: 4,
-		Source: "the database's catalog: expressionIndexTableWithoutStatistics reads quote_ident(nspname) || '.' || quote_ident(relname) from pg_class for the index just built",
-		Reason: "the table to ANALYZE is named by the database, already quoted there by quote_ident; this reader cannot see that a value read from a query is an identifier. A read of statistics: ANALYZE writes no row of any table"},
-}
-
-// columnWriteShapes are the SQL arguments that are not read whole and whose
-// every unread part is of a kind the READER verified (0.29.212): an
-// identifier quoted by pgx.Identifier.Sanitize, a value inside a quoted
-// literal with its quotes doubled, or the mark after text a loop repeats.
-// An entry names the argument (declaration, place, count) and those kinds;
-// nothing here is a description. A part of any other origin is covered by
-// no shape. The pattern says what the fixed text must be.
-var columnWriteShapes = func() []sqlscan.Shape {
-	hole := regexp.QuoteMeta(sqlscan.Unknown)
-	// Words that begin a statement, or an arm of one, that changes rows or
-	// schema. SET covers UPDATE ... SET and DO UPDATE SET; INTO covers
-	// INSERT INTO, MERGE INTO and SELECT ... INTO.
-	writes := regexp.MustCompile(`(?i)\b(INSERT|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|COPY|CALL|DO|EXECUTE|PREPARE|REFRESH|SET|INTO)\b`)
-	const (
-		ident = sqlscan.KindIdentifier
-		lit   = sqlscan.KindLiteral
-		rep   = sqlscan.KindRepeated
-	)
-	arg := func(decl string, call, of int, kinds ...string) sqlscan.ShapeArg {
-		return sqlscan.ShapeArg{Decl: decl, Call: call, Of: of, Kinds: strings.Join(kinds, ",")}
+// Enforces SR-11 (scripts/standing_rules.go).
+func TestColumnWritePolicies(t *testing.T) {
+	stmts := columnWriteReading(t).Statements
+	if len(stmts) == 0 {
+		t.Fatal("no statement reached the policy check")
 	}
-	return []sqlscan.Shape{
-		{Name: "a read", Text: regexp.MustCompile(`(?is)^(SELECT|WITH|SHOW)\b[^;]*$`), Forbid: writes,
-			Args: []sqlscan.ShapeArg{
-				arg("ContentExpectations.CheckContent", 1, 1, ident),
-				arg("PostgresStore.RunDataVerification", 5, 10, lit),
-				arg("contentCount", 1, 1, ident),
-				arg("diffOneTable", 1, 4, ident),
-				arg("diffOneTable", 2, 4, ident, lit, rep),
-				arg("diffOneTable", 3, 4, ident, lit, rep),
-				arg("diffOneTable", 4, 4, ident, lit, rep),
-				arg("populatedCounts", 1, 1, ident, rep),
-				arg("tableRowCounts", 2, 2, ident),
-			},
-			Reason: "ONE statement that begins SELECT, WITH or SHOW and holds none of the words that change rows or schema. Its unread parts are names of the compared databases' own tables and columns (quoted identifiers), key names inside quoted literals, and lists of those built in a loop: the data-test comparison tools, and the forge-account pattern of data-verify"},
-		{Name: "schema change", Text: regexp.MustCompile(`^(ALTER TABLE|CREATE (UNIQUE )?INDEX)\b[^;]*$`),
-			// ALTER COLUMN ... TYPE ... USING rewrites every row's value
-			// of the column: it is not of this shape.
-			Forbid: regexp.MustCompile(`(?i)\b(INSERT|MERGE|TRUNCATE|GRANT|COPY|CALL|DO|EXECUTE)\b|\bUPDATE\s+\S+\s+SET\b|\bDELETE\s+FROM\b|\bALTER\s+COLUMN\b[^,]*\b(TYPE|USING)\b|\bSET\s+DATA\s+TYPE\b`),
-			Args: []sqlscan.ShapeArg{
-				arg("ensureAllFKsDeferrable", 2, 2, ident),
-				arg("execMigrationStep", 1, 1, ident),
-				arg("execCreateIndexConcurrently", 3, 4, ident),
-				arg("migrateStage4DedupAndIndexes", 3, 12, ident),
-				arg("setToolVersionDefaults", 2, 2, ident),
-			},
-			Reason: "DDL the migrate runs with a name read from the catalog, quoted as an identifier: a constraint made deferrable, the schema pg_trgm's operator class lives in, a tool_version column's default (which applies to rows written later, by statements this check reads). ONE statement, no statement that writes rows, no change of a column's type"},
-		{Name: "a batch insert's rows", Text: regexp.MustCompile(`^INSERT INTO aveloxis_data\.(commits|commit_messages) \([a-z_, ]*\) VALUES [^;]* ON CONFLICT [^;]*$`),
-			Forbid: regexp.MustCompile(`ON CONFLICT.*` + hole),
-			Args: []sqlscan.ShapeArg{
-				arg("PostgresStore.UpsertCommitMessageBatch", 1, 1, rep),
-			},
-			Reason: "the VALUES rows are written by a loop over the batch, each a row of placeholders and two quoted constants; one round of it is read and stands in the text Check judges, with the mark that it repeats. (UpsertCommitBatch's rows are placeholders only, and it is read whole.) The column list and the whole ON CONFLICT arm are fixed text; no unread part stands in or after ON CONFLICT"},
+	t.Logf("%d whole statements of the store judged", len(stmts))
+	for _, f := range columnWriteFailures(stmts) {
+		t.Error(f)
 	}
-}()
-
-// columnWriteStatements is every write statement of the store that the
-// policy check judges: those written as one string, those assembled from
-// fixed text (one per value where a part takes several), and those the
-// unreadable check hands on (filled, or with holes that cannot matter).
-func columnWriteStatements(t *testing.T) ([]sqlscan.Stmt, sqlscan.UnreadReport) {
-	t.Helper()
-	return columnWriteStatementsOf(t, srctest.PackageFiles(t, "internal/db", 30), columnWritePolicies)
-}
-
-// columnWriteStatementsOf is that reading, of the files and against the
-// registry it is given: the ONE way statements reach the policy check.
-func columnWriteStatementsOf(t *testing.T, files map[string]string, registry []sqlscan.Registered) ([]sqlscan.Stmt, sqlscan.UnreadReport) {
-	t.Helper()
-	whole, unread, err := sqlscan.AssembleTyped(srctest.Root(t), files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rep := sqlscan.CheckUnreadable(unread, registry, columnWriteFills(t), columnWriteUnreadableExceptions, columnWriteShapes)
-	return append(append(sqlscan.Statements(files), whole...), rep.Statements...), rep
-}
-
-// A write to a table with a protected column that cannot be read is a
-// failure, never a silent pass (the checker's blind spot until 0.29.203:
-// "SQL assembled by string concatenation is invisible").
-//
-// 0.29.210, deny by default: the claim is now about every SQL argument of
-// the store, a read included, and about every part of it. Nothing is
-// passed because a part "cannot matter". (The name is kept: the
-// contributor guide and the lens file cite it.)
-func TestNoProtectedWriteGoesUnread(t *testing.T) {
-	_, rep := columnWriteStatements(t)
-	for _, u := range rep.Violations {
-		arg := ""
-		if u.Arg != "" {
-			arg = "\n  the argument, as written: " + u.Arg
+	// Registry hygiene: every entry carries a reason.
+	for _, r := range columnWritePolicies {
+		if r.Reason == "" {
+			t.Errorf("%s.%s: registry entries REQUIRE a reason", r.Table, r.Column)
 		}
-		t.Errorf("%s:%d (%s): SQL the policy check cannot read whole (%s):\n  %s%s\n  TRIAGE, in this order:\n"+
-			"  1. REWRITE it so every part is fixed text: a value belongs in a placeholder ($1), never in the text (fmt's %%d included); choose between whole statements (q := a; if x { q = b }) and not between pieces.\n"+
-			"  2. FILL it: give its parts' real values in columnWriteFills, taken from the variable or function the code itself reads, so each instance is checked whole.\n"+
-			"  3. SHAPE: if it is of a kind already in columnWriteShapes (a read, a savepoint, a schema change, a batch's rows) and you have read where its unread parts come from, add this declaration to that shape's list.\n"+
-			"  4. EXCEPTION (last, with the operator's decision): columnWriteUnreadableExceptions, naming the argument and what you found.\n"+
-			"  If the call is not a database call at all (a method that happens to be named Exec, Queue or Prepare): the reader has no type information and cannot tell; rename the method or take step 4.",
-			u.File, u.Line, u.Decl, u.Why, strings.Join(strings.Fields(u.Text), " "), arg)
 	}
-	for _, b := range rep.BadFills {
-		t.Errorf("fill: %s", b)
+	for _, ex := range columnWriteExceptions {
+		if ex.Reason == "" {
+			t.Errorf("exception %s.%s: exceptions REQUIRE a reason", ex.Table, ex.Column)
+		}
 	}
-	for _, st := range rep.StaleShapes {
-		t.Errorf("stale shape entry: %s", st)
+}
+
+// columnWriteFailures is everything the policy check holds against the
+// statements: the one function the real test and the canary both report
+// through, so that a kind of failure dropped here is dropped in neither
+// without the canary saying so.
+func columnWriteFailures(stmts []sqlscan.Stmt) []string {
+	rep := sqlscan.Check(stmts, columnWritePolicies, columnWriteExceptions)
+	var out []string
+	for _, u := range rep.Unparsed {
+		out = append(out, fmt.Sprintf("%s: a statement the policy check did not read to its end (%s), so nothing was checked on it:\n  %.300s", u.File, u.Detail, strings.Join(strings.Fields(u.SQL), " ")))
 	}
-	for _, f := range rep.StaleFills {
-		t.Errorf("stale fill %s (%q): it matched no statement; delete or correct it (reason was: %s)", f.Decl, f.Match, f.Reason)
+	for _, v := range rep.Violations {
+		out = append(out, fmt.Sprintf("%s.%s in %s violates %s:\n  expr: %s\n  %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason",
+			v.Table, v.Column, v.File, v.Want, v.Expr, v.Detail))
 	}
 	for _, ex := range rep.StaleExceptions {
-		t.Errorf("stale exception %s (%q): it covered nothing; delete it (reason was: %s)", ex.Decl, ex.Match, ex.Reason)
+		out = append(out, fmt.Sprintf("stale exception %s.%s (%s: %q): it suppressed nothing this run; delete it (reason was: %s)",
+			ex.Table, ex.Column, ex.File, ex.Match, ex.Reason))
+	}
+	for _, u := range rep.Unwritten {
+		out = append(out, fmt.Sprintf("registered column %s.%s has NO writer statement: registry rot (renamed column?) or a dark column (the column-writer tripwire's territory)",
+			u.Table, u.Column))
+	}
+	return out
+}
+
+// envFunc hands one of the store's real text builders to the reading: the
+// reading calls IT, with the constants the source calls it with.
+func envFunc(t testing.TB, name string, f any) func([]string) string {
+	v := reflect.ValueOf(f)
+	ft := v.Type()
+	if ft.Kind() != reflect.Func || ft.IsVariadic() || ft.NumOut() != 1 || ft.Out(0).Kind() != reflect.String {
+		t.Fatalf("%s is not a function of strings that returns a string", name)
+	}
+	for i := 0; i < ft.NumIn(); i++ {
+		if ft.In(i).Kind() != reflect.String {
+			t.Fatalf("%s: parameter %d is not a string", name, i+1)
+		}
+	}
+	return func(args []string) string {
+		if len(args) != ft.NumIn() {
+			t.Fatalf("%s is called with %d arguments and takes %d", name, len(args), ft.NumIn())
+		}
+		in := make([]reflect.Value, len(args))
+		for i, a := range args {
+			in[i] = reflect.ValueOf(a).Convert(ft.In(i))
+		}
+		return v.Call(in)[0].String()
 	}
 }
 
-// The denominator, without a number to keep (0.29.209; until then a floor,
-// 55, stood under a count of 63 by a margin somebody chose). "No violation"
-// proves nothing if the reading stopped: so a file of the store's package
-// is added, in memory, that writes a table registered for this test alone,
-// once per way a statement reaches the check, each time with a value the
-// policy forbids or a part that cannot be read, and once per call that
-// runs SQL in the reader's own table (sqlscan.Runners). Every one must
-// come back as a violation THROUGH columnWriteStatementsOf, the function
-// the real checks use, beside the store's real files. A reader that
-// stopped reading, a wiring that dropped one of the three sources, or a
-// call the reader no longer knows, loses a canary. What each rule of the
-// reader reads is pinned in sqlscan's own tests, not here.
-func TestTheWritePolicyCheckSeesEveryWayAStatementArrives(t *testing.T) {
-	const table = "aveloxis_canary.write_policy_canary"
-	files := srctest.PackageFiles(t, "internal/db", 30)
-	const name = "internal/db/zz_write_policy_canary.go"
-	if _, taken := files[name]; taken {
-		t.Fatalf("%s exists: this test adds an in-memory file of that name", name)
+// columnWriteEnv is the store's own text that statements are built from:
+// the embedded files and the functions that make a piece of SQL from
+// string constants. Each entry IS the code (sqlscan.Env).
+func columnWriteEnv(t testing.TB) sqlscan.Env {
+	funcs := map[string]any{
+		"bucketSQL": bucketSQL, "clientAddrVisibleSQL": clientAddrVisibleSQL, "backgroundBackendSQL": backgroundBackendSQL,
+		"appNamePrefixSQL": appNamePrefixSQL, "effectiveProviderSQL": effectiveProviderSQL, "resolvedRepoIDSQL": resolvedRepoIDSQL,
+		"itemRepoIDSQL": itemRepoIDSQL, "itemKeySQL": itemKeySQL, "ownerLinksURL": ownerLinksURL, "repoScopeSQL": repoScopeSQL,
+		"packageExposureSQL": packageExposureSQL, "packageAdvisorySQL": packageAdvisorySQL, "exposureSelectColumns": exposureSelectColumns,
+		"stampLinkedOwnerSQL": stampLinkedOwnerSQL, "deleteSessionsSQL": deleteSessionsSQL, "deleteSessionTreeSQL": deleteSessionTreeSQL,
+		"backendOnThisHostSQL": backendOnThisHostSQL, "probingSessionSQL": probingSessionSQL,
+		"apiTokenDailyLimitColumnType": apiTokenDailyLimitColumnType,
 	}
-	files[name] = "package db\n\nimport \"context\"\n\n" +
-		"const canaryLiteral = `UPDATE " + table + " SET literal_col = $1 WHERE id = $2`\n\n" +
-		"const canaryHead = `UPDATE " + table + " SET `\n\n" +
-		"func canaryAssembled() string { return canaryHead + `assembled_col = $1 WHERE id = $2` }\n\n" +
-		"func canaryArgument(ctx context.Context, tx rotationExecer) {\n\ttx.Exec(ctx, \"UPDATE " + table + " SET argument_col = $1 WHERE id = $2\")\n}\n\n" +
-		"func canaryHole(ctx context.Context, tx rotationExecer, v string) {\n\ttx.Exec(ctx, canaryHead+`hole_col = LOWER(`+v+`) WHERE id = $1`)\n}\n\n" +
-		"func canaryUnread(ctx context.Context, tx rotationExecer, j struct{ sql string }) {\n\ttx.Exec(ctx, j.sql)\n}\n" +
-		"func canaryFragment(v string) string { return canaryHead + `fragment_col = ` + v }\n"
-	// One more per call that runs SQL, from the reader's own table: an
-	// argument at that call's SQL position that cannot be read. A runner
-	// added to the table is covered here without anyone remembering to,
-	// and one the reader stopped knowing loses its canary.
-	// The table is the LIBRARY's (0.29.211): every method of pgx, pgxpool,
-	// pgconn and database/sql that takes SQL text, with the position its
-	// signature gives. The canary calls each through an interface of the
-	// package's own that has a method of that name with a string there,
-	// which is how the store's own narrow interfaces reach them.
-	entries, err := sqlscan.LibraryEntries(srctest.Root(t))
+	env := sqlscan.Env{
+		Embedded: map[string]string{"schemaSQL": schemaSQL, "viewsSQL": viewsSQL, "matviewsSQL": matviewsSQL},
+		Funcs:    map[string]func([]string) string{},
+	}
+	for name, f := range funcs {
+		env.Funcs[name] = envFunc(t, name, f)
+	}
+	return env
+}
+
+// storeTestNames are the names of the store package's tests, read from its
+// test files: what a registration's refusal test must be one of.
+func storeTestNames(t testing.TB) map[string]bool {
+	names := map[string]bool{}
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	type runner struct {
-		Name  string
-		Index int
-	}
-	var runners []runner
-	seen := map[runner]bool{}
+	decl := regexp.MustCompile(`(?m)^func (Test\w+)\(t \*testing\.T\) \{`)
 	for _, e := range entries {
-		parts := strings.Split(e.Name, ".")
-		if e.Class != sqlscan.LibRunsSQL || len(parts) != 3 {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		r := runner{parts[2], e.Index}
-		if !seen[r] {
-			seen[r] = true
-			runners = append(runners, r)
+		b, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range decl.FindAllStringSubmatch(string(b), -1) {
+			names[m[1]] = true
 		}
 	}
-	if len(runners) == 0 {
-		t.Fatal("the reader knows no library method that runs SQL")
+	return names
+}
+
+// columnWriteReading is the reading of the store: every SQL argument of
+// internal/db, classified, joined with the registrations of those that
+// were not read. Its statements are what the policy check judges.
+func columnWriteReading(t testing.TB) sqlscan.SiteReport {
+	t.Helper()
+	return columnWriteReadingOf(t, srctest.PackageFiles(t, "internal/db", 30), columnWriteSites(t))
+}
+
+func columnWriteReadingOf(t testing.TB, files map[string]string, sites []sqlscan.Site) sqlscan.SiteReport {
+	t.Helper()
+	root, env := srctest.Root(t), columnWriteEnv(t)
+	args, err := sqlscan.StrictArguments(root, files, env)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for n, r := range runners {
-		params := make([]string, r.Index+1)
-		args := make([]string, r.Index+1)
-		for i := range args {
-			params[i], args[i] = "any", "nil"
+	pins, err := sqlscan.StrictPins(root, files, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A registered builder covers every SQL argument that is exactly a
+	// call of it (or a local taken once from one): the registration is the
+	// builder's, not the call site's.
+	registered := map[string]bool{}
+	for _, s := range sites {
+		registered[fmt.Sprintf("%s#%d", s.Decl, s.Ordinal)] = true
+	}
+	builders := columnWriteBuilders(t)
+	for _, a := range args {
+		b, ok := builders[a.Builder]
+		if a.Kind != sqlscan.StrictHole || !ok || registered[fmt.Sprintf("%s#%d", a.Decl, a.Ordinal)] {
+			continue
 		}
-		params[r.Index], args[r.Index] = "string", "j.sql"
-		typ := fmt.Sprintf("canaryRunner%d", n)
-		files[name] += "\ntype " + typ + " interface{ " + r.Name + "(" + strings.Join(params, ", ") + ", ...any) }\n" +
-			"func " + typ + r.Name + "(x " + typ + ", j struct{ sql string }) {\n\tx." + r.Name + "(" + strings.Join(args, ", ") + ")\n}\n"
+		result := a.BuilderResult
+		sites = append(sites, sqlscan.Site{Decl: a.Decl, Ordinal: a.Ordinal, Builder: a.Builder, Result: result, Tuples: b.Tuples, FromCallers: b.FromCallers,
+			Run:    func(in []string) (string, error) { return b.Run(result, in) },
+			Domain: b.Domain, Open: b.Open, RefusalTest: b.RefusalTest, Quoters: columnWriteQuoters, Reason: b.Reason})
 	}
-	registry := append([]sqlscan.Registered{}, columnWritePolicies...)
-	for _, col := range []string{"literal_col", "assembled_col", "argument_col", "hole_col", "fragment_col"} {
-		registry = append(registry, sqlscan.Registered{Table: table, Column: col, Policy: sqlscan.FillEmptyOnly, Reason: "canary"})
+	return sqlscan.CheckSites(args, sites, pins, storeTestNames(t))
+}
+
+// No SQL argument of the store goes unread: each is a compiler constant,
+// a pure call on constants, built from the store's own text by running it,
+// a parameter read at its function's calls, or registered. (The name is
+// kept: the contributor guide and the lens file cite it.)
+func TestNoProtectedWriteGoesUnread(t *testing.T) {
+	rep := columnWriteReading(t)
+	for _, p := range rep.Problems {
+		t.Errorf("%s\n  TRIAGE, in this order:\n"+
+			"  1. Make the statement a constant: a value belongs in a placeholder ($1), never in the text.\n"+
+			"  2. Build it with one named function of the store from string constants, and add that function to columnWriteEnv.\n"+
+			"  3. Register it in columnWriteSites as EXECUTED: name the builder, give the statements running it gives over its whole domain, and name the test that shows it refuses any other input.\n"+
+			"  4. FROZEN (last, with the operator's decision): say what the statement is, and record the digest printed above.", p)
 	}
-	stmts, unread := columnWriteStatementsOf(t, files, registry)
-	rep := sqlscan.Check(stmts, registry, columnWriteExceptions)
-	caught := map[string]bool{}
-	for _, v := range rep.Violations {
-		if v.Table == table {
-			caught[v.Column] = true
+	t.Logf("SQL arguments of internal/db: %d constants, %d pure calls on constants, %d built by running the store's own text, %d fixed text with a number in it, %d fixed text filled with its callers' constants, %d queued statements read back, %d parameters read at their callers; registered: %d executed, %d open, %d frozen",
+		rep.Constant, rep.Pure, rep.Built, rep.Numbered, rep.FromCallers, rep.Queued, rep.Parameter, rep.Executed, rep.Open, rep.Frozen)
+}
+
+// columnWriteFrozen are the digests of the declarations whose unread SQL
+// arguments are FROZEN (sqlscan.Site), or EXECUTED from a variable (its
+// Pin): the source each statement is made of, as it stood when the
+// registration was written. A digest that no
+// longer matches fails TestNoProtectedWriteGoesUnread with the new one;
+// read the statement as it now is before recording it.
+var columnWriteFrozen = map[string]string{
+	"PostgresStore.SnapshotSeries":          "97c9c8a1f8636ebc/6",
+	"ContentExpectations.wherePassing":      "6a063ced5e12ecb8/8",
+	"PostgresStore.GetPackageExposedRepos":  "1bcfdce21d17bbeb/9",
+	"PostgresStore.GetPackageVersionsInUse": "cc9820a347d6120a/8",
+	"PostgresStore.ListPackageExposure":     "324f2f2d92b17e99/24",
+	"PostgresStore.ListQueuePage":           "47683c6dfc54ed59/8",
+	"PostgresStore.ReplaceRepoLibyear":      "542965e8c1f0c231/16",
+	"PostgresStore.RunDataVerification":     "3570692a1c6540ac/33",
+	"PostgresStore.TopContributors":         "4fb7ae3f2408c1fc/16",
+	"PostgresStore.catalogPick":             "6c6795374136bbcf/11",
+	"PostgresStore.listRepos":               "605c1d9cbe27013c/12",
+	"PostgresStore.queryForgeIDChanges":     "ee04d248c423cb9f/35",
+	"diffOneTable":                          "14244630714ea244/8",
+}
+
+// columnWriteSites registers every SQL argument of the store that the
+// reading does not read. EXECUTED entries name the store's own builder and
+// give what running it gave. The rest are FROZEN: nothing was run for
+// them; each says what the argument is, and gives the policy check
+// something to judge where the argument can write (the source's own fixed
+// text with representative values in its gaps, made by the real
+// fmt.Sprintf; or the fixed statements of its source, harvested).
+func columnWriteSites(t testing.TB) []sqlscan.Site {
+	var sites []sqlscan.Site
+	frozen := func(decl string, reason string, ordinals []int, with func(ord int, s *sqlscan.Site)) {
+		if columnWriteFrozen[decl] == "" {
+			return // converted: its arguments are constants or a registered builder's
+		}
+		for _, ord := range ordinals {
+			site := sqlscan.Site{Decl: decl, Ordinal: ord, Frozen: columnWriteFrozen[decl], Reason: reason}
+			if with != nil {
+				with(ord, &site)
+			}
+			sites = append(sites, site)
 		}
 	}
-	for _, u := range unread.Violations {
-		if u.File == name {
-			caught["unread:"+u.Decl] = true
-		}
+	fills := func(rows map[int][][]string) func(int, *sqlscan.Site) {
+		return func(ord int, s *sqlscan.Site) { s.Fills = rows[ord] }
 	}
-	for n, r := range runners {
-		if !caught[fmt.Sprintf("unread:canaryRunner%d%s", n, r.Name)] {
-			t.Errorf("the canary for an unread argument of %s was not caught: the reader knows that call by name and did not report what it was given", r.Name)
-		}
+	all := func(rows ...[]string) func(int, *sqlscan.Site) {
+		return func(_ int, s *sqlscan.Site) { s.Fills = rows }
 	}
-	for want, what := range map[string]string{
-		"literal_col":           "a statement written as one backtick literal (sqlscan.Statements)",
-		"assembled_col":         "a statement assembled from fixed text (sqlscan.Assemble)",
-		"argument_col":          "a statement that is the SQL argument of a call, in a quoted string",
-		"unread:canaryHole":     "an SQL argument with a part that cannot be read (a violation wherever the part stands)",
-		"unread:canaryUnread":   "an SQL argument with no fixed text",
-		"unread:canaryFragment": "an expression that is no argument and shows a write to a registered table with a part unread",
+	harvest := func(_ int, s *sqlscan.Site) { s.Harvest = true }
+	statements := func(texts ...string) func(int, *sqlscan.Site) {
+		return func(_ int, s *sqlscan.Site) { s.Statements = texts }
+	}
+	flat := func(rows [][]string) []string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r...)
+		}
+		return out
+	}
+
+	// EXECUTED: the argument is the package variable, given its value once
+	// (a function computes it from libyearRotatedColumns at start); the
+	// statement judged is that variable.
+	sites = append(sites,
+		sqlscan.Site{Decl: "PostgresStore.ReplaceRepoLibyear", Ordinal: 1, Builder: "rotateLibyearInsertSQL", Statements: []string{rotateLibyearInsertSQL},
+			Domain: "no input: the variable's one value", Pin: columnWriteFrozen["PostgresStore.ReplaceRepoLibyear"], Reason: "the INSERT that rotates a repository's libyear rows to history"},
+		sqlscan.Site{Decl: "PostgresStore.ReplaceRepoLibyear", Ordinal: 2, Builder: "replaceLibyearDeleteAndCarrySQL", Statements: []string{replaceLibyearDeleteAndCarrySQL},
+			Domain: "no input: the variable's one value", Pin: columnWriteFrozen["PostgresStore.ReplaceRepoLibyear"], Reason: "the DELETE ... RETURNING and carrying INSERT of a libyear replacement, run through Query for its rows"})
+
+	// The package-key fill's three statements are packageKeyFillSQL(table)'s
+	// results for the tables it accepts: run here for each.
+	var keyBound, keyPage, keyWrite []string
+	for _, tbl := range packageKeyFillTablesChecked {
+		b, pg, w, err := packageKeyFillSQL(tbl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyBound, keyPage, keyWrite = append(keyBound, b), append(keyPage, pg), append(keyWrite, w)
+	}
+	var keyBoundRows [][]string
+	for _, b := range keyBound {
+		keyBoundRows = append(keyBoundRows, []string{b})
+	}
+	frozen("PostgresStore.FillPackageKeysStep", "the three statements of packageKeyFillSQL(table), a local each (TestThePackageKeyFillWriteIsTheFunctionsResult pins that they are taken once and not changed); judged as that function's real results for both tables it accepts",
+		[]int{1, 3, 5}, func(ord int, s *sqlscan.Site) {
+			switch ord {
+			case 1:
+				s.Fills = keyBoundRows
+			case 3:
+				s.Statements = keyPage
+			case 5:
+				s.Statements = keyWrite
+			}
+		})
+
+	// The gone-clear statements: c.build(c.sideline + c.guard) for the
+	// goneClear a caller passes; judged for every goneClear literal in the
+	// store's source (goneClearsInSource), by running its build.
+	frozen("clearInTxUnderRowLock", "the gone-clear statement and its row lock, built from the goneClear the caller passes; judged as built by every goneClear literal in the source",
+		[]int{2, 3, 4}, func(ord int, s *sqlscan.Site) {
+			if ord == 3 {
+				s.Fills = goneClearSidelines(t)
+			} else {
+				s.Statements = flat(goneClearStatements(t))
+			}
+		})
+
+	// Schema changes whose table, constraint, index or column name is a
+	// value of a list in the function or of the catalog. Judged with a
+	// representative name in each gap.
+	frozen("ensureOnUpdateCascadeOnCntrbIDFKs", "ALTER TABLE ... DROP/ADD/VALIDATE CONSTRAINT for each contributor foreign key of a fixed list", []int{2, 3},
+		fills(map[int][][]string{2: {{"issues", "fk_issues_cntrb", "fk_issues_cntrb", "cntrb_id"}}, 3: {{"issues", "fk_issues_cntrb"}}}))
+	frozen("applyFullBehaviorFK", "ALTER TABLE ... DROP/ADD/VALIDATE CONSTRAINT for the foreign key its caller names", []int{1, 2},
+		fills(map[int][][]string{1: {{"issues", "fk_x", "fk_x", "cntrb_id", "contributors", "cntrb_id"}}, 2: {{"issues", "fk_x"}}}))
+	frozen("ensureAllFKsDeferrable", "ALTER TABLE ... ALTER CONSTRAINT ... DEFERRABLE for each foreign key the catalog lists, names quoted by quotedIdentifier", []int{2},
+		all([]string{`"aveloxis_data"."issues"`, `"fk_x"`}))
+	frozen("migrateStage4DedupAndIndexes", "CREATE INDEX CONCURRENTLY with the schema of the trigram operator class, quoted by quoteIdent", []int{3}, all([]string{`"public"`}))
+	frozen("migrateStage9DataQuality", "two INSERTs into contributor_login_history with the tool version in a literal", []int{17, 18}, all([]string{ToolVersion}))
+	frozen("migrateStage10RecentReleases", "ALTER TABLE ... SET (autovacuum...) for each table of a fixed list", []int{17}, all([]string{"releases"}))
+	frozen("execCreateIndexConcurrently", "DROP INDEX of the invalid index it is about to rebuild, and ANALYZE of the table the catalog names for it", []int{4},
+		fills(map[int][][]string{4: {{`"aveloxis_data"."repos"`}}}))
+	frozen("seedAPITokenSettings", "the INSERT of the one api_token_settings row, with the shipped limits as numbers", []int{2}, all([]string{"1000"}))
+	frozen("setToolVersionDefaults", "ALTER TABLE ... ALTER COLUMN tool_version SET DEFAULT for each table the catalog lists (a default is not a write of stored rows)", []int{2},
+		all([]string{`"aveloxis_data"."repos"`, `'` + ToolVersion + `'`}))
+	frozen("dropIndexOnceReplacementIsValid", "DROP INDEX CONCURRENTLY of the index its caller names", []int{2}, all([]string{"idx_old"}))
+	frozen("addColumnWithOneTimeStampTx", "ALTER TABLE ... ADD COLUMN IF NOT EXISTS for the column its caller names", []int{2}, all([]string{"aveloxis_data", "repos", "x_added", "timestamptz"}))
+	frozen("consolidateRepoGroups", "the UPDATE and DELETE that move each table of a fixed list onto the canonical repo group", []int{2, 3}, all([]string{"aveloxis_data.repos"}))
+	frozen("refreshMatview", "REFRESH MATERIALIZED VIEW of the view its caller names", []int{1, 2}, all([]string{"aveloxis_data.explorer_entry_list"}))
+	frozen("rotateRepoRowsToHistory", "the INSERT ... SELECT * into a history table and the DELETE of the rotated rows, for the table pair its caller names", []int{1, 2},
+		fills(map[int][][]string{1: {{"aveloxis_data.repo_info_history", "aveloxis_data.repo_info"}}, 2: {{"aveloxis_data.repo_info"}}}))
+	frozen("dedupOnePair", "the loser repository's rows moved or deleted table by table: steps from lists in the function, and a DELETE per table of a list", []int{6, 7, 8, 9},
+		func(ord int, s *sqlscan.Site) {
+			if ord >= 8 {
+				s.Fills = [][]string{{"aveloxis_data.repo_info"}}
+			} else {
+				s.Harvest = true
+			}
+		})
+	frozen("PostgresStore.BackfillAssignmentIdentities", "a count, a MAX and the UPDATE that fills cntrb_id on each assignment table of a fixed list", []int{1, 2, 3},
+		fills(map[int][][]string{3: {{"issue_assignees", "issue_assignee_id", "assignee_src_id"}}}))
+	// Statements chosen or stepped through from fixed statements written
+	// in the source: every one of those that writes is judged (Harvest).
+	for decl, ords := range map[string][]int{
+		"PostgresStore.RefreshRepoAggregates": {1, 2}, "PostgresStore.RefreshGroupAggregates": {1, 2},
+		"dedupRepoGroupsListServeTx": {3}, "PostgresStore.HealAutomationPhantomContributors": {1}, "PostgresStore.HealRenamedDuplicate": {2},
+		"addSessionTokenHashedColumn": {3}, "PostgresStore.UpsertCommitBatch": {1}, "PostgresStore.UpsertCommitMessageBatch": {1},
 	} {
-		if !caught[want] {
-			t.Errorf("the canary for %s was not caught (%s): statements of that kind are not reaching the policy check", what, want)
+		frozen(decl, "one of the fixed statements written in the function or in the list it steps through; each that writes is judged", ords, harvest)
+	}
+	frozen("addColumnIfMissing", "ALTER TABLE ... ADD COLUMN IF NOT EXISTS for the table, column and type its caller names", []int{1},
+		all([]string{"aveloxis_data.repos", "x_added", "text"}))
+	frozen("cleanupBadTimestamps", "the one-time repair UPDATE t SET \"c\" = NULL (or NOW()) WHERE the year is before 1970, for each (table, column) of a list in the function; judged for the two registered columns in that list and one other",
+		[]int{1}, all([]string{"aveloxis_data.repos", "created_at", "NULL", "created_at", "created_at"},
+			[]string{"aveloxis_data.repos", "updated_at", "NULL", "updated_at", "updated_at"},
+			[]string{"aveloxis_data.commits", "cmt_author_timestamp", "NOW()", "cmt_author_timestamp", "cmt_author_timestamp"}))
+	frozen("createSupplyChainView", "DROP, CREATE MATERIALIZED VIEW and CREATE UNIQUE INDEX for one supply-chain view: schema changes on a view, which write no table's rows",
+		[]int{1}, statements("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_package_exposure CASCADE",
+			"CREATE MATERIALIZED VIEW aveloxis_data.explorer_package_exposure AS "+PackageExposureMatviewSQL()))
+	frozen("freshBatch", "a copy of the statements queued on another batch, for a re-send", []int{1}, func(_ int, s *sqlscan.Site) {
+		s.ReadElsewhere = "each statement on the batch it copies was queued by a Queue call in this package, which is an SQL argument the reading reads"
+	})
+	// Index creation from a list of fixed definitions.
+	for _, decl := range []string{"ensureCntrbIDFKIndexes", "ensureEmailMessageFKIndexes", "ensureExtraFKIndexes", "ensurePerfWaveIndexes", "ensureRepoGroupFKIndexes"} {
+		frozen(decl, "CREATE INDEX CONCURRENTLY for each index of a fixed list: a schema change that writes no row", []int{1},
+			statements("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_x ON aveloxis_data.issues (cntrb_id)"))
+	}
+	frozen("ensureMsgRefMetadata", "a MAX and the windowed UPDATE MsgRefDataSourceWindowSQL builds for each message-reference table of a fixed list", []int{3, 4},
+		func(ord int, s *sqlscan.Site) {
+			if ord == 4 {
+				for _, tbl := range []string{"aveloxis_data.issue_message_ref", "aveloxis_data.pull_request_message_ref"} {
+					s.Statements = append(s.Statements, MsgRefDataSourceWindowSQL(tbl, "msg_ref_id"))
+				}
+			}
+		})
+
+	// Reads: a SELECT (or SHOW) whose text is chosen or composed in the
+	// function. Nothing is judged for them but their fixed text, which
+	// holds no word that writes (the reading requires something to judge
+	// when it does).
+	for decl, ords := range map[string][]int{
+		"PostgresStore.MetricWeeklySeries": {1}, "populatedCounts": {1}, "contentCount": {1}, "diffOneTable": {1, 2, 3, 4},
+		"ContentExpectations.CheckContent": {1}, "ContentExpectations.wherePassing": {1}, "PostgresStore.TopContributors": {1},
+		"PostgresStore.GetContributorsForHistoryBackfill": {1}, "PostgresStore.RunDataVerification": {5}, "PostgresStore.postSchemaProbes": {1, 2},
+		"PostgresStore.ClaimNextDistributionRepo": {1}, "PostgresStore.GetMailingListBodiesForStrip": {1}, "PostgresStore.GetGapHealCandidates": {1},
+		"PostgresStore.BackfillClosedByFromEvents": {1}, "PostgresStore.IssuesNeedingClosedBySweep": {1}, "loadKeysFromTable": {1},
+		"PostgresStore.catalogPick": {1}, "PostgresStore.SnapshotSeries": {1}, "PostgresStore.LatestCount": {1}, "PostgresStore.GetNewRepos": {1},
+		"PostgresStore.ListPackageExposure": {1, 2, 3}, "PostgresStore.GetPackageVersionsInUse": {1}, "PostgresStore.GetPackageExposedRepos": {1},
+		"PostgresStore.listRepos": {1}, "PostgresStore.ListQueuePage": {1, 2}, "PostgresStore.queryForgeIDChanges": {1},
+		"PostgresStore.ContributorRetentionSeries": {1}, "tableRowCounts": {2}, "ServerConnectionBudget": {1}, "PostgresStore.GetRepoTimeSeries": {2},
+		"PostgresStore.SignInOAuthUser": {1},
+	} {
+		frozen(decl, "a read: a SELECT (or SHOW) chosen or composed in the function from fixed text and a name, predicate, order or unit the function picks", ords, nil)
+	}
+	return sites
+}
+
+// columnWriteReferences are the store's references to something that runs
+// SQL which no reading of arguments covers, each read by a person.
+var columnWriteReferences = []struct{ File, Why, Reason string }{
+	{File: "internal/db/prepared_stmt_retry.go", Why: "a batch made with its QueuedQueries given",
+		Reason: "freshBatch copies a batch for a re-send: the list starts empty (make) and takes only copies of the queries queued on the batch it is given, each of which a Queue call in this package put there"},
+	{File: "internal/db/prepared_stmt_retry.go", Why: "QueuedQueries used other than to read it",
+		Reason: "the same copy: fresh.QueuedQueries = append(fresh.QueuedQueries, a copy of q), for q ranging over the given batch's own list"},
+}
+
+// The store refers to nothing that runs SQL in a way the reading does not
+// cover (a runner taken as a value, a call that writes rows with no text,
+// a library type that carries SQL arriving from or leaving to other code),
+// but for the references registered above.
+func TestNoSQLReachesTheLibraryUnseen(t *testing.T) {
+	refs, err := sqlscan.StrictReferences(srctest.Root(t), srctest.PackageFiles(t, "internal/db", 30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := make([]bool, len(columnWriteReferences))
+	for _, r := range refs {
+		ok := false
+		for i, a := range columnWriteReferences {
+			if a.File == r.File && strings.Contains(r.Why, a.Why) {
+				used[i], ok = true, true
+			}
+		}
+		if !ok {
+			t.Errorf("%s:%d: %s", r.File, r.Line, r.Why)
+		}
+	}
+	for i, a := range columnWriteReferences {
+		if !used[i] {
+			t.Errorf("stale reference registration %s (%q): it covers nothing; delete it", a.File, a.Why)
+		}
+		if a.Reason == "" {
+			t.Errorf("reference registration %s (%q) gives no reason", a.File, a.Why)
 		}
 	}
 }
 
-// The store's package is not the only one that can run SQL: any package
-// holding a pool can (PostgresStore.Pool(), the data-test tooling, the test
-// harness). The write-policy check reads internal/db; this reads EVERY
-// OTHER package of the repository with the same typed finder, and fails
-// when one of them writes a registered column against its policy, or runs
-// an argument that cannot be read whole and can be seen to write a
-// registered table. (0.29.211, review round 4: the package comment said
-// what could hide inside the store and nothing about outside it.)
+// The store's package is not the only one that can run SQL. This reads
+// EVERY OTHER package of the module with the same finder (a package is
+// one that runs SQL when the finder finds a call of a classified library
+// function in it, by type; no text filter chooses the packages).
 //
-// What it does not do: an argument outside the store with no part that
-// names a registered table is not a violation here (the data-test tools
-// build many from catalog names). The count below says how many there are.
+// What it proves, exactly: (1) every SQL argument outside internal/db
+// that is a compiler constant, or a pure call on constants, was tokenised
+// and judged against the registered policies like the store's own, and
+// none violates one or failed to be read to its end; (2) no argument
+// outside the store that is NOT read holds, among the compiler constants
+// it is made of, both a word that writes and the name of a registered
+// table (matched as SQL names, case folded). What it does not prove: that
+// an unread argument outside the store, whose table name arrives at run
+// time, writes no registered column. The count of unread arguments is
+// logged; the store's package is the place for writes.
 func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 	root := srctest.Root(t)
 	dirs := map[string]map[string]string{}
@@ -854,6 +952,10 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
 			return nil
 		}
+		// The files this platform builds, as the compiler chooses them.
+		if ok, err := build.Default.MatchFile(filepath.Dir(path), d.Name()); err != nil || !ok {
+			return err
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -868,222 +970,506 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered := map[string]bool{}
+	bare := map[string]string{}
 	for _, r := range columnWritePolicies {
-		registered[r.Table] = true
+		bare[r.Table[strings.LastIndex(r.Table, ".")+1:]] = r.Table
 	}
-	writes := regexp.MustCompile(`(?i)\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM|MERGE\s+INTO|COPY)\b`)
-	packages, arguments, unreadArgs := 0, 0, 0
+	writeWords := map[string]bool{"update": true, "insert": true, "delete": true, "merge": true, "copy": true, "truncate": true, "alter": true}
+	read, packages, arguments, unread := 0, 0, 0, 0
 	for dir, files := range dirs {
-		runs := false
-		for _, src := range files {
-			if strings.Contains(src, `"github.com/jackc/pgx/v5`) || strings.Contains(src, `"database/sql"`) || strings.Contains(src, ".Pool()") {
-				runs = true
-			}
-		}
-		if !runs {
-			continue
-		}
-		whole, unread, err := sqlscan.AssembleTyped(root, files)
+		args, err := sqlscan.StrictArguments(root, files, sqlscan.Env{})
 		if err != nil {
 			t.Errorf("%s: %v", dir, err)
 			continue
 		}
-		n, err := sqlscan.SQLArguments(root, files)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n == 0 {
+		read++
+		if len(args) == 0 {
 			continue
 		}
 		packages++
-		arguments += n
-		stmts := append(sqlscan.Statements(files), whole...)
-		counted := map[string]bool{}
-		for _, u := range unread {
-			if !u.SQLArg {
-				continue
-			}
-			if at := fmt.Sprintf("%s:%d:%d", u.File, u.Line, u.Call); !counted[at] {
-				counted[at] = true
-				unreadArgs++
-			}
-			stmts = append(stmts, sqlscan.Stmt{File: u.File, SQL: u.Text})
-			if !writes.MatchString(u.Text) {
-				continue
-			}
-			for table := range registered {
-				if strings.Contains(u.Text, table) || strings.Contains(u.Text, strings.TrimPrefix(table, "aveloxis_data.")+" ") {
-					t.Errorf("%s:%d (%s): an SQL argument outside internal/db that cannot be read whole (%s) and can be seen to write %s, whose columns have write policies. Move the statement into the store, where the policy check reads it:\n  %s",
-						u.File, u.Line, u.Decl, u.Why, table, strings.Join(strings.Fields(u.Text), " "))
-				}
-			}
-		}
-		for _, v := range sqlscan.Check(stmts, columnWritePolicies, nil).Violations {
-			t.Errorf("%s: a statement outside internal/db writes %s.%s against its policy (%s):\n  expr: %s\n  %s\n  Move the write into the store.", v.File, v.Table, v.Column, v.Want, v.Expr, v.Detail)
-		}
-	}
-	// The reading of internal/db took the values of some EXPORTED maps and
-	// lists as every value a lookup can give (an ORDER BY from
-	// PackageExposureSorts). Nothing in the store writes them, which the
-	// reader checks by object; another package could. None does: every
-	// mention of one outside the store is a read (an index, a range, len).
-	relied, scalars, err := sqlscan.ExportedRelied(root, srctest.PackageFiles(t, "internal/db", 30))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The same for an exported string VARIABLE read as its declared value
-	// (ToolVersion): no other package assigns it or takes its address.
-	for _, name := range scalars {
-		assigns := regexp.MustCompile(`\b\w+\.` + regexp.QuoteMeta(name) + `\s*(=[^=]|\+=)|&\s*\w+\.` + regexp.QuoteMeta(name) + `\b`)
-		for _, files := range dirs {
-			for file, src := range files {
-				if m := assigns.FindString(srctest.StripGoComments(src)); m != "" {
-					t.Errorf("%s: %q gives the store's exported %s another value (or takes its address): the write-policy reader reads statements built with it as built with its declared value", file, m, name)
-				}
-			}
-		}
-	}
-	if len(relied) == 0 {
-		t.Error("the reader relied on no exported map or list of the store: PackageExposureSorts and SupplyChainViewNames are two, and this check has nothing to look for")
-	}
-	for _, name := range relied {
-		mention := regexp.MustCompile(`\b\w+\.` + regexp.QuoteMeta(name) + `\b`)
-		for _, files := range dirs {
-			for file, src := range files {
-				src = srctest.StripGoComments(src)
-				for _, loc := range mention.FindAllStringIndex(src, -1) {
-					if why := writesExported(src[:loc[0]], src[loc[1]:]); why != "" {
-						t.Errorf("%s: %s of the store's exported %s, whose values the write-policy reader takes as fixed (they reach a statement's text). Give the other package its own copy", file, why, name)
+		arguments += len(args)
+		var stmts []sqlscan.Stmt
+		for _, a := range args {
+			switch a.Kind {
+			case sqlscan.StrictConstant, sqlscan.StrictPure:
+				stmts = append(stmts, sqlscan.Stmt{File: a.File, SQL: a.Text})
+			case sqlscan.StrictHole:
+				unread++
+				writes, table := false, ""
+				for _, f := range a.Fragments {
+					for _, w := range sqlscan.FragmentWords(f) {
+						writes = writes || writeWords[w]
+						if full, ok := bare[w]; ok {
+							table = full
+						}
 					}
 				}
+				if writes && table != "" {
+					t.Errorf("%s:%d (%s): an SQL argument outside internal/db that is not read, and whose fixed text both writes and names %s, whose columns have write policies. Move the statement into the store:\n  %s",
+						a.File, a.Line, a.Decl, table, a.Expr)
+				}
+			}
+		}
+		rep := sqlscan.Check(stmts, columnWritePolicies, nil)
+		for _, v := range rep.Violations {
+			t.Errorf("%s: a statement outside internal/db writes %s.%s against its policy (%s):\n  expr: %s\n  %s\n  Move the write into the store.", v.File, v.Table, v.Column, v.Want, v.Expr, v.Detail)
+		}
+		for _, u := range rep.Unparsed {
+			t.Errorf("%s: a statement outside internal/db that the policy check did not read to its end (%s):\n  %.200s", u.File, u.Detail, strings.Join(strings.Fields(u.SQL), " "))
+		}
+	}
+	if packages == 0 || arguments == 0 {
+		t.Fatalf("no SQL argument was found outside internal/db (%d packages read): the scheduler alone runs several", read)
+	}
+	t.Logf("outside internal/db: %d packages read by type, %d of them run SQL, at %d SQL arguments; %d of those are not read (none holds a write word and a registered table's name)", read, packages, arguments, unread)
+}
+
+// The denominator, without a number to keep. "No violation" proves nothing
+// if the reading stopped: so a file of the store's package is added, in
+// memory, with a forbidden write as a constant, one queued on a batch, one
+// through a helper's parameter, and an argument that cannot be read. Each
+// must come back THROUGH columnWriteReadingOf and sqlscan.Check, the
+// functions the real tests use, beside the store's real files.
+func TestTheWritePolicyCheckSeesWhatIsAddedToTheStore(t *testing.T) {
+	files := map[string]string{}
+	for name, src := range srctest.PackageFiles(t, "internal/db", 30) {
+		files[name] = src
+	}
+	const canary = "internal/db/zz_canary.go"
+	files[canary] = `package db
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func zzCanaryConstant(ctx context.Context, s *PostgresStore) {
+	s.pool.Exec(ctx, "UPDATE aveloxis_data.repos SET platform_repo_id = 'canary-constant' WHERE repo_id = $1")
+}
+
+func zzCanaryBatch(ctx context.Context, s *PostgresStore) {
+	b := &pgx.Batch{}
+	b.Queue("UPDATE aveloxis_data.repos SET platform_repo_id = 'canary-batch' WHERE repo_id = $1")
+	s.pool.SendBatch(ctx, b)
+}
+
+func zzCanaryHelper(ctx context.Context, s *PostgresStore, q string) { s.pool.Exec(ctx, q) }
+
+func zzCanaryCaller(ctx context.Context, s *PostgresStore) {
+	zzCanaryHelper(ctx, s, "UPDATE aveloxis_data.repos SET platform_repo_id = 'canary-helper' WHERE repo_id = $1")
+}
+
+func zzCanaryUnparsed(ctx context.Context, s *PostgresStore) {
+	s.pool.Exec(ctx, "UPDATE aveloxis_data.repos SET platform_repo_id /* canary-unparsed */")
+}
+
+func zzCanaryHole(ctx context.Context, s *PostgresStore, table string) {
+	s.pool.Exec(ctx, "UPDATE "+table+" SET platform_repo_id = 'canary-hole'")
+}
+`
+	rep := columnWriteReadingOf(t, files, columnWriteSites(t))
+	hole := false
+	for _, p := range rep.Problems {
+		if strings.Contains(p, "zzCanaryHole#1") && strings.Contains(p, "not read and not registered") {
+			hole = true
+		} else {
+			t.Errorf("a problem that is not the canary's: %s", p)
+		}
+	}
+	if !hole {
+		t.Error("an SQL argument that cannot be read, added to the store, was not reported")
+	}
+	failures := columnWriteFailures(rep.Statements)
+	for _, f := range failures {
+		if !strings.Contains(f, canary) {
+			t.Errorf("a failure that is not the canary's: %s", f)
+		}
+	}
+	all := strings.Join(failures, "\n")
+	seen := map[string]bool{}
+	for _, want := range []string{"'canary-constant'", "'canary-batch'", "'canary-helper'", "canary-unparsed"} {
+		seen[want] = strings.Contains(all, want)
+	}
+	for _, want := range []string{"'canary-constant'", "'canary-batch'", "'canary-helper'", "canary-unparsed"} {
+		if !seen[want] {
+			t.Errorf("the forbidden or unreadable statement %s, added to the store, was not reported", want)
+		}
+	}
+}
+
+// The gone-clear builders are run for every goneClear in the store's
+// source: each literal a plain reading of repo_gone.go finds is one of the
+// inputs, as written (0.29.212, S5s-9: a fill that left values out went
+// unnoticed).
+func TestTheGoneClearSitesAreJudgedForEveryGoneClear(t *testing.T) {
+	src := srctest.StripGoComments(srctest.Read(t, "internal/db/repo_gone.go"))
+	literals := regexp.MustCompile(`goneClear\{[^}]*\}`).FindAllString(src, -1)
+	if len(literals) < 5 {
+		t.Fatalf("%d goneClear literals found in repo_gone.go; the store has had five", len(literals))
+	}
+	b := columnWriteBuilders(t)
+	for _, name := range []string{"goneClearSQL", "goneClearLockSQL"} {
+		inputs := map[string]bool{}
+		for _, row := range b[name].Tuples {
+			inputs[row[0]] = true
+		}
+		for _, lit := range literals {
+			if !inputs[lit] {
+				t.Errorf("%s is not run for %s", name, lit)
 			}
 		}
 	}
-	// The denominator: the finder saw the calls the repository has. The
-	// floor is one package and one argument; the real numbers are logged
-	// for the ledger.
-	if packages == 0 || arguments == 0 {
-		t.Fatalf("no SQL argument was found outside internal/db (%d packages, %d arguments): the scheduler alone runs several through Pool()", packages, arguments)
-	}
-	t.Logf("outside internal/db: %d packages run SQL, at %d SQL arguments; %d places there are not read whole or are reported references (none writes a registered table)", packages, arguments, unreadArgs)
 }
 
-// The true size of what the registrations cover, for the ledger and for
-// anyone asking how much is taken on a person's word (review round 4: the
-// changelog's counts were wrong). Nothing here is asserted but that the
-// numbers exist; they are printed with -v.
-func TestWritePolicyRegistrationCounts(t *testing.T) {
-	root, files := srctest.Root(t), srctest.PackageFiles(t, "internal/db", 30)
-	args, err := sqlscan.SQLArguments(root, files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, unread, err := sqlscan.AssembleTyped(root, files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	type site struct {
-		decl string
-		call int
-	}
-	sites, decls, alternatives := map[site]bool{}, map[string]bool{}, 0
-	for _, u := range unread {
-		if u.SQLArg {
-			sites[site{u.Decl, u.Call}] = true
-			decls[u.Decl] = true
-			alternatives++
-		}
-	}
-	shapeArgs := 0
-	for _, sh := range columnWriteShapes {
-		shapeArgs += len(sh.Args)
-	}
-	if args == 0 || len(sites) == 0 {
-		t.Fatalf("the finder sees %d SQL arguments and %d unread ones: it is not reading the package", args, len(sites))
-	}
-	t.Logf("internal/db: %d SQL arguments; %d of them (in %d declarations, %d alternative texts) are not read whole and are registered: %d fills, %d shape entries in %d shapes, %d exceptions",
-		args, len(sites), len(decls), alternatives, len(columnWriteFills(t)), shapeArgs, len(columnWriteShapes), len(columnWriteUnreadableExceptions))
+// sqlBuilder registers one of the store's functions that build a statement
+// from inputs: the inputs it is run with here, and how it is run.
+type sqlBuilder struct {
+	// Tuples are the inputs: the whole domain, or (Open) representative
+	// inputs that reach every branch.
+	Tuples [][]string
+	// Run calls the real function and gives the result'th of its results.
+	Run func(result int, args []string) (string, error)
+	// Domain says what the inputs are. Open, when they are not a finite
+	// set, says what varies and why it cannot name a protected column.
+	// RefusalTest names the test showing an input outside a finite domain
+	// produces no statement.
+	Domain, Open, RefusalTest, Reason string
+	// FromCallers: the inputs are the constants every caller passes,
+	// which the reading finds (sqlscan.Site.FromCallers).
+	FromCallers bool
 }
 
-// Enforces SR-11 (scripts/standing_rules.go).
-func TestColumnWritePolicies(t *testing.T) {
-	stmts, _ := columnWriteStatements(t)
-	rep := sqlscan.Check(stmts, columnWritePolicies, columnWriteExceptions)
-	for _, v := range rep.Violations {
-		t.Errorf("%s.%s in %s violates %s:\n  expr: %s\n  %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason",
-			v.Table, v.Column, v.File, v.Want, v.Expr, v.Detail)
-	}
-	for _, ex := range rep.StaleExceptions {
-		t.Errorf("stale exception %s.%s (%s: %q) — it suppressed nothing this run; delete it (reason was: %s)",
-			ex.Table, ex.Column, ex.File, ex.Match, ex.Reason)
-	}
-	for _, u := range rep.Unwritten {
-		t.Errorf("registered column %s.%s has NO writer statement — registry rot (renamed column?) or a dark column (the column-writer tripwire's territory)",
-			u.Table, u.Column)
-	}
-	// Registry hygiene: every entry carries a reason.
-	for _, r := range columnWritePolicies {
-		if r.Reason == "" {
-			t.Errorf("%s.%s: registry entries REQUIRE a reason", r.Table, r.Column)
+// runSQLBuilder runs f, one of the store's builders, with inputs written as
+// text: each is converted to the parameter's type (a string, a number, a
+// bool, or a declared type of one of those).
+func runSQLBuilder(f any) func(result int, args []string) (string, error) {
+	v := reflect.ValueOf(f)
+	ft := v.Type()
+	return func(result int, args []string) (out string, err error) {
+		if len(args) != ft.NumIn() {
+			return "", fmt.Errorf("%d inputs for a builder of %d parameters", len(args), ft.NumIn())
 		}
+		in := make([]reflect.Value, len(args))
+		for i, a := range args {
+			p := reflect.New(ft.In(i)).Elem()
+			switch p.Kind() {
+			case reflect.String:
+				p.SetString(a)
+			case reflect.Bool:
+				b, err := strconv.ParseBool(a)
+				if err != nil {
+					return "", err
+				}
+				p.SetBool(b)
+			case reflect.Int, reflect.Int64, reflect.Int32:
+				n, err := strconv.ParseInt(a, 10, 64)
+				if err != nil {
+					return "", err
+				}
+				p.SetInt(n)
+			case reflect.Slice:
+				if p.Type().Elem().Kind() != reflect.String {
+					return "", fmt.Errorf("parameter %d: a list of %s is not run from text", i+1, p.Type().Elem())
+				}
+				parts := strings.Split(a, "\x00")
+				p.Set(reflect.MakeSlice(p.Type(), len(parts), len(parts)))
+				for k, part := range parts {
+					p.Index(k).SetString(part)
+				}
+			default:
+				return "", fmt.Errorf("parameter %d is a %s, which is not run from text", i+1, p.Kind())
+			}
+			in[i] = p
+		}
+		// A builder that refuses by panicking (an index outside its list)
+		// refuses here too.
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("the builder panicked: %v", r)
+			}
+		}()
+		res := v.Call(in)
+		if last := res[len(res)-1]; last.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) && !last.IsNil() {
+			return "", last.Interface().(error)
+		}
+		if result >= len(res) || res[result].Kind() != reflect.String {
+			return "", fmt.Errorf("result %d of the builder is not a string", result)
+		}
+		return res[result].String(), nil
 	}
-	for _, ex := range columnWriteExceptions {
-		if ex.Reason == "" {
-			t.Errorf("exception %s.%s: exceptions REQUIRE a reason", ex.Table, ex.Column)
+}
+
+// indexedBuilders are the builders that take the index of a member of a
+// fixed list of the store (the tables a rename rewrites, the foreign keys
+// a migration alters): each with the length of its list. The domain is
+// every index; an index outside it panics before any statement exists.
+func indexedBuilders() map[string]struct {
+	n int
+	f func(int) string
+} {
+	return map[string]struct {
+		n int
+		f func(int) string
+	}{
+		"repoURLRewriteSQL":                 {len(repoURLColumns), repoURLRewriteSQL},
+		"renameHealStepSQL":                 {len(renameHealSteps), renameHealStepSQL},
+		"dedupPairStepSQL":                  {len(dedupPairSteps), dedupPairStepSQL},
+		"loserJoinDeleteSQL":                {len(loserJoinDeletes), loserJoinDeleteSQL},
+		"loserRepoIDDeleteSQL":              {len(loserRepoIDDeletes), loserRepoIDDeleteSQL},
+		"loserHygieneDeleteSQL":             {len(loserHygieneDeletes), loserHygieneDeleteSQL},
+		"repoGroupRepointSQL":               {len(repoGroupRepointTables), repoGroupRepointSQL},
+		"repoGroupLoserRowsDeleteSQL":       {len(repoGroupLoserRowTables), repoGroupLoserRowsDeleteSQL},
+		"dedupListServeStepSQL":             {len(dedupListServeSteps), dedupListServeStepSQL},
+		"healAutomationPhantomStepSQL":      {len(healAutomationPhantomSteps), healAutomationPhantomStepSQL},
+		"matviewRefreshConcurrentlySQL":     {len(matviewNames), matviewRefreshConcurrentlySQL},
+		"matviewRefreshSQL":                 {len(matviewNames), matviewRefreshSQL},
+		"supplyChainRefreshConcurrentlySQL": {len(SupplyChainViewNames), supplyChainRefreshConcurrentlySQL},
+		"supplyChainRefreshSQL":             {len(SupplyChainViewNames), supplyChainRefreshSQL},
+		"supplyChainViewDropSQL":            {len(supplyChainViewDefs()), supplyChainViewDropSQL},
+		"supplyChainViewCreateSQL":          {len(supplyChainViewDefs()), supplyChainViewCreateSQL},
+		"supplyChainViewIndexSQL":           {len(supplyChainViewDefs()), supplyChainViewIndexSQL},
+		"assignmentBackfillCountSQL":        {len(assignmentBackfillTables), assignmentBackfillCountSQL},
+		"assignmentBackfillMaxSQL":          {len(assignmentBackfillTables), assignmentBackfillMaxSQL},
+		"assignmentBackfillUpdateSQL":       {len(assignmentBackfillTables), assignmentBackfillUpdateSQL},
+		"extraFKAddSQL":                     {len(fkExtraConstraints), extraFKAddSQL},
+		"extraFKValidateSQL":                {len(fkExtraConstraints), extraFKValidateSQL},
+		"cntrbFullFKAddSQL":                 {len(cntrbIDChildFKs), cntrbFullFKAddSQL},
+		"cntrbFullFKValidateSQL":            {len(cntrbIDChildFKs), cntrbFullFKValidateSQL},
+		"msgRefDataSourceMaxSQL":            {len(msgRefDataSourceTargets), msgRefDataSourceMaxSQL},
+		"msgRefDataSourceWindowSQLAt":       {len(msgRefDataSourceTargets), msgRefDataSourceWindowSQLAt},
+		"autovacuumInsertFactorSQL":         {len(autovacuumInsertTables), autovacuumInsertFactorSQL},
+		"sessionTokenTagStepSQL":            {len(sessionTokenTagSteps), sessionTokenTagStepSQL},
+		"badTimestampFixSQL":                {len(badTimestampFixes), badTimestampFixSQL},
+		"cntrbFKCascadeSQL":                 {len(cntrbIDChildFKs), cntrbFKCascadeSQL},
+		"cntrbFKValidateSQL":                {len(cntrbIDChildFKs), cntrbFKValidateSQL},
+		"cntrbIDFKIndexSQL":                 {len(cntrbIDFKIndexes), cntrbIDFKIndexSQL},
+		"fkExtraIndexSQL":                   {len(fkExtraIndexes), fkExtraIndexSQL},
+		"repoGroupFKIndexSQL":               {len(repoGroupFKIndexes), repoGroupFKIndexSQL},
+		"emailMessageFKIndexSQL":            {len(emailMessageFKIndexes), emailMessageFKIndexSQL},
+		"perfWaveIndexSQL":                  {len(perfWaveIndexDDL), perfWaveIndexSQL},
+		"repoAggDeleteSQL":                  {len(repoAggQueries), repoAggDeleteSQL},
+		"repoAggInsertSQL":                  {len(repoAggQueries), repoAggInsertSQL},
+		"groupAggDeleteSQL":                 {len(groupAggQueries), groupAggDeleteSQL},
+		"groupAggInsertSQL":                 {len(groupAggQueries), groupAggInsertSQL},
+	}
+}
+
+func TestAnIndexedStatementBuilderRefusesAnIndexOutsideItsList(t *testing.T) {
+	for name, b := range indexedBuilders() {
+		if b.n == 0 {
+			t.Errorf("%s: its list is empty, so nothing is judged for it", name)
+		}
+		for _, i := range []int{-1, b.n} {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("%s(%d) gave a statement for an index outside its list of %d", name, i, b.n)
+					}
+				}()
+				_ = b.f(i)
+			}()
 		}
 	}
 }
 
-// writesExported says how a mention of an exported map or list, given the
-// source before and after it, is anything but a read: "" for an index that
-// is read, a range over it, or len of it.
-func writesExported(before, after string) string {
-	before = strings.TrimRight(before, " \t")
-	switch {
-	case strings.HasSuffix(before, "&"):
-		return "the address is taken"
-	case strings.HasSuffix(before, "range") || strings.HasSuffix(before, "len("):
-		return ""
-	}
-	rest := strings.TrimLeft(after, " \t")
-	if !strings.HasPrefix(rest, "[") {
-		return "a use that is not an index, a range or len (the value could be kept and changed)"
-	}
-	depth := 0
-	for i, r := range rest {
-		switch r {
-		case '[':
-			depth++
-		case ']':
-			depth--
+// keyedBuilders are the builders that look their input up in a fixed map
+// of the store and refuse a key it does not have: each with every key
+// (its domain) and one input that is no key.
+func keyedBuilders() map[string]struct {
+	f      any
+	domain [][]string
+	bad    []string
+} {
+	keys := func(m map[string]string) []string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
 		}
-		if depth == 0 {
-			rest = strings.TrimLeft(rest[i+1:], " \t")
-			break
-		}
+		sort.Strings(out)
+		return out
 	}
-	for _, op := range []string{"==", "!="} {
-		if strings.HasPrefix(rest, op) {
-			return ""
+	one := func(ks []string) [][]string {
+		var out [][]string
+		for _, k := range ks {
+			out = append(out, []string{k})
+		}
+		return out
+	}
+	var metricByBucket [][]string
+	for _, m := range keys(metricSeriesSQL) {
+		for _, b := range keys(seriesBuckets) {
+			metricByBucket = append(metricByBucket, []string{m, b})
 		}
 	}
-	for _, op := range []string{"=", "+=", ":=", "++", "--", "["} {
-		if strings.HasPrefix(rest, op) {
-			return "an element is assigned (or the value is a nested index this check does not read)"
-		}
+	return map[string]struct {
+		f      any
+		domain [][]string
+		bad    []string
+	}{
+		"latestCountSQL":           {latestCountSQL, one(keys(snapshotColumns)), []string{"repo_name FROM x; --"}},
+		"retentionSeriesStatement": {retentionSeriesStatement, one(keys(seriesBuckets)), []string{"week; DROP TABLE x"}},
+		"metricSeriesStatement":    {metricSeriesStatement, metricByBucket, []string{keys(metricSeriesSQL)[0], "day"}},
 	}
-	return ""
 }
 
-func TestWritesExportedTellsAReadFromAWrite(t *testing.T) {
-	for src, wantWrite := range map[string]bool{
-		"x := db.M[k]": false, "if db.M[k] == \"a\" {": false, "for _, v := range db.M {": false, "n := len(db.M)": false,
-		"db.M[k] = v": true, "db.M[k] += v": true, "p := &db.M": true, "db.M = nil": true, "m := db.M": true, "delete(db.M, k)": true, "f(db.M)": true,
-	} {
-		i := strings.Index(src, "db.M")
-		if got := writesExported(src[:i], src[i+len("db.M"):]) != ""; got != wantWrite {
-			t.Errorf("%q: read as a write %v, want %v", src, got, wantWrite)
+func TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave(t *testing.T) {
+	for name, k := range keyedBuilders() {
+		if len(k.domain) == 0 {
+			t.Errorf("%s: no key, so nothing is judged for it", name)
+		}
+		run := runSQLBuilder(k.f)
+		if text, err := run(0, k.bad); err == nil {
+			t.Errorf("%s(%q) gave a statement: %s", name, k.bad, text)
+		}
+		// Each input of the domain but one value, changed, is refused too:
+		// the refusal is per input, not for the first alone.
+		for i := range k.domain[0] {
+			in := append([]string(nil), k.domain[0]...)
+			in[i] = "no-such-key"
+			if text, err := run(0, in); err == nil {
+				t.Errorf("%s(%q) gave a statement: %s", name, in, text)
+			}
 		}
 	}
+}
+
+// openBuilders are the builders whose inputs are not a finite set: each
+// with representative inputs that reach every branch, and the sentence
+// saying what varies.
+func openBuilders() map[string]struct {
+	f                      any
+	inputs                 [][]string
+	domain, varies, reason string
+} {
+	const names = "names the database's catalog gives at run time; each reaches the text only as a quoted identifier"
+	const number = "a number: it is written with %d, and a number is digits"
+	_, _ = names, number
+	return map[string]struct {
+		f                      any
+		inputs                 [][]string
+		domain, varies, reason string
+	}{
+		// (open builders are added here)
+		"closedBySweepSQL":   {closedBySweepSQL, [][]string{{"0"}, {"25"}}, "any limit", number, "a read"},
+		"tableRowCountSQL":   {tableRowCountSQL, [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, "any table of the aveloxis schemas", names, "a count"},
+		"populatedCountsSQL": {populatedCountsSQL, [][]string{{"aveloxis_data", "repos", "repo_git\x00repo_id\x00odd \"c", "text\x00bigint\x00jsonb"}}, "any table with its columns and their data types", names + "; a data type only chooses among three fixed predicates", "counts"},
+	}
+}
+
+// boolBuilders are the builders whose every parameter is a bool: the type
+// is the whole domain, and each is run for every combination.
+func boolBuilders() map[string]any {
+	return map[string]any{
+		// (bool builders are added here)
+		"gapHealCandidatesSQL":     gapHealCandidatesSQL,
+		"distributionClaimSQL":     distributionClaimSQL,
+		"weeklyCommitsSQL":         weeklyCommitsSQL,
+		"oauthUserByIDSQL":         oauthUserByIDSQL,
+		"cachedCountsProbeSQL":     cachedCountsProbeSQL,
+		"metadataDriftProbeSQL":    metadataDriftProbeSQL,
+		"mailingListStripBatchSQL": mailingListStripBatchSQL,
+	}
+}
+
+// columnWriteQuoters are the store's quoting helpers an open builder may
+// hand a varying value to, each with the test that pins what it quotes.
+var columnWriteQuoters = map[string]string{
+	"quotedIdentifier": "TestCatalogNamesAreQuotedAsSQLQuotesThem",
+	"quoteIdent":       "TestCatalogNamesAreQuotedAsSQLQuotesThem",
+}
+
+// columnWriteBuilders are the store's statement builders, by name.
+func columnWriteBuilders(t testing.TB) map[string]sqlBuilder {
+	out := map[string]sqlBuilder{}
+	for name, b := range indexedBuilders() {
+		var tuples [][]string
+		for i := 0; i < b.n; i++ {
+			tuples = append(tuples, []string{strconv.Itoa(i)})
+		}
+		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(b.f), Domain: "the index of each member of the builder's fixed list",
+			RefusalTest: "TestAnIndexedStatementBuilderRefusesAnIndexOutsideItsList", Reason: "one statement per member of a fixed list of the store"}
+	}
+	for name, f := range boolBuilders() {
+		n := reflect.TypeOf(f).NumIn()
+		var tuples [][]string
+		for mask := 0; mask < 1<<n; mask++ {
+			row := make([]string, n)
+			for k := range row {
+				row[k] = strconv.FormatBool(mask&(1<<k) != 0)
+			}
+			tuples = append(tuples, row)
+		}
+		out[name] = sqlBuilder{Tuples: tuples, Run: runSQLBuilder(f), Domain: "every combination of the builder's bools",
+			Reason: "a statement chosen among fixed texts by conditions"}
+	}
+	// Builders keyed by a value of a fixed map of the store: run for every
+	// key, and refused for any other (keyedBuilders).
+	for name, k := range keyedBuilders() {
+		out[name] = sqlBuilder{Tuples: k.domain, Run: runSQLBuilder(k.f), Domain: "every key of the map the builder looks its input up in",
+			RefusalTest: "TestAKeyedStatementBuilderRefusesAKeyItDoesNotHave", Reason: "a read whose column or unit is chosen by a request value"}
+	}
+	// Open builders whose every text parameter reaches the statement only
+	// as a quoted name (the reading checks that, by object) and whose other
+	// parameters are numbers.
+	for name, o := range openBuilders() {
+		out[name] = sqlBuilder{Tuples: o.inputs, Run: runSQLBuilder(o.f), Domain: o.domain, Open: o.varies, Reason: o.reason}
+	}
+	const identifiers = "names of the tables and columns being compared, from the catalog or an operator's rules file; each goes through pgx.Identifier"
+	out["contentCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(contentCountSQL), Domain: "any table", Open: identifiers, Reason: "a count"}
+	out["contentNotNullCountSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos", "repo_git"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(contentNotNullCountSQL),
+		Domain: "any table and column", Open: identifiers, Reason: "a count"}
+	// The gone-clear statements: run for every goneClear written in the
+	// store's source (goneClearsInSource reads the literals and gives each
+	// its real value). A goneClear is an unexported struct whose fields are
+	// never assigned, so the literals are every one there can be.
+	clears := goneClearsInSource(t)
+	var clearKeys [][]string
+	for lit := range clears {
+		clearKeys = append(clearKeys, []string{lit})
+	}
+	sort.Slice(clearKeys, func(i, j int) bool { return clearKeys[i][0] < clearKeys[j][0] })
+	for name, f := range map[string]func(goneClear) string{"goneClearSQL": goneClearSQL, "goneClearLockSQL": goneClearLockSQL} {
+		out[name] = sqlBuilder{Tuples: clearKeys, Domain: "every goneClear literal in the store's source", RefusalTest: "TestNoFieldOfAGoneClearIsEverAssigned",
+			Reason: "the gone-clear statement and its row lock",
+			Run: func(_ int, in []string) (string, error) {
+				c, ok := clears[in[0]]
+				if !ok {
+					return "", fmt.Errorf("no goneClear %q in the source", in[0])
+				}
+				return f(c), nil
+			}}
+	}
+	keyTables := [][]string{}
+	for _, tbl := range packageKeyFillTablesChecked {
+		keyTables = append(keyTables, []string{string(tbl)})
+	}
+	for name, f := range map[string]any{"packageKeyFillSQL": packageKeyFillSQL, "packageKeyFillMarkerSQL": packageKeyFillMarkerSQL} {
+		out[name] = sqlBuilder{Tuples: keyTables, Run: runSQLBuilder(f), Domain: "the two tables the fill walks", RefusalTest: "TestPackageKeyFillTablesAreTheFilledOnes",
+			Reason: "the package-key fill's statements for one table"}
+	}
+	// Builders whose inputs are the constants their callers pass (the
+	// reading finds them), builders that take nothing, and open builders.
+	for name, f := range map[string]any{"addColumnSQL": addColumnSQL, "addQualifiedColumnSQL": addQualifiedColumnSQL, "dropSupersededIndexSQL": dropSupersededIndexSQL} {
+		out[name] = sqlBuilder{FromCallers: true, Run: runSQLBuilder(f), Domain: "the constants every caller passes", Reason: "a schema change whose names are written at its callers"}
+	}
+	for name, f := range map[string]any{"loginHistoryFromIdentitiesSQL": loginHistoryFromIdentitiesSQL, "loginHistoryFromContributorsSQL": loginHistoryFromContributorsSQL,
+		"seedAPITokenSettingsSQL": seedAPITokenSettingsSQL} {
+		out[name] = sqlBuilder{Tuples: [][]string{{}}, Run: runSQLBuilder(f), Domain: "no input", Reason: "fixed text with the running version or the shipped limits in it"}
+	}
+	const catalog = "names the database's catalog gives at run time; each reaches the text only through a quoting helper or pgx.Identifier, so it can be nothing but a name"
+	out["reposTrgmIndexSQL"] = sqlBuilder{Tuples: [][]string{{"public"}, {`odd "schema`}}, Run: runSQLBuilder(reposTrgmIndexSQL), Domain: "the schema pg_trgm is installed in", Open: catalog, Reason: "CREATE INDEX"}
+	out["toolVersionDefaultSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(toolVersionDefaultSQL),
+		Domain: "every table with a tool_version column", Open: catalog, Reason: "SET DEFAULT: not a write of stored rows"}
+	out["fkDeferrableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "issues", "fk_x"}, {"s", `odd "t`, `odd "c`}}, Run: runSQLBuilder(fkDeferrableSQL),
+		Domain: "every foreign key of the aveloxis schemas that is not yet deferrable", Open: catalog, Reason: "ALTER CONSTRAINT"}
+	const rows = "the number of rows in the chunk: a number, which makes placeholders ($1, $2, ...) and nothing else"
+	for name, f := range map[string]any{"commitBatchInsertSQL": commitBatchInsertSQL, "commitMessageBatchUpsertSQL": commitMessageBatchUpsertSQL} {
+		out[name] = sqlBuilder{Tuples: [][]string{{"1"}, {"2"}, {"500"}}, Run: runSQLBuilder(f), Domain: "any chunk size", Open: rows, Reason: "a batch upsert"}
+	}
+	out["analyzeTableSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "repos"}, {"s", `odd "t`}}, Run: runSQLBuilder(analyzeTableSQL),
+		Domain: "the table of an expression index just built", Open: catalog, Reason: "ANALYZE: writes no row of any table"}
+	out["dropInvalidIndexSQL"] = sqlBuilder{Tuples: [][]string{{"aveloxis_data", "idx_x"}, {"aveloxis_ops", `odd "name`}}, Run: runSQLBuilder(dropInvalidIndexSQL),
+		Domain: "the index a caller is about to build", Open: "the index's schema and name, from its caller's list; both go through pgx.Identifier", Reason: "DROP INDEX"}
+	return out
 }

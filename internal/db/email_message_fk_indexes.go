@@ -43,13 +43,19 @@ var emailMessageFKIndexes = []emailMessageFKIndex{
 	{"rgls_id", "idx_email_message_rgls_id", "repo_groups_list_serve"},
 }
 
+// emailMessageFKIndexSQL is the CREATE INDEX statement for the i-th of emailMessageFKIndexes: a function of the
+// index, so that the write-policy check runs it for every member.
+func emailMessageFKIndexSQL(i int) string {
+	idx := emailMessageFKIndexes[i]
+	return fmt.Sprintf(
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.email_message (%s) WHERE %s IS NOT NULL`,
+		idx.indexName, idx.column, idx.column,
+	)
+}
+
 func ensureEmailMessageFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range emailMessageFKIndexes {
-		sql := fmt.Sprintf(
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.email_message (%s) WHERE %s IS NOT NULL`,
-			idx.indexName, idx.column, idx.column,
-		)
-		execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", idx.indexName, sql)
+	for i, idx := range emailMessageFKIndexes {
+		execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", idx.indexName, emailMessageFKIndexSQL(i))
 	}
 }
 
@@ -284,6 +290,56 @@ func serveBackendsBeyondOwnPool(ctx context.Context, sess pgSession, ownPIDs fun
 	return n > 0, nil
 }
 
+const dedupListServeMembers = `unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)`
+
+// dedupListServeSteps are the statements that consolidate duplicate (group, list) rows onto their lowest id, in order.
+var dedupListServeSteps = []struct{ key, sql string }{
+	{"staging_duplicates_deleted",
+		`DELETE FROM aveloxis_ops.mailing_list_staging s
+			 USING (
+				SELECT st.mls_id,
+				       ROW_NUMBER() OVER (PARTITION BY w.winner, st.message_id_header
+				                          ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id) AS rn
+				FROM aveloxis_ops.mailing_list_staging st
+				JOIN ` + dedupListServeMembers + ` ON w.rgls_id = st.rgls_id
+			 ) d
+			 WHERE s.mls_id = d.mls_id AND d.rn > 1`},
+	{"staging_repointed",
+		`UPDATE aveloxis_ops.mailing_list_staging s
+			 SET rgls_id = w.winner,
+			     repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)
+			 FROM ` + dedupListServeMembers + `
+			 WHERE s.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
+	{"email_messages_repointed",
+		`UPDATE aveloxis_data.email_message em SET rgls_id = w.winner
+			 FROM ` + dedupListServeMembers + `
+			 WHERE em.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
+	{"winners_with_merged_checkpoints",
+		`UPDATE aveloxis_data.repo_groups_list_serve r
+			 SET mlls_last_month    = GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month),
+			     mlls_last_run      = GREATEST(r.mlls_last_run, agg.last_run),
+			     mlls_scan_complete = COALESCE(r.mlls_scan_complete, FALSE) AND agg.all_complete
+			 FROM (
+				SELECT w.winner,
+				       MAX(COALESCE(l.mlls_last_month, '')) AS last_month,
+				       MAX(l.mlls_last_run) AS last_run,
+				       bool_and(COALESCE(l.mlls_scan_complete, FALSE)) AS all_complete
+				FROM aveloxis_data.repo_groups_list_serve l
+				JOIN ` + dedupListServeMembers + ` ON w.rgls_id = l.rgls_id
+				WHERE w.rgls_id <> w.winner
+				GROUP BY w.winner
+			 ) agg
+			 WHERE r.rgls_id = agg.winner`},
+	{"list_rows_deleted",
+		`DELETE FROM aveloxis_data.repo_groups_list_serve r
+			 USING ` + dedupListServeMembers + `
+			 WHERE r.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
+}
+
+// dedupListServeStepSQL is the statement of the i-th of dedupListServeSteps: a function of the index,
+// so that the write-policy check runs it for every member.
+func dedupListServeStepSQL(i int) string { return dedupListServeSteps[i].sql }
+
 // dedupRepoGroupsListServeTx is the pass itself, inside the caller's tx.
 //
 // Partition = (CANONICAL group, rgls_email): the v0.27.17 consolidation
@@ -366,52 +422,9 @@ func dedupRepoGroupsListServeTx(ctx context.Context, tx pgx.Tx, logger *slog.Log
 	logger.Warn("repo_groups_list_serve carries duplicate (group, list) rows and no other aveloxis-serve is connected — consolidating to the lowest rgls_id before the UNIQUE index builds (young worker locks are ghosts of a stopped serve)",
 		"partitions", len(partitions), "losers", len(ids)-len(partitions), "member_rows_locked", len(ids))
 	// Every statement joins the SAME frozen pairs.
-	const members = `unnest($1::bigint[], $2::bigint[]) AS w(rgls_id, winner)`
-	steps := []struct{ key, sql string }{
-		{"staging_duplicates_deleted",
-			`DELETE FROM aveloxis_ops.mailing_list_staging s
-			 USING (
-				SELECT st.mls_id,
-				       ROW_NUMBER() OVER (PARTITION BY w.winner, st.message_id_header
-				                          ORDER BY (st.rgls_id = w.winner) DESC, st.mls_id) AS rn
-				FROM aveloxis_ops.mailing_list_staging st
-				JOIN ` + members + ` ON w.rgls_id = st.rgls_id
-			 ) d
-			 WHERE s.mls_id = d.mls_id AND d.rn > 1`},
-		{"staging_repointed",
-			`UPDATE aveloxis_ops.mailing_list_staging s
-			 SET rgls_id = w.winner,
-			     repo_group_id = (SELECT repo_group_id FROM aveloxis_data.repo_groups_list_serve WHERE rgls_id = w.winner)
-			 FROM ` + members + `
-			 WHERE s.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
-		{"email_messages_repointed",
-			`UPDATE aveloxis_data.email_message em SET rgls_id = w.winner
-			 FROM ` + members + `
-			 WHERE em.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
-		{"winners_with_merged_checkpoints",
-			`UPDATE aveloxis_data.repo_groups_list_serve r
-			 SET mlls_last_month    = GREATEST(COALESCE(r.mlls_last_month, ''), agg.last_month),
-			     mlls_last_run      = GREATEST(r.mlls_last_run, agg.last_run),
-			     mlls_scan_complete = COALESCE(r.mlls_scan_complete, FALSE) AND agg.all_complete
-			 FROM (
-				SELECT w.winner,
-				       MAX(COALESCE(l.mlls_last_month, '')) AS last_month,
-				       MAX(l.mlls_last_run) AS last_run,
-				       bool_and(COALESCE(l.mlls_scan_complete, FALSE)) AS all_complete
-				FROM aveloxis_data.repo_groups_list_serve l
-				JOIN ` + members + ` ON w.rgls_id = l.rgls_id
-				WHERE w.rgls_id <> w.winner
-				GROUP BY w.winner
-			 ) agg
-			 WHERE r.rgls_id = agg.winner`},
-		{"list_rows_deleted",
-			`DELETE FROM aveloxis_data.repo_groups_list_serve r
-			 USING ` + members + `
-			 WHERE r.rgls_id = w.rgls_id AND w.rgls_id <> w.winner`},
-	}
 	touched := map[string]int64{}
-	for _, st := range steps {
-		tag, err := tx.Exec(ctx, st.sql, ids, winners)
+	for i, st := range dedupListServeSteps {
+		tag, err := tx.Exec(ctx, dedupListServeStepSQL(i), ids, winners)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", st.key, err)
 		}

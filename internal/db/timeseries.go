@@ -30,6 +30,23 @@ type TimeSeriesResult struct {
 	Issues    []WeeklyDataPoint `json:"issues"`
 }
 
+// weeklyCommitsSQL is the weekly commit series' statement: from the commit
+// rows, or (daily) from the daily table that serves the window.
+func weeklyCommitsSQL(daily bool) string {
+	commitsSQL := `
+		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
+			COUNT(DISTINCT cmt_commit_hash) AS cnt
+		FROM aveloxis_data.commits
+		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
+		  AND cmt_author_timestamp IS NOT NULL
+		GROUP BY week_start
+		ORDER BY week_start`
+	if daily {
+		commitsSQL = dailyWeeklyCommitsSQL
+	}
+	return commitsSQL
+}
+
 // GetRepoTimeSeries returns weekly aggregated counts for a repo's key metrics
 // between `since` and `until` (inclusive lower, exclusive upper), both
 // clamped to the plausible range: the lower bound is at least the earliest
@@ -67,18 +84,7 @@ func (s *PostgresStore) GetRepoTimeSeries(ctx context.Context, repoID int64, sin
 	if err != nil {
 		return nil, fmt.Errorf("time series: %w", err)
 	}
-	commitsSQL := `
-		SELECT date_trunc('week', cmt_author_timestamp AT TIME ZONE 'UTC') AS week_start,
-			COUNT(DISTINCT cmt_commit_hash) AS cnt
-		FROM aveloxis_data.commits
-		WHERE repo_id = $1 AND cmt_author_timestamp >= $2 AND cmt_author_timestamp < $3
-		  AND cmt_author_timestamp IS NOT NULL
-		GROUP BY week_start
-		ORDER BY week_start`
-	if daily {
-		commitsSQL = dailyWeeklyCommitsSQL
-	}
-	result.Commits, err = s.weeklySeries(ctx, commitsSQL, repoID, since, upper)
+	result.Commits, err = s.weeklySeries(ctx, weeklyCommitsSQL(daily), repoID, since, upper)
 	if err != nil {
 		return nil, fmt.Errorf("weekly commits: %w", err)
 	}

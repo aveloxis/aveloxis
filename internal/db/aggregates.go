@@ -15,18 +15,20 @@ import (
 //
 // Each table is refreshed inside a transaction (DELETE old + INSERT new) so
 // readers never see a half-updated state.
-func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64) error {
-	type aggQuery struct {
-		name   string
-		delete string
-		insert string
-	}
+// aggQuery is one aggregate table's refresh: delete its rows for the key,
+// insert them again.
+type aggQuery struct {
+	name   string
+	delete string
+	insert string
+}
 
-	queries := []aggQuery{
-		{
-			name:   "dm_repo_annual",
-			delete: `DELETE FROM aveloxis_data.dm_repo_annual WHERE repo_id = $1`,
-			insert: `
+// repoAggQueries are the refreshes of the aggregate tables, in order.
+var repoAggQueries = []aggQuery{
+	{
+		name:   "dm_repo_annual",
+		delete: `DELETE FROM aveloxis_data.dm_repo_annual WHERE repo_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_annual
 					(repo_id, email, affiliation, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -46,11 +48,11 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 				  AND cmt_author_timestamp IS NOT NULL
 				GROUP BY repo_id, cmt_author_email, cmt_author_affiliation,
 				         EXTRACT(YEAR FROM cmt_author_timestamp)`,
-		},
-		{
-			name:   "dm_repo_monthly",
-			delete: `DELETE FROM aveloxis_data.dm_repo_monthly WHERE repo_id = $1`,
-			insert: `
+	},
+	{
+		name:   "dm_repo_monthly",
+		delete: `DELETE FROM aveloxis_data.dm_repo_monthly WHERE repo_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_monthly
 					(repo_id, email, affiliation, month, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -72,11 +74,11 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 				GROUP BY repo_id, cmt_author_email, cmt_author_affiliation,
 				         EXTRACT(MONTH FROM cmt_author_timestamp),
 				         EXTRACT(YEAR FROM cmt_author_timestamp)`,
-		},
-		{
-			name:   "dm_repo_weekly",
-			delete: `DELETE FROM aveloxis_data.dm_repo_weekly WHERE repo_id = $1`,
-			insert: `
+	},
+	{
+		name:   "dm_repo_weekly",
+		delete: `DELETE FROM aveloxis_data.dm_repo_weekly WHERE repo_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_weekly
 					(repo_id, email, affiliation, week, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -98,19 +100,27 @@ func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64)
 				GROUP BY repo_id, cmt_author_email, cmt_author_affiliation,
 				         EXTRACT(WEEK FROM cmt_author_timestamp),
 				         EXTRACT(YEAR FROM cmt_author_timestamp)`,
-		},
-	}
+	},
+}
 
-	for _, q := range queries {
+// repoAggDeleteSQL is the statement of the i-th of repoAggQueries: a function of the index,
+// so that the write-policy check runs it for every member.
+func repoAggDeleteSQL(i int) string { return repoAggQueries[i].delete }
+
+// repoAggInsertSQL is its insert.
+func repoAggInsertSQL(i int) string { return repoAggQueries[i].insert }
+
+func (s *PostgresStore) RefreshRepoAggregates(ctx context.Context, repoID int64) error {
+	for i, q := range repoAggQueries {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin tx for %s: %w", q.name, err)
 		}
-		if _, err := tx.Exec(ctx, q.delete, repoID); err != nil {
+		if _, err := tx.Exec(ctx, repoAggDeleteSQL(i), repoID); err != nil {
 			tx.Rollback(ctx)
 			return fmt.Errorf("deleting %s for repo %d: %w", q.name, repoID, err)
 		}
-		if _, err := tx.Exec(ctx, q.insert, repoID); err != nil {
+		if _, err := tx.Exec(ctx, repoAggInsertSQL(i), repoID); err != nil {
 			tx.Rollback(ctx)
 			return fmt.Errorf("inserting %s for repo %d: %w", q.name, repoID, err)
 		}
@@ -140,25 +150,12 @@ func (s *PostgresStore) RefreshRepoGroupAggregates(ctx context.Context, repoID i
 	return s.RefreshGroupAggregates(ctx, *rgID)
 }
 
-// RefreshGroupAggregates rebuilds the dm_repo_group_* tables for ONE
-// group. Every statement below is scoped `WHERE r.repo_group_id = $1`,
-// so the work is proportional to the whole GROUP, not to any one repo
-// in it — which is why RefreshAllRepoAggregates drives this per group
-// and not per repo (v0.28.19).
-func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int64) error {
-	rgID := &groupID
-
-	type aggQuery struct {
-		name   string
-		delete string
-		insert string
-	}
-
-	queries := []aggQuery{
-		{
-			name:   "dm_repo_group_annual",
-			delete: `DELETE FROM aveloxis_data.dm_repo_group_annual WHERE repo_group_id = $1`,
-			insert: `
+// groupAggQueries are the refreshes of the aggregate tables, in order.
+var groupAggQueries = []aggQuery{
+	{
+		name:   "dm_repo_group_annual",
+		delete: `DELETE FROM aveloxis_data.dm_repo_group_annual WHERE repo_group_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_annual
 					(repo_group_id, email, affiliation, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -179,11 +176,11 @@ func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int6
 				  AND c.cmt_author_timestamp IS NOT NULL
 				GROUP BY r.repo_group_id, c.cmt_author_email, c.cmt_author_affiliation,
 				         EXTRACT(YEAR FROM c.cmt_author_timestamp)`,
-		},
-		{
-			name:   "dm_repo_group_monthly",
-			delete: `DELETE FROM aveloxis_data.dm_repo_group_monthly WHERE repo_group_id = $1`,
-			insert: `
+	},
+	{
+		name:   "dm_repo_group_monthly",
+		delete: `DELETE FROM aveloxis_data.dm_repo_group_monthly WHERE repo_group_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_monthly
 					(repo_group_id, email, affiliation, month, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -206,11 +203,11 @@ func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int6
 				GROUP BY r.repo_group_id, c.cmt_author_email, c.cmt_author_affiliation,
 				         EXTRACT(MONTH FROM c.cmt_author_timestamp),
 				         EXTRACT(YEAR FROM c.cmt_author_timestamp)`,
-		},
-		{
-			name:   "dm_repo_group_weekly",
-			delete: `DELETE FROM aveloxis_data.dm_repo_group_weekly WHERE repo_group_id = $1`,
-			insert: `
+	},
+	{
+		name:   "dm_repo_group_weekly",
+		delete: `DELETE FROM aveloxis_data.dm_repo_group_weekly WHERE repo_group_id = $1`,
+		insert: `
 				INSERT INTO aveloxis_data.dm_repo_group_weekly
 					(repo_group_id, email, affiliation, week, year, added, removed, whitespace, files, patches,
 					 tool_source, data_source)
@@ -233,19 +230,34 @@ func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int6
 				GROUP BY r.repo_group_id, c.cmt_author_email, c.cmt_author_affiliation,
 				         EXTRACT(WEEK FROM c.cmt_author_timestamp),
 				         EXTRACT(YEAR FROM c.cmt_author_timestamp)`,
-		},
-	}
+	},
+}
 
-	for _, q := range queries {
+// groupAggDeleteSQL is the statement of the i-th of groupAggQueries: a function of the index,
+// so that the write-policy check runs it for every member.
+func groupAggDeleteSQL(i int) string { return groupAggQueries[i].delete }
+
+// groupAggInsertSQL is its insert.
+func groupAggInsertSQL(i int) string { return groupAggQueries[i].insert }
+
+// RefreshGroupAggregates rebuilds the dm_repo_group_* tables for ONE
+// group. Every statement below is scoped `WHERE r.repo_group_id = $1`,
+// so the work is proportional to the whole GROUP, not to any one repo
+// in it — which is why RefreshAllRepoAggregates drives this per group
+// and not per repo (v0.28.19).
+func (s *PostgresStore) RefreshGroupAggregates(ctx context.Context, groupID int64) error {
+	rgID := &groupID
+
+	for i, q := range groupAggQueries {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin tx for %s: %w", q.name, err)
 		}
-		if _, err := tx.Exec(ctx, q.delete, *rgID); err != nil {
+		if _, err := tx.Exec(ctx, groupAggDeleteSQL(i), *rgID); err != nil {
 			tx.Rollback(ctx)
 			return fmt.Errorf("deleting %s for group %d: %w", q.name, *rgID, err)
 		}
-		if _, err := tx.Exec(ctx, q.insert, *rgID); err != nil {
+		if _, err := tx.Exec(ctx, groupAggInsertSQL(i), *rgID); err != nil {
 			tx.Rollback(ctx)
 			return fmt.Errorf("inserting %s for group %d: %w", q.name, *rgID, err)
 		}

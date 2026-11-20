@@ -91,6 +91,18 @@ func GitLabOAuthHost(base string) string {
 	return h
 }
 
+// oauthUserByIDSQL finds the account a forge user id belongs to: GitHub's,
+// or (gitlab) a GitLab instance's.
+func oauthUserByIDSQL(gitlab bool) string {
+	byID := `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gh_user_id = $1 AND $2 = ''
+		ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
+	if gitlab {
+		byID = `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gl_user_id = $1 AND gl_oauth_host = $2
+		ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
+	}
+	return byID
+}
+
 // SignInOAuthUser creates or updates a user from OAuth login. Returns the
 // user_id and whether this sign-in created the account (the web login's
 // welcome mail keys on it; final review round 3 — a second, name-keyed
@@ -143,12 +155,7 @@ func (s *PostgresStore) SignInOAuthUser(ctx context.Context, info OAuthUserInfo)
 		// GitLab ID matches only on its own instance; a row from before the
 		// instance was recorded matches none until StampLegacyGitLabHost
 		// stamps it at web start (round 3).
-		byID := `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gh_user_id = $1 AND $2 = ''
-			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
-		if info.Provider == "gitlab" {
-			byID = `SELECT user_id, count(*) OVER () FROM aveloxis_ops.users WHERE gl_user_id = $1 AND gl_oauth_host = $2
-			ORDER BY data_collection_date DESC NULLS LAST, user_id DESC LIMIT 1`
-		}
+		byID := oauthUserByIDSQL(info.Provider == "gitlab")
 		var matches int
 		err := s.pool.QueryRow(ctx, byID, ownID, info.GLHost).Scan(&userID, &matches)
 		if err == nil {

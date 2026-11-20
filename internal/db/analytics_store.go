@@ -177,17 +177,31 @@ var metricSeriesSQL = map[string]string{
 }
 
 // seriesBuckets are the buckets a series can be asked in, each mapped to
-// the date_trunc unit it is (0.29.212): a reader takes the unit from the
+// the date_trunc unit it is (0.29.211): a reader takes the unit from the
 // map, never from its caller, so that what reaches a statement's text is
 // one of these values whatever was asked for.
 var seriesBuckets = map[string]string{"week": "week", "month": "month"}
+
+// metricSeriesStatement is MetricWeeklySeries' statement for a metric that
+// is a key of metricSeriesSQL and a bucket that is one of seriesBuckets;
+// anything else is refused here, before a statement exists.
+func metricSeriesStatement(metric, bucket string) (string, error) {
+	unit, ok := seriesBuckets[bucket]
+	if !ok {
+		return "", fmt.Errorf("invalid bucket %q", bucket)
+	}
+	q, ok := metricSeriesSQL[metric]
+	if !ok {
+		return "", fmt.Errorf("unknown temporal metric %q", metric)
+	}
+	return fmt.Sprintf(q, unit), nil
+}
 
 // MetricWeeklySeries returns the bucketed series for one base
 // temporal metric over a repo-id set. bucket ∈ week|month (validated
 // here as defense in depth — it is interpolated into SQL).
 func (s *PostgresStore) MetricWeeklySeries(ctx context.Context, repoIDs []int64, metric, bucket string, since, until time.Time) ([]WeeklyPoint, error) {
-	unit, ok := seriesBuckets[bucket]
-	if !ok {
+	if _, ok := seriesBuckets[bucket]; !ok {
 		return nil, fmt.Errorf("invalid bucket %q", bucket)
 	}
 	q, ok := metricSeriesSQL[metric]
@@ -222,7 +236,11 @@ func (s *PostgresStore) MetricWeeklySeries(ctx context.Context, repoIDs []int64,
 		}
 		args = []any{live, since, until, daily} // never nil: ANY(NULL) and $1 || NULL are NULL, not empty
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(q, unit), args...)
+	stmt, err := metricSeriesStatement(metric, bucket)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, stmt, args...)
 	if err != nil {
 		return nil, fmt.Errorf("metric %s: %w", metric, err)
 	}

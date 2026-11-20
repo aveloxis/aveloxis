@@ -130,6 +130,11 @@ type Violation struct {
 	Detail string
 }
 
+// Unparsed is one statement not read.
+type Unparsed struct {
+	File, SQL, Detail string
+}
+
 // Report is Check's result.
 type Report struct {
 	Violations      []Violation
@@ -138,6 +143,10 @@ type Report struct {
 	// registry rot (a renamed column) or a genuinely dark column (the
 	// column-writer tripwire's territory).
 	Unwritten []Registered
+	// Unparsed are the statements the token reader did not read to their
+	// end (parse.go says what that means). Each is a failure until a
+	// person has read it: nothing was checked on it.
+	Unparsed []Unparsed
 }
 
 // Check verifies every registered column's UPDATE SET assignments
@@ -145,47 +154,119 @@ type Report struct {
 func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 	var rep Report
 	used := make([]bool, len(exceptions))
+	// Every statement is read once, by the token reader. One that is not
+	// read to its end is reported whatever it is.
+	type read struct {
+		stmt   Stmt
+		writes []Write
+	}
+	reads := make([]read, 0, len(stmts))
+	for _, st := range stmts {
+		ws, err := ParseWrites(st.SQL)
+		if err != nil {
+			rep.Unparsed = append(rep.Unparsed, Unparsed{File: st.File, SQL: st.SQL, Detail: err.Error()})
+			continue
+		}
+		reads = append(reads, read{st, ws})
+	}
+	// The views defined anywhere in what was read: a write through one is
+	// a write of the tables behind it.
+	views := map[string][]string{}
+	for _, st := range stmts {
+		for v, srcs := range ViewSources(st.SQL) {
+			views[v] = append(views[v], srcs...)
+		}
+	}
 	for _, reg := range registry {
-		writes := FindWrites(stmts, reg.Table)
+		bare := reg.Table[strings.LastIndex(reg.Table, ".")+1:]
 		seenWriter := false
-		for _, w := range writes {
+		for _, w := range FindWrites(stmts, reg.Table) {
 			if w.WritesColumn(reg.Table, reg.Column) {
 				seenWriter = true
 			}
-			violate := func(expr, detail string) {
-				if i := findException(exceptions, reg, w); i >= 0 {
-					used[i] = true
-					return
+		}
+		for _, rd := range reads {
+			for i := range rd.writes {
+				w := rd.writes[i]
+				st := rd.stmt
+				st.write = &rd.writes[i]
+				violate := func(expr, detail string) {
+					if i := findException(exceptions, reg, st); i >= 0 {
+						used[i] = true
+						return
+					}
+					rep.Violations = append(rep.Violations, Violation{
+						Table: reg.Table, Column: reg.Column, File: st.File,
+						Expr: expr, Want: reg.Policy, Detail: detail,
+					})
 				}
-				rep.Violations = append(rep.Violations, Violation{
-					Table: reg.Table, Column: reg.Column, File: w.File,
-					Expr: expr, Want: reg.Policy, Detail: detail,
-				})
-			}
-			for _, expr := range w.SetExprsOf(reg.Table, reg.Column) {
-				var ok bool
-				var detail string
-				if strings.Contains(expr, Unknown) {
-					// A statement CheckUnreadable handed on with a hole in
-					// this column's value: nothing can judge it.
-					ok, detail = false, "the value has a part that is not fixed text ("+Unknown+"), so the policy cannot be checked on it"
-				} else if reg.Policy == InsertOnly {
-					ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET"
-				} else {
-					ok, detail = exprConforms(w, expr, reg.Column, reg.Policy)
+				if w.Schema == "" {
+					// Deny by default: which table an unqualified name is
+					// depends on the session's search_path, so a write of a
+					// column of this NAME through one is judged a write of
+					// the registered column that nothing can check.
+					touches := w.Kind == "copy" && (w.CopyAll || w.Table == bare)
+					for _, it := range w.Sets {
+						touches = touches || it.Column == reg.Column
+					}
+					for _, a := range w.Alters {
+						touches = touches || a.Column == reg.Column
+					}
+					for _, c := range w.CopyColumns {
+						touches = touches || (w.Kind == "copy" && c == reg.Column)
+					}
+					if touches {
+						violate(w.Kind+" "+w.Table, "the target names no schema, so it may be "+reg.Table+
+							" and nothing can tell: write the schema")
+					}
+					continue
 				}
-				if !ok {
-					violate(expr, detail)
+				if w.Qualified() != reg.Table {
+					for _, src := range views[w.Qualified()] {
+						if src == reg.Table && (len(w.Sets) > 0 || w.Kind == "copy") {
+							violate(w.Kind+" "+w.Qualified(), "the target is a view over "+reg.Table+": a write through it writes that table under the view's column names, which no policy can be checked on")
+							break
+						}
+					}
+					continue
 				}
-			}
-			// A multiple-column assignment, SET (a, col) = (...): its right
-			// side is one row, not a value per column, so no matcher can
-			// judge it — fail closed (round 3 finding 5 of 0.29.123: the
-			// form escaped every policy), on any spelling of the column as a
-			// list member (setListMember, round 7). Spell the column's
-			// assignment on its own, or take a reviewed Exception.
-			if m, ok := setListMember(w.SQL, reg.Column); ok {
-				violate(m, "multiple-column SET: the policy cannot be checked on this form; assign the column on its own, or take a reviewed Exception")
+				for _, a := range w.Alters {
+					if a.Column == reg.Column {
+						violate("ALTER TABLE ... "+a.Action+" "+a.Column, "the statement rewrites, renames or destroys the column's stored values ("+
+							a.Action+"): no policy allows that; take a reviewed Exception")
+					}
+				}
+				if w.Kind == "copy" {
+					all := w.CopyAll
+					for _, c := range w.CopyColumns {
+						all = all || c == reg.Column
+					}
+					if all {
+						violate("COPY "+reg.Table, "COPY ... FROM writes the column with values no policy can be checked on")
+					}
+				}
+				for _, it := range w.Sets {
+					if it.Column != reg.Column {
+						continue
+					}
+					var ok bool
+					var detail string
+					switch {
+					case it.Multi:
+						// SET (a, col) = (...): the right side is one row,
+						// not a value per column.
+						ok, detail = false, "multiple-column SET: the policy cannot be checked on this form; assign the column on its own, or take a reviewed Exception"
+					case strings.Contains(it.Expr, Unknown):
+						ok, detail = false, "the value has a part that is not fixed text ("+Unknown+"), so the policy cannot be checked on it"
+					case reg.Policy == InsertOnly:
+						ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET"
+					default:
+						ok, detail = exprConforms(st, it.Expr, reg.Column, reg.Policy)
+					}
+					if !ok {
+						violate(it.Expr, detail)
+					}
+				}
 			}
 		}
 		if !seenWriter {

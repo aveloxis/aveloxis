@@ -364,6 +364,46 @@ func (s *PostgresStore) RunDataVerification(ctx context.Context, opts VerifyOpti
 	return out
 }
 
+// cachedCountsProbeSQL is the cached-counts probe's statement, sampled at random or
+// (deterministic) in a fixed order.
+func cachedCountsProbeSQL(deterministic bool) string {
+	opts := VerifyOptions{DeterministicSample: deterministic}
+	return `
+		WITH sample AS (
+			SELECT repo_id, last_issues, last_prs FROM aveloxis_ops.collection_queue
+			WHERE last_collected IS NOT NULL AND status = 'queued'
+			ORDER BY ` + opts.sampleOrder("repo_id") + ` LIMIT LEAST($1, 30)
+		)
+		SELECT COUNT(*) FILTER (WHERE
+			s.last_issues <> (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = s.repo_id)
+			OR s.last_prs <> (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = s.repo_id)),
+			COUNT(*)
+		FROM sample s`
+}
+
+// metadataDriftProbeSQL is the metadata-drift probe's statement, sampled at random or
+// (deterministic) in a fixed order.
+func metadataDriftProbeSQL(deterministic bool) string {
+	opts := VerifyOptions{DeterministicSample: deterministic}
+	return `
+		WITH sample AS (
+			SELECT q.repo_id, q.last_issues, q.last_prs
+			FROM aveloxis_ops.collection_queue q
+			WHERE q.last_collected > NOW() - INTERVAL '7 days'
+			ORDER BY ` + opts.sampleOrder("q.repo_id") + ` LIMIT $1
+		), meta AS (
+			SELECT DISTINCT ON (ri.repo_id) ri.repo_id, ri.issues_count, ri.pr_count
+			FROM aveloxis_data.repo_info ri
+			JOIN sample s ON s.repo_id = ri.repo_id
+			ORDER BY ri.repo_id, ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
+		)
+		SELECT COUNT(*) FILTER (WHERE
+			(m.issues_count > 0 AND abs(s.last_issues - m.issues_count)::float / m.issues_count > $2 / 100.0)
+			OR (m.pr_count > 0 AND abs(s.last_prs - m.pr_count)::float / m.pr_count > $2 / 100.0)),
+			COUNT(*)
+		FROM sample s JOIN meta m USING (repo_id)`
+}
+
 // postSchemaProbes are the probes independent of the msg_kind
 // migration state — split out so the schema-behind early return above
 // still runs the full remainder of the battery.
@@ -386,17 +426,7 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 	// Cached queue counts vs actual table counts. CompleteJob writes
 	// these via COUNT subqueries (v0.21.2), so ANY mismatch is a FAIL.
 	var mismatches, sampled int64
-	if err := s.pool.QueryRow(ctx, `
-		WITH sample AS (
-			SELECT repo_id, last_issues, last_prs FROM aveloxis_ops.collection_queue
-			WHERE last_collected IS NOT NULL AND status = 'queued'
-			ORDER BY `+opts.sampleOrder("repo_id")+` LIMIT LEAST($1, 30)
-		)
-		SELECT COUNT(*) FILTER (WHERE
-			s.last_issues <> (SELECT COUNT(*) FROM aveloxis_data.issues i WHERE i.repo_id = s.repo_id)
-			OR s.last_prs <> (SELECT COUNT(*) FROM aveloxis_data.pull_requests p WHERE p.repo_id = s.repo_id)),
-			COUNT(*)
-		FROM sample s`, opts.Sample).Scan(&mismatches, &sampled); err != nil {
+	if err := s.pool.QueryRow(ctx, cachedCountsProbeSQL(opts.DeterministicSample), opts.Sample).Scan(&mismatches, &sampled); err != nil {
 		probeErr("cached counts vs actual", err)
 	} else if mismatches > 0 {
 		add("cached counts vs actual", "FAIL", "%d of %d sampled repos: collection_queue.last_issues/last_prs disagree with actual table counts — CompleteJob's cumulative-count contract is broken", mismatches, sampled)
@@ -411,23 +441,7 @@ func (s *PostgresStore) postSchemaProbes(ctx context.Context, opts VerifyOptions
 	// 5%% semantic). Drift is expected on high-velocity repos between
 	// cycles → WARN, not FAIL; gap fill is the healer.
 	var drifted int64
-	if err := s.pool.QueryRow(ctx, `
-		WITH sample AS (
-			SELECT q.repo_id, q.last_issues, q.last_prs
-			FROM aveloxis_ops.collection_queue q
-			WHERE q.last_collected > NOW() - INTERVAL '7 days'
-			ORDER BY `+opts.sampleOrder("q.repo_id")+` LIMIT $1
-		), meta AS (
-			SELECT DISTINCT ON (ri.repo_id) ri.repo_id, ri.issues_count, ri.pr_count
-			FROM aveloxis_data.repo_info ri
-			JOIN sample s ON s.repo_id = ri.repo_id
-			ORDER BY ri.repo_id, ri.data_collection_date DESC NULLS LAST, ri.repo_info_id DESC
-		)
-		SELECT COUNT(*) FILTER (WHERE
-			(m.issues_count > 0 AND abs(s.last_issues - m.issues_count)::float / m.issues_count > $2 / 100.0)
-			OR (m.pr_count > 0 AND abs(s.last_prs - m.pr_count)::float / m.pr_count > $2 / 100.0)),
-			COUNT(*)
-		FROM sample s JOIN meta m USING (repo_id)`,
+	if err := s.pool.QueryRow(ctx, metadataDriftProbeSQL(opts.DeterministicSample),
 		opts.Sample, driftThresholdPct).Scan(&drifted, &sampled); err != nil {
 		probeErr("gathered vs metadata drift", err)
 	} else if drifted > 0 {

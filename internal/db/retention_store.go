@@ -131,13 +131,22 @@ SELECT date_trunc('%s', first_ts AT TIME ZONE 'UTC') AS bucket,
  WHERE first_ts >= $2 AND first_ts < $3
  GROUP BY 1 ORDER BY 1`
 
+// retentionSeriesStatement is ContributorRetentionSeries' statement for a
+// bucket that is one of seriesBuckets; any other is refused here.
+func retentionSeriesStatement(bucket string) (string, error) {
+	unit, ok := seriesBuckets[bucket]
+	if !ok {
+		return "", fmt.Errorf("invalid bucket %q", bucket)
+	}
+	return fmt.Sprintf(retentionSeriesSQL, unit), nil
+}
+
 // ContributorRetentionSeries returns the drive-by and repeat
 // new-contributor series for a repo-id set, bucketed by the FIRST
 // contribution of each contributor. threshold is the minimum total
 // action count that makes a contributor "repeat" (8Knot default: 4).
 func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs []int64, bucket string, since, until time.Time, threshold int) (driveBy, repeat []WeeklyPoint, err error) {
-	unit, ok := seriesBuckets[bucket]
-	if !ok {
+	if _, ok := seriesBuckets[bucket]; !ok {
 		return nil, nil, fmt.Errorf("invalid bucket %q", bucket)
 	}
 	if threshold < 1 {
@@ -162,7 +171,11 @@ func (s *PostgresStore) ContributorRetentionSeries(ctx context.Context, repoIDs 
 			live = complementOf(repoIDs, served)
 		}
 	}
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(retentionSeriesSQL, unit), repoIDs, since, until, threshold, live, daily)
+	stmt, err := retentionSeriesStatement(bucket)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := s.pool.Query(ctx, stmt, repoIDs, since, until, threshold, live, daily)
 	if err != nil {
 		return nil, nil, fmt.Errorf("contributor retention: %w", err)
 	}

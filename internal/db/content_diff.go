@@ -209,9 +209,15 @@ func contentTables(ctx context.Context, pool *pgxpool.Pool, schemas []string) (m
 	return out, nil
 }
 
+// contentCountSQL counts the rows of one table the catalog names; the
+// names are quoted.
+func contentCountSQL(schema, table string) string {
+	return `SELECT COUNT(*) FROM ` + pgx.Identifier{schema, table}.Sanitize()
+}
+
 func contentCount(ctx context.Context, pool *pgxpool.Pool, schema, table string) (int64, error) {
 	var n int64
-	err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM `+pgx.Identifier{schema, table}.Sanitize()).Scan(&n)
+	err := pool.QueryRow(ctx, contentCountSQL(schema, table)).Scan(&n)
 	return n, err
 }
 

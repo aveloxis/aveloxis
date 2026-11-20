@@ -590,22 +590,31 @@ type StripBatchRow struct {
 	Text  string
 }
 
+// mailingListStripBatchSQL is GetMailingListBodiesForStrip's statement:
+// the bodies never stripped, or (rerun) those stripped under another rule
+// than $3.
+func mailingListStripBatchSQL(rerun bool) string {
+	predicate := `msg_text_clean IS NULL`
+	if rerun {
+		predicate = `COALESCE(msg_text_clean_rule, '') <> $3`
+	}
+	return `
+		SELECT msg_id, msg_text FROM aveloxis_data.messages
+		WHERE platform_id = 6 AND msg_text <> '' AND msg_id > $1 AND ` + predicate + `
+		ORDER BY msg_id LIMIT $2`
+}
+
 // GetMailingListBodiesForStrip pages mailing-list bodies needing a
 // quote-strip, by keyset cursor. ruleRerun == "" selects never-stripped
 // rows (msg_text_clean IS NULL — the resume state); a non-empty
 // ruleRerun selects rows whose stored rule differs from it (the
 // --rule-rerun mode after a pattern-library bump).
 func (s *PostgresStore) GetMailingListBodiesForStrip(ctx context.Context, afterMsgID int64, limit int, ruleRerun string) ([]StripBatchRow, error) {
-	predicate := `msg_text_clean IS NULL`
 	args := []any{afterMsgID, limit}
 	if ruleRerun != "" {
-		predicate = `COALESCE(msg_text_clean_rule, '') <> $3`
 		args = append(args, ruleRerun)
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT msg_id, msg_text FROM aveloxis_data.messages
-		WHERE platform_id = 6 AND msg_text <> '' AND msg_id > $1 AND `+predicate+`
-		ORDER BY msg_id LIMIT $2`, args...)
+	rows, err := s.pool.Query(ctx, mailingListStripBatchSQL(ruleRerun != ""), args...)
 	if err != nil {
 		return nil, fmt.Errorf("strip batch after %d: %w", afterMsgID, err)
 	}
@@ -695,6 +704,30 @@ func (s *PostgresStore) HealMisdrainedMailingListRows(ctx context.Context, logge
 		   AND em.email_message_id > $1 AND em.email_message_id <= $2`)
 }
 
+const automationPhantomsSQL = `
+		SELECT cntrb_id FROM aveloxis_data.contributors
+		WHERE aveloxis_data.is_automation_email(cntrb_email)
+		  AND COALESCE(cntrb_login, '') = ''
+		  AND COALESCE(gh_login, '') = ''
+		  AND COALESCE(gl_username, '') = ''`
+
+// healAutomationPhantomSteps are the statements that re-point rows from automation phantom contributors, in order.
+var healAutomationPhantomSteps = []struct{ label, sql string }{
+	{"null message attributions",
+		`UPDATE aveloxis_data.messages SET cntrb_id = NULL WHERE cntrb_id IN (` + automationPhantomsSQL + `)`},
+	{"null issue reporters",
+		`UPDATE aveloxis_data.issues SET reporter_id = NULL WHERE reporter_id IN (` + automationPhantomsSQL + `)`},
+	{"drop relay aliases",
+		`DELETE FROM aveloxis_data.contributors_aliases WHERE cntrb_id IN (` + automationPhantomsSQL + `)`},
+	{"soft-delete phantoms",
+		`UPDATE aveloxis_data.contributors SET cntrb_deleted = 1
+			 WHERE cntrb_id IN (` + automationPhantomsSQL + `) AND COALESCE(cntrb_deleted, 0) = 0`},
+}
+
+// healAutomationPhantomStepSQL is the statement of the i-th of healAutomationPhantomSteps: a function of the index,
+// so that the write-policy check runs it for every member.
+func healAutomationPhantomStepSQL(i int) string { return healAutomationPhantomSteps[i].sql }
+
 // HealAutomationPhantomContributors repairs the 2026-08-31 identity
 // fabrication: email-only contributor rows minted for AUTOMATION
 // addresses (jira@apache.org, gitbox@, list addresses) by the
@@ -707,25 +740,8 @@ func (s *PostgresStore) HealMisdrainedMailingListRows(ctx context.Context, logge
 // (cntrb_deleted = 1 — R10: FK targets are never physically deleted).
 // Idempotent; ledgered in migrate.
 func (s *PostgresStore) HealAutomationPhantomContributors(ctx context.Context) error {
-	const phantoms = `
-		SELECT cntrb_id FROM aveloxis_data.contributors
-		WHERE aveloxis_data.is_automation_email(cntrb_email)
-		  AND COALESCE(cntrb_login, '') = ''
-		  AND COALESCE(gh_login, '') = ''
-		  AND COALESCE(gl_username, '') = ''`
-	steps := []struct{ label, sql string }{
-		{"null message attributions",
-			`UPDATE aveloxis_data.messages SET cntrb_id = NULL WHERE cntrb_id IN (` + phantoms + `)`},
-		{"null issue reporters",
-			`UPDATE aveloxis_data.issues SET reporter_id = NULL WHERE reporter_id IN (` + phantoms + `)`},
-		{"drop relay aliases",
-			`DELETE FROM aveloxis_data.contributors_aliases WHERE cntrb_id IN (` + phantoms + `)`},
-		{"soft-delete phantoms",
-			`UPDATE aveloxis_data.contributors SET cntrb_deleted = 1
-			 WHERE cntrb_id IN (` + phantoms + `) AND COALESCE(cntrb_deleted, 0) = 0`},
-	}
-	for _, st := range steps {
-		if _, err := s.pool.Exec(ctx, st.sql); err != nil {
+	for i, st := range healAutomationPhantomSteps {
+		if _, err := s.pool.Exec(ctx, healAutomationPhantomStepSQL(i)); err != nil {
 			return fmt.Errorf("heal automation phantoms (%s): %w", st.label, err)
 		}
 	}

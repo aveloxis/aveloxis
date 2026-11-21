@@ -112,9 +112,9 @@ func TestScanLockfilesWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, needle := range []string{
-		"ReplaceRepoLockfileSnapshot(", // one-tx snapshot replace
-		"GetRepoDepsForVulnScan(",      // declared direct deps
-		"pkgid.MatchKey(",              // ecosystem-aware name matching
+		"ReplaceRepoLockfileSnapshotFrom(", // one-tx snapshot replace
+		"GetRepoDepsForVulnScan(",          // declared direct deps
+		"pkgid.MatchKey(",                  // ecosystem-aware name matching
 	} {
 		if !strings.Contains(string(scan), needle) {
 			t.Errorf("scanLockfiles must use %s", needle)

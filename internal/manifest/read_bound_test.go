@@ -74,7 +74,7 @@ func TestAnInstalledReadBoundHoldsEveryReadOfAManifest(t *testing.T) {
 	}
 	room := int64(1000)
 	var asked []int64
-	restore := SetReadBound(func(size int64) int64 { asked = append(asked, size); return room })
+	restore := SetReadBound(func(_ string, size int64) int64 { asked = append(asked, size); return room })
 	t.Cleanup(restore)
 	if _, err := ReadManifest(small); err != nil {
 		t.Errorf("a file inside the bound: %v", err)

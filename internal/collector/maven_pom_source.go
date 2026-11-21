@@ -209,6 +209,11 @@ const (
 	answerHit                             // the pom
 	answerUnknown                         // no answer, and none stored
 	answerRefused                         // it may not be fetched from, or refused the request
+	// answerNotAsked: it is not fetched from (collection.declared_repository_fetch
+	// is off) and nothing is stored for the coordinate. It has said nothing:
+	// until 0.29.215 that was counted as a miss, and "not found" was reported
+	// for a pom a repository the build names was never asked for (round 8).
+	answerNotAsked
 )
 
 // RemotePom implements manifest.PomSource: the configured repositories in
@@ -228,7 +233,7 @@ func (s *mavenPomSource) RemotePom(group, artifact, version string, declared []s
 		s.unaskable++
 		return nil, manifest.RemoteNotAsked
 	}
-	unknown, refused := false, false
+	unknown, refused, notAsked := false, false, false
 	settle := func(pom *manifest.RemotePom, ans repositoryAnswer) bool {
 		switch ans {
 		case answerHit:
@@ -237,6 +242,8 @@ func (s *mavenPomSource) RemotePom(group, artifact, version string, declared []s
 			unknown = true
 		case answerRefused:
 			refused = true
+		case answerNotAsked:
+			notAsked = true
 		}
 		return false
 	}
@@ -276,6 +283,11 @@ func (s *mavenPomSource) RemotePom(group, artifact, version string, declared []s
 		return nil, manifest.RemoteFailed
 	case refused:
 		return nil, manifest.RemoteRefused
+	case notAsked:
+		// Every repository asked has none, and one the build declares was
+		// not asked: not an answer (manifest.RemoteNotAsked withholds what a
+		// later pom would give, as a failed lookup does).
+		return nil, manifest.RemoteNotAsked
 	}
 	return nil, manifest.RemoteNotFound
 }
@@ -317,7 +329,7 @@ func (s *mavenPomSource) ask(ctx context.Context, base, group, artifact, version
 		return nil, answerMiss
 	}
 	if !fetch {
-		return nil, answerMiss // never asked, and not to be: it contributes nothing
+		return nil, answerNotAsked // never asked, and not to be: what it has is not known
 	}
 	declared := registryDeclaredHost(ctx)
 	if declared && s.declaredSpent >= declaredFetchBudget {

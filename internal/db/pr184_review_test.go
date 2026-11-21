@@ -1049,7 +1049,9 @@ func TestChainRootsArePerLockfile(t *testing.T) {
 // diagnostic. The log must SPLIT the kinds (log-the-effective-value).
 func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/lockfile_scan.go")
-	if !strings.Contains(s, `"transitive_resolutions", len(packages)-direct`) ||
+	// 0.29.215: the rows are counted as they are handed to the store (they
+	// are no longer all held), direct and transitive each on its own.
+	if !strings.Contains(s, `"transitive_resolutions", transitive`) || !strings.Contains(s, "transitive++") ||
 		!strings.Contains(s, `"direct_resolutions", direct`) {
 		t.Error("lockfile-scan completion log must report direct and transitive counts separately")
 	}
@@ -1706,7 +1708,9 @@ func TestDataTestReportRendersTypeChanges(t *testing.T) {
 func TestGoModDiscoveryPrecedesToolchainCheck(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/gomod_graph.go")
 	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
-	walk := strings.Index(body, "filepath.Walk(")
+	// 0.29.215: the discovery walk is walkBounded (a directory's listing is
+	// taken in chunks, in the worker); the ORDER this pins is unchanged.
+	walk := strings.Index(body, "walkBounded(workDir,")
 	zero := strings.Index(body, "if len(modDirs) == 0 {")
 	look := strings.Index(body, `exec.LookPath("go")`)
 	if walk < 0 || zero < 0 || look < 0 || !(walk < zero && zero < look) {
@@ -1771,12 +1775,15 @@ func TestSchemaAuditDumpFailsClosed(t *testing.T) {
 func TestGoModWalkFailureIsIncomplete(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/gomod_graph.go")
 	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
-	failCheck := strings.Index(body, "if walkErr != nil || walkFailed {")
+	// 0.29.215: walkBounded ends at the first entry it cannot read and
+	// returns that error, so the one check is of its error (there is no
+	// second flag to forget).
+	failCheck := strings.Index(body, "if walkErr != nil {")
 	zeroCheck := strings.Index(body, "if len(modDirs) == 0 {")
 	if failCheck < 0 || zeroCheck < 0 || failCheck > zeroCheck {
 		t.Error("the walk-failure check must precede the zero-modules COMPLETE return — otherwise a failed walk clears the prior closure as if the repo dropped Go")
 	}
-	if strings.Contains(body, "_ = filepath.Walk(") {
+	if strings.Contains(body, "_ = filepath.Walk(") || strings.Contains(body, "_ = walkBounded(") || !strings.Contains(body, "walkErr := walkBounded(") {
 		t.Error("the walk error must not be discarded (SR-16)")
 	}
 }

@@ -89,42 +89,70 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 	}
 	union := func(a, b string) { parent[find(a)] = find(b) }
 
-	// bomWhole: a BOM is whole when its own parent chain was followed to its
-	// end and every BOM its chain imports was obtained and is whole. Round
-	// 7: only the BOM itself was looked for, so a tree was reported whole,
-	// and its managed entries noted as unused, while a version of one of its
+	// A BOM is whole when its own parent chain was followed to its end and
+	// every BOM its chain imports was obtained and is whole. Round 7: only
+	// the BOM itself was looked for, so a tree was reported whole, and its
+	// managed entries noted as unused, while a version of one of its
 	// dependencies had been withheld because a pom BEHIND the BOM (its
-	// parent, a BOM it imports) could not be obtained. The verdict now
-	// agrees with what the questions do (pomContext.managed): a tree that is
-	// whole has had nothing withheld. Decided once per BOM for the walk.
-	wholeBOM := map[*pomModel]bool{}
-	var bomWhole func(b *pomModel, depth int) bool
-	bomWhole = func(b *pomModel, depth int) bool {
-		if w, ok := wholeBOM[b]; ok {
-			return w
-		}
-		wholeBOM[b] = true // met again inside itself: a cycle is no gap of its own
-		ok := depth < pomChainLimit
-		if ok {
-			if _, _, _, whole := t.chainWhole(b); !whole {
-				ok = false
+	// parent, a BOM it imports) could not be obtained. The verdict agrees
+	// with what the questions do (pomContext.managed): a tree that is whole
+	// has had nothing withheld. Decided once per BOM for the walk.
+	//
+	// height is how many BOMs deep the imports below a BOM go, itself
+	// counted: a question follows imports pomChainLimit deep and no deeper
+	// (pomContext.lookup), so a pom whose import is higher than that has
+	// imports no question reaches, and is not whole. Both facts are the
+	// BOM's own, whatever depth it is met at (round 8: the verdict was
+	// worked out with the depth it was first met at and remembered for every
+	// other, and counted one level more than the questions do, so that at
+	// exactly one depth a tree was whole whose later BOM's version had been
+	// stored in place of the deeper one's).
+	type bomFacts struct {
+		whole  bool
+		height int
+		done   bool
+	}
+	facts := map[*pomModel]*bomFacts{}
+	var bomOf func(b *pomModel) *bomFacts
+	bomOf = func(b *pomModel) *bomFacts {
+		if f, ok := facts[b]; ok {
+			// Met again inside itself (not done): a cycle of imports, which
+			// Maven refuses to build and a question does not see past
+			// (pomLookup.within). Every BOM of the cycle is not whole.
+			if !f.done {
+				return &bomFacts{}
 			}
-			bc := t.context(b)
-			for _, cm := range bc.chain {
-				for _, j := range cm.index().imports {
-					bg, ba, bv := importCoordinates(bc, cm.managed[j])
-					next, ambiguous := t.byCoordinates(bg, ba, bv)
-					if next == nil && !ambiguous {
-						next, _, _ = t.remotePom(bg, ba, bv, bc.declaredFor)
-					}
-					if next == nil || !bomWhole(next, depth+1) {
-						ok = false
-					}
+			return f
+		}
+		f := &bomFacts{whole: true, height: 1}
+		facts[b] = f
+		if _, _, _, whole := t.chainWhole(b); !whole {
+			f.whole = false
+		}
+		bc := t.context(b)
+		for _, cm := range bc.chain {
+			for _, j := range cm.index().imports {
+				bg, ba, bv := importCoordinates(bc, cm.managed[j])
+				next, _, _ := t.obtain(bg, ba, bv, bc.asker())
+				if next == nil {
+					f.whole = false
+					continue
+				}
+				below := bomOf(next)
+				if !below.whole {
+					f.whole = false
+				}
+				if below.height+1 > f.height {
+					f.height = below.height + 1
 				}
 			}
 		}
-		wholeBOM[b] = ok
-		return ok
+		f.done = true
+		return f
+	}
+	bomWhole := func(b *pomModel) bool {
+		f := bomOf(b)
+		return f.whole && f.height <= pomChainLimit
 	}
 
 	gapOf := map[string]string{}     // a member pom -> why its tree is not whole
@@ -167,34 +195,31 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 			// makes the tree not whole.
 			for _, j := range cm.index().imports {
 				bg, ba, bv := importCoordinates(c, cm.managed[j])
-				bom, ambiguous := t.byCoordinates(bg, ba, bv)
-				switch {
-				case ambiguous:
+				if _, ambiguous := t.byCoordinates(bg, ba, bv); ambiguous {
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
-				case bom != nil:
-					// A BOM of the clone: whole only if its own chain and
-					// its own imports are (round 7, below).
-					if !bomWhole(bom, 0) {
-						gapOf[p] = "an imported BOM could not be read whole"
-					}
-				case bom == nil:
-					// Asked through the one path (remotePom), which asks
-					// for a coordinate once per walk. An import whose
-					// coordinates hold a reference is another coordinate in
-					// each pom that inherits it, and is asked for each (a
-					// module that sets the property otherwise does import
-					// another BOM); how many coordinates an analysis may ask
-					// for is the source's to bound.
-					remote, _, _ := t.remotePom(bg, ba, bv, c.declaredFor)
-					if remote == nil {
-						gapOf[p] = "an imported BOM could not be obtained"
-						continue
-					}
-					bomChain, _, _, _ := t.chainWhole(remote)
+					continue
+				}
+				// Found through the one path (obtain): the pom of the clone
+				// with the coordinates, else a repository's, asked for once
+				// per walk. An import whose coordinates hold a reference is
+				// another coordinate in each pom that inherits it, and is
+				// asked for each (a module that sets the property otherwise
+				// does import another BOM); how many coordinates an analysis
+				// may ask for is the source's to bound.
+				bom, _, _ := t.obtain(bg, ba, bv, c.asker())
+				if bom == nil {
+					gapOf[p] = "an imported BOM could not be obtained"
+					continue
+				}
+				if strings.HasPrefix(bom.path, "remote:") {
+					bomChain, _, _, _ := t.chainWhole(bom)
 					hostsOf[p] = mergeHosts(hostsOf[p], chainHosts(bomChain))
-					if !bomWhole(remote, 0) {
-						gapOf[p] = "an imported BOM could not be read whole"
-					}
+				}
+				// Whole only if its own chain and its own imports are
+				// (round 7), and its imports go no deeper than a question
+				// follows them (round 8).
+				if !bomWhole(bom) {
+					gapOf[p] = "an imported BOM could not be read whole"
 				}
 			}
 		}

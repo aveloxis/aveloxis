@@ -148,6 +148,52 @@ type RepoLockfileEdge struct {
 func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID int64,
 	inventory []*RepoLockfileInfo, packages []*model.RepoLockfilePackage, edges []*RepoLockfileEdge,
 	failed []model.ManifestFailure) error {
+	return s.ReplaceRepoLockfileSnapshotFrom(ctx, repoID, func(write func(LockfileRows) error) error {
+		return write(LockfileRows{Inventory: inventory, Packages: packages, Edges: edges})
+	}, failed, nil)
+}
+
+// LockfileRows is one piece of a lockfile snapshot being written: any rows
+// of the three tables, in any mix.
+type LockfileRows struct {
+	Inventory []*RepoLockfileInfo
+	Packages  []*model.RepoLockfilePackage
+	Edges     []*RepoLockfileEdge
+}
+
+// lockfileBatchRows is how many row statements are sent to the database at
+// a time while a snapshot is written: what the writer holds queued. A
+// queued row is its nine or fewer values; five thousand of them are about
+// two megabytes, and one round trip.
+const lockfileBatchRows = 5000
+
+// ReplaceRepoLockfileSnapshotFrom is ReplaceRepoLockfileSnapshot for a
+// caller that does not hold the snapshot (0.29.215): rows is called inside
+// the one transaction and hands the snapshot over piece by piece through
+// write, which sends each piece to the database lockfileBatchRows rows at a
+// time. What this function holds is one batch, whatever the snapshot's
+// size; what the caller holds is whatever it builds one piece from (one
+// lockfile, for the analysis). Before it, every row of every lockfile of a
+// repository was built in the worker first: 1.2 times the lockfiles' bytes,
+// 1.4 GiB for ninety-five lockfiles of 12 MB (review round 8).
+//
+// Everything else is ReplaceRepoLockfileSnapshot's: the three DELETEs, the
+// same INSERTs with the same conflict arms, the coverage record's failed
+// lockfiles, one transaction. An error from rows or from a write rolls the
+// whole replace back and the previous snapshot stands.
+//
+// rows may be called more than once (the transaction is retried on a
+// deadlock or a serialization failure): it must hand over the same
+// snapshot each time it is called, from the start.
+//
+// reading, when not nil, is asked after the rows are in for how the reading
+// of the lockfiles that made this snapshot ended, and that is recorded on
+// the coverage record IN THIS TRANSACTION (recordLockfileReadingIn): the
+// snapshot and the record of its reading commit together, so that a stop
+// between the two cannot leave a caution standing over rows that were just
+// replaced, or rows replaced with nothing said of a lockfile left unread.
+func (s *PostgresStore) ReplaceRepoLockfileSnapshotFrom(ctx context.Context, repoID int64,
+	rows func(write func(LockfileRows) error) error, failed []model.ManifestFailure, reading func() model.LockfileReading) error {
 	// failed (0.29.176) are the lockfiles that exist and could not be read
 	// or parsed this cycle, with the rows carried for each. They are written
 	// to the coverage record in this transaction: the record describes
@@ -180,8 +226,19 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 		}
 
 		batch := &pgx.Batch{}
-		for _, inv := range inventory {
-			batch.Queue(`
+		// send sends what is queued when it has reached lockfileBatchRows,
+		// or whatever is queued when all is true.
+		send := func(all bool) error {
+			if batch.Len() == 0 || (!all && batch.Len() < lockfileBatchRows) {
+				return nil
+			}
+			err := tx.SendBatch(ctx, batch).Close()
+			batch = &pgx.Batch{}
+			return err
+		}
+		write := func(r LockfileRows) error {
+			for _, inv := range r.Inventory {
+				batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfiles
 					(repo_id, ecosystem, lockfile_path, lockfile_kind,
 					 entry_count, direct_count, data_source, data_collection_date)
@@ -192,34 +249,46 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 					entry_count = EXCLUDED.entry_count,
 					direct_count = EXCLUDED.direct_count,
 					data_collection_date = NOW()`,
-				repoID, inv.Ecosystem, inv.LockfilePath, inv.LockfileKind,
-				inv.EntryCount, inv.DirectCount)
-		}
-		for _, p := range packages {
-			batch.Queue(`
+					repoID, inv.Ecosystem, inv.LockfilePath, inv.LockfileKind,
+					inv.EntryCount, inv.DirectCount)
+				if err := send(false); err != nil {
+					return err
+				}
+			}
+			for _, p := range r.Packages {
+				batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_packages
 					(repo_id, ecosystem, package_name, resolved_version,
 					 lockfile_path, direct, dependency_scope, purl_namespace, data_source, data_collection_date,
 					 package_key)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'analysis', NOW(), NULLIF($9, ''))
 				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
-				repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
-				p.Direct, p.Scope, p.Namespace, packageKeyOrEmpty(p.Ecosystem, p.PackageName))
-		}
-		for _, e := range edges {
-			batch.Queue(`
+					repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
+					p.Direct, p.Scope, p.Namespace, packageKeyOrEmpty(p.Ecosystem, p.PackageName))
+				if err := send(false); err != nil {
+					return err
+				}
+			}
+			for _, e := range r.Edges {
+				batch.Queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_edges
 					(repo_id, ecosystem, lockfile_path, parent_name,
 					 parent_version, child_name, child_constraint, data_source, data_collection_date)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
 				ON CONFLICT (repo_id, lockfile_path, parent_name, parent_version, child_name) DO NOTHING`,
-				repoID, e.Ecosystem, e.LockfilePath, e.ParentName,
-				e.ParentVersion, e.ChildName, e.ChildConstraint)
-		}
-		if batch.Len() > 0 {
-			if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-				return err
+					repoID, e.Ecosystem, e.LockfilePath, e.ParentName,
+					e.ParentVersion, e.ChildName, e.ChildConstraint)
+				if err := send(false); err != nil {
+					return err
+				}
 			}
+			return nil
+		}
+		if err := rows(write); err != nil {
+			return err
+		}
+		if err := send(true); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO aveloxis_data.repo_dependency_coverage (repo_id, lockfiles_failed, data_collection_date)
@@ -227,6 +296,11 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 			ON CONFLICT (repo_id) DO UPDATE SET lockfiles_failed = EXCLUDED.lockfiles_failed`,
 			repoID, failedJSON); err != nil {
 			return fmt.Errorf("writing the failed lockfiles to the coverage record: %w", err)
+		}
+		if reading != nil {
+			if err := recordLockfileReadingIn(ctx, tx, repoID, reading()); err != nil {
+				return fmt.Errorf("recording how the reading of the lockfiles ended: %w", err)
+			}
 		}
 		return tx.Commit(ctx)
 	})
@@ -262,6 +336,29 @@ func (s *PostgresStore) DeleteRepoLockfileRowsAtPaths(ctx context.Context, repoI
 		return s.pool.QueryRow(ctx, deleteRepoLockfileRowsAtPathsSQL, repoID, paths).Scan(&removed)
 	})
 	return removed, err
+}
+
+// GetRepoLockfilePaths returns the paths of the lockfiles the current
+// snapshot names: its inventory rows. A lockfile is named there whether or
+// not it gave any package row (a binary lockfile, an empty one, one whose
+// entries are all of another registry), so this, and not the package rows,
+// says which lockfiles the snapshot is of (0.29.215).
+func (s *PostgresStore) GetRepoLockfilePaths(ctx context.Context, repoID int64) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT lockfile_path FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1 ORDER BY lockfile_path`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
 }
 
 // GetRepoLockfileRowsAtPaths returns what the current snapshot holds for the

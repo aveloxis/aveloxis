@@ -225,7 +225,11 @@ func TestProcessedTrackerAndMailStagingIsPurgedAfterItsRetention(t *testing.T) {
 	for i, r := range []struct {
 		processed bool
 		age       string
-	}{{true, "3 hours"}, {true, "1 minute"}, {false, "3 hours"}} {
+		// The fourth row is the one that tells the retention's UNIT: thirty
+		// minutes old is inside two hours and outside two minutes (round 8:
+		// with ages of three hours and one minute only, a purge that read
+		// its seconds as minutes passed).
+	}{{true, "3 hours"}, {true, "1 minute"}, {false, "3 hours"}, {true, "30 minutes"}} {
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.jira_staging (jps_id, project_key, issue_key, issue_updated, envelope, processed, created_at)
 			VALUES (-7, $1, $2, NOW(), '{}', $3, NOW() - $4::interval)`, tag, fmt.Sprintf("K-%d", i), r.processed, r.age)
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.mailing_list_staging (rgls_id, message_id_header, envelope, processed, created_at)
@@ -237,11 +241,11 @@ func TestProcessedTrackerAndMailStagingIsPurgedAfterItsRetention(t *testing.T) {
 	if n, err := store.PurgeMailingListStagingProcessed(ctx, (2 * time.Hour).Seconds()); err != nil || n < 1 {
 		t.Fatalf("the mail purge removed %d (%v)", n, err)
 	}
-	if got := pathsText(t, store, `SELECT string_agg(issue_key, ',' ORDER BY issue_key) FROM aveloxis_ops.jira_staging WHERE project_key = $1`, tag); got != "K-1,K-2" {
-		t.Errorf("tracker rows left: %q; want K-1 (processed, recent) and K-2 (old, not processed)", got)
+	if got := pathsText(t, store, `SELECT string_agg(issue_key, ',' ORDER BY issue_key) FROM aveloxis_ops.jira_staging WHERE project_key = $1`, tag); got != "K-1,K-2,K-3" {
+		t.Errorf("tracker rows left: %q; want K-1 and K-3 (processed, inside the retention) and K-2 (old, not processed)", got)
 	}
-	if got := pathsText(t, store, `SELECT string_agg(right(message_id_header, 1), ',' ORDER BY message_id_header) FROM aveloxis_ops.mailing_list_staging WHERE message_id_header LIKE $1`, tag+"%"); got != "1,2" {
-		t.Errorf("mail rows left: %q; want 1 (processed, recent) and 2 (old, not processed)", got)
+	if got := pathsText(t, store, `SELECT string_agg(right(message_id_header, 1), ',' ORDER BY message_id_header) FROM aveloxis_ops.mailing_list_staging WHERE message_id_header LIKE $1`, tag+"%"); got != "1,2,3" {
+		t.Errorf("mail rows left: %q; want 1 and 3 (processed, inside the retention) and 2 (old, not processed)", got)
 	}
 }
 
@@ -470,7 +474,10 @@ func TestCaseVariantDuplicateRepositoriesAreCounted(t *testing.T) {
 		}
 	})
 	tag := pathsTag("case")
-	for _, url := range []string{"https://github.com/" + tag + "/Repo", "https://github.com/" + tag + "/repo", "https://example.org/" + tag + "/Git", "https://example.org/" + tag + "/git"} {
+	// The fifth is a forge repository with no case variant: it is no group
+	// (round 8: without it, a count of every repository as a group of one
+	// also rose by exactly one).
+	for _, url := range []string{"https://github.com/" + tag + "/Repo", "https://github.com/" + tag + "/repo", "https://example.org/" + tag + "/Git", "https://example.org/" + tag + "/git", "https://github.com/" + tag + "/alone"} {
 		platform := 1
 		if url[8:15] == "example" {
 			platform = 3
@@ -482,6 +489,6 @@ func TestCaseVariantDuplicateRepositoriesAreCounted(t *testing.T) {
 	})
 	after, err := CountCaseVariantRepoDups(ctx, store)
 	if err != nil || after != before+1 {
-		t.Errorf("case-variant duplicate groups %d -> %d (%v); want one more: the forge pair, and not the generic-git pair", before, after, err)
+		t.Errorf("case-variant duplicate groups %d -> %d (%v); want one more: the forge pair, and neither the generic-git pair nor the forge repository that has no variant", before, after, err)
 	}
 }

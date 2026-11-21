@@ -169,9 +169,9 @@ when the inventory is older than the last attempt.
 Under the tiles a **caution** appears when the repository's lockfiles went unread at the
 last analysis (0.29.214), and only then. Exact versions and transitive dependencies come
 from lockfiles, so what the page shows below is then older than its date suggests, or
-lacks them. There are two sentences. When an earlier reading exists: "Lockfiles last read
+lacks them. There are two sentences. When lockfile rows are stored: "Lockfiles last read
 2026-11-02; the latest read did not finish (reading them took more memory than allowed).
-Versions and transitive dependencies may be out of date." When none ever finished:
+Versions and transitive dependencies may be out of date." When none is stored:
 "Lockfiles could not be read (reading them took more memory than allowed). Transitive
 dependencies are not checked." A repository whose lockfiles were read, or that has none,
 shows nothing. What to do about it is in [troubleshooting](troubleshooting.md).

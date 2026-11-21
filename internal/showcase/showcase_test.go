@@ -630,7 +630,7 @@ func TestRenderRepoShowsTheLockfileCautionAndOtherwiseNothing(t *testing.T) {
 		d := RepoPageData{BaseURL: "https://aveloxis.io", Slug: "x-y", Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y",
 			GeneratedAt: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
 		in := vulnclass.CoverageInputs{HasRow: true}
-		in.Coverage.LockfilesReadAt, in.Coverage.LockfilesUnreadReason = at, reason
+		in.Coverage.LockfilesLastRead, in.Coverage.LockfilesUnreadReason = at, reason
 		v := vulnclass.Coverage(in)
 		d.SetVulnCoverage(&v)
 		var b strings.Builder
@@ -644,7 +644,7 @@ func TestRenderRepoShowsTheLockfileCautionAndOtherwiseNothing(t *testing.T) {
 		t.Errorf("behind: the caution is not on the page:\n%s", behind)
 	}
 	never := render(nil, "manifest_read_failed")
-	if !strings.Contains(never, "<strong>Caution.</strong> Lockfiles could not be read (they could not be read). Transitive dependencies are not checked.</p>") {
+	if !strings.Contains(never, "<strong>Caution.</strong> Lockfiles could not be read (the reader failed). Transitive dependencies are not checked.</p>") {
 		t.Error("never read: the caution is not on the page")
 	}
 	for name, out := range map[string]string{"read": render(&read, ""), "nothing known": render(nil, "")} {

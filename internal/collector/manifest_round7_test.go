@@ -179,7 +179,7 @@ func TestAFileLargerThanTheMemoryLeftIsOneFailedReadAndTheRestIsRead(t *testing.
 	}
 	locks := heldLockfiles(*run.locks)
 	if len(locks) != 1 || locks[0].Path != "web/yarn.lock" || len(run.locks.Failed) != 1 ||
-		run.locks.Failed[0] != (model.ManifestFailure{Path: "big/yarn.lock", Kind: "yarn.lock", Reason: model.ManifestFailedRead}) {
+		run.locks.Failed[0] != (model.ManifestFailure{Path: "big/yarn.lock", Kind: "yarn.lock", Reason: model.ManifestFailedRead, TooLarge: true}) {
 		t.Errorf("the lockfiles: %d read, failed %+v; want web/yarn.lock read and the 4 GiB one failed", len(locks), run.locks.Failed)
 	}
 	if !run.present["big/yarn.lock"] || !run.present["web/yarn.lock"] || len(run.present) != 2 || !run.presentKnown {
@@ -201,16 +201,24 @@ func TestAFileLargerThanTheMemoryLeftIsOneFailedReadAndTheRestIsRead(t *testing.
 // The rule itself: nothing is too large outside the child; inside it, a
 // file is when its size is more than the limit leaves.
 func TestWhatIsTooLargeToRead(t *testing.T) {
-	if cloneFileTooLarge(1 << 40) {
+	if cloneFileTooLarge("requirements.txt", 1<<40) {
 		t.Fatal("a process that is not the reading child refused a file for its size")
 	}
+	// The limit is set from this TEST process's heap, which holds whatever
+	// the tests before this one left to be collected. The function collects
+	// before it refuses, so the room it then sees can be much more than was
+	// left here (0.29.215's closing run: 64 MiB was read "with 32 MiB left"
+	// after a collection freed more than its cost). Collect first, and ask
+	// about a size no collection can make room for.
+	runtime.GC()
+	runtime.GC()
 	cloneReadHeapLimit.Store(processHeapBytes() + 32<<20)
 	t.Cleanup(func() { cloneReadHeapLimit.Store(0) })
-	if cloneFileTooLarge(1 << 20) {
+	if cloneFileTooLarge("requirements.txt", 1<<20) {
 		t.Error("a mebibyte was refused with 32 MiB left")
 	}
-	if !cloneFileTooLarge(64 << 20) {
-		t.Error("64 MiB was not refused with 32 MiB left")
+	if !cloneFileTooLarge("requirements.txt", 1<<40) {
+		t.Error("a tebibyte was not refused with 32 MiB left")
 	}
 }
 
@@ -250,6 +258,17 @@ func TestAnItemTooLongToSendFailsItsFileByName(t *testing.T) {
 // smaller than all of them together, and this process holds their heads,
 // not their entries (review round 7: refused as a protocol error past the
 // limit, and 673 MiB held for fifteen yarn.lock files).
+// manyHonestLockfiles is how many lockfiles of 4,000 entries the stand-in
+// child of that test sends: 200, some 30 MiB on the wire; under the race
+// detector 70, some 10 MiB, which this process checks entry by entry at a
+// fifth of the speed. Either is several times what it may hold.
+func manyHonestLockfiles() int {
+	if manifestRaceEnabled {
+		return 70
+	}
+	return 200
+}
+
 func TestManyLockfilesAreReadUnderALimitSmallerThanTheirSumAndKeptOnDisk(t *testing.T) {
 	dir := writeClone(t, nil)
 	misbehaving(t, "r7-many-honest-lockfiles")
@@ -259,18 +278,24 @@ func TestManyLockfilesAreReadUnderALimitSmallerThanTheirSumAndKeptOnDisk(t *test
 	run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassLockfiles}, Dir: dir},
 		ManifestLimits{CPU: 20 * time.Second, HeapBytes: 8 << 20}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
-		t.Fatalf("200 lockfiles of 4,000 entries under an 8 MiB limit: %v", err)
+		t.Fatalf("%d lockfiles of 4,000 entries under an 8 MiB limit: %v", manyHonestLockfiles(), err)
 	}
 	defer run.close()
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	if run.locks.spool.written < 16<<20 {
+	// Several times the 4 MiB this process may hold of it: 16 MiB at least
+	// in the ordinary run, 8 MiB under the smaller count of the race run.
+	floor := int64(16 << 20)
+	if manifestRaceEnabled {
+		floor = 8 << 20
+	}
+	if run.locks.spool.written < floor {
 		t.Fatalf("the fixture is %d bytes on the wire: too small to show anything", run.locks.spool.written)
 	}
 	if held := int64(after.HeapAlloc) - int64(before.HeapAlloc); held > 4<<20 {
 		t.Errorf("this process holds %d bytes of a lockfile pass of %d on the wire: the entries are to be on disk", held, run.locks.spool.written)
 	}
-	if run.locks.Parsed != nil || run.locks.parsedCount() != 200 {
+	if run.locks.Parsed != nil || run.locks.parsedCount() != manyHonestLockfiles() {
 		t.Errorf("lockfiles held in memory: %d; counted: %d", len(run.locks.Parsed), run.locks.parsedCount())
 	}
 	// Read back one at a time, twice (the inventory and the lockfile phase
@@ -287,7 +312,7 @@ func TestManyLockfilesAreReadUnderALimitSmallerThanTheirSumAndKeptOnDisk(t *test
 			n++
 			entries += len(pl.Result.Entries)
 			return nil
-		}); err != nil || n != 200 || entries != 800000 {
+		}); err != nil || n != manyHonestLockfiles() || entries != 4000*manyHonestLockfiles() {
 			t.Fatalf("read back: %d lockfiles, %d entries, %v", n, entries, err)
 		}
 	}
@@ -550,11 +575,27 @@ func TestHowTheLockfileReadingEndedIsSaidInOnePlace(t *testing.T) {
 		{context.Canceled, nil},
 	} {
 		rec.got = nil
-		if err := ac.scanLockfiles(ctx, 7, "", lockfileSet{WalkErr: c.err}, &AnalysisResult{}); err == nil {
+		// The reader was reading the lockfiles when it stopped.
+		if err := ac.scanLockfiles(ctx, 7, "", lockfileSet{WalkErr: c.err, Started: true}, &AnalysisResult{}); err == nil {
 			t.Fatalf("%v: unread lockfiles were not an error", c.err)
 		}
 		if fmt.Sprint(rec.got) != fmt.Sprint(c.want) {
 			t.Errorf("%v: recorded %+v, want %+v", c.err, rec.got, c.want)
+		}
+		// It was stopped BEFORE it reached them (0.29.215): whatever
+		// stopped the pass ahead, the lockfiles' own reason is that they
+		// were not reached. A clone whose root cannot be read, and the two
+		// that record nothing, are as above.
+		var child *errManifestChild
+		if !errors.As(c.err, &child) || child.Stale {
+			continue
+		}
+		rec.got = nil
+		if err := ac.scanLockfiles(ctx, 7, "", lockfileSet{WalkErr: c.err}, &AnalysisResult{}); err == nil {
+			t.Fatalf("%v: unread lockfiles were not an error", c.err)
+		}
+		if want := []LockfileReading{{NotCompleted: model.LockfileUnreadNotReached}}; fmt.Sprint(rec.got) != fmt.Sprint(want) {
+			t.Errorf("%v, the lockfiles not reached: recorded %+v, want %+v", c.err, rec.got, want)
 		}
 	}
 }

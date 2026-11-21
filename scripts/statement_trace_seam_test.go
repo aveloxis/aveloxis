@@ -134,7 +134,7 @@ func TestTheStatementSeamIsSetOnlyByTheTestHarness(t *testing.T) {
 					write(x.X, "addressed")
 				}
 			case *ast.CallExpr:
-				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Install" {
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Install" || sel.Sel.Name == "InstallChild") {
 					if id, ok := sel.X.(*ast.Ident); ok && local[id.Name] == "judge" {
 						installs++
 						if !strings.HasPrefix(rel, harnessIn) {
@@ -159,10 +159,12 @@ func TestTheStatementSeamIsSetOnlyByTheTestHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The denominators: the store tests the seam and calls it; the judge
-	// assigns it once; the harness imports the judge and installs it once.
-	if files < 300 || seamReads != 2 || seamWrites != 1 || judgeImports != 1 || installs != 1 {
-		t.Errorf("%d production files read; the seam is read %d times (want 2: the store's test of it and its call), given a value %d times (want 1: the judge's Install), the judge imported by %d production files and installed %d times (want 1 each: internal/testdb)",
+	// The denominators: the store tests the seam and calls it, and tests it
+	// once more before it wraps a caller's BeforeConnect hook (0.29.215);
+	// the judge assigns it once; the harness imports the judge and installs
+	// it twice (a package's own run; a re-executed test binary's, 0.29.215).
+	if files < 300 || seamReads != 3 || seamWrites != 1 || judgeImports != 1 || installs != 2 {
+		t.Errorf("%d production files read; the seam is read %d times (want 3: the store's two tests of it and its call), given a value %d times (want 1: the judge's Install), the judge imported by %d production files and installed %d times (want 2 each: internal/testdb)",
 			files, seamReads, seamWrites, judgeImports, installs)
 	}
 }

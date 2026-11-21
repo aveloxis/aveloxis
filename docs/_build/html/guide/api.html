@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.214 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.215 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=84582877"></script>
+      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -751,6 +751,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1863,14 +1864,18 @@
 the last analysis; then it is an object:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">reason</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>,
-<code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code> or <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">last_read_at</span></code></strong>: when the lockfiles were last read to the end, or <code class="docutils literal notranslate"><span class="pre">null</span></code> when they
-never were.</p></li>
+<code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>, or (0.29.215)
+<code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code>: the reader was stopped while it read the manifests and never
+began on the lockfiles. Show a value you do not know as written.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">last_read_at</span></code></strong>: when the lockfile rows that are stored were read, or <code class="docutils literal notranslate"><span class="pre">null</span></code> when
+none is stored. The key is always sent. (0.29.214 sent the date of the last reading
+that finished since that release, which was <code class="docutils literal notranslate"><span class="pre">null</span></code> for every repository at first and
+could name a date whose lockfiles had since been deleted.)</p></li>
 </ul>
 <p>Show it as a caution beside the coverage state, never in its place. With a date: the
 exact versions and transitive dependencies in the answer are as old as that date. With no
-date: the repository has lockfiles and none was ever read, so transitive dependencies are
-not checked. When the field is <code class="docutils literal notranslate"><span class="pre">null</span></code>, or absent (an older server), show nothing.</p>
+date: no lockfile was read, so transitive dependencies are not checked. When the field is
+<code class="docutils literal notranslate"><span class="pre">null</span></code>, or absent (an older server), show nothing.</p>
 <p><code class="docutils literal notranslate"><span class="pre">last_analysis_attempt.reason</span></code> can also be one of the four <code class="docutils literal notranslate"><span class="pre">manifest_read_*</span></code> values
 (since 0.29.213; the reference listed three).</p>
 <p>The SBOM’s coverage marker gains <code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">lockfiles_last_read_at</span></code>

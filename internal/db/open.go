@@ -30,12 +30,26 @@ import (
 //
 // In a binary the seam is nil and each opener is the library call it is
 // named for, with nothing added: OpenPool(ctx, s) is pgxpool.New(ctx, s).
+//
+// The seam stays on (0.29.215, review round 8). A pool hands each new
+// connection's configuration to the caller's BeforeConnect hook, which may
+// replace its tracer; a pool opened here with the seam set runs its hook
+// and then puts the seam back on whatever tracer the hook left. Nothing
+// else can take it off: the other hooks are given a connection, whose
+// configuration is a copy. And the tracer of a configuration is set in
+// two places only, this file and the store's own (its UTF-8 scrub, set
+// before the pool is opened): scripts/pool_openers_test.go fails on an
+// assignment to a Tracer field anywhere else in non-test code.
 
 // withStatementSeam gives the configuration's tracer to the one test seam
 // on what is sent (stmttrace): nil in every binary; the DB-tier test
-// harness sets it, to hand each statement to the write-policy judge.
+// harness sets it, to hand each statement to the write-policy judge. A
+// tracer that already carries the seam is left as it is.
 func withStatementSeam(cc *pgx.ConnConfig) {
-	if stmttrace.Wrap != nil {
+	if stmttrace.Wrap == nil {
+		return
+	}
+	if _, seamed := cc.Tracer.(stmttrace.Seamed); !seamed {
 		cc.Tracer = stmttrace.Wrap(cc.Tracer)
 	}
 }
@@ -43,6 +57,19 @@ func withStatementSeam(cc *pgx.ConnConfig) {
 // OpenPoolConfig is pgxpool.NewWithConfig.
 func OpenPoolConfig(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) {
 	withStatementSeam(cfg.ConnConfig)
+	if stmttrace.Wrap != nil {
+		// After the caller's hook, whatever it did to the tracer.
+		callers := cfg.BeforeConnect
+		cfg.BeforeConnect = func(ctx context.Context, cc *pgx.ConnConfig) error {
+			if callers != nil {
+				if err := callers(ctx, cc); err != nil {
+					return err
+				}
+			}
+			withStatementSeam(cc)
+			return nil
+		}
+	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 

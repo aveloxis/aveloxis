@@ -201,8 +201,13 @@ func TestGradlePlatformsAreResolvedTogether(t *testing.T) {
 			"a/pom.xml": bom("a", "2.1.1"), "b/pom.xml": bom("b", "2.1")}, notFound, "2.1.1", ""},
 		"two that agree": {map[string]string{"build.gradle": build("platform('t:a:1')", "platform('t:b:1')"),
 			"a/pom.xml": bom("a", "3.0"), "b/pom.xml": bom("b", "3.0")}, notFound, "3.0", ""},
-		"two that are not plain release numbers": {map[string]string{"build.gradle": build("platform('t:a:1')", "platform('t:b:1')"),
-			"a/pom.xml": bom("a", "1.0-rc1"), "b/pom.xml": bom("b", "1.0")}, notFound, "", ""},
+		// 0.29.215: ordered as Gradle orders them (a release is above its
+		// release candidate); until then two that were not plain numbers
+		// were not ordered, and the dependency had no version and no reason.
+		"a release and its release candidate": {map[string]string{"build.gradle": build("platform('t:a:1')", "platform('t:b:1')"),
+			"a/pom.xml": bom("a", "1.0-rc1"), "b/pom.xml": bom("b", "1.0")}, notFound, "1.0", ""},
+		"two texts of one place in the ordering": {map[string]string{"build.gradle": build("platform('t:a:1')", "platform('t:b:1')"),
+			"a/pom.xml": bom("a", "1.0"), "b/pom.xml": bom("b", "1-0")}, notFound, "", model.VersionReasonPlatformsDisagree},
 		"an enforced platform's lower version": {map[string]string{"build.gradle": build("platform('t:b:1')", "enforcedPlatform('t:a:1')"),
 			"a/pom.xml": bom("a", "1.9.0"), "b/pom.xml": bom("b", "1.10.0")}, notFound, "1.9.0", ""},
 		"a platform AFTER the one that manages it could not be obtained": {map[string]string{"build.gradle": build("platform('t:a:1')", "platform('t:gone:1')"),
@@ -225,7 +230,11 @@ func TestGradlePlatformsAreResolvedTogether(t *testing.T) {
 	}
 }
 
-func TestGradleHighestOrdersOnlyPlainReleaseNumbers(t *testing.T) {
+// 0.29.215: gradleHighest orders by Gradle's version ordering
+// (gradleCompareVersions, pinned in round8_gradle_test.go), so a qualified
+// version has its place; what it cannot say is two different texts that
+// stand equal highest.
+func TestGradleHighestIsTheHighestInGradlesOrdering(t *testing.T) {
 	for _, c := range []struct {
 		in   []string
 		want string
@@ -234,8 +243,9 @@ func TestGradleHighestOrdersOnlyPlainReleaseNumbers(t *testing.T) {
 		{[]string{"1.0"}, "1.0", true}, {[]string{"1.0-rc1"}, "1.0-rc1", true}, {[]string{"1.9", "1.10"}, "1.10", true},
 		{[]string{"1.10", "1.9"}, "1.10", true}, {[]string{"2", "10"}, "10", true}, {[]string{"1.2", "1.2.0"}, "1.2.0", true},
 		{[]string{"1.02", "1.1"}, "1.02", true}, {[]string{"99999999999999999999999", "1"}, "99999999999999999999999", true},
-		{[]string{"1.0", "1.0.Final"}, "", false}, {[]string{"1.0", "1..0"}, "", false}, {[]string{"1.0", ""}, "", false},
-		{[]string{"1.0", "v2"}, "", false}, {[]string{"1.0", "1.0-rc1", "0.9"}, "", false},
+		{[]string{"1.0", "1.0.Final"}, "1.0", true}, {[]string{"1.0", "1..0"}, "", false}, {[]string{"1-0", "1.0", "0.9"}, "", false},
+		{[]string{"1.0", "v2"}, "1.0", true}, {[]string{"1.0", "1.0-rc1", "0.9"}, "1.0", true}, {[]string{"1.0", "1-0", "1.1"}, "1.1", true},
+		{[]string{"4.1.107.Final", "4.1.110.Final"}, "4.1.110.Final", true}, {nil, "", false},
 	} {
 		if got, ok := gradleHighest(c.in); got != c.want || ok != c.ok {
 			t.Errorf("gradleHighest(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)

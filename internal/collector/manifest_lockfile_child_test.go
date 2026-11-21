@@ -286,7 +286,14 @@ func TestAStoppedChildLeavesItsFinishedPassesWhole(t *testing.T) {
 // A lockfile of a million packages crosses the wire, in pieces that each fit
 // a frame, and arrives whole.
 func TestALockfileOfAMillionPackagesCrosses(t *testing.T) {
-	const packages = 1_000_000
+	// A million in the ordinary run; under the race detector, where the
+	// child's every write is watched and a million take twenty seconds, a
+	// fifth of that, which still crosses in many pieces (the result is cut
+	// at 1 MiB) and in order.
+	packages := 1_000_000
+	if manifestRaceEnabled {
+		packages = 200_000
+	}
 	var b strings.Builder
 	for i := 0; i < packages; i++ {
 		fmt.Fprintf(&b, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
@@ -303,7 +310,7 @@ func TestALockfileOfAMillionPackagesCrosses(t *testing.T) {
 	if first, last := got[0].Result.Entries[0], got[0].Result.Entries[packages-1]; first.Name != "com.example.group0:artifact-0" || last.Version != fmt.Sprintf("1.%d.0", (packages-1)%50) {
 		t.Errorf("the entries did not arrive in order: first %+v, last %+v", first, last)
 	}
-	t.Logf("a million packages: child CPU %s, heap peak %d MiB", run.cpu.Round(time.Millisecond), run.heapPeak>>20)
+	t.Logf("%d packages: child CPU %s, heap peak %d MiB", packages, run.cpu.Round(time.Millisecond), run.heapPeak>>20)
 }
 
 // The whole phase, for an analysis whose reader was stopped while it read
@@ -356,12 +363,8 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	// The next analysis meets a second manifest, and a lockfile that takes
 	// more memory to read than the limit allows.
 	f.write(t, "requirements.txt", "requests==2.31.0\n")
-	var big strings.Builder
-	for i := 0; big.Len() < 40<<20; i++ {
-		fmt.Fprintf(&big, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
-	}
-	f.write(t, "big/gradle.lockfile", big.String())
-	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 64`))
+	f.write(t, "big/yarn.lock", lockfileThatOutgrowsItsCost(outgrowingLockfileBytes))
+	SetManifestLimits(limitsFromConfig(t, outgrownMemorySetting))
 	t.Cleanup(func() { installedManifestLimits.Store(nil) })
 
 	read := f.ac.readClone(ctx, f.repoID, f.dir)
@@ -394,7 +397,7 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	f.ac.logger = log.logger()
 	err := f.ac.scanLockfiles(ctx, f.repoID, f.dir, locks, &AnalysisResult{})
 	f.ac.logger = quiet
-	if !errors.As(err, &child) || child.Attempt != model.InventoryAttemptReadMemoryLimit || !strings.Contains(err.Error(), "collection.manifest_read_memory_mb allows (64 MiB)") {
+	if !errors.As(err, &child) || child.Attempt != model.InventoryAttemptReadMemoryLimit || !strings.Contains(err.Error(), "collection.manifest_read_memory_mb allows (20 MiB)") {
 		t.Errorf("the lockfile phase: %v; want the memory limit, by its setting and value", err)
 	}
 	if after := lockfileRows(t, f); !reflect.DeepEqual(after, rowsBefore) {
@@ -413,7 +416,7 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	for _, line := range log.lines {
 		if strings.Contains(line, "level=ERROR") && strings.Contains(line, "the lockfiles were not read") {
 			said = true
-			for _, want := range []string{fmt.Sprintf("repo_id=%d", f.repoID), "result=" + model.InventoryAttemptReadMemoryLimit, "raise collection.manifest_read_memory_mb", "manifest_read_memory_mb=64", "manifest_read_cpu_seconds=180"} {
+			for _, want := range []string{fmt.Sprintf("repo_id=%d", f.repoID), "result=" + model.InventoryAttemptReadMemoryLimit, "raise collection.manifest_read_memory_mb", "manifest_read_memory_mb=20", "manifest_read_cpu_seconds=180"} {
 				if !strings.Contains(line, want) {
 					t.Errorf("the Error line lacks %q: %s", want, line)
 				}
@@ -427,10 +430,40 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	// With room, the same clone is read whole.
 	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 2048`))
 	roomy := f.ac.readClone(ctx, f.repoID, f.dir).lockfiles()
-	// Three: package-lock.json, the large gradle.lockfile, and r/renv.lock.
+	// Three: package-lock.json, the large yarn.lock, and r/renv.lock.
 	if roomy.WalkErr != nil || roomy.parsedCount() != 3 {
 		t.Errorf("with room: %v, %d lockfiles", roomy.WalkErr, roomy.parsedCount())
 	}
+}
+
+// outgrowingLockfileBytes and outgrownMemorySetting are the pair the tests
+// that need a reading stopped WHILE it reads a lockfile use: about the
+// smallest that shows it in every run (2 MiB at 12 MiB was read whole
+// without the race detector). A 4 MiB file is let by at a 20 MiB limit,
+// three times its length being 12 MiB, and its 150,000 entries cost the
+// reader several times the limit. The sizes are not the point of any test
+// that uses them, and the lockfile is later read whole and stored, so a
+// larger pair only cost time (15 MiB at 64 MiB took 80 s under -race).
+const (
+	outgrowingLockfileBytes = 4 << 20
+	outgrownMemorySetting   = `"manifest_read_memory_mb": 20`
+)
+
+// lockfileThatOutgrowsItsCost is a yarn.lock of about size bytes that costs
+// its reader far more than a yarn.lock of its length is taken to
+// (readCostTenths): entries as short as the format allows, so that what the
+// reader builds for each is many times its text. The check before a read
+// lets it by at a limit its reading then passes, which is the one way left
+// for a reading to be stopped WHILE it reads a lockfile (0.29.215: a file
+// whose cost is known to be past the room left is not read at all, and is
+// one failed lockfile).
+func lockfileThatOutgrowsItsCost(size int) string {
+	var b strings.Builder
+	b.WriteString("# yarn lockfile v1\n\n")
+	for i := 0; b.Len() < size; i++ {
+		fmt.Fprintf(&b, "p%d@1:\n  version \"1\"\n\n", i)
+	}
+	return b.String()
 }
 
 // rowDeleter stands in for the store's removal of lockfile rows at paths.
@@ -473,12 +506,8 @@ func TestALockfileThatIsGoneLocksNothingWhenTheLockfilesGoUnread(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.write(t, "package.json", `{"dependencies": {"express": "^5.0.0"}}`)
-	var big strings.Builder
-	for i := 0; big.Len() < 40<<20; i++ {
-		fmt.Fprintf(&big, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
-	}
-	f.write(t, "big/gradle.lockfile", big.String())
-	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 64`))
+	f.write(t, "big/yarn.lock", lockfileThatOutgrowsItsCost(outgrowingLockfileBytes))
+	SetManifestLimits(limitsFromConfig(t, outgrownMemorySetting))
 	t.Cleanup(func() { installedManifestLimits.Store(nil) })
 
 	read := f.ac.readClone(ctx, f.repoID, f.dir)
@@ -488,7 +517,7 @@ func TestALockfileThatIsGoneLocksNothingWhenTheLockfilesGoUnread(t *testing.T) {
 	if !errors.As(locks.WalkErr, &child) || child.Attempt != model.InventoryAttemptReadMemoryLimit {
 		t.Fatalf("the lockfiles: %v; want them unread at the memory limit", locks.WalkErr)
 	}
-	if !locks.PresentKnown || locks.Present["package-lock.json"] || !locks.Present["kept/package-lock.json"] || !locks.Present["big/gradle.lockfile"] {
+	if !locks.PresentKnown || locks.Present["package-lock.json"] || !locks.Present["kept/package-lock.json"] || !locks.Present["big/yarn.lock"] {
 		t.Fatalf("the lockfiles listed: %v (known %v)", locks.Present, locks.PresentKnown)
 	}
 	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks, read.declaredKeys()), &AnalysisResult{}); err != nil {

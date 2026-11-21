@@ -61,7 +61,7 @@ func TestGemLogicalLinesAnswersAsThePatternsDo(t *testing.T) {
 	seps := []string{" ", " ", " ", "", ";", "; ", " ;"}
 	rng := rand.New(rand.NewSource(7))
 	cases := 0
-	for ; cases < 400000; cases++ {
+	for ; cases < gemLineCases; cases++ {
 		var b strings.Builder
 		for k := rng.Intn(14); k >= 0; k-- {
 			b.WriteString(words[rng.Intn(len(words))])
@@ -116,6 +116,13 @@ func TestAGemfileLineOfManyStatementsIsReadInLinearTime(t *testing.T) {
 				t.Fatalf("%q repeated to %d bytes on one line was not read in 20 s", unit, n)
 				return 0
 			}
+		}
+		if raceEnabled {
+			// Time says nothing under the detector (scaling_test.go), and
+			// the megabyte read costs it a minute over these units: the
+			// unit is read once, for what the detector is there to see.
+			read(64 << 10)
+			continue
 		}
 		small, large := read(256<<10), read(1<<20)
 		t.Logf("%-28q 256 KB %v, 1 MB %v", unit, small, large)

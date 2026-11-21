@@ -219,13 +219,18 @@ func TestMailingListCoverageAndResolvableSendersAreCounted(t *testing.T) {
 	mail(3, tag+"-alias@example.org", "thread_root_id = NULL")
 	mail(4, tag+"-nobody@example.org", "linked_pull_request_id = $2", pr)
 	mail(5, "", "")
+	// An automated sender whose address exactly one contributor has: it is
+	// never resolved to a contributor (round 8: none was seeded, and a count
+	// that included automation senders passed).
+	seedR6Contributor(t, store, tag+"-bot", tag+"[bot]@example.org", nil)
+	mail(6, tag+"[bot]@example.org", "")
 
 	after, err := store.MailingListCoverage(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.BySystem[tag] != 5 {
-		t.Errorf("%d messages counted for this test's list system, want 5", after.BySystem[tag])
+	if after.BySystem[tag] != 6 {
+		t.Errorf("%d messages counted for this test's list system, want 6", after.BySystem[tag])
 	}
 	if d := after.BridgedToIssue - before.BridgedToIssue; d != 1 {
 		t.Errorf("messages bridged to an issue: %+d, want +1", d)
@@ -236,8 +241,8 @@ func TestMailingListCoverageAndResolvableSendersAreCounted(t *testing.T) {
 	if d := after.MirrorLinked - before.MirrorLinked; d != 1 {
 		t.Errorf("mirror messages that are linked: %+d, want +1", d)
 	}
-	if d := after.ThreadRooted - before.ThreadRooted; d != 4 {
-		t.Errorf("messages with a thread root recorded: %+d, want +4 (the fifth's is NULL)", d)
+	if d := after.ThreadRooted - before.ThreadRooted; d != 5 {
+		t.Errorf("messages with a thread root recorded: %+d, want +5 (the third's is NULL)", d)
 	}
 	if d := after.ExternalKeyIssues - before.ExternalKeyIssues; d != 0 {
 		t.Errorf("issues with an external key: %+d since the first reading, want 0 (the one of this test was there)", d)
@@ -251,7 +256,7 @@ func TestMailingListCoverageAndResolvableSendersAreCounted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d := resolvable - resolvableBefore; d != 2 {
-		t.Errorf("resolvable senders: %+d, want +2: the address one contributor has, and the aliased one; not the address two share, the unknown one or the empty one", d)
+		t.Errorf("resolvable senders: %+d, want +2: the address one contributor has, and the aliased one; not the address two share, the unknown one, the empty one, or the automated sender's", d)
 	}
 }
 
@@ -282,6 +287,8 @@ func TestContributorsNeedingASearchOrEnrichmentAreListed(t *testing.T) {
 	want := seedR6Contributor(t, store, tag+"-want", tag+"-want@example.org", nil)
 	linked := seedR6Contributor(t, store, tag+"-linked", tag+"-linked@example.org", time.Now().UnixNano()%1_000_000_000+5_000_000_000)
 	noreply := seedR6Contributor(t, store, tag+"-noreply", tag+"@users.noreply.github.com", nil)
+	// The other spelling the search excludes (round 8: only one was seeded).
+	noReply := seedR6Contributor(t, store, tag+"-no-reply", tag+"@no-reply.example.org", nil)
 	recent := seedR6Contributor(t, store, tag+"-recent", tag+"-recent@example.org", nil)
 	old := seedR6Contributor(t, store, tag+"-old", tag+"-old@example.org", nil)
 	deleted := seedR6Contributor(t, store, tag+"-deleted", tag+"-deleted@example.org", nil)
@@ -298,7 +305,7 @@ func TestContributorsNeedingASearchOrEnrichmentAreListed(t *testing.T) {
 	for _, c := range search {
 		found[c.CntrbID] = c.Email
 	}
-	for id, in := range map[string]bool{want: true, old: true, linked: false, noreply: false, recent: false, deleted: false} {
+	for id, in := range map[string]bool{want: true, old: true, linked: false, noreply: false, noReply: false, recent: false, deleted: false} {
 		if _, ok := found[id]; ok != in {
 			t.Errorf("contributor %s listed for a search = %v, want %v (linked to a GitHub user, a noreply address, tried within the cooldown, and deleted are not listed)", id, ok, in)
 		}
@@ -318,7 +325,7 @@ func TestContributorsNeedingASearchOrEnrichmentAreListed(t *testing.T) {
 	for _, l := range thin {
 		listed[l] = true
 	}
-	for login, in := range map[string]bool{tag + "-want": true, tag + "-old": true, tag + "-noreply": true, tag + "-linked": false, tag + "-recent": false, tag + "-deleted": false} {
+	for login, in := range map[string]bool{tag + "-want": true, tag + "-old": true, tag + "-noreply": true, tag + "-no-reply": true, tag + "-linked": false, tag + "-recent": false, tag + "-deleted": false} {
 		if listed[login] != in {
 			t.Errorf("contributor %s listed for enrichment = %v, want %v (one with a company, one enriched within the cooldown, and a deleted one are not listed)", login, listed[login], in)
 		}
@@ -552,9 +559,16 @@ func TestAnInvalidCaseInsensitiveIndexIsDroppedAndRebuilt(t *testing.T) {
 		t.Fatalf("after the failed build the index is %s; the premise is an invalid one", state())
 	}
 	// With the pair still there the step does nothing (it would fail again).
+	// "Nothing" is the SAME index object: a step that did not see the pair
+	// drops the index and fails to build another, which also ends invalid
+	// (round 8: the state alone was compared).
+	object := func() string {
+		return pathsText(t, store, `SELECT COALESCE((SELECT c.oid::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'aveloxis_data' AND c.relname = 'uq_repos_repo_git_ci'), 'none')`)
+	}
+	before := object()
 	ensureRepoGitCaseInsensitiveUnique(ctx, store, logger)
-	if state() != "invalid" {
-		t.Errorf("with duplicates present the step left the index %s, want it untouched", state())
+	if state() != "invalid" || object() != before {
+		t.Errorf("with duplicates present the step left the index %s (object %s, was %s), want it untouched", state(), object(), before)
 	}
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.repos WHERE repo_owner = $1 AND repo_git LIKE '%/repo'`, tag)
 	ensureRepoGitCaseInsensitiveUnique(ctx, store, logger)

@@ -152,6 +152,13 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 			// same deterministic cntrb_id, where the logins are normally
 			// identical; when they differ, the stored one wins
 			// (2026-09-11, F4).
+			//
+			// gh_user_id is the same way since 0.29.215: STORED first. It
+			// is the forge's numeric ID, the identity cntrb_id is computed
+			// from; every other writer filled it only when empty, this arm
+			// alone let an incoming value replace an established one, and
+			// the column had no write policy to say so (review round 8).
+			// On the race this arm exists for the two values are equal.
 			_, insertErr := s.pool.Exec(ctx, `
 				INSERT INTO aveloxis_data.contributors
 					(cntrb_id, cntrb_login, gh_login, gh_user_id, cntrb_canonical,
@@ -161,7 +168,7 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 				ON CONFLICT (cntrb_id) DO UPDATE SET
 					gh_login = COALESCE(NULLIF(EXCLUDED.gh_login,''), contributors.gh_login),
 					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
-					gh_user_id = COALESCE(EXCLUDED.gh_user_id, contributors.gh_user_id)`,
+					gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)`,
 				cntrbID, login, ghUserID, commitEmail)
 			if insertErr != nil {
 				// Race: another worker inserted this login. Look it up.

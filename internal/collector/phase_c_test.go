@@ -239,19 +239,19 @@ func TestScanLockfilesTransitiveGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "if !ac.TransitiveLockfiles {") {
+	// 0.29.215: what the gate gives is pinned by what comes out
+	// (TestRowsOfALockfileUnderTheTransitiveKnob: knob off keeps the
+	// declared-only row set, transitive rows are Direct=false, declared
+	// resolutions Direct=true). This holds the wiring: the phase builds a
+	// lockfile's rows by that function, with the knob, and the flag is the
+	// declared match.
+	s = srctest.StripGoComments(s)
+	if !strings.Contains(s, "rowsOfLockfile(pl, declared, ac.TransitiveLockfiles)") {
 		t.Error("the transitive storage branch must be gated on ac.TransitiveLockfiles — " +
 			"knob off must keep the pre-C1 declared-only row set")
 	}
-	// gofmt realigns struct literals as fields come and go (v0.29.59 added
-	// Namespace), so the pin matches the field and its value, not the
-	// spacing.
-	s = srctest.StripGoComments(s)
-	if !regexp.MustCompile(`Direct:\s+false,`).MatchString(s) {
-		t.Error("transitive rows must be stored with Direct=false")
-	}
-	if !regexp.MustCompile(`Direct:\s+true,`).MatchString(s) {
-		t.Error("declared-dep resolutions must be stored with Direct=true")
+	if !regexp.MustCompile(`Direct:\s+isDeclared,`).MatchString(s) {
+		t.Error("a stored row is Direct exactly when it is the resolution of a declared dependency")
 	}
 }
 

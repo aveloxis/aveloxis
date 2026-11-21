@@ -91,6 +91,17 @@ func RunManifestChildIfAsked() {
 	}
 }
 
+// manifestChildBuild is the build of the program this child is: the same
+// examination, of the same file, as the process that asks makes of itself
+// (manifestParentBuild). A variable for a test.
+var manifestChildBuild = func() string {
+	exe, err := manifestChildProgram(runtime.GOOS, os.Executable)
+	if err != nil {
+		return ""
+	}
+	return programBuild(exe)
+}
+
 // ManifestChildMain is the child: it serves one request and returns its
 // exit status.
 func ManifestChildMain(in io.Reader, out io.Writer) int {
@@ -108,12 +119,21 @@ func ManifestChildMain(in io.Reader, out io.Writer) int {
 	var asked struct {
 		Request struct {
 			Version string `json:"version"`
+			Build   string `json:"build"`
 		} `json:"request"`
 	}
-	if json.Unmarshal(body, &asked) == nil && asked.Request.Version != db.ToolVersion {
-		// Its own version, for the analysis that asked to log.
-		fmt.Fprintln(os.Stderr, db.ToolVersion)
-		return manifestExitVersion
+	if json.Unmarshal(body, &asked) == nil {
+		if asked.Request.Version != db.ToolVersion {
+			// Its own version, for the analysis that asked to log.
+			fmt.Fprintln(os.Stderr, db.ToolVersion)
+			return manifestExitVersion
+		}
+		// The same version and another FILE (0.29.215): a build installed
+		// over the one that is running. Compared only when both can tell.
+		if own := manifestChildBuild(); asked.Request.Build != "" && own != "" && own != asked.Request.Build {
+			fmt.Fprintln(os.Stderr, db.ToolVersion+" build "+own)
+			return manifestExitVersion
+		}
 	}
 	first, _, err := decodeManifestFrame(body)
 	if err != nil || first.T != frameRequest || first.Request == nil {
@@ -320,7 +340,7 @@ func (c *manifestChild) serveDeclarations(req *manifestRequest, done *manifestDo
 	}
 	for _, f := range got.Failed {
 		parts.add(func(p *manifestPart) {
-			p.Failed = append(p.Failed, manifestWireFailure{ManifestFailure: f, NoCarry: f.NoCarry})
+			p.Failed = append(p.Failed, manifestWireFailure{ManifestFailure: f, NoCarry: f.NoCarry, TooLarge: f.TooLarge})
 		}, len(f.Path)+len(f.Kind)+len(f.Reason))
 	}
 	for _, h := range got.TreeHosts {
@@ -371,7 +391,7 @@ func (c *manifestChild) serveLockfiles(req *manifestRequest, done *manifestDone,
 	done.Lockfiles = sent
 	for _, f := range failed {
 		parts.add(func(p *manifestPart) {
-			p.Failed = append(p.Failed, manifestWireFailure{ManifestFailure: f})
+			p.Failed = append(p.Failed, manifestWireFailure{ManifestFailure: f, NoCarry: f.NoCarry, TooLarge: f.TooLarge})
 		}, len(f.Path)+len(f.Kind)+len(f.Reason))
 	}
 }

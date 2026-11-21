@@ -8288,16 +8288,19 @@ components:
           description: |
             A caution beside the state (0.29.214). Null except when the
             repository's lockfiles went unread at the last analysis. With
-            `last_read_at` set, the exact versions and transitive
-            dependencies are as old as that time; with it null, the
-            repository has lockfiles and none was ever read, so transitive
-            dependencies are not checked. Absent on an older server: show
-            nothing.
+            `last_read_at` set, lockfile rows are stored and the exact
+            versions and transitive dependencies are as old as that time;
+            with it null, no lockfile row is stored, so transitive
+            dependencies are not checked. `last_read_at` is always sent
+            (null, never absent). Since 0.29.215 it is the date of the
+            lockfile rows that are stored, whichever reading stored them,
+            and null when none is. Absent on an older server: show nothing.
           required: [reason, last_read_at]
           properties:
             reason:
               type: string
-              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable]
+              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.
+              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable, lockfiles_not_reached]
             last_read_at:
               type: [string, "null"]
               format: date-time

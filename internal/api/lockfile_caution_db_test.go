@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,7 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repo_dependency_coverage WHERE repo_id = $1`, repoID)
 		_, _ = store.Pool().Exec(c, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
@@ -92,7 +94,14 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 		}
 	}
 
-	// Read: the key is there and null.
+	// Read, with the snapshot a completed reading leaves: the key is there
+	// and null. (0.29.215: "behind" is decided from the lockfile rows that
+	// are STORED, so the test stores some, as a reading does.)
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID,
+		[]*db.RepoLockfileInfo{{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 1, DirectCount: 1}},
+		nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	record(model.LockfileReading{Completed: true, Lockfiles: true})
 	for path, cov := range answers() {
 		if raw, has := cov["lockfiles_unread"]; !has || string(raw) != "null" {
@@ -111,7 +120,20 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 			t.Errorf("%s: %+v; want the memory limit and the reading just made", path, u)
 		}
 	}
-	// The lockfiles are deleted: nothing to caution about again.
+	// The date is sent as a UTC instant.
+	for path, cov := range answers() {
+		var raw struct {
+			LastReadAt string `json:"last_read_at"`
+		}
+		if err := json.Unmarshal(cov["lockfiles_unread"], &raw); err != nil || !strings.HasSuffix(raw.LastReadAt, "Z") {
+			t.Errorf("%s: last_read_at = %q (%v); want a UTC instant", path, raw.LastReadAt, err)
+		}
+	}
+	// The lockfiles are deleted: the snapshot is replaced by an empty one
+	// and there is nothing to caution about again.
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	record(model.LockfileReading{Completed: true})
 	for path, cov := range answers() {
 		if string(cov["lockfiles_unread"]) != "null" {
@@ -124,6 +146,12 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 		var u *vulnclass.LockfilesUnread
 		if err := json.Unmarshal(cov["lockfiles_unread"], &u); err != nil || u == nil || u.Reason != model.InventoryAttemptReadFailed || u.LastReadAt != nil {
 			t.Errorf("%s: never read: %s", path, cov["lockfiles_unread"])
+		}
+		// The key is sent, and null: a client tells the two cautions apart
+		// by it.
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(cov["lockfiles_unread"], &keys); err != nil || string(keys["last_read_at"]) != "null" {
+			t.Errorf("%s: never read: last_read_at = %s (in %s); want the key, null", path, keys["last_read_at"], cov["lockfiles_unread"])
 		}
 	}
 }

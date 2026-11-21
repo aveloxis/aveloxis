@@ -42,19 +42,28 @@ func TestABOMIsAskedOfTheChildsOwnRepositoriesFirst(t *testing.T) {
 	}
 }
 
-// B1. A build file's own platforms are consulted before the ones the build
-// files above give every project.
-func TestAProjectsOwnPlatformComesBeforeTheOnesFromAbove(t *testing.T) {
-	files := map[string]string{
-		"settings.gradle":  "rootProject.name = 'r'\n",
-		"build.gradle":     "subprojects {\n  dependencies {\n    implementation platform('t:above:1')\n  }\n}\n",
-		"app/build.gradle": "dependencies {\n  implementation platform('t:own:1')\n  implementation 'g:x'\n  implementation 'g:onlyabove'\n}\n",
-		"above/pom.xml":    r6Bom("above", "g", "x", "1.0", "g", "onlyabove", "5.0"),
-		"own/pom.xml":      r6Bom("own", "g", "x", "2.0"),
-	}
-	got := r6Read(t, files, "app/build.gradle", nil)
-	if got["g:x"].Version != "2.0" || got["g:onlyabove"].Version != "5.0" {
-		t.Errorf("g:x at %q and g:onlyabove at %q; want 2.0 (the project's own platform first) and 5.0 (from above)", got["g:x"].Version, got["g:onlyabove"].Version)
+// B1. A project's platforms are its own and the ones the build files above
+// give every project, settled together: the highest recommendation wins,
+// whichever of them gives it. (Until 0.29.214 the project's own were
+// consulted first and the first to answer won, and until 0.29.215 this test
+// still said so: its fixture had the higher version in the project's own
+// platform, so both rules passed it. Round 8.)
+func TestAProjectsOwnPlatformsAndTheOnesFromAboveAreSettledTogether(t *testing.T) {
+	for name, c := range map[string]struct{ above, own, want string }{
+		"the project's own is the higher":  {"1.0", "2.0", "2.0"},
+		"the one from above is the higher": {"2.0", "1.0", "2.0"},
+	} {
+		files := map[string]string{
+			"settings.gradle":  "rootProject.name = 'r'\n",
+			"build.gradle":     "subprojects {\n  dependencies {\n    implementation platform('t:above:1')\n  }\n}\n",
+			"app/build.gradle": "dependencies {\n  implementation platform('t:own:1')\n  implementation 'g:x'\n  implementation 'g:onlyabove'\n}\n",
+			"above/pom.xml":    r6Bom("above", "g", "x", c.above, "g", "onlyabove", "5.0"),
+			"own/pom.xml":      r6Bom("own", "g", "x", c.own),
+		}
+		got := r6Read(t, files, "app/build.gradle", nil)
+		if got["g:x"].Version != c.want || got["g:onlyabove"].Version != "5.0" {
+			t.Errorf("%s: g:x at %q and g:onlyabove at %q; want %s (the highest) and 5.0 (from above)", name, got["g:x"].Version, got["g:onlyabove"].Version, c.want)
+		}
 	}
 }
 

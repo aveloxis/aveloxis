@@ -29,6 +29,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,13 +100,32 @@ func TestTheJudgeTakesWhatProductionSendsAndLeavesFixtures(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, direct); err != nil {
 		t.Fatal(err)
 	}
-	const inClosure = "SELECT 'the judge pin: a fixture in a closure'"
-	if err := retryOnDeadlock(ctx, logger, "judge pin", func() error {
-		_, err := store.pool.Exec(ctx, inClosure)
-		return err
-	}); err != nil {
-		t.Fatal(err)
+	// A test's closure that a production wrapper runs stands UNDER a
+	// production frame, as a test's stand-in for a transaction does when it
+	// hands on production's text, and a stack cannot tell the two apart. So
+	// it is production's (0.29.215) unless the test is on the judge's list
+	// of tests that send their own SQL that way.
+	const unlisted = "SELECT 'the judge pin: a closure of a test that is not listed'"
+	send := func(sql string) {
+		t.Helper()
+		if err := retryOnDeadlock(ctx, logger, "judge pin", func() error {
+			_, err := store.pool.Exec(ctx, sql)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	send(unlisted)
+	through := judgeSaw(t, unlisted)
+	if len(through) != 1 || through[0].Frames[0].Decl != "retryOnDeadlock" || !strings.Contains(through[0].Via, "TestTheJudgeTakesWhatProductionSendsAndLeavesFixtures") {
+		t.Errorf("a closure of an unlisted test, run by a production wrapper: %+v; want it production's, from retryOnDeadlock, with the test it came through named", through)
+	}
+	const inClosure = "SELECT 'the judge pin: a fixture in a closure'"
+	const here = "internal/db/statement_sites_test.go\x00TestTheJudgeTakesWhatProductionSendsAndLeavesFixtures"
+	listed := writejudge.FixtureSenders
+	writejudge.FixtureSenders = map[string]string{here: "this test's closure sends its own text"}
+	t.Cleanup(func() { writejudge.FixtureSenders = listed })
+	send(inClosure)
 	for _, sql := range []string{direct, inClosure} {
 		if n := len(judgeSaw(t, sql)); n != 0 {
 			t.Errorf("%q, sent by this test, was taken for production's (%d records)", sql, n)
@@ -294,6 +314,262 @@ func siteCoverageFailures(notExecuted []string, baseline map[string]bool) []stri
 	return out
 }
 
+// unsentTextsBaseline is the reviewed list of the statement TEXTS the
+// static reading reads in the store that no DB-tier test of the whole
+// suite sent (0.29.215). The site requirement above is per CALL: a call a
+// builder or a list feeds is reached by any one of its statements, and the
+// others were judged from their text alone, never run. This list is what
+// says which. IT ONLY SHRINKS: a text on it that a test now sends fails
+// until its line is deleted, and a text that is not on it and was not sent
+// fails until a test sends it. A line is "file<TAB>declaration<TAB>key",
+// then a comment (the kind and the start of the text) that is not compared.
+const unsentTextsBaseline = "testdata/unsent_statement_texts.txt"
+
+// A static text's kind, for the baseline's comment and the run's counts.
+const (
+	textWritesRegistered = "writes a registered table"
+	textDefines          = "defines or alters the schema"
+	textWritesOther      = "writes another table"
+	textReads            = "reads"
+	textUnread           = "not read by the parser"
+)
+
+// kindOfText says what a statement does, as far as the baseline's reader
+// needs: a write of a table with a registered column weighs most (the judge
+// would have something to hold against it at run time).
+func kindOfText(sql string, registered map[string]bool) string {
+	writes, err := sqlscan.ParseWrites(sql)
+	if err != nil {
+		return textUnread
+	}
+	kind := textReads
+	for _, w := range writes {
+		switch w.Kind {
+		case "update", "conflict-update", "merge-update", "insert", "delete", "merge", "truncate", "copy":
+			if registered[w.Schema+"."+w.Table] {
+				return textWritesRegistered
+			}
+			if kind == textReads {
+				kind = textWritesOther
+			}
+		default:
+			kind = textDefines
+		}
+	}
+	if kind == textReads {
+		up := strings.ToUpper(strings.TrimSpace(sql))
+		for _, verb := range []string{"CREATE ", "ALTER ", "DROP ", "COMMENT ", "GRANT ", "REVOKE "} {
+			if strings.HasPrefix(up, verb) {
+				return textDefines
+			}
+		}
+	}
+	return kind
+}
+
+// unsentText is one static text no test sent.
+type unsentText struct {
+	// ID is what the baseline compares: file, declaration and the text's
+	// key (writejudge.TextKey). No line number: an edit above the statement
+	// must not move it off the list.
+	ID, Kind, Head string
+}
+
+// statementTextsNotSent are the static texts whose key no package's record
+// holds, one per (file, declaration, text), sorted.
+func statementTextsNotSent(static []sqlscan.Stmt, sent map[string]bool, registered map[string]bool) (not []unsentText, total int) {
+	seen := map[string]bool{}
+	for _, st := range static {
+		key := writejudge.TextKey(st.SQL)
+		id := st.File + "\t" + st.Decl + "\t" + key
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		total++
+		if sent[key] {
+			continue
+		}
+		head := writejudge.Fold(st.SQL)
+		if len(head) > 90 {
+			head = head[:90]
+		}
+		not = append(not, unsentText{ID: id, Kind: kindOfText(st.SQL, registered), Head: head})
+	}
+	sort.Slice(not, func(i, k int) bool { return not[i].ID < not[k].ID })
+	return not, total
+}
+
+// readTextBaseline reads the list: the compared part of each line.
+func readTextBaseline() (map[string]bool, error) {
+	b, err := os.ReadFile(unsentTextsBaseline)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(l) == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		f := strings.SplitN(l, "\t", 4)
+		if len(f) < 3 {
+			return nil, fmt.Errorf("%s: a line that is not file<TAB>declaration<TAB>key: %q", unsentTextsBaseline, l)
+		}
+		out[strings.Join(f[:3], "\t")] = true
+	}
+	return out, nil
+}
+
+// textCoverageFailures compares what was not sent with the baseline. A
+// text that writes a registered table is never excused by the list: the
+// judge would have had a policy to hold it to, and it must be sent.
+func textCoverageFailures(not []unsentText, baseline map[string]bool) []string {
+	var out []string
+	unsent := map[string]bool{}
+	for _, u := range not {
+		unsent[u.ID] = true
+		id := strings.ReplaceAll(u.ID, "\t", " ")
+		switch {
+		case u.Kind == textWritesRegistered:
+			out = append(out, fmt.Sprintf("no DB-tier test of the suite sent the statement %s (%s...), which writes a table with a registered column: the write-policy judge never saw it run, and %s excuses no such statement. Write a DB-tier test that makes the store send it and asserts what it did", id, u.Head, unsentTextsBaseline))
+		case !baseline[u.ID]:
+			out = append(out, fmt.Sprintf("no DB-tier test of the suite sent the statement %s (%s: %s...): it was judged from its text alone. Write a DB-tier test that makes the store send it and asserts what it did. The list %s only shrinks", id, u.Kind, u.Head, unsentTextsBaseline))
+		}
+	}
+	var stale []string
+	for id := range baseline {
+		if !unsent[id] {
+			stale = append(stale, strings.ReplaceAll(id, "\t", " "))
+		}
+	}
+	sort.Strings(stale)
+	for _, id := range stale {
+		out = append(out, fmt.Sprintf("%s lists %s, and a test now sends that statement (or the store no longer holds it): delete its line (the list only shrinks)", unsentTextsBaseline, id))
+	}
+	return out
+}
+
+// registeredTables are the tables that have a column with a write policy.
+func registeredTables() map[string]bool {
+	out := map[string]bool{}
+	for _, r := range writejudge.Policies {
+		out[r.Table] = true
+	}
+	return out
+}
+
+// The statement-text comparison, on a made-up store: what counts as sent,
+// what the list excuses and what it never does, and what is stale.
+func TestStatementTextsAreComparedWithWhatWasSent(t *testing.T) {
+	registered := map[string]bool{"aveloxis_data.repos": true}
+	const (
+		read    = "SELECT 1 FROM aveloxis_data.repos"
+		write   = "UPDATE aveloxis_data.repos SET repo_name = $1"
+		other   = "DELETE FROM aveloxis_ops.staging WHERE repo_id = $1"
+		define  = "ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS zz int"
+		sentOne = "SELECT 2"
+	)
+	for sql, want := range map[string]string{read: textReads, write: textWritesRegistered, other: textWritesOther, define: textDefines,
+		"INSERT INTO aveloxis_data.repos (repo_id) VALUES ($1)": textWritesRegistered, "CREATE INDEX zz ON aveloxis_data.repos (repo_id)": textDefines, "SELEC 1": textUnread} {
+		if got := kindOfText(sql, registered); got != want {
+			t.Errorf("kindOfText(%q) = %q, want %q", sql, got, want)
+		}
+	}
+	static := []sqlscan.Stmt{
+		{File: "internal/db/a.go", Decl: "A", Line: 3, SQL: read},
+		{File: "internal/db/a.go", Decl: "A", Line: 9, SQL: "SELECT 1\n\tFROM aveloxis_data.repos"}, // the same text, folded: one
+		{File: "internal/db/a.go", Decl: "B", Line: 20, SQL: read},                                  // another declaration: its own
+		{File: "internal/db/a.go", Decl: "A", SQL: write},
+		{File: "internal/db/b.go", Decl: "C", SQL: other},
+		{File: "internal/db/b.go", Decl: "C", SQL: define},
+		{File: "internal/db/b.go", Decl: "C", SQL: sentOne},
+	}
+	sent := map[string]bool{writejudge.TextKey("SELECT  2"): true}
+	not, total := statementTextsNotSent(static, sent, registered)
+	if total != 6 || len(not) != 5 {
+		t.Fatalf("%d texts, %d not sent; want 6 (one text read twice in a declaration is one) and 5", total, len(not))
+	}
+	id := func(file, decl, sql string) string { return file + "\t" + decl + "\t" + writejudge.TextKey(sql) }
+	// Nothing listed: each is a failure.
+	if got := textCoverageFailures(not, map[string]bool{}); len(got) != 5 {
+		t.Errorf("%d failures with an empty list, want 5: %v", len(got), got)
+	}
+	// Everything listed: the write of a registered table still fails, and
+	// alone.
+	all := map[string]bool{}
+	for _, u := range not {
+		all[u.ID] = true
+	}
+	got := textCoverageFailures(not, all)
+	if len(got) != 1 || !strings.Contains(got[0], "excuses no such statement") || !strings.Contains(got[0], writejudge.TextKey(write)) {
+		t.Errorf("with every unsent text listed: %v; want the one write of a registered table", got)
+	}
+	// A line for a text that was sent, and one for a text the store no
+	// longer holds, are stale.
+	all[id("internal/db/b.go", "C", sentOne)] = true
+	all[id("internal/db/gone.go", "G", "SELECT 9")] = true
+	stale := 0
+	for _, f := range textCoverageFailures(not, all) {
+		if strings.Contains(f, "delete its line") {
+			stale++
+		}
+	}
+	if stale != 2 {
+		t.Errorf("%d stale lines reported, want 2", stale)
+	}
+	// The list as kept: the compared part of a line is its first three
+	// fields, and the real file reads.
+	if _, err := readTextBaseline(); err != nil {
+		t.Error(err)
+	}
+}
+
+// The statement-level half of the coverage requirement, over the whole
+// suite, run by scripts/skip-census.sh with the test above (and, like it,
+// checking nothing without the variable).
+func TestTheSuiteSendsEveryStatementText(t *testing.T) {
+	dir := os.Getenv(sitesCheckEnv)
+	if dir == "" {
+		t.Logf("%s is not set: the union of what the suite's packages sent is checked by the closing suite", sitesCheckEnv)
+		return
+	}
+	reached, records, err := writejudge.ReadSites(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The denominator: records that hold no text at all are records of an
+	// older judge, and every static text would read as never sent.
+	if len(reached.Texts) < 1000 {
+		t.Fatalf("%d records in %s hold %d statement texts: the suite sends some thousands", records, dir, len(reached.Texts))
+	}
+	registered := registeredTables()
+	if len(registered) < 10 {
+		t.Fatalf("%d tables with a registered column: the registry was not read", len(registered))
+	}
+	not, total := statementTextsNotSent(columnWriteReading(t).Statements, reached.Texts, registered)
+	byKind := map[string]int{}
+	var lines []string
+	for _, u := range not {
+		byKind[u.Kind]++
+		lines = append(lines, u.ID+"\t# "+u.Kind+": "+u.Head)
+	}
+	if out := os.Getenv("AVELOXIS_STATEMENT_TEXTS_OUT"); out != "" {
+		// A maintainer's aid: what the suite did not send, in the list's form.
+		if err := os.WriteFile(out, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	baseline, err := readTextBaseline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range textCoverageFailures(not, baseline) {
+		t.Error(f)
+	}
+	t.Logf("%d statement texts read in internal/db; %d not sent by any DB-tier package (all on the list when this passes): %d %s, %d %s, %d %s, %d %s, %d %s",
+		total, len(not), byKind[textWritesRegistered], textWritesRegistered, byKind[textDefines], textDefines, byKind[textWritesOther], textWritesOther, byKind[textReads], textReads, byKind[textUnread], textUnread)
+}
+
 // sitesCheckEnv names the directory holding every DB-tier package's record
 // of what it reached (writejudge.SitesDirEnv during the suite). The closing
 // suite sets it for ONE run of the test below, after every package has
@@ -465,6 +741,88 @@ func TestStatementSitesNotExecutedAndTheBaseline(t *testing.T) {
 	}
 }
 
+// siteListMismatches compares the statement-site list (static: "file:line"
+// to the callee as written) with a second, dumb counting of the same
+// sources: every call of something NAMED as a library function that takes
+// SQL, with arguments. It returns what differs either way, how many calls
+// the counting by name found, and how many CopyFrom calls (rows with no
+// text, which the list does not count: each is a problem too).
+func siteListMismatches(files map[string]string, static map[string]string) (problems []string, byNameCount, rowsOnly int, err error) {
+	takesText := map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "Queue": true, "Prepare": true}
+	byName := map[string]string{}
+	for name, src := range files {
+		fset := token.NewFileSet()
+		af, perr := parser.ParseFile(fset, name, src, 0)
+		if perr != nil {
+			return nil, 0, 0, perr
+		}
+		ast.Inspect(af, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := c.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			at := fset.Position(c.Pos())
+			switch {
+			case sel.Sel.Name == "CopyFrom":
+				// Rows with no text: the judge sees a CopyFrom, and the
+				// coverage requirement has no site for one. The store
+				// uses none; the first use is the time to count them.
+				rowsOnly++
+				problems = append(problems, fmt.Sprintf("%s: the store calls CopyFrom, which the statement-site list does not count: add it to the list (sqlscan.RunnerCalls) before using it", at))
+			case takesText[sel.Sel.Name] && len(c.Args) > 0:
+				byName[fmt.Sprintf("%s:%d", at.Filename, at.Line)] = sel.Sel.Name
+			}
+			return true
+		})
+	}
+	for at, name := range byName {
+		if _, ok := static[at]; !ok {
+			problems = append(problems, fmt.Sprintf("%s calls something named %s with arguments, and it is not on the statement-site list: a library function that takes SQL, or the store's own interface over one, is a site; anything else of that name needs another name, so that this counting stays a check of the list", at, name))
+		}
+	}
+	for at, callee := range static {
+		if _, ok := byName[at]; !ok {
+			problems = append(problems, fmt.Sprintf("%s (%s) is on the statement-site list and is no call named Exec, Query, QueryRow, Queue or Prepare", at, callee))
+		}
+	}
+	sort.Strings(problems)
+	return problems, len(byName), rowsOnly, nil
+}
+
+// The comparison finds each kind of difference (round 8: its failing arm
+// could be switched off and every test passed).
+func TestTheSiteListComparisonFindsEachDifference(t *testing.T) {
+	files := map[string]string{"x.go": `package x
+
+func a(tx T) {
+	tx.Exec(ctx, "SELECT 1")
+	tx.Query(ctx, "SELECT 2")
+	tx.CopyFrom(ctx, nil, nil, nil)
+	tx.Exec()
+	Exec(ctx, "not a method")
+}
+`}
+	// The list knows the first call, not the second, and has one that is
+	// no call of such a name.
+	problems, n, rows, err := siteListMismatches(files, map[string]string{"x.go:4": "tx.Exec", "x.go:9": "tx.Scan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(problems, "\n")
+	for _, want := range []string{"x.go:5 calls something named Query", "x.go:9 (tx.Scan) is on the statement-site list", "x.go:6:2: the store calls CopyFrom"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no finding %q in:\n%s", want, all)
+		}
+	}
+	if len(problems) != 3 || n != 2 || rows != 1 {
+		t.Errorf("%d findings (want 3), %d calls by name (want 2: a call with no argument and a plain function are not counted), %d CopyFrom (want 1):\n%s", len(problems), n, rows, all)
+	}
+}
+
 // The static list of statement sites is COMPLETE: every call in the
 // store's non-test source that is named as a library function that takes
 // SQL, counted here by name alone with no types, is on it, and it holds
@@ -485,52 +843,17 @@ func TestTheStatementSiteListIsEveryCallNamedAsOne(t *testing.T) {
 	for _, c := range calls {
 		static[fmt.Sprintf("%s:%d", c.File, c.Line)] = c.Callee
 	}
-	takesText := map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "Queue": true, "Prepare": true}
-	byName := map[string]string{}
-	rowsOnly := 0
-	for name, src := range files {
-		fset := token.NewFileSet()
-		af, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(af, func(n ast.Node) bool {
-			c, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := c.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			at := fset.Position(c.Pos())
-			switch {
-			case sel.Sel.Name == "CopyFrom":
-				// Rows with no text: the judge sees a CopyFrom, and the
-				// coverage requirement has no site for one. The store
-				// uses none; the first use is the time to count them.
-				rowsOnly++
-				t.Errorf("%s: the store calls CopyFrom, which the statement-site list does not count: add it to the list (sqlscan.RunnerCalls) before using it", at)
-			case takesText[sel.Sel.Name] && len(c.Args) > 0:
-				byName[fmt.Sprintf("%s:%d", at.Filename, at.Line)] = sel.Sel.Name
-			}
-			return true
-		})
+	problems, byName, rowsOnly, err := siteListMismatches(files, static)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for at, name := range byName {
-		if _, ok := static[at]; !ok {
-			t.Errorf("%s calls something named %s with arguments, and it is not on the statement-site list: a library function that takes SQL, or the store's own interface over one, is a site; anything else must be renamed or explained here", at, name)
-		}
-	}
-	for at, callee := range static {
-		if _, ok := byName[at]; !ok {
-			t.Errorf("%s (%s) is on the statement-site list and is no call named Exec, Query, QueryRow, Queue or Prepare", at, callee)
-		}
+	for _, p := range problems {
+		t.Error(p)
 	}
 	// The denominator, exactly: a call silently dropped from BOTH
 	// countings would still change this number.
-	if len(calls) != len(byName) || len(calls) < 900 {
-		t.Errorf("%d statement sites on the list, %d calls counted by name: they are the same calls, about 910", len(calls), len(byName))
+	if len(calls) != byName || len(calls) < 900 {
+		t.Errorf("%d statement sites on the list, %d calls counted by name: they are the same calls, about 910", len(calls), byName)
 	}
 	t.Logf("%d statement sites; %d CopyFrom calls", len(calls), rowsOnly)
 }
@@ -563,4 +886,95 @@ func TestTheUnexecutedSiteBaselineNamesCallsTheStoreHas(t *testing.T) {
 		}
 	}
 	t.Logf("%d library calls that take SQL; %d on the baseline of calls no DB-tier test reaches", len(calls), len(baseline))
+}
+
+// sendersOfSQL are the packages, of those given (directory to its non-test
+// sources), that call a library function that takes SQL themselves, each
+// with its calls.
+func sendersOfSQL(root string, packages map[string]map[string]string) (map[string][]sqlscan.RunnerCall, error) {
+	out := map[string][]sqlscan.RunnerCall{}
+	for dir, files := range packages {
+		calls, err := sqlscan.RunnerCalls(root, files)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", dir, err)
+		}
+		if len(calls) > 0 {
+			out[dir] = calls
+		}
+	}
+	return out, nil
+}
+
+// The store hands its SQL to the library and to nothing else. A function
+// of ANOTHER package of this module that took a text from the store and
+// ran it would be no call site of the store's (the static list is of
+// library calls and of the store's own interfaces) and its argument no SQL
+// argument, so a statement sent that way, by a store function no test
+// calls, passed the coverage requirement (review round 8). So no package
+// of this module that the store imports, at any depth, sends SQL itself:
+// there are none today, and the first one fails here, where its calls
+// must be given to the static list before it is used.
+func TestNoPackageTheStoreImportsSendsSQLItself(t *testing.T) {
+	root := srctest.Root(t)
+	const module = "github.com/aveloxis/aveloxis/"
+	packages := map[string]map[string]string{}
+	queue := []string{"internal/db"}
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+		files := srctest.PackageFiles(t, dir, 1)
+		if dir != "internal/db" {
+			packages[dir] = files
+		}
+		for name, src := range files {
+			af, err := parser.ParseFile(token.NewFileSet(), name, src, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, imp := range af.Imports {
+				path, _ := strconv.Unquote(imp.Path.Value)
+				if rel, ok := strings.CutPrefix(path, module); ok && rel != "internal/db" && packages[rel] == nil {
+					packages[rel] = map[string]string{} // seen; read when it is taken off the queue
+					queue = append(queue, rel)
+				}
+			}
+		}
+	}
+	if len(packages) < 8 || packages["internal/db/stmttrace"] == nil || packages["internal/model"] == nil {
+		t.Fatalf("%d packages of this module found behind the store's imports: it imports more (the statement seam and the model among them)", len(packages))
+	}
+	senders, err := sendersOfSQL(root, packages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for dir, calls := range senders {
+		c := calls[0]
+		t.Errorf("%s, which the store imports, sends SQL itself (%d calls; the first: %s:%d %s in %s): a statement the store hands it is on no list of the store's call sites. Send it from the store, or teach sqlscan.RunnerCalls and the SQL-argument reading that a call of this package's function is one",
+			dir, len(calls), c.File, c.Line, c.Callee, c.Decl)
+	}
+
+	// The check finds one that does: a package with a method that runs the
+	// text it is given.
+	fixture := map[string]map[string]string{"internal/zzfixture": {"internal/zzfixture/run.go": `package zzfixture
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Runner struct{ Pool *pgxpool.Pool }
+
+func (r Runner) Run(ctx context.Context, sql string, args ...any) error {
+	_, err := r.Pool.Exec(ctx, sql, args...)
+	return err
+}
+`}, "internal/zzclean": {"internal/zzclean/x.go": "package zzclean\n\nfunc Exec(sql string) string { return sql }\n"}}
+	found, err := sendersOfSQL(root, fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || len(found["internal/zzfixture"]) != 1 || found["internal/zzfixture"][0].Decl != "Runner.Run" {
+		t.Errorf("a package whose method runs the text it is given: found %v; want its one call, in Runner.Run, and nothing for the package that sends none", found)
+	}
 }

@@ -80,16 +80,28 @@ func TestTheChildBoundsAFileAReaderOpensForItself(t *testing.T) {
 func TestCloneReadRoomIsWhatTheLimitLeaves(t *testing.T) {
 	t.Cleanup(func() { cloneReadHeapLimit.Store(0) })
 	cloneReadHeapLimit.Store(0)
-	if got := cloneReadRoom(-1); got != 0 {
+	if got := cloneReadRoom("requirements.txt", -1); got != 0 {
 		t.Errorf("with no limit: %d; want 0 (the child always has one)", got)
 	}
 	heap := processHeapBytes()
 	cloneReadHeapLimit.Store(heap + 64<<20)
-	if got := cloneReadRoom(1 << 20); got <= 0 || got > 64<<20+heap {
+	if got := cloneReadRoom("requirements.txt", 1<<20); got <= 0 || got > 64<<20+heap {
 		t.Errorf("with 64 MiB above the heap: %d", got)
 	}
+	// The room is in bytes of THE FILE: a kind that costs more to read has
+	// less of it (0.29.215). A pnpm-lock.yaml costs fourteen times its
+	// length and a manifest three, so the same heap leaves the manifest
+	// between four and five times the length.
+	manifestRoom, pnpmRoom := cloneReadRoom("requirements.txt", 1<<10), cloneReadRoom("pnpm-lock.yaml", 1<<10)
+	if pnpmRoom <= 0 || manifestRoom < 4*pnpmRoom || manifestRoom > 5*pnpmRoom {
+		t.Errorf("room for a manifest %d, for a pnpm-lock.yaml %d; want between four and five times", manifestRoom, pnpmRoom)
+	}
+	if readCost("a/b/pnpm-lock.yaml", 100) != 1400 || readCost("yarn.lock", 100) != 300 || readCost("requirements.txt", 100) != 300 ||
+		readCost("uv.lock", 100) != 800 || readCost("x", 1<<62) != 1<<62 {
+		t.Errorf("readCost: pnpm %d, yarn %d, a manifest %d, an unmeasured lockfile %d", readCost("pnpm-lock.yaml", 100), readCost("yarn.lock", 100), readCost("requirements.txt", 100), readCost("uv.lock", 100))
+	}
 	cloneReadHeapLimit.Store(1) // far under the heap: no room
-	if got := cloneReadRoom(1); got > 0 {
+	if got := cloneReadRoom("requirements.txt", 1); got > 0 {
 		t.Errorf("with the limit under the heap: %d; want none", got)
 	}
 }

@@ -3,8 +3,10 @@
 
 package sqlscan
 
-// WHAT THE WRITE-POLICY CHECKS ARE FOR (0.29.213; the judge's reach and its
-// rule for whose statement it is, 0.29.214), and what they are not.
+// WHAT THE WRITE-POLICY CHECKS ARE FOR (0.29.213; the judge's reach,
+// 0.29.214; its rule for whose statement it is, re-executed test binaries
+// and the list of statement texts never sent, 0.29.215), and what they are
+// not.
 //
 // There are two checks, and they stand on different ground.
 //
@@ -14,24 +16,44 @@ package sqlscan
 // module opens: all of them are opened in ONE file (internal/db/open.go,
 // which hands each configuration to the seam; scripts/pool_openers_test.go
 // fails on a library constructor anywhere else in non-test code, and in a
-// DB-tier package's test files outside a reviewed list of one). It is
+// DB-tier package's test files outside a reviewed list of one; the same
+// test fails on any non-test code that gives a Tracer field a value
+// outside that file and the store's own logging tracer, and the opener
+// puts the seam back after a caller's BeforeConnect hook has run). It is
 // handed the text of every statement the library is given: Query, QueryRow
 // and Exec, each statement of a batch when the batch is sent, the table
 // and columns of a CopyFrom, the text of a Prepare.
 //
-// Whose statement it is (writejudge.Origin): PRODUCTION's unless a test
-// wrote it. The module's frames of the stack are read from the library
-// outwards; a _test.go METHOD named as a library function that takes SQL
-// (a test's stand-in for a transaction that hands on what it was given) is
-// passed over; the first frame left decides. In a _test.go file: a
-// fixture's, not judged (also a test's own closure run by a production
-// retry or transaction helper: the text is the test's). Otherwise, and
-// when the stack holds NO frame of this module (`go pool.Exec(ctx, sql)`),
-// it is production's: parsed and judged (step 3 below: the same CheckIn,
-// with the one registry of policies and Exceptions, in the test database's
-// own catalog, to which what fixtures AND production created while the
-// tests ran is added as what it is), and a violation fails the package
-// after its tests.
+// A test binary that a test RE-EXECUTES (os.Args[0] run again as a child,
+// for a subprocess under test) is judged too (0.29.215): the child's
+// harness installs a judge that appends each thing it records, as it
+// records it, to a file in a directory its ancestor named in the
+// environment, and the ancestor's verdict reads those files with its own.
+// A child that ends by os.Exit or is killed has handed over everything it
+// recorded before that: there is one write per statement and no buffer.
+//
+// Whose statement it is (writejudge.Origin, 0.29.215): PRODUCTION's
+// whenever a frame of production code stands anywhere on the stack. The
+// rule reads the stack's SHAPE, not who called the library: only test
+// frames of this module, a test sent it (a fixture's, not judged);
+// production code nearest the library, production sent it; test code
+// nearest the library with production code above it (a test's closure run
+// by a production retry or transaction helper, a test's stand-in for a
+// transaction that hands on what production gave it, in any spelling: a
+// method, a closure, a free function, a generic type), production's as
+// well, judged at the production frames, and the finding names the test
+// code it came through. A test that really does send its OWN text through
+// a production helper is listed, by file and declaration and with its
+// reason, in writejudge.FixtureSenders; the list is empty, and each
+// package's run writes beside its record of sites a "<package>.through"
+// file of what came through test code, so that what the list would have
+// to excuse can be counted. A stack with NO frame of this module
+// (`go pool.Exec(ctx, sql)`) is production's. A production statement is
+// parsed and judged (step 3 below: the same CheckIn, with the one registry
+// of policies and Exceptions, in the test database's own catalog, to which
+// what fixtures AND production created while the tests ran is added as
+// what it is, each in the order it was sent), and a violation fails the
+// package after its tests.
 //
 // What the judge sees is exactly what ran, so no way of building a string
 // in Go can mislead it; what it does not see is a statement no test runs.
@@ -43,7 +65,26 @@ package sqlscan
 // (the closing suite, scripts/skip-census.sh, checks the union). The list
 // of sites no test reaches (internal/db/testdata/unexecuted_statement_sites.txt)
 // is EMPTY since 0.29.214 and only shrinks; the list of sites itself is
-// held complete by a second count of the store's calls by name alone.
+// held complete by a second count of the store's calls by name alone, and
+// no package the store imports sends SQL of its own (a forwarding runner
+// there would be a site this list cannot see; a test fails on the first).
+//
+// That requirement is PER CALL SITE, and a site is reached by ANY one
+// statement sent through it. A site that a builder, a list of steps or a
+// loop feeds can send many statements, and "no site unreached" does not
+// say each of them ran: the others were judged by the static reader from
+// their text alone. So each package also records the key of every
+// statement text production sent (writejudge.TextKey), and the closing
+// suite compares the union with every text the static reader reads in the
+// store (internal/db: TestTheSuiteSendsEveryStatementText). A text no test
+// sent stands on internal/db/testdata/unsent_statement_texts.txt, which
+// only shrinks, and a text that WRITES A TABLE WITH A REGISTERED COLUMN is
+// never excused by that list: it must be sent. What remains on it is what
+// the judge has not seen run: mostly the members of the foreign-key
+// migration steps, and the reads of the listing builders whose text
+// depends on a sort or filter no test asks for. An open builder's text is
+// a sample (its real text depends on its input), so its line says the
+// sample was not sent, not that the builder never ran.
 //
 // THE STATIC READER (steps 1 and 2 below) gives a maintainer fast feedback
 // on an HONEST MISTAKE, without a database: a write of a protected column
@@ -131,8 +172,18 @@ package sqlscan
 //        the condition compares a parameter with a constant AND the
 //        registered inputs take both sides of it: a builder that chose
 //        another statement for an input nobody registered returned text
-//        nobody judged (0.29.214). A condition in a function the builder
-//        CALLS on a value it was handed is not followed: that remains the
+//        nobody judged (0.29.214). Since 0.29.215 it may hold only ONE
+//        such condition (the cases of one switch count as one): both
+//        sides of each of two say nothing of the two together. And it
+//        may not pick its text without a condition: a `for cond {}` on a
+//        parameter, an index or map lookup by a parameter or by a call
+//        handed one, and, inside a loop a parameter bounds (how a count
+//        repeats a fragment), a return, break or goto, or a condition on
+//        the loop's variable other than a comparison with the constant 0
+//        (the separator before all but the first), each fail. A builder
+//        that needs one of these is given a finite domain, where every
+//        input is run. A condition in a function the builder CALLS on a
+//        value it was handed is not followed: that remains the
 //        registration's word.
 //    A registration with nothing run (FROZEN) fails the store's test.
 //
@@ -178,14 +229,22 @@ package sqlscan
 //        target has no alias, by its name or schema.name. (PostgreSQL stops
 //        a statement in which a bare name is also another relation's
 //        column; a parameter of an SQL function yields to a column.)
-//      - INCOMING: EXCLUDED.col, in ON CONFLICT DO UPDATE only. (A $N
+//      - INCOMING: EXCLUDED.col, in ON CONFLICT DO UPDATE only, and only
+//        when the INSERT's own source is made of incoming values (0.29.215:
+//        INSERT ... SELECT FROM the target hands one row's stored values
+//        to another as EXCLUDED). (A $N
 //        placeholder is incoming too, and so is ANY column of an INCOMING
 //        FROM ITEM, qualified by the item's name: unnest of placeholders, a
 //        VALUES list of placeholders, a sub-select whose every output is
 //        one and that names no relation at all: the batch form, UPDATE t
 //        SET c = COALESCE(v.c, t.c) FROM unnest($1::..[], $2::..[]) AS
-//        v(id, c). An incoming value may carry one cast, and may stand in
-//        TRIM / btrim of one argument.)
+//        v(id, c). WITH ORDINALITY's counter is one of its columns: the
+//        position of a value handed in, which reads no stored value. A
+//        LATERAL sub-select is such an item only if it QUALIFIES every
+//        column it hands on: a bare name in it could be a column of the
+//        item to its left. A placeholder may carry one cast, may stand in
+//        TRIM / btrim of one argument, and that TRIM may carry one cast
+//        more: NULLIF(TRIM($1::text)::varchar(3), '').)
 //      - ANOTHER RELATION'S: qualified by a FROM item, the MERGE source, or
 //        a relation of the sub-select the reference stands in.
 //      - A VARIABLE: a record's field, a parameter qualified by the
@@ -198,41 +257,56 @@ package sqlscan
 //    A policy's "stored" operand is a STORED reference to the SAME column,
 //    and nothing else (TRIM of it, a cast of it, another row's value of it
 //    are not it); its "incoming" operand is one of the incoming values
-//    above. "The value does not read the stored value" (the incoming side
-//    of a fill) fails on a STORED or an UNRESOLVED reference at any depth,
-//    on the target's whole row (r, r.*, to_jsonb(r), (r).col), and on the
-//    target TABLE named again in a sub-select under any alias.
+//    above.
 //
-//    WHAT A FROM ITEM READS (policy.go, Write.read; 0.29.214). AlwaysRefresh
-//    asks more than the row's own value: NOTHING of the column's stored
-//    value, of any row, by any route. Each FROM item (a MERGE's source
-//    too) is followed to what it reads: the relation itself; for a view or
-//    a materialized view, everything behind it by the catalog,
-//    transitively; for the name of a WITH query of the statement, what that
-//    query reads; for a sub-select, every relation named in it. An item
-//    that reads the TARGET is the stored value under another name:
-//      - the target table again (a self-join): its column of the name;
-//      - a view over it, a join's alias, an item whose alias renames its
-//        columns, a query that is not one plain SELECT (a set operation, a
-//        WITH of its own, a data-modifying statement), a query that reads
-//        the target other than as itself written in place, a query with
-//        `*` or with an unnamed output that may hold the value: EVERY
-//        column of the item;
-//      - one plain SELECT over the target written in place: its outputs are
-//        enumerated, and the columns that may hold the value are those
-//        whose expression names a column of the name, a whole row, or a
-//        query of its own. (SELECT repo_id, count(*) AS n FROM t GROUP BY
-//        repo_id hands over nothing of it; SELECT repo_id, ar AS x FROM t
-//        hands it over as x.)
-//    A column of such an item in the value (qualified, or bare where no
-//    sub-select shadows it), the item's whole row, and a sub-select of the
-//    value that reads the target through a view or a WITH query, fail
-//    AlwaysRefresh. Another COLUMN of the table is not this column's stored
-//    value (SET ar = r2.fe is as SET ar = fe). For the other policies an
-//    item that reads the target is what any FROM item is: not the row's
-//    own stored value (so no shape's "stored"), and not incoming; a fill
-//    may take what it fills an EMPTY column with from one, since an
-//    established value is still never overwritten.
+//    WHAT A VALUE MAY BE MADE OF (policy.go, Write.notIncoming; 0.29.215).
+//    AlwaysRefresh says the value is never derived from the column's stored
+//    value, of any row. Rounds 6 to 8 each found a route by which a stored
+//    value arrived that the rule did not list (a FROM item; a LATERAL
+//    sibling, a WITH query's column list, INSERT ... SELECT from the target
+//    read back as EXCLUDED, a bare name in a sub-select). The rule no
+//    longer lists routes. It says what the value may be made of, and
+//    anything else fails. Every leaf of the value is one of:
+//      - a placeholder, a constant, DEFAULT, or a function with no schema
+//        (or pg_catalog's) and operators over such leaves;
+//      - EXCLUDED.<any column>, when the INSERT's source is incoming;
+//      - a column QUALIFIED by a CLEAN item of the FROM list it stands in;
+//      - ANOTHER column of the row being written (SET ar = lower(fe)): a
+//        stored value, but not this column's. Bare, only when every item
+//        of the write's FROM list is clean, since the name could be an
+//        item's column.
+//    A CLEAN item reads no stored value of the target's:
+//      - an incoming batch (above);
+//      - a schema-qualified BASE TABLE the catalog knows that is not the
+//        target, nor a partition, child or parent of it, nor a table the
+//        catalog saw filled from one (CREATE TABLE ... AS SELECT); a view
+//        or materialized view over such tables only;
+//      - a WITH query of the statement or a sub-select written in place,
+//        every item of which is clean and every leaf of which is incoming
+//        by this same list (so a column list, AS old(a, b), renames
+//        nothing into an incoming value: a WITH that reads the target is
+//        not clean, whatever it calls its columns);
+//      - pg_temp.<name> for a declared session table.
+//    NOT clean: the target under another alias; a relation the catalog
+//    does not know; a name with no schema that is no WITH query (a view
+//    named without its schema, a session table: which relation it is, or
+//    what it was filled from, the text does not say); a function in FROM
+//    that is not unnest of placeholders; a data-modifying WITH. And when
+//    ANY item of the write's own FROM list is not clean, no column of that
+//    list is taken, because a LATERAL item or a bare name can carry a
+//    sibling's value.
+//    Refused as leaves: the column's own name, bare or qualified by the
+//    target; the target's whole row; a variable or parameter of a body
+//    (what it holds is not known); a function of another schema (what it
+//    reads is not known); a bare name where no item can give it.
+//    What a query SELECTS is its value; its conditions (WHERE, ON, GROUP
+//    BY, HAVING, ORDER BY, LIMIT) pick rows and are not walked: a condition
+//    may read anything, the stored value included, as the write's own
+//    WHERE may. A relation a JOIN names is an item, whatever its ON says.
+//    The other policies' shapes name two kinds of leaf, the row's own
+//    STORED value and an INCOMING one; what a fill fills an empty column
+//    WITH is incoming by this list too (0.29.214 let it come from anywhere:
+//    another row of the table, read through a self-join, is not incoming).
 //
 //    THE SHAPES, as they may be written (policy.go, matchPolicy). The fill:
 //    COALESCE(NULLIF(stored, ''), v), COALESCE(stored, v), CASE WHEN <the
@@ -289,10 +363,28 @@ package sqlscan
 //        of the tables (Catalog.Table: a catalog made from a live database)
 //        and not of their foreign keys (Catalog.Reference, Defined), it is
 //        held against AnyRegisteredTable. DROP OWNED BY, REASSIGN OWNED BY
-//        and DROP TYPE / DOMAIN ... CASCADE are held against
-//        AnyRegisteredTable always. (DROP TABLE x CASCADE and ALTER TABLE x
-//        DROP COLUMN c CASCADE drop dependent views and constraints, and no
-//        row of another table: they are x's own violation, or none.)
+//        and DROP ... CASCADE of anything a column can depend on (a type, a
+//        domain, a function, procedure or aggregate, an extension, a
+//        collation, an operator, a cast, a sequence, a language) are held
+//        against AnyRegisteredTable always: which columns they drop, the
+//        text does not say.
+//      - A registered table's FAMILY (0.29.215). A partition or inheritance
+//        child of a registered table holds rows that are that table's, and
+//        a parent of it is read and written through to it. A write of such
+//        a table's rows, DROP or TRUNCATE of it (DROP of a parent CASCADE
+//        drops the child; TRUNCATE of a parent empties it), a trigger or a
+//        rule on it, an ALTER of it (a column's type, NO INHERIT), a rename
+//        and a foreign key's action on it are held against the registered
+//        table (child-target). (DROP TABLE x CASCADE of a table that is no
+//        relative drops dependent views and constraints, and no row of
+//        another table.)
+//      - A SESSION TABLE the text made itself, earlier and at the same
+//        level, is passed over for writes of its ROWS only, and only while
+//        it is a plain table that still stands: not one made a child of
+//        another table (INHERITS, ALTER ... INHERIT), not after the text's
+//        COMMIT when it was made ON COMMIT DROP, not after a ROLLBACK, not
+//        once renamed. A rename, a move or an ALTER of it is judged as any
+//        other.
 //      - A trigger FUNCTION's body: NEW.col := v is a write of col (also
 //        SELECT INTO, GET DIAGNOSTICS, FOR and FOREACH targets). Held
 //        against it besides: any value given to OLD or to the whole NEW;
@@ -319,6 +411,13 @@ package sqlscan
 //    Exception for each output that needs excusing (the gone-clear
 //    statements of writejudge's registry). Exception.Pins answers "does
 //    this text hold the pinned statement" for a caller with only text.
+//    What an Exception does NOT pin (0.29.215, said plainly): the ARGUMENTS
+//    the statement is sent with (its text is the same whatever is bound to
+//    $1, and neither check sees them), and where INSIDE a body the
+//    statement stands. It does say whether it stands in a body at all
+//    (InBody): an Exception for a statement at the top of a text does not
+//    excuse the same statement in a DO block, where an IF or a loop decides
+//    when it runs, nor the reverse.
 //
 // WHAT IS NOT GUARANTEED:
 //   - An Env function, and a registered builder, is trusted to depend on
@@ -332,26 +431,36 @@ package sqlscan
 //     shape fails, whatever it computes. Refused though correct, each with
 //     its way out: a cast of the WHOLE value (cast the incoming operand:
 //     COALESCE(col, $1::t)); a guard spelled another way, length(col) = 0
-//     among them (write one of the four); a bare name in a sub-select,
-//     which counts as the stored value though the sub-select's own
-//     relation may be what has the column (qualify it); a value that reads
-//     the target table again for ANOTHER column in a sub-select (use a
-//     FROM item whose outputs are named, or take an Exception).
+//     among them (write one of the four); the column's own name written
+//     bare in a sub-select of an AlwaysRefresh value, though the
+//     sub-select's relation may be what has a column of that name (qualify
+//     it: MAX(o.ar)); an AlwaysRefresh value that reads the target table
+//     again, for another column or a count (an item that reads the target
+//     hands on nothing: take an Exception); a derived table that JOINs the
+//     target only to filter (filter with EXISTS or IN in its WHERE, which
+//     is a condition); a batch handed in as JSON (jsonb_to_recordset: use
+//     unnest of arrays); a value read from a session table named with no
+//     schema (use the batch itself as the FROM item, or pg_temp.<name>
+//     with the table declared in writejudge.TempTables); a variable or a
+//     parameter of a body in an AlwaysRefresh value (write the statement
+//     with placeholders, or UPDATE ... FROM the relation the loop reads).
 //   - The catalog knows relations and foreign keys, not columns or their
-//     types: which columns a view shows and under what names (so every
-//     column of a view over the target counts as the stored value), which
-//     tables DROP TYPE ... CASCADE reaches (so it is held against them
-//     all), what a function called by SELECT f() or CALL p() writes, what
+//     types: which columns a view shows and under what names (so no
+//     column of a view over the target is taken), which tables DROP ...
+//     CASCADE reaches (so it is held against them all), what a function
+//     READS (one with no schema, called in a value, is taken to read no
+//     table: lower(), COALESCE; a function of another schema is refused),
+//     what a function called by SELECT f() or CALL p() writes, what
 //     an extension's script or ALTER TYPE ... ALTER ATTRIBUTE ... CASCADE
 //     rewrites. What a trigger or a rule created OUTSIDE the statements
 //     read does is not in any text it reads either.
-//   - A relation in FROM that the catalog does not know (a temporary table
-//     of another text) is taken to read no registered table: the catalog
-//     holds every view of the schema, and a relation outside it cannot be
-//     one of them.
-//   - What a PL/pgSQL variable HOLDS is not followed: a record filled from
-//     the target table by a loop's query is a variable, and its field is
-//     not the stored value to this reader.
+//   - What a declared session table (pg_temp.<name>, writejudge.TempTables)
+//     HOLDS is not followed: declaring one says a person read what fills
+//     it. So is what a table held BEFORE the texts the catalog read: a base
+//     table the schema creates is taken not to be a copy of another.
+//   - A value's CONDITIONS are not judged (which rows a sub-select picks
+//     may depend on the stored value), and neither are the arguments a
+//     statement is sent with.
 //   - The parser is PostgreSQL 17's and the fleet runs 18: what 18 reads
 //     and 17 does not is refused, and what both read is read as 17 does.
 //   - A trigger function's assignment to NEW.col is reported for every

@@ -6,6 +6,7 @@ package manifest
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/pkgid"
@@ -43,6 +45,15 @@ type pomTree struct {
 	// those coordinates; built once, on the first BOM import.
 	byCoord  map[string][]string
 	pomFiles []string
+	// unread are the files of the clone that were looked at as poms, are
+	// there, and could not be read (model): by cleaned absolute path. What
+	// such a pom says is not known, which is not the same as there being no
+	// pom (round 8).
+	unread map[string]*pomUnread
+	// pathOnly: this tree is the one the index is built with, and finds a
+	// parent at its relativePath alone (the index it would look in is the
+	// one being built).
+	pathOnly bool
 	// remote answers for a parent or BOM that is not in the tree (0.29.181);
 	// nil: nothing is asked, and nothing is said about what was not asked.
 	remote PomSource
@@ -322,10 +333,12 @@ func (t *pomTree) remotePom(group, artifact, version string, declared func() []s
 	if t.remote == nil {
 		return nil, "", model.VersionReasonInheritedNotFound
 	}
-	// A snapshot is whatever was built last, a range is not one pom, and an
+	// A snapshot is whatever was built last, a range (or LATEST, RELEASE:
+	// Maven's names for "whichever is newest") is not one pom, and an
 	// unresolved reference is not a coordinate: none is asked for.
 	if group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") ||
-		strings.Contains(strings.ToUpper(version), "SNAPSHOT") || strings.ContainsAny(version, "[](),") {
+		strings.Contains(strings.ToUpper(version), "SNAPSHOT") || strings.ContainsAny(version, "[](),") ||
+		version == "LATEST" || version == "RELEASE" {
 		return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
 	}
 	key := group + ":" + artifact + ":" + version
@@ -381,15 +394,18 @@ func (ans remoteAnswer) reason() (m *pomModel, reason, unknown string) {
 
 // worseReason orders the reasons a chain can have: a failed lookup may yet
 // succeed and outranks the rest; a refusal is the operator's and outranks
-// "not found".
+// "not found"; a pom that could not be had outranks a profile that was not
+// applied.
 func worseReason(a, b string) string {
 	rank := func(r string) int {
 		switch r {
 		case model.VersionReasonInheritedLookupFailed:
-			return 3
+			return 4
 		case model.VersionReasonInheritedRepositoryRefused:
-			return 2
+			return 3
 		case model.VersionReasonInheritedNotFound:
+			return 2
+		case model.VersionReasonProfileManaged:
 			return 1
 		}
 		return 0
@@ -401,7 +417,7 @@ func worseReason(a, b string) string {
 }
 
 func newPomTree(root string, logger *slog.Logger) *pomTree {
-	return &pomTree{root: filepath.Clean(root), logger: logger, models: map[string]*pomModel{}}
+	return &pomTree{root: filepath.Clean(root), logger: logger, models: map[string]*pomModel{}, unread: map[string]*pomUnread{}}
 }
 
 // pomModel is what one pom says, as written.
@@ -416,6 +432,13 @@ type pomModel struct {
 	// does not apply, so a tree that has it is not read whole).
 	modules           []string
 	profileManagement bool
+	// profileManaged are the "group:artifact" a profile of this pom manages
+	// or declares with a version, as written; profileAll is true when a
+	// profile's entry could mean any artifact (its coordinates hold a
+	// reference, or it imports a BOM). Profiles are not applied, so what
+	// one manages is not known to be what the build takes (pomContext.lookup).
+	profileManaged map[string]bool
+	profileAll     bool
 	// repositories are the <repositories> and <pluginRepositories> the pom
 	// declares, each classified (0.29.184).
 	repositories []DeclaredRepository
@@ -424,6 +447,9 @@ type pomModel struct {
 	// effective model whose chain has no other declaring pom holds THIS
 	// slice (pomContext.declaredFor).
 	fetchable []string
+	// unasked: the pom declares a repository for dependencies that is never
+	// asked (repositoryUnasked).
+	unasked bool
 	// servedBy is the repository host a fetched pom came from; "" for a
 	// pom of the clone.
 	servedBy string
@@ -600,8 +626,16 @@ type xmlPom struct {
 	Modules  []string `xml:"modules>module"`
 	Profiles []struct {
 		Managed []struct {
+			GroupID    string `xml:"groupId"`
 			ArtifactID string `xml:"artifactId"`
+			Type       string `xml:"type"`
+			Scope      string `xml:"scope"`
 		} `xml:"dependencyManagement>dependencies>dependency"`
+		Dependencies []struct {
+			GroupID    string `xml:"groupId"`
+			ArtifactID string `xml:"artifactId"`
+			Version    string `xml:"version"`
+		} `xml:"dependencies>dependency"`
 	} `xml:"profiles>profile"`
 }
 
@@ -616,31 +650,245 @@ func (t *pomTree) model(path string) *pomModel {
 	t.models[path] = nil
 	if !regularBuildFile(t.root, path) {
 		if buildFileTooLarge(path) {
-			t.warn("a pom of the tree is larger than a pom is, and was not read: it answers for nothing", path, errBuildFileTooLarge)
+			t.warn("a pom of the tree is larger than a pom is, and was not read: what it says is not known", path, errBuildFileTooLarge)
 		}
+		t.noteUnread(path, "")
 		return nil
 	}
 	content, err := ReadManifest(path)
 	if err != nil {
-		t.warn("a pom of the tree could not be read — it answers for nothing", path, err)
+		t.warn("a pom of the tree could not be read: what it says is not known", path, err)
+		t.noteUnread(path, "")
 		return nil
 	}
 	m, err := decodePom(string(content), path)
 	if err != nil {
-		t.warn("a pom of the tree could not be parsed — it answers for nothing", path, err)
+		t.warn("a pom of the tree could not be parsed: what it says is not known", path, err)
+		t.noteUnread(path, string(content))
 		return nil
 	}
 	t.models[path] = m
 	return m
 }
 
+// pomUnread is a file of the clone that is there, was looked at as a pom, and
+// could not be read: it is a link, is not a regular file, is larger than a
+// pom is, or does not parse. head is the start of its text when that could
+// be had; the coordinates are what can be made out of it, each "" when it
+// cannot (identify).
+type pomUnread struct {
+	path                     string
+	head                     string
+	identified               bool
+	group, artifact, version string
+}
+
+// pomUnreadHead is how much of a pom that could not be read is looked at for
+// its own coordinates, which a pom states before anything long.
+const pomUnreadHead = 64 << 10
+
+// noteUnread records that the file at path exists inside the clone and was
+// not read. content is its text when it was read and did not parse.
+func (t *pomTree) noteUnread(path, content string) {
+	if rel, err := filepath.Rel(t.root, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return // not a file of this clone: nothing is said of what is outside it
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.IsDir() {
+		return // there is no such file: a pom that is absent is not one that could not be read
+	}
+	if len(content) > pomUnreadHead {
+		content = content[:pomUnreadHead]
+	}
+	if content == "" && info.Mode().IsRegular() && regularFileInClone(t.root, path) {
+		// Too large to read whole: its start, which is where a pom says what
+		// it is.
+		if f, err := os.Open(path); err == nil {
+			head := make([]byte, pomUnreadHead)
+			n, _ := io.ReadFull(f, head)
+			f.Close()
+			content = string(head[:n])
+		}
+	}
+	t.unread[path] = &pomUnread{path: path, head: content}
+}
+
+// identify makes out what it can of an unread pom's own coordinates from its
+// start: the project's artifactId, and its groupId and version or, where it
+// states none, its parent's. Whatever cannot be made out stays "".
+func (u *pomUnread) identify() {
+	if u.identified {
+		return
+	}
+	u.identified = true
+	head := pomXML10(u.head)
+	dec := xml.NewDecoder(strings.NewReader(head))
+	dec.Strict = false
+	dec.CharsetReader = func(_ string, in io.Reader) (io.Reader, error) { return in, nil }
+	var stack []string
+	var parentGroup, parentVersion string
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch e := tok.(type) {
+		case xml.StartElement:
+			stack = append(stack, e.Name.Local)
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case xml.CharData:
+			text := strings.TrimSpace(string(e))
+			if text == "" || len(stack) < 2 || stack[0] != "project" {
+				continue
+			}
+			switch {
+			case len(stack) == 2 && stack[1] == "groupId":
+				u.group = text
+			case len(stack) == 2 && stack[1] == "artifactId":
+				u.artifact = text
+			case len(stack) == 2 && stack[1] == "version":
+				u.version = text
+			case len(stack) == 3 && stack[1] == "parent" && stack[2] == "groupId":
+				parentGroup = text
+			case len(stack) == 3 && stack[1] == "parent" && stack[2] == "version":
+				parentVersion = text
+			}
+		}
+	}
+	if u.group == "" {
+		u.group = parentGroup
+	}
+	if u.version == "" {
+		u.version = parentVersion
+	}
+}
+
+// unreadAt reports a file of the clone at path that is there and was not
+// read as a pom.
+func (t *pomTree) unreadAt(path string) bool {
+	_, is := t.unread[filepath.Clean(path)]
+	return is
+}
+
+// couldBeUnread reports whether a pom of the clone that could not be read
+// may be the one with these coordinates: by what can be made out of it, it
+// is that artifact, and its group and version are those or cannot be made
+// out. A pom of which nothing can be made out may be any.
+func (t *pomTree) couldBeUnread(group, artifact, version string) bool {
+	for _, u := range t.unread {
+		u.identify()
+		agrees := func(has, want string) bool { return has == "" || strings.Contains(has, "${") || has == want }
+		if agrees(u.artifact, artifact) && agrees(u.group, group) && agrees(u.version, version) {
+			return true
+		}
+	}
+	return false
+}
+
+// pomXML10 is a pom's text with an XML 1.1 declaration read as 1.0. Maven
+// reads both; Go's decoder refuses 1.1, and nothing a pom says depends on
+// which it is.
+func pomXML10(content string) string {
+	start := strings.Index(content, "<?xml")
+	if start < 0 || strings.TrimSpace(content[:start]) != "" {
+		return content
+	}
+	end := strings.Index(content[start:], "?>")
+	if end < 0 {
+		return content
+	}
+	decl := content[start : start+end]
+	for _, q := range []string{`"`, `'`} {
+		if at := strings.Index(decl, "version="+q+"1.1"+q); at >= 0 {
+			return content[:start+at] + "version=" + q + "1.0" + q + content[start+at+len("version=")+5:]
+		}
+	}
+	return content
+}
+
+// pomCharsetReader reads a pom in the encoding its declaration names, as
+// Maven does (round 8: every label was passed through as if it were UTF-8,
+// and a pom in ISO-8859-1 with one accented letter did not parse). UTF-8 and
+// UTF-16 arrive decoded already (ReadManifest). The single-byte encodings
+// poms are written in are decoded here: ISO-8859-1, Windows-1252 and
+// US-ASCII. Any other label is taken to agree with ASCII, as nearly every
+// encoding a pom could name does, and is refused at the first byte that is
+// not ASCII: what that byte means is not known.
+func pomCharsetReader(label string, in io.Reader) (io.Reader, error) {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "", "utf-8", "utf8", "utf-16", "utf-16le", "utf-16be", "utf16", "ucs-2", "iso-10646-ucs-2":
+		return in, nil
+	case "iso-8859-1", "iso8859-1", "iso_8859-1", "iso8859_1", "latin1", "latin-1", "l1", "iso-ir-100", "cp819", "ibm819", "csisolatin1":
+		return &pomByteReader{in: in, decode: func(b byte) (rune, bool) { return rune(b), true }}, nil
+	case "windows-1252", "cp1252", "cp-1252", "x-cp1252", "ms-ansi":
+		return &pomByteReader{in: in, decode: func(b byte) (rune, bool) {
+			if b >= 0x80 && b <= 0x9f {
+				if r := pomWindows1252[b-0x80]; r != 0 {
+					return r, true
+				}
+				return 0xFFFD, true // five bytes the encoding leaves undefined
+			}
+			return rune(b), true
+		}}, nil
+	case "us-ascii", "ascii", "ansi_x3.4-1968", "iso646-us", "646":
+		return &pomByteReader{in: in, decode: func(b byte) (rune, bool) {
+			if b >= 0x80 {
+				return 0xFFFD, true // not ASCII: Maven's reader replaces it too
+			}
+			return rune(b), true
+		}}, nil
+	}
+	return &pomByteReader{in: in, label: label, decode: func(b byte) (rune, bool) { return rune(b), b < 0x80 }}, nil
+}
+
+// pomWindows1252 are the characters of bytes 0x80 to 0x9F in Windows-1252; 0
+// where the encoding defines none.
+var pomWindows1252 = [32]rune{
+	0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+	0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178,
+}
+
+// pomByteReader turns a stream in a single-byte encoding into UTF-8.
+type pomByteReader struct {
+	in      io.Reader
+	label   string
+	decode  func(byte) (rune, bool)
+	pending []byte
+	err     error
+}
+
+func (r *pomByteReader) Read(p []byte) (int, error) {
+	for len(r.pending) == 0 && r.err == nil {
+		raw := make([]byte, 4096)
+		n, err := r.in.Read(raw)
+		for _, b := range raw[:n] {
+			c, ok := r.decode(b)
+			if !ok {
+				r.err = fmt.Errorf("the pom declares the encoding %q, which this reader does not have, and holds a byte that is not ASCII", r.label)
+				break
+			}
+			r.pending = utf8.AppendRune(r.pending, c)
+		}
+		if err != nil && r.err == nil {
+			r.err = err
+		}
+	}
+	if len(r.pending) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.pending)
+	r.pending = r.pending[n:]
+	return n, nil
+}
+
 // decodePom reads one pom document into what it says, as written.
 func decodePom(content, path string) (*pomModel, error) {
 	var x xmlPom
-	dec := xml.NewDecoder(strings.NewReader(content))
-	// The bytes are already decoded; a prolog naming another encoding must
-	// not make the decoder refuse the document.
-	dec.CharsetReader = func(_ string, in io.Reader) (io.Reader, error) { return in, nil }
+	dec := xml.NewDecoder(strings.NewReader(pomXML10(content)))
+	dec.CharsetReader = pomCharsetReader
 	if err := dec.Decode(&x); err != nil {
 		return nil, err
 	}
@@ -674,6 +922,11 @@ func decodePom(content, path string) (*pomModel, error) {
 		}
 	}
 	m.fetchable = fetchableDeclared([]*pomModel{m})
+	for _, d := range m.repositories {
+		if repositoryUnasked(d) {
+			m.unasked = true
+		}
+	}
 	for _, mod := range x.Modules {
 		if mod = strings.TrimSpace(mod); mod != "" {
 			m.modules = append(m.modules, mod)
@@ -682,6 +935,31 @@ func decodePom(content, path string) (*pomModel, error) {
 	for _, pr := range x.Profiles {
 		if len(pr.Managed) > 0 {
 			m.profileManagement = true
+		}
+		names := func(group, artifact string) {
+			group, artifact = strings.TrimSpace(group), strings.TrimSpace(artifact)
+			if strings.Contains(group+artifact, "${") {
+				m.profileAll = true
+				return
+			}
+			if m.profileManaged == nil {
+				m.profileManaged = map[string]bool{}
+			}
+			m.profileManaged[group+":"+artifact] = true
+		}
+		for _, d := range pr.Managed {
+			if strings.TrimSpace(d.Scope) == "import" && strings.TrimSpace(d.Type) == "pom" {
+				m.profileAll = true // a BOM: it could manage anything
+				continue
+			}
+			names(d.GroupID, d.ArtifactID)
+		}
+		for _, d := range pr.Dependencies {
+			// Declared by the profile WITH a version: where the pom declares
+			// it with none, the profile's is the one the build takes.
+			if strings.TrimSpace(d.Version) != "" {
+				names(d.GroupID, d.ArtifactID)
+			}
 		}
 	}
 	return m, nil
@@ -737,30 +1015,88 @@ func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap, unknown strin
 			at = filepath.Clean(at)
 			// Verified by coordinates. The parent's own group and version
 			// may be inherited from ITS parent; what it states must agree.
-			if c := t.model(at); c != nil && c.artifact == cur.parent.artifact &&
+			c := t.model(at)
+			switch {
+			case c != nil && c.artifact == cur.parent.artifact &&
 				(c.group == "" || c.group == cur.parent.group) &&
-				(c.version == "" || strings.Contains(c.version, "${") || c.version == cur.parent.version) {
+				(c.version == "" || strings.Contains(c.version, "${") || c.version == cur.parent.version):
 				p = c
+			case c == nil && t.unreadAt(at):
+				// The file the child points at is there and could not be
+				// read. It is the parent for all that is known, and what it
+				// says is not (round 8: it was treated as absent, the
+				// repositories answered "not found", and a later BOM's
+				// version was stored).
+				return out, model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed, false
 			}
 		}
 		if p == nil {
-			soFar := out
-			remote, reason, unknown := t.remotePom(cur.parent.group, cur.parent.artifact, cur.parent.version, func() []string {
-				return fetchableDeclared(soFar)
-			})
-			if remote == nil {
+			// Not at the place the child names (or the child names none):
+			// among the poms of the clone by its coordinates, as Maven finds
+			// a parent that is part of the build, and otherwise on a
+			// repository (obtain).
+			found, reason, unknown := t.obtain(cur.parent.group, cur.parent.artifact, cur.parent.version, chainAsker(out))
+			if found == nil {
 				return out, reason, unknown, false
 			}
-			p = remote
+			p = found
 		}
 		out = append(out, p)
 		cur = p
 	}
-	// The loop ended at a pom with no parent (whole), or at the bound with a
-	// parent still to follow. (Until 0.29.214 a chain of exactly
-	// pomChainLimit poms that ended was called not whole: the count was
-	// compared and not the end.)
-	return out, "", "", cur.parent == nil
+	if cur.parent != nil {
+		// The bound was reached with a parent still to follow: the chain is
+		// longer than is read, or it is a cycle (which Maven refuses to
+		// build). Its far end was never asked for, and what it says is not
+		// known (round 8: nothing was said, and a BOM's version was taken
+		// from behind it).
+		return out, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound, false
+	}
+	// The loop ended at a pom with no parent: whole. (Until 0.29.214 a chain
+	// of exactly pomChainLimit poms that ended was called not whole: the
+	// count was compared and not the end.)
+	return out, "", "", true
+}
+
+// obtain is the pom with these coordinates that is not at a place a pom
+// names: the ONE pom of the clone that has them (Maven resolves a parent or
+// an imported BOM that is part of the build from the build), and otherwise
+// the one a repository has. It is the one way a pom is found by its
+// coordinates, for a parent, an import and a Gradle platform.
+//
+// reason is why there is none; unknown is not "" when what the pom says is
+// NOT KNOWN (remotePom): no repository answered for it, or it was not asked
+// for, or
+//
+//   - the clone holds two poms with the coordinates: neither is chosen
+//     (SR-6), and a repository's would be a third candidate, so none is
+//     asked;
+//   - every repository answered "not found", and the clone holds a pom that
+//     could not be read and that, by what can be made out of it, may be this
+//     one (couldBeUnread);
+//   - every repository ASKED answered "not found", and the build that asks
+//     declares a repository that is never asked (repositoryUnasked).
+func (t *pomTree) obtain(group, artifact, version string, from pomAsker) (m *pomModel, reason, unknown string) {
+	if !t.pathOnly {
+		in, ambiguous := t.byCoordinates(group, artifact, version)
+		if ambiguous {
+			return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
+		}
+		if in != nil {
+			return in, "", ""
+		}
+	}
+	m, reason, unknown = t.remotePom(group, artifact, version, from.declared)
+	if m != nil || unknown != "" || t.pathOnly {
+		return m, reason, unknown
+	}
+	if t.couldBeUnread(group, artifact, version) {
+		return nil, model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed
+	}
+	if t.remote != nil && from.unasked != nil && from.unasked() {
+		return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
+	}
+	return m, reason, unknown
 }
 
 // pomContext is the effective model of one pom: what Maven builds from it
@@ -790,6 +1126,18 @@ type pomContext struct {
 	// list, by reference, or a merged one.
 	declaredList []string
 	declaredDone bool
+	// unaskedIs is whether the chain declares a repository that is never
+	// asked (asker); unaskedDone that it was worked out.
+	unaskedIs, unaskedDone bool
+}
+
+// unasked reports whether this model's chain declares a repository that is
+// never asked.
+func (c *pomContext) unasked() bool {
+	if !c.unaskedDone {
+		c.unaskedIs, c.unaskedDone = chainAsker(c.chain).unasked(), true
+	}
+	return c.unaskedIs
 }
 
 // declaredFor is the repositories this model's chain declares and that may
@@ -1030,6 +1378,11 @@ type pomLookup struct {
 	// imports: two poms importing each other twice were 2^32 calls (review
 	// round 1).
 	searched map[*pomModel]bool
+	// within are the BOMs the question is inside of now: one met again
+	// there imports itself, directly or through others. Maven refuses to
+	// build such a model, so what the cycle and everything after it says is
+	// not known (round 8: it was skipped as a second route is).
+	within map[*pomModel]bool
 	// gap is the worst reason a pom the question MET could not be obtained:
 	// the missing end of a chain it looked into, a BOM import that led
 	// nowhere. It is what a dependency NOTHING manages is reported with.
@@ -1096,7 +1449,23 @@ func (c *pomContext) ask(rd *pomReading, group, artifact string) (version string
 // is answered (with no version), and no pom after it is asked.
 func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (version string, found bool, bomHosts []string, stop bool) {
 	key := group + ":" + artifact
+	// profiled: a profile of a pom the question has reached manages the
+	// artifact. Profiles are not applied (which of them a build activates is
+	// not known here), so an answer from that pom, a farther one or an
+	// import is not known to be the one the build takes: it is withheld. An
+	// answer from a NEARER pom stands, which outranks the pom the profile
+	// is in whatever its profiles do.
+	profiled := false
+	doubt := func() {
+		if profiled {
+			lk.gap = worseReason(lk.gap, model.VersionReasonProfileManaged)
+			lk.before = worseReason(lk.before, model.VersionReasonProfileManaged)
+		}
+	}
 	for _, m := range c.chain {
+		if m.profileAll || m.profileManaged[key] {
+			profiled = true
+		}
 		idx := m.index()
 		best, has := idx.plain[key]
 		// An entry whose coordinates hold a reference comes first if it is
@@ -1121,6 +1490,7 @@ func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (v
 			}
 		}
 		if has {
+			doubt()
 			v := c.interpolate(m.managed[best].version)
 			if v != "" && !strings.Contains(v, "${") {
 				// The chain's own entry: nothing that could not be obtained
@@ -1132,10 +1502,21 @@ func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (v
 			return v, false, nil, true
 		}
 	}
+	doubt()
 	// No pom of the chain that was read manages it. One that could not be
 	// obtained may, and it comes before every import.
 	lk.before = worseReason(lk.before, c.chainUnknown)
 	if depth >= pomChainLimit {
+		// BOMs importing BOMs are followed pomChainLimit deep. What this
+		// one imports is not looked at, and is therefore not known to say
+		// nothing (round 8: it was passed in silence, and a later BOM's
+		// version was stored).
+		for _, m := range c.chain {
+			if len(m.index().imports) > 0 {
+				lk.pass(model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound)
+				break
+			}
+		}
 		return "", false, nil, false
 	}
 	for _, m := range c.chain {
@@ -1157,12 +1538,26 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 	idx.compact()
 	idx.inUse++
 	defer func() { idx.inUse-- }()
+	// What is remembered of an import that led nowhere is remembered for
+	// every pom that inherits it, so it is what holds for all of them: what
+	// the repositories that were asked said. A build that declares a
+	// repository that is never asked takes "not found" from the others for
+	// not known (obtain's third case), and that is the ASKER's, applied here
+	// as the reason is taken. (Round 8, found by the reference: remembered
+	// with the asker's verdict, a module's unasked repository withheld its
+	// parent's own answers, or not, by which was read first.)
+	pass := func(reason, unknown string) {
+		if unknown == "" && reason != "" && c.tree.remote != nil && c.unasked() {
+			unknown = model.VersionReasonInheritedNotFound
+		}
+		lk.pass(reason, unknown)
+	}
 	for k := 0; k < len(idx.live); k++ {
 		n := idx.live[k]
 		c.tree.importSteps++
 		if idx.dead[n] {
 			// Found so by a question inside this one, and passed.
-			lk.pass(idx.deadReason[n], idx.deadUnknown[n])
+			pass(idx.deadReason[n], idx.deadUnknown[n])
 			continue
 		}
 		e := m.managed[idx.imports[n]]
@@ -1175,28 +1570,19 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 			// read.
 			at = lk.rd.importAt(c, m, n)
 			if at.dead {
-				lk.pass(at.reason, at.unknown)
+				pass(at.reason, at.unknown)
 				continue
 			}
 			bg, ba, bv = at.group, at.artifact, at.version
 		}
-		bom, ambiguous := c.tree.byCoordinates(bg, ba, bv)
-		reason, unknown := "", ""
-		switch {
-		case ambiguous:
-			// The tree holds two poms under that name, and a repository's
-			// would be a third candidate, not the answer: it is not asked,
-			// and what the import says is not known.
-			unknown = model.VersionReasonInheritedNotFound
-		case bom == nil:
-			// Not in the tree: asked of a repository.
-			bom, reason, unknown = c.tree.remotePom(bg, ba, bv, c.declaredFor)
-		}
+		// The one pom of the clone with the coordinates, else a
+		// repository's (obtain).
+		bom, reason, unknown := c.tree.obtain(bg, ba, bv, pomAsker{declared: c.declaredFor})
 		if bom == nil {
 			// It leads nowhere: for every question of this walk when its
 			// coordinates are written out, for this file's when they depend
 			// on the model. Not looked for again.
-			lk.pass(reason, unknown)
+			pass(reason, unknown)
 			if plain {
 				idx.dead[n], idx.deadReason[n], idx.deadUnknown[n], idx.stale = true, reason, unknown, true
 			} else {
@@ -1205,22 +1591,30 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 			continue
 		}
 		if lk.searched[bom] {
+			if lk.within[bom] {
+				lk.pass(model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound)
+			}
 			continue
 		}
 		lk.searched[bom] = true
 		// A BOM is built in its OWN context.
 		bc := c.tree.context(bom)
 		lk.gap = worseReason(lk.gap, bc.chainGap)
+		if lk.within == nil {
+			lk.within = map[*pomModel]bool{}
+		}
+		lk.within[bom] = true
 		v, ok, via, stop := bc.lookup(lk, group, artifact, depth+1)
+		delete(lk.within, bom)
 		if ok || stop {
-			lk.pass(idx.gapBefore[k], idx.unknownBefore[k])
+			pass(idx.gapBefore[k], idx.unknownBefore[k])
 			if !ok {
 				return v, false, nil, true
 			}
 			return v, true, mergeHosts(chainHosts(bc.chain), via), false
 		}
 	}
-	lk.pass(idx.gapBefore[len(idx.live)], idx.unknownBefore[len(idx.live)])
+	pass(idx.gapBefore[len(idx.live)], idx.unknownBefore[len(idx.live)])
 	return "", false, nil, false
 }
 
@@ -1269,27 +1663,40 @@ func (t *pomTree) indexTree() {
 				return nil
 			}
 			t.pomFiles = append(t.pomFiles, filepath.Clean(path))
-			m := t.model(path)
-			if m == nil {
-				return nil
-			}
-			// Its own coordinates, from the tree alone: indexing must not
-			// send a request per pom of the tree.
-			c := t.treeOnly().context(m)
-			key := c.interpolate(c.group) + ":" + c.interpolate(c.artifact) + ":" + c.interpolate(c.version)
-			t.byCoord[key] = append(t.byCoord[key], m.path)
+			t.model(path)
 			return nil
 		})
+		// Each pom's own coordinates, from the tree alone: indexing must not
+		// send a request per pom of the tree. A coordinate written as a
+		// property is what the pom's own chain makes of it, the chain as far
+		// as it is found by relativePath (pathOnly: finding a parent by its
+		// coordinates needs the index being built). A pom whose coordinates
+		// are still not worked out, because the property is set by a parent
+		// that is found only by ITS coordinates, is tried once more with the
+		// index as it then stands.
+		var again []*pomModel
+		for pass := 0; pass < 2; pass++ {
+			list := again
+			if pass == 0 {
+				list = nil
+				for _, path := range t.pomFiles {
+					if m := t.model(path); m != nil {
+						list = append(list, m)
+					}
+				}
+			}
+			only := &pomTree{root: t.root, logger: t.logger, models: t.models, unread: t.unread, byCoord: t.byCoord, pomFiles: t.pomFiles, pathOnly: pass == 0}
+			for _, m := range list {
+				c := only.newContext(m)
+				key := c.interpolate(c.group) + ":" + c.interpolate(c.artifact) + ":" + c.interpolate(c.version)
+				if pass == 0 && strings.Contains(key, "${") {
+					again = append(again, m)
+					continue
+				}
+				t.byCoord[key] = append(t.byCoord[key], m.path)
+			}
+		}
 	}
-}
-
-// treeOnly is the tree with no remote source: the same poms, and nothing
-// asked.
-func (t *pomTree) treeOnly() *pomTree {
-	if t.remote == nil {
-		return t
-	}
-	return &pomTree{root: t.root, logger: t.logger, models: t.models, byCoord: t.byCoord, pomFiles: t.pomFiles}
 }
 
 // settle gives the dependencies read from the pom at path what the tree
@@ -1422,6 +1829,54 @@ func classifyDeclaredRepository(raw, kind string) (DeclaredRepository, bool) {
 		d.NotFetched = NotFetchedPluginsOnly
 	}
 	return d, true
+}
+
+// repositoryUnasked reports a repository a build declares for its
+// dependencies that is never asked and that may hold a pom: its address is
+// not https, carries credentials, could not be read, or it is the machine's
+// own Maven cache. While a build names such a repository, "not found" from
+// the repositories that WERE asked is not the answer of every repository the
+// build would ask (round 8: it was taken for one, and a later BOM's version
+// was stored behind a BOM that lives only there). A plugin repository serves
+// no parent or BOM; a directory of files and an Ivy repository hold no pom;
+// JCenter answers nothing any more.
+func repositoryUnasked(d DeclaredRepository) bool {
+	if d.Kind != RepositoryForDependencies {
+		return false
+	}
+	switch d.NotFetched {
+	case NotFetchedNotHTTPS, NotFetchedCredentials, NotFetchedUnreadable, NotFetchedLocal:
+		return true
+	}
+	return false
+}
+
+// pomAsker is who asks for a pom by its coordinates: the repositories its
+// build declares that may be fetched from, and whether it declares one that
+// is never asked.
+type pomAsker struct {
+	declared func() []string
+	unasked  func() bool
+}
+
+// chainAsker is the asker for a chain of poms as far as it has been built.
+func chainAsker(chain []*pomModel) pomAsker {
+	return pomAsker{
+		declared: func() []string { return fetchableDeclared(chain) },
+		unasked: func() bool {
+			for _, m := range chain {
+				if m.unasked && !strings.HasPrefix(m.path, "remote:") {
+					return true
+				}
+			}
+			return false
+		},
+	}
+}
+
+// asker is the asker for this effective model.
+func (c *pomContext) asker() pomAsker {
+	return pomAsker{declared: c.declaredFor, unasked: c.unasked}
 }
 
 // fetchableDeclared are the repositories the tree poms of a chain declare

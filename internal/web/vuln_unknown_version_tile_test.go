@@ -58,7 +58,7 @@ func TestVulnTile(t *testing.T) {
 			vulnTile{Value: "0", State: "scanned 2026-11-01", SecondLine: "last analysis attempt failed (the clone could not be read)"}},
 		{"lockfiles behind: the caution, beside the state",
 			&db.RepoStats{Coverage: view(func(in *vulnclass.CoverageInputs) {
-				in.Coverage.LockfilesReadAt, in.Coverage.LockfilesUnreadReason = &at, model.InventoryAttemptReadMemoryLimit
+				in.Coverage.LockfilesLastRead, in.Coverage.LockfilesUnreadReason = &at, model.InventoryAttemptReadMemoryLimit
 			})},
 			vulnTile{Value: "0", State: "scanned 2026-11-01", LockfileCaution: "Lockfiles last read " + at.UTC().Format("2006-01-02") +
 				"; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date."}},
@@ -66,7 +66,7 @@ func TestVulnTile(t *testing.T) {
 			&db.RepoStats{Coverage: view(func(in *vulnclass.CoverageInputs) {
 				in.Coverage.LockfilesUnreadReason = model.InventoryAttemptReadFailed
 			})},
-			vulnTile{Value: "0", State: "scanned 2026-11-01", LockfileCaution: "Lockfiles could not be read (they could not be read). Transitive dependencies are not checked."}},
+			vulnTile{Value: "0", State: "scanned 2026-11-01", LockfileCaution: "Lockfiles could not be read (the reader failed). Transitive dependencies are not checked."}},
 		{"no coverage view, no findings: not known, and blank",
 			&db.RepoStats{}, vulnTile{Value: "—", State: "coverage not known"}},
 		{"no coverage view, findings: the count stays",

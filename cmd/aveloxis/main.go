@@ -198,6 +198,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	manifestReaderSelfTest(ctx, logger) // 0.29.215: one line says whether manifests can be read here
 
 	// v0.29.58: the pool is sized from the scheduler's connection DEMAND
 	// (every goroutine class, scheduler.PoolDemand) capped by the server's

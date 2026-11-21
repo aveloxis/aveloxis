@@ -1,0 +1,12 @@
+@@ RL1 direct self-join (control: must be refused)
+UPDATE aveloxis_data.repos w SET vuln_scan_last_run = l.vuln_scan_last_run FROM aveloxis_data.repos l WHERE l.repo_id = $2 AND w.repo_id = $1
+@@ RL2 same through CROSS JOIN LATERAL (repo_dedup.go:483 style)
+UPDATE aveloxis_data.repos w SET vuln_scan_last_run = k.prev FROM aveloxis_data.repos l CROSS JOIN LATERAL (SELECT l.vuln_scan_last_run AS prev) k WHERE l.repo_id = $2 AND w.repo_id = $1
+@@ RL3 same through a WITH query with a column list (retention_store.go:77 style)
+WITH loser (id, prev) AS (SELECT repo_id, vuln_scan_last_run FROM aveloxis_data.repos WHERE repo_id = $2) UPDATE aveloxis_data.repos w SET vuln_scan_last_run = loser.prev FROM loser WHERE w.repo_id = $1
+@@ RL4 control: WITH query without column list
+WITH loser AS (SELECT repo_id AS id, vuln_scan_last_run AS prev FROM aveloxis_data.repos WHERE repo_id = $2) UPDATE aveloxis_data.repos w SET vuln_scan_last_run = loser.prev FROM loser WHERE w.repo_id = $1
+@@ RL5 dedup move of traffic rows (repo_dedup.go:476 style)
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones, unique_clones, data_collection_date) SELECT $2, l.clone_timestamp, l.total_clones, l.unique_clones, l.data_collection_date FROM aveloxis_data.repo_clones l WHERE l.repo_id = $1 ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones, unique_clones = EXCLUDED.unique_clones, data_collection_date = EXCLUDED.data_collection_date
+@@ RL6 msg_text_clean copied from another message row via lateral
+UPDATE aveloxis_data.messages m SET msg_text_clean = k.c, msg_text_clean_rule = k.r FROM aveloxis_data.messages o CROSS JOIN LATERAL (SELECT o.msg_text_clean AS c, o.msg_text_clean_rule AS r) k WHERE o.msg_id = $2 AND m.msg_id = $1

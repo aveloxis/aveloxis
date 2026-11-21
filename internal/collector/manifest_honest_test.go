@@ -240,12 +240,17 @@ const (
 //
 //	pnpm-lock.yaml     read at 13 times its size, stopped at 11; factor 16.
 //	                   Holding the parsed document twice needs about 25.
-//	package-lock.json  read at 2 times its size, stopped at 1; factor 2.5.
+//	package-lock.json  read at 2 times its size, stopped at 1; factor 2.75 (see below).
 //	                   Holding the decoded document twice needs about 3
 //	                   (the text, and the document twice over).
 var lockfileHeapFactors = map[string]float64{
-	"pnpm-lock.yaml":    16,
-	"package-lock.json": 2.5,
+	"pnpm-lock.yaml": 16,
+	// 2.75 since 0.29.215: the reader's own check before a read takes a
+	// package-lock.json to cost 2.6 times its length (readCostTenths) and
+	// refuses one that cannot have that, so the limit this test reads it
+	// under must leave that much. Holding the document twice still needs
+	// about 3.
+	"package-lock.json": 2.75,
 }
 
 func honestLockfile(kind string, size int) string {

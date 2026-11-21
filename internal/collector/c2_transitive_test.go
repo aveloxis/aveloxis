@@ -29,10 +29,13 @@ func TestEdgesGatedOnTransitiveKnobAndSameSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "if ac.TransitiveLockfiles {\n\t\t\tedgeSeen := map[string]bool{}") {
+	// The gate itself is pinned by what comes out
+	// (TestRowsOfALockfileUnderTheTransitiveKnob); here, that the phase
+	// builds its rows by that function with the knob.
+	if !strings.Contains(s, "rowsOfLockfile(pl, declared, ac.TransitiveLockfiles)") {
 		t.Error("edge collection must be gated on ac.TransitiveLockfiles")
 	}
-	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges, failed)" /* 0.29.176: and the failed lockfiles */) {
+	if !strings.Contains(s, "ReplaceRepoLockfileSnapshotFrom(ctx, repoID, feed, failed, inTx)" /* 0.29.176: and the failed lockfiles; 0.29.215: handed over a lockfile at a time, with how the reading ended */) {
 		t.Error("edges must ride the SAME snapshot transaction as the package rows")
 	}
 	if !strings.Contains(s, "ac.scanGoModGraph(ctx, repoID, workDir, declared)") {
@@ -59,8 +62,12 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 		`exec.LookPath("go")`,
 		"goModGraphTimeout",
 		"context.WithTimeout(ctx, goModGraphTimeout)",
-		`run("list", "-m", "all")`,
-		`run("mod", "graph")`,
+		`"list", "-m", "all")`,
+		`"mod", "graph")`,
+		// 0.29.215: the toolchain's output is taken as a bounded stream,
+		// never whole (TestAGoModuleGraphLargerThanIsTakenIsAbandonedAsIncomplete
+		// drives it).
+		"boundedLines(cmd, goModOutputBytes",
 	} {
 		if !strings.Contains(s, needle) {
 			t.Errorf("gomod_graph.go missing %q", needle)

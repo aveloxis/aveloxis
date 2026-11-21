@@ -84,8 +84,12 @@ func TestStoredIsTheTargetsOwnColumn(t *testing.T) {
 	}
 }
 
-// AlwaysRefresh: the value may not read the stored value by ANY route, and
-// what cannot be told to be something else counts.
+// AlwaysRefresh: the value is made of incoming leaves and nothing else
+// (round 8: policy.go's closed list; before, it was "does not read the
+// stored value", a list of routes that three rounds each added one to). A
+// variable or parameter of a body is no incoming leaf: what one holds is
+// not known. Another column of the row being written is the one leaf that
+// is not incoming and passes.
 func TestAlwaysRefreshReadsNothingStored(t *testing.T) {
 	for name, tc := range map[string]struct {
 		sql string
@@ -96,9 +100,9 @@ func TestAlwaysRefreshReadsNothingStored(t *testing.T) {
 		"a FROM item's same name":      {`UPDATE aveloxis_data.repos r SET ar = s.ar FROM s.stg s WHERE s.id = r.id`, true},
 		"a sub-select's own alias":     {`UPDATE aveloxis_data.repos r SET ar = (SELECT o.ar FROM s.stg o WHERE o.id = r.id)`, true},
 		"EXCLUDED's":                   {`INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET ar = EXCLUDED.ar`, true},
-		"a variable, by use_variable":  {"DO $$ #variable_conflict use_variable\nDECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = ar; END $$", true},
-		"a parameter, by the function": {`CREATE FUNCTION f(ar text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = f.ar $$`, true},
-		"a record's field":             {`DO $$ DECLARE r record; BEGIN FOR r IN SELECT * FROM s.stg LOOP UPDATE aveloxis_data.repos SET ar = r.ar; END LOOP; END $$`, true},
+		"a variable, by use_variable":  {"DO $$ #variable_conflict use_variable\nDECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = ar; END $$", false},
+		"a parameter, by the function": {`CREATE FUNCTION f(ar text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = f.ar $$`, false},
+		"a record's field":             {`DO $$ DECLARE r record; BEGIN FOR r IN SELECT * FROM s.stg LOOP UPDATE aveloxis_data.repos SET ar = r.ar; END LOOP; END $$`, false},
 		"the stored value":             {`UPDATE aveloxis_data.repos SET ar = ar || 'x'`, false},
 		"by the alias":                 {`UPDATE aveloxis_data.repos r SET ar = r.ar || 'x'`, false},
 		"the row's field":              {`UPDATE aveloxis_data.repos r SET ar = (r).ar || 'x'`, false},

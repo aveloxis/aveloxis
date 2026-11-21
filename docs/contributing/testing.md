@@ -278,33 +278,86 @@ instead of ad-hoc regexes:
   no statement), or, for an open one, representative inputs, where what varies
   may reach the text only through `pgx.Identifier{...}.Sanitize()`, a
   registered quoting function, or (a number) `%d` and base-ten `strconv`.
+  An open builder may choose its text by its input in ONE place only (one
+  comparison of a parameter with a constant, both sides taken by the
+  registered inputs; the cases of one switch count as one), and a count may
+  only repeat a fragment (`if i > 0` for the separator is the one condition a
+  counted loop may hold). An index or map lookup by a parameter, a
+  `for cond {}` on one, or a return inside a counted loop is refused
+  (v0.29.215): give such a builder a finite domain.
   Nothing is registered on a person's reading alone.
-- **The run-time judge** (`internal/testdb/writejudge`, v0.29.213) decides.
-  It is a pgx tracer that `testdb.Main` installs for EVERY DB-tier package,
-  on every pool the store builds (the seam is `internal/db/stmttrace.Wrap`,
-  nil in every binary): every statement PRODUCTION code sends (the first frame
-  of the stack in this module is a non-test file) is parsed and judged by the
-  same `CheckIn`, policies and Exceptions, in the test database's own catalog,
-  and a violation fails the package after its tests. A statement a test sends
-  itself is a fixture and is not judged. A statement sent with a
-  `pgx.QueryRewriter` among its arguments (`pgx.NamedArgs` included; nothing in
-  the module uses one) is held against production, because the tracer sees the
-  text before the rewriter runs. The policy registry and the Exceptions live in
-  that package too (`writejudge.Policies`, `writejudge.Exceptions`): one
-  registry for the judge and for the store's static check.
-- **The coverage requirement.** The judge sees only what runs, so every call in
-  `internal/db` of a library function that takes SQL (`sqlscan.RunnerCalls`)
-  must have a statement sent through it by some DB-tier package's tests, or
-  stand on `internal/db/testdata/unexecuted_statement_sites.txt`, which only
-  shrinks. Each package records what it reached when
-  `AVELOXIS_STATEMENT_SITES_DIR` is set; `scripts/skip-census.sh` (the closing
-  suite) sets it and then checks the union
-  (`TestTheSuiteReachesEveryStatementSite`). A new store function that runs SQL
-  therefore needs a DB-tier test, in any package, that reaches it. An ordinary
-  `go test ./internal/db/` judges but does not check coverage: one package
-  cannot know what the others reach. To see what a whole run did not reach,
-  set `AVELOXIS_STATEMENT_SITES_OUT=file` with `AVELOXIS_STATEMENT_SITES_CHECK`
-  pointing at the folder of records.
+- **The run-time judge** (`internal/testdb/writejudge`, v0.29.213; as of
+  v0.29.215) decides. It is a pgx tracer that `testdb.Main` installs for EVERY
+  DB-tier package, with no code in the package. Every statement PRODUCTION code
+  sends is parsed and judged by the same `CheckIn`, policies and Exceptions, in
+  the test database's own catalog, and a violation fails the package after its
+  tests.
+  - **One file opens every pool and connection**: `internal/db/open.go`
+    (`db.OpenPool`, `db.OpenPoolConfig`, `db.OpenConn`, `db.OpenConnConfig`).
+    Each hands its configuration to the seam `internal/db/stmttrace.Wrap`
+    (nil in every binary, so nothing changes outside tests), and puts the seam
+    back after a caller's `BeforeConnect` hook. `scripts/pool_openers_test.go`
+    fails on a pgx, pgxpool, pgconn, `stdlib` or `database/sql` constructor in
+    any other non-test file, on one in a DB-tier package's test files outside
+    its reviewed list, on a dot-import of those packages, and on non-test code
+    that gives a `Tracer` field a value anywhere but `open.go` and the store's
+    logging tracer. **A test that needs a pool of its own opens it with
+    `db.OpenPool` or `db.OpenPoolConfig`**, never with the library: a pool
+    opened with the library carries no judge, and what production sends on it
+    is not seen.
+  - **Whose statement it is** (`writejudge.Origin`) is read from the shape of
+    the stack. Only test frames: the test sent it, a fixture, not judged.
+    Production code anywhere on the stack: production's, judged. That includes
+    test code that stands between production and the library: a test's
+    closure run by a production retry or transaction helper, and a test's
+    stand-in for a transaction that hands on what production gave it, in any
+    spelling. The finding then names the test code it came through. A test
+    that really sends its OWN text through a production helper registers
+    itself, with the reason, in `writejudge.FixtureSenders` (file and
+    declaration); the list is empty. No frame of the module at all (a bare
+    `go pool.Exec(...)`): production's.
+  - **A re-executed test binary is judged.** A test that runs `os.Args[0]`
+    again as a child (a subprocess under test) needs nothing extra: the child's
+    `testdb.Main` installs a judge that appends each record, one write per
+    statement, to a file in a directory its ancestor named in
+    `AVELOXIS_WRITE_JUDGE_CHILD_DIR`, and the ancestor's verdict includes them.
+    A child that calls `os.Exit` or is killed has already handed over what it
+    sent. Do not clear that variable from a child's environment.
+  - A statement sent with a `pgx.QueryRewriter` among its arguments
+    (`pgx.NamedArgs` included; nothing in the module uses one) is held against
+    production, because the tracer sees the text before the rewriter runs.
+  - **The registry** is `internal/testdb/writejudge/registry.go`:
+    `writejudge.Policies`, `writejudge.Exceptions`, and `writejudge.TempTables`
+    (the temporary tables production declares). The judge and the store's
+    static check read the same one.
+- **The coverage requirement** has two halves, both checked by
+  `scripts/skip-census.sh` (the closing suite) over the union of what every
+  DB-tier package recorded (`AVELOXIS_STATEMENT_SITES_DIR`, set by the script).
+  An ordinary `go test ./internal/db/` judges but checks neither: one package
+  cannot know what the others reach.
+  - **Per call site.** Every call in `internal/db` of a library function that
+    takes SQL (`sqlscan.RunnerCalls`) must have had a statement sent through
+    it, or stand on `internal/db/testdata/unexecuted_statement_sites.txt`
+    (`TestTheSuiteReachesEveryStatementSite`). That list is empty and only
+    shrinks. A new store function that runs SQL therefore needs a DB-tier
+    test, in any package, that reaches it and asserts what the statement did.
+  - **Per statement text.** A site is reached by ANY one statement sent
+    through it; a site that a builder, a list of migration steps or a loop
+    feeds can send many. So every text the static reader reads in the store
+    must have been sent, or stand on
+    `internal/db/testdata/unsent_statement_texts.txt`
+    (`TestTheSuiteSendsEveryStatementText`). That list only shrinks, a line is
+    `file<TAB>declaration<TAB>key` (`writejudge.TextKey`: no line number, so an
+    edit above a statement does not move it), and it NEVER excuses a text that
+    writes a table with a registered column: such a statement must be sent by
+    a test. A statement on the list was judged from its text alone.
+  - The closing suite prints both: `statement sites: N library calls that take
+    SQL in internal/db; 0 not reached by any DB-tier package` and `statement
+    texts: N statement texts read in internal/db; M not sent by any DB-tier
+    package`, with M by kind. To see what a run did not reach or send, point
+    `AVELOXIS_STATEMENT_SITES_CHECK` at the folder of records and set
+    `AVELOXIS_STATEMENT_SITES_OUT=file` or `AVELOXIS_STATEMENT_TEXTS_OUT=file`
+    (the second writes lines in the list's own form).
 - `sqlscan.ParseWrites(sql)` — the writes of a statement, read from the
   parse tree PostgreSQL's own parser gives (`pgread.go`; the parser is
   `github.com/wasilibs/go-pgquery`, the server's grammar compiled to
@@ -331,8 +384,10 @@ mutations flag identically).
 
 ### Column write-policy registry (v0.27.126)
 
-`internal/db/column_write_policy_test.go` declares each protected column's ONE
-write policy (`FillEmptyOnly` / `PreferNonemptyIncoming` /
+`internal/testdb/writejudge/registry.go` declares each protected column's ONE
+write policy in `writejudge.Policies`, which the static test
+`internal/db/column_write_policy_test.go` and the run-time judge both read
+(`FillEmptyOnly` / `PreferNonemptyIncoming` /
 `PreferNonNullIncoming` / `GreatestNonNull` / `AlwaysRefresh` / `InsertOnly`);
 the sqlscan policy engine verifies every UPDATE SET assignment in the store
 corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
@@ -360,9 +415,11 @@ SQL does not enter the store from outside it.
 
 Triage protocol for a red run (in the failure message; never weaken a
 matcher): fix the SQL | correct the registered policy | add an `Exception`
-WITH a reason. An `Exception` with no `File` is for one statement, whole: its
-`Match` is the statement's entire text, so it ends with any change to the
-statement. Exceptions that suppress nothing are reported STALE and fail
+WITH a reason. An `Exception` is for ONE statement, whole: its `Statement`
+field is the statement's entire text (required for every kind), so it ends with
+any change to the statement; `InBody` says the statement stands inside a DO
+block or a function's body, and an Exception of the one kind does not excuse
+the same statement of the other. Exceptions that suppress nothing are reported STALE and fail
 the run. New schema columns with a meaningful write discipline register at
 introduction (schema-migrations.md checklist step 7).
 

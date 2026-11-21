@@ -22,6 +22,12 @@
 # the shrink-only baseline internal/db/testdata/unexecuted_statement_sites.txt
 # (internal/db: TestTheSuiteReachesEveryStatementSite). One package's run
 # cannot know what the others reach, so this is where it is checked.
+# A call site is reached by any ONE statement sent through it, so the same
+# step also compares every statement TEXT the static reader reads in the
+# store with the texts the packages sent (0.29.215:
+# TestTheSuiteSendsEveryStatementText, against the shrink-only
+# internal/db/testdata/unsent_statement_texts.txt, which never excuses a
+# write of a table with a registered column).
 set -u -o pipefail
 
 if [ -z "${AVELOXIS_TEST_DB:-}" ]; then
@@ -96,7 +102,11 @@ else
 	# run's when this run stops before the check.
 	rm -f "$OUT/sites-check.txt"
 	# shellcheck disable=SC2086
-	AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} ./... -count=1 -json > "$OUT/suite.json" 2> "$OUT/stderr.txt"
+	# 0.29.215: an explicit per-package limit. Go's default is 10 minutes, and
+	# under -race the slowest package (internal/collector, about 195 s on a
+	# developer machine) can pass that on a two-core CI runner. 20 minutes is
+	# about six times that; the CI job's own 30-minute limit still ends a hang.
+	AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} -timeout "${SKIP_CENSUS_TIMEOUT:-20m}" ./... -count=1 -json > "$OUT/suite.json" 2> "$OUT/stderr.txt"
 	suite_status=$?
 fi
 
@@ -107,7 +117,7 @@ fi
 sites_status=0
 if [ "$suite_status" -eq 0 ] && { [ -z "${SKIP_CENSUS_SUITE_JSON:-}" ] || [ -n "${SKIP_CENSUS_SITES:-}" ]; }; then
 	env -u AVELOXIS_STATEMENT_SITES_DIR AVELOXIS_TEST_DB= AVELOXIS_STATEMENT_SITES_CHECK="$SITES" \
-		go test ./internal/db/ -run '^TestTheSuiteReachesEveryStatementSite$' -count=1 -v > "$OUT/sites-check.txt" 2>&1 || sites_status=1
+		go test ./internal/db/ -run '^(TestTheSuiteReachesEveryStatementSite|TestTheSuiteSendsEveryStatementText)$' -count=1 -v > "$OUT/sites-check.txt" 2>&1 || sites_status=1
 fi
 
 # One line per skipped test: "<package> <Test>" (the module path trimmed).
@@ -129,6 +139,7 @@ gone="$(comm -13 "$OUT/skipped.txt" "$OUT/required.txt")"
 echo "skip-census: $(wc -l < "$OUT/skipped.txt" | tr -d ' ') tests skipped (reviewed $(wc -l < "$OUT/required.txt" | tr -d ' '), host-dependent allowed $(wc -l < "$OUT/allowed.txt" | tr -d ' '))"
 if [ -s "$OUT/sites-check.txt" ] && [ "$sites_status" -eq 0 ]; then
 	grep -o '[0-9]* library calls that take SQL in internal/db; [0-9]* not reached by any DB-tier package' "$OUT/sites-check.txt" | head -1 | sed 's/^/skip-census: statement sites: /'
+	grep -o '[0-9]* statement texts read in internal/db; [0-9]* not sent by any DB-tier package.*' "$OUT/sites-check.txt" | head -1 | sed 's/^/skip-census: statement texts: /'
 fi
 status=0
 if [ -n "$new" ]; then
@@ -189,7 +200,7 @@ if [ "$suite_status" -ne 0 ]; then
 	echo "  raw output kept in $OUT (suite.json, stderr.txt)"
 	status=1
 elif [ "$sites_status" -ne 0 ]; then
-	echo "skip-census: FAIL — the write-policy judge's coverage (the store's library calls no DB-tier test sent a statement through):"
+	echo "skip-census: FAIL — the write-policy judge's coverage (the store's library calls no DB-tier test sent a statement through, or its statement texts no test sent):"
 	grep -v '^=== RUN' "$OUT/sites-check.txt" | head -80 | sed 's/^/  /'
 	keep_out=1
 	echo "  raw output kept in $OUT (sites-check.txt, sites/)"

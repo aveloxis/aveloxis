@@ -83,7 +83,6 @@ func round7Verdict(c round7Case) string {
 // or (said so) something this judge does not model.
 var round7StillPass = map[string]string{
 	"base-fe-coalesce (ok)":                           "control: the nullable fill",
-	"fe guarded bare from selfjoin":                   "a fill from another row of the table: an established value is never overwritten, which is all FillEmptyOnly asks (the reviewer's reading, and the registry's reasons')",
 	"g with selfjoin":                                 "the registered pair; the self-join is in FROM and not in the value",
 	"conflict alias x":                                "the fill, stored value named by the target's alias",
 	"conflict bare stored":                            "the fill; a bare name in DO UPDATE SET is the target's column",
@@ -122,24 +121,20 @@ var round7StillPass = map[string]string{
 	"D39 create table as with same name as registered in other schema then set schema": "a table of another schema; a write of it is unknown-target",
 	"D40 alter extension / create extension":                                           "NOT MODELLED: what an extension's script does is not in the text",
 	"R09 hash-operator lookalike: x # variable_conflict use_column as expression":      "a # in an expression is no directive (the scanner's reading); PostgreSQL then refuses the ambiguous fe",
-	"R12 loop record": "AlwaysRefresh from a record read from another table",
-	"R13 loop record over target (stored through a record)":    "NOT MODELLED: what a PL/pgSQL variable holds; a record's field is a variable, whatever query filled it",
-	"R14 sql fn param named fe: guard is column (ok accept)":   "an SQL function's parameter yields to the column: the guard is the column's",
-	"R17 conflict update pnn stored qualified by schema.table": "the registered shape, stored value named schema.table.col",
-	"R20 lateral":               "PostgreSQL refuses a reference to the UPDATE target from its FROM (invalid reference to FROM-clause entry): no such statement runs",
-	"R24 returning (no effect)": "RETURNING reads; it writes nothing",
-	"R26 merge: source alias same as column; fe fill reading source":       "the value is the stored value of ANOTHER column (fe) of the table, as SET ar = fe would be: AlwaysRefresh is about ar's own stored value, and the source's outputs are enumerated: repo_id and fe",
-	"R30 keepcarry with stored cast / other col":                           "the stored value or a cast placeholder: both allowed results",
-	"R33 earliest LEAST($1, e, extra)":                                     "the registered LEAST(stored, incoming), incoming cast",
-	"R35 greatest with two different params":                               "each side is an (incoming, stored) pair; that the two placeholders differ is the caller's",
-	"R36 pnn with different param cast truncation":                         "a cast on the incoming value is the caller's choice of value",
-	"R37 pn nullif incoming cast then stored":                              "the registered shape with a cast placeholder",
-	"R38 fe second arg subselect of other table":                           "the fill; what fills an empty column may come from anywhere",
-	"R41 fe guard with char padding semantic: fe = '' OR fe IS NULL":       "the guard (col IS NULL OR col = ''), either order",
-	"R44 guard: 3-part":                                                    "the guard, the column named schema.table.col",
-	"R45 guard NULLIF IS NULL":                                             "the guard NULLIF(col, '') IS NULL",
-	"R46 guard bare fe with FROM (ambiguous if other has fe; else target)": "a bare name PostgreSQL would refuse if it could be the other table's",
-	"R47 conflict update where guard bare":                                 "PostgreSQL refuses the bare name there as ambiguous; where it runs, it is the target's",
+	"R14 sql fn param named fe: guard is column (ok accept)":                           "an SQL function's parameter yields to the column: the guard is the column's",
+	"R17 conflict update pnn stored qualified by schema.table":                         "the registered shape, stored value named schema.table.col",
+	"R24 returning (no effect)":                                                        "RETURNING reads; it writes nothing",
+	"R30 keepcarry with stored cast / other col":                                       "the stored value or a cast placeholder: both allowed results",
+	"R33 earliest LEAST($1, e, extra)":                                                 "the registered LEAST(stored, incoming), incoming cast",
+	"R35 greatest with two different params":                                           "each side is an (incoming, stored) pair; that the two placeholders differ is the caller's",
+	"R36 pnn with different param cast truncation":                                     "a cast on the incoming value is the caller's choice of value",
+	"R37 pn nullif incoming cast then stored":                                          "the registered shape with a cast placeholder",
+	"R38 fe second arg subselect of other table":                                       "the fill; what fills an empty column may come from anywhere",
+	"R41 fe guard with char padding semantic: fe = '' OR fe IS NULL":                   "the guard (col IS NULL OR col = ''), either order",
+	"R44 guard: 3-part":                                                                "the guard, the column named schema.table.col",
+	"R45 guard NULLIF IS NULL":                                                         "the guard NULLIF(col, '') IS NULL",
+	"R46 guard bare fe with FROM (ambiguous if other has fe; else target)":             "a bare name PostgreSQL would refuse if it could be the other table's",
+	"R47 conflict update where guard bare":                                             "PostgreSQL refuses the bare name there as ambiguous; where it runs, it is the target's",
 }
 
 // round7Refused are the correct statements of fp.txt that are refused, each
@@ -151,7 +146,8 @@ var round7Refused = map[string]string{
 	"F04 cast on the whole": "a cast of the whole value: to the column's own type it changes nothing, but the run-time judge's catalog (the live database's relations) holds no column types, so the static check may not accept what the judge would refuse. Way out: cast the incoming operand, COALESCE(NULLIF(fe, ''), $7::text)",
 	"F09 guard length":      "the guard set is closed: length(col) = 0 is not true of a NULL, and though the OR with IS NULL makes this one right, it is not one of the four forms. Way out: (fe IS NULL OR fe = '')",
 	"F37 ar subselect whose other table has a column of the same name (bare)": "a bare name in a sub-select is taken for the stored value (which relation's column it is needs the columns of every table). Way out: qualify it, MAX(other.ar)",
-	"F54 ar subselect that locks/reads target for another column":             "the value reads the target table again in a sub-select; that it reads another column cannot be told in general (SELECT *). Way out: a FROM item whose outputs are named, or an Exception",
+	"F54 ar subselect that locks/reads target for another column":             "the value reads the target table again in a sub-select: an item that reads the target is not clean, and nothing of it is taken (round 8). Way out: an Exception",
+	"F49 temp staging across statements in ONE text":                          "round 8: the value reads a session table by a name with no schema, and what a session table holds (the text may have filled it from the target) is not followed. Way out: the batch itself as the FROM item, FROM unnest($1::bigint[], $2::text[]) AS s(id, v); or pg_temp.stage with the table declared in writejudge.TempTables",
 }
 
 func TestTheRound7ProbesAreHeldAgainst(t *testing.T) {

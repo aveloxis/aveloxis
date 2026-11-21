@@ -320,8 +320,16 @@ func TestTheDeclaredFetchKnobGatesFetchingNotReading(t *testing.T) {
 	withMavenRepositories(t)
 	withDeclaredFetch(t, false)
 
-	if _, outcome := src.RemotePom("org.remote", "parent", "5.0", []string{declared.srv.URL}); outcome != manifest.RemoteNotFound || declared.asked.Load() != 0 {
-		t.Errorf("knob off, nothing stored: outcome %v, asked %d; want not found and no request", outcome, declared.asked.Load())
+	// 0.29.215: with nothing stored, a repository that is not asked has said
+	// nothing: "not asked", which withholds what a later pom would give, and
+	// not "not found", which is what a repository that answered says.
+	if _, outcome := src.RemotePom("org.remote", "parent", "5.0", []string{declared.srv.URL}); outcome != manifest.RemoteNotAsked || declared.asked.Load() != 0 {
+		t.Errorf("knob off, nothing stored: outcome %v, asked %d; want not asked and no request", outcome, declared.asked.Load())
+	}
+	// With no declared repository there is none that was not asked: the
+	// configured ones answered, and that is "not found".
+	if _, outcome := src.RemotePom("org.remote", "parent", "5.0", nil); outcome != manifest.RemoteNotFound {
+		t.Errorf("knob off, no declared repository: outcome %v, want not found", outcome)
 	}
 	SetDeclaredRepositoryFetch(true)
 	if _, outcome := src.RemotePom("org.remote", "parent", "5.0", []string{declared.srv.URL}); outcome != manifest.RemoteFound {

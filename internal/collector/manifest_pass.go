@@ -102,7 +102,7 @@ func readManifestNames(workDir string) (manifestNames, error) {
 		// The roster says which files the name inventory counts and reads
 		// them (manifest.Names): a file no kind claims, and one that cannot
 		// be read or parsed, contribute nothing.
-		if cloneFileTooLarge(info.Size()) {
+		if cloneFileTooLarge(path, info.Size()) {
 			return nil // as a file that cannot be read: it contributes nothing
 		}
 		lang, deps, matched, err := manifest.Names(path)
@@ -166,7 +166,7 @@ func readManifestDeclarations(workDir string, opts manifest.Options, src manifes
 		// claims the file reads it, under the two knobs. A file no kind
 		// claims is not a manifest.
 		rel := relativeToClone(workDir, path)
-		if cloneFileTooLarge(info.Size()) {
+		if cloneFileTooLarge(path, info.Size()) {
 			// Not read at all: the file alone is larger than the memory
 			// this process has left to it (0.29.214; until then it was read
 			// whole between two looks at the limit, and the limit was
@@ -300,55 +300,120 @@ var manifestPassesAll = []string{manifestPassNames, manifestPassDeclarations, ma
 // any other process, where no file is too large.
 var cloneReadHeapLimit atomic.Int64
 
+// readCostTenths is what reading one file of a kind costs this process, in
+// tenths of the file's length: its bytes, the text made of them, and what
+// its reader builds while it parses, at the peak. The pre-check and the
+// manifest package's read bound both compare THIS with the room left, so
+// that a file the reader could not finish within the limit is refused up
+// front as one file that could not be read, and the rest of the repository
+// is read; without the factor a file just under the room left was read and
+// the child was stopped at its limit mid-parse, losing every pass not yet
+// finished (0.29.215, review round 8).
+//
+// PROVISIONAL, every number. Each is the heap peak measured through the
+// real child for the largest file of that kind it read at a 1,024 MiB
+// limit (0.29.214's table: composer.lock 1.7 times its length,
+// package-lock.json 2.2 to 2.3, yarn.lock 2.6 to 2.7, Gemfile.lock 8.9,
+// stack.yaml.lock 11.2, pnpm-lock.yaml 12.5 to 13.0, pubspec.lock 13.6),
+// rounded up. A kind not listed costs a default: a lockfile of an
+// unmeasured format eight times its length (with no limit pressing, those
+// formats peaked at 3 to 13 times their length where the measured ones
+// peaked at about twice what they cost under the limit), and a manifest
+// three times (its bytes, its text, and rows that together are no longer
+// than the text).
+var readCostTenths = map[string]int64{
+	"composer.lock":       20,
+	"package-lock.json":   26,
+	"npm-shrinkwrap.json": 26,
+	"yarn.lock":           30,
+	"Gemfile.lock":        100,
+	"stack.yaml.lock":     125,
+	"pnpm-lock.yaml":      140,
+	"pubspec.lock":        150,
+}
+
+const (
+	readCostManifestTenths = 30
+	readCostLockfileTenths = 80
+)
+
+// readCost is what reading the file at path, of the given length, is taken
+// to cost this process (readCostTenths).
+func readCost(path string, size int64) int64 {
+	base := filepath.Base(path)
+	tenths, ok := readCostTenths[base]
+	if !ok {
+		tenths = readCostManifestTenths
+		if _, isLockfile := lockfileKinds[base]; isLockfile {
+			tenths = readCostLockfileTenths
+		}
+	}
+	if size > (1<<62)/tenths {
+		return 1 << 62
+	}
+	return size * tenths / 10
+}
+
 // cloneFileTooLarge reports whether a file of the clone is not to be read
-// because of its size alone: it is larger than what the heap limit leaves
-// this process (the limit less the heap now, after a collection when it
-// looks too small).
+// because of its size alone: reading it (readCost) would take more than the
+// heap limit leaves this process (the limit less the heap now, after a
+// collection when it looks too small).
 //
 // The watchdog looks at the heap every manifestWatchEvery, and a file is
 // read in one call between two looks, so before 0.29.214 the limit was
 // passed by the size of whatever file the repository held: a 6 GiB file of
 // zeros named requirements.txt, a few megabytes in git, took the child to
 // 2 GiB resident at a 256 MiB limit and at a 1,024 MiB one alike (review
-// round 7). A file's size is known before it is read. With this, what the
-// child holds is at most its limit, one file-reading step past it by what
-// the readers allocate in one manifestWatchEvery while they parse (measured
-// at about a gigabyte a second for the densest, so a tenth of a gibibyte),
-// and what the Go runtime keeps beyond its heap objects.
-func cloneFileTooLarge(size int64) bool {
+// round 7). A file's size is known before it is read.
+//
+// What the child holds, said honestly. For a file that passes this check
+// the heap stays within the limit as far as readCostTenths is right about
+// its kind; where it is not (a file built to cost its reader more than the
+// measured files did), the watchdog stops the child within one
+// manifestWatchEvery of passing the limit, and what it can allocate in
+// that time is what a reader allocates in a tenth of a second (measured at
+// about a gigabyte a second for the densest). Resident memory is the heap
+// and what the Go runtime keeps beyond it.
+func cloneFileTooLarge(path string, size int64) bool {
 	limit := cloneReadHeapLimit.Load()
 	if limit <= 0 {
 		return false
 	}
-	if size <= limit-processHeapBytes() {
+	cost := readCost(path, size)
+	if cost <= limit-processHeapBytes() {
 		return false
 	}
 	runtime.GC()
-	return size > limit-processHeapBytes()
+	return cost > limit-processHeapBytes()
 }
 
-// cloneReadRoom is how many bytes one read of a file of the clone may take
-// in this process: what the heap limit leaves now. It is the bound the
-// manifest package's own reads are held to (manifest.SetReadBound, installed
-// by ManifestChildMain), so that a file a reader opens for itself (a crate's
-// workspace root, a build's parent pom), which the walk's check above never
-// sees, and a file that grew after that check, stop at the same line. It is
-// the rule of cloneFileTooLarge, and like it collects before it refuses a
-// file of the given size (-1: not known): the answer for one file must not
-// change between the roster's read of it and its reader's a moment later
-// because of what the first read left to be collected. 0 in a process with
-// no limit, which never installs it.
-func cloneReadRoom(size int64) int64 {
+// cloneReadRoom is how many bytes of the file at path one read may take in
+// this process: the length whose readCost is what the heap limit leaves
+// now. It is the bound the manifest package's own reads are held to
+// (manifest.SetReadBound, installed by ManifestChildMain), so that a file a
+// reader opens for itself (a crate's workspace root, a build's version
+// catalogue), which the walk's check above never sees, and a file that grew
+// after that check, stop at the same line. It is the rule of
+// cloneFileTooLarge, and like it collects before it refuses a file of the
+// given size (-1: not known): the answer for one file must not change
+// between the roster's read of it and its reader's a moment later because
+// of what the first read left to be collected. 0 in a process with no
+// limit, which never installs it.
+func cloneReadRoom(path string, size int64) int64 {
 	limit := cloneReadHeapLimit.Load()
 	if limit <= 0 {
 		return 0
 	}
 	room := limit - processHeapBytes()
-	if room <= 0 || size > room {
+	if room <= 0 || (size >= 0 && readCost(path, size) > room) {
 		runtime.GC()
 		room = limit - processHeapBytes()
 	}
-	return room
+	if room <= 0 {
+		return room
+	}
+	// The length whose cost is the room: readCost's inverse.
+	return room * 10 / (readCost(path, 10))
 }
 
 // manifestItemLimit is the most text one item of a result may hold: a
@@ -411,32 +476,12 @@ func storablePath(p string) string {
 // stored lockfile rows are held to when the lockfiles themselves go unread.
 func presentLockfiles(workDir string) ([]manifestWirePresent, error) {
 	var out []manifestWirePresent
-	err := filepath.Walk(workDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			if p == workDir {
-				return err
-			}
-			return nil
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if info.IsDir() {
-			if skippedManifestDir(filepath.Base(p), false) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		base := filepath.Base(p)
-		if _, ok := lockfileKinds[base]; !ok {
-			return nil
-		}
-		rel, relErr := filepath.Rel(workDir, p)
-		if relErr != nil {
-			return nil
-		}
-		if rel = filepath.ToSlash(rel); wirePathOK(rel) {
-			out = append(out, manifestWirePresent{Path: rel, Kind: base})
+	err := eachLockfileOfClone(workDir, func(path, rel string, _ os.FileInfo, storable bool) error {
+		// A lockfile at a path that cannot be stored has no stored rows to
+		// keep and no name the parent would accept: it is not listed (the
+		// lockfile pass records it as one that failed).
+		if storable {
+			out = append(out, manifestWirePresent{Path: rel, Kind: filepath.Base(path)})
 		}
 		return nil
 	})

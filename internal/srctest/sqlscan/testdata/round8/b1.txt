@@ -1,0 +1,224 @@
+@@ B01 base batch pnn
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM unnest($1::int[], $2::text[]) AS v(id, c) WHERE v.id = r.repo_id
+@@ B02 unnest WITH ORDINALITY
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM unnest($1::text[]) WITH ORDINALITY AS v(c, id) WHERE v.id = r.repo_id
+@@ B03 ordinality col as value (a counter, not handed in)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.ord::text, r.pnn) FROM unnest($1::int[]) WITH ORDINALITY AS v(id, ord) WHERE v.id = r.repo_id
+@@ B04 jsonb_to_recordset
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM jsonb_to_recordset($1::jsonb) AS v(id int, c text) WHERE v.id = r.repo_id
+@@ B05 generate_series
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c::text, r.pnn) FROM generate_series($1::int, $2::int) AS v(c) WHERE v.c = r.repo_id
+@@ B06 VALUES with subselect
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (VALUES ($1::int, (SELECT pnn FROM aveloxis_data.repos LIMIT 1))) AS v(id, c) WHERE v.id = r.repo_id
+@@ B07 VALUES with column ref (lateral not allowed, but const)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (VALUES ($1::int, 'const')) AS v(id, c) WHERE v.id = r.repo_id
+@@ B08 VALUES with NOW()
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (VALUES ($1::int, lower($2))) AS v(id, c) WHERE v.id = r.repo_id
+@@ B09 derived joining placeholders to real table
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT u.id, o.v AS c FROM unnest($1::int[]) AS u(id) JOIN aveloxis_data.other o ON o.id = u.id) v WHERE v.id = r.repo_id
+@@ B10 unnest(ARRAY(SELECT from target))
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM unnest(ARRAY(SELECT pnn FROM aveloxis_data.repos)) AS v(c)
+@@ B11 unnest of ARRAY[$1,$2]
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM unnest(ARRAY[$1, $2]) AS v(c)
+@@ B12 lateral unnest of stored (not incoming)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM aveloxis_data.repos r2, unnest(ARRAY[r2.pnn]) AS v(c) WHERE r2.repo_id = r.repo_id
+@@ B13 derived SELECT unnest with WHERE
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT unnest($1::int[]) AS id, unnest($2::text[]) AS c) v WHERE v.id = r.repo_id
+@@ B14 derived SELECT unnest and expression
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT unnest($1::int[]) AS id, lower(unnest($2::text[])) AS c) v WHERE v.id = r.repo_id
+@@ B15 derived SELECT DISTINCT ON
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT DISTINCT ON (t.id) t.id, t.c FROM unnest($1::int[], $2::text[]) AS t(id, c)) v WHERE v.id = r.repo_id
+@@ B16 incoming item qualifier same as target alias (shadow)
+UPDATE aveloxis_data.repos SET pnn = COALESCE(v.pnn, repos.pnn) FROM unnest($1::int[], $2::text[]) AS v(id, pnn) WHERE v.id = repos.repo_id
+@@ B17 bare column from incoming item (unqualified)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(c, r.pnn) FROM unnest($1::int[], $2::text[]) AS v(id, c) WHERE v.id = r.repo_id
+@@ B18 incoming item id column used as value (wrong column of the batch)
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(v.id, ''), r.pn) FROM unnest($1::text[], $2::text[]) AS v(id, c) WHERE v.id = r.pn
+@@ B19 incoming whole row
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v::text, r.pnn) FROM unnest($1::int[], $2::text[]) AS v(id, c) WHERE v.id = r.repo_id
+@@ B20 unnest schema-qualified myschema.unnest
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM myschema.unnest($1::text[]) AS v(c)
+@@ B21 unnest no alias
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(unnest.unnest, r.pnn) FROM unnest($1::text[])
+@@ B22 ROWS FROM
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM ROWS FROM (unnest($1::int[]), generate_series(1,3)) AS v(id, c) WHERE v.id = r.repo_id
+@@ B23 ROWS FROM unnest + unnest
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM ROWS FROM (unnest($1::int[]), unnest($2::text[])) AS v(id, c) WHERE v.id = r.repo_id
+@@ B24 fe guarded bare from batch
+UPDATE aveloxis_data.repos r SET fe = v.c FROM unnest($1::int[], $2::text[]) AS v(id, c) WHERE v.id = r.repo_id AND r.fe IS NULL
+@@ B25 g from batch
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, v.c) FROM unnest($1::int[], $2::timestamptz[]) AS v(id, c) WHERE v.id = r.repo_id
+@@ B26 TABLESAMPLE / unnest with cast of cast
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM unnest($1::text::text[]) AS v(c)
+@@ B27 unnest VARIADIC? unnest($1) FILTER n/a; unnest(DISTINCT)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT $1::int AS id, $2::text AS c LIMIT 1) v WHERE v.id = r.repo_id
+@@ B28 derived placeholders-only (ok)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT $1::int AS id, $2::text AS c) v WHERE v.id = r.repo_id
+@@ B29 derived of incoming nested with bare col that is lateral ref to r2? (bare 1-part col in incoming query, no FROM)
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM aveloxis_data.repos r2, LATERAL (SELECT t.id, pnn AS c FROM unnest($1::int[]) AS t(id)) v WHERE v.id = r.repo_id AND r2.repo_id = r.repo_id
+@@ B30 same, qualified r2.pnn inside lateral incoming query
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM aveloxis_data.repos r2, LATERAL (SELECT t.id, r2.pnn AS c FROM unnest($1::int[]) AS t(id)) v WHERE v.id = r.repo_id AND r2.repo_id = r.repo_id
+@@ G01 greatest plain
+UPDATE aveloxis_data.repos SET g = GREATEST(g, $1)
+@@ G02 greatest 3 args
+UPDATE aveloxis_data.repos SET g = GREATEST(g, $1, 'infinity')
+@@ G03 greatest const
+UPDATE aveloxis_data.repos SET g = GREATEST(g, 'infinity'::timestamptz)
+@@ G04 greatest other column stored
+UPDATE aveloxis_data.repos SET g = GREATEST(e, $1)
+@@ G05 greatest from r2
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, r2.g) FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ G06 greatest stored cast
+UPDATE aveloxis_data.repos SET g = GREATEST(g::date, $1)
+@@ G07 greatest incoming cast lossy
+UPDATE aveloxis_data.repos SET g = GREATEST(g, $1::date)
+@@ G08 greatest excluded other column
+INSERT INTO aveloxis_data.repos (repo_id, g) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET g = GREATEST(repos.g, EXCLUDED.e)
+@@ G09 pnn excluded other column
+INSERT INTO aveloxis_data.repos (repo_id, g) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(EXCLUDED.fe, repos.pnn)
+@@ G10 greatest(stored, stored)
+UPDATE aveloxis_data.repos SET g = GREATEST(g, g)
+@@ G11 greatest(incoming, incoming)
+UPDATE aveloxis_data.repos SET g = GREATEST($1, $2)
+@@ G12 pnn from self-join r2.pnn as incoming
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(r2.pnn, r.pnn) FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ G13 least e three
+UPDATE aveloxis_data.repos SET e = LEAST(e, $1, $2)
+@@ T01 nullif trim
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM($1), ''), pn)
+@@ T02 btrim chars
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(btrim($1, 'x'), ''), pn)
+@@ T03 ltrim
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(ltrim($1), ''), pn)
+@@ T04 trim both x from
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM(BOTH 'x' FROM $1), ''), pn)
+@@ T05 trim leading
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM(LEADING FROM $1), ''), pn)
+@@ T06 lower
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(lower($1), ''), pn)
+@@ T07 trim(trim)
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM(TRIM($1)), ''), pn)
+@@ T08 trim cast inside and outside
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM($1::text)::varchar(3), ''), pn)
+@@ T09 trim of stored in incoming position
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM(pn), ''), pn)
+@@ T10 user schema btrim
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(myschema.btrim($1), ''), pn)
+@@ T11 trim excluded
+INSERT INTO aveloxis_data.repos (repo_id, pn) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pn = COALESCE(NULLIF(TRIM(EXCLUDED.pn), ''), repos.pn)
+@@ T12 trim excluded other col
+INSERT INTO aveloxis_data.repos (repo_id, pn) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pn = COALESCE(NULLIF(TRIM(EXCLUDED.fe), ''), repos.pn)
+@@ T13 nullif with ' ' 
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, ' '), pn)
+@@ T14 nullif E''
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, E''), pn)
+@@ T15 fe with trim incoming
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, ''), TRIM($1))
+@@ T16 btrim named arg / variadic
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(btrim(VARIADIC $1), ''), pn)
+@@ K01 coalesce($n, now())
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN COALESCE($2, NOW()) ELSE k END
+@@ K02 current_timestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN CURRENT_TIMESTAMP ELSE k END
+@@ K03 transaction_timestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN transaction_timestamp() ELSE k END
+@@ K04 clock_timestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN clock_timestamp() ELSE k END
+@@ K05 statement_timestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN statement_timestamp() ELSE k END
+@@ K06 now - interval
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN NOW() - interval '1 day' ELSE k END
+@@ K07 current_date
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN CURRENT_DATE ELSE k END
+@@ K08 localtimestamp
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN LOCALTIMESTAMP ELSE k END
+@@ K09 'now'::timestamptz
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN 'now'::timestamptz ELSE k END
+@@ K10 timeofday
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN timeofday()::timestamptz ELSE k END
+@@ K11 current_timestamp(0)
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN CURRENT_TIMESTAMP(0) ELSE k END
+@@ K12 coalesce(now(), $n)
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN COALESCE(NOW(), $2) ELSE k END
+@@ K13 coalesce($n, k) / coalesce(k, now())
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN COALESCE(k, NOW()) ELSE k END
+@@ K14 myschema.now()
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN myschema.now() ELSE k END
+@@ K15 pg_catalog.now()
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN pg_catalog.now() ELSE k END
+@@ K16 "NOW"() quoted uppercase
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN "NOW"() ELSE k END
+@@ K17 now() cast
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN NOW()::date ELSE k END
+@@ K18 coalesce(excluded.other, now())
+INSERT INTO aveloxis_data.repos (repo_id, k) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET k = CASE WHEN $3 THEN COALESCE(EXCLUDED.g, NOW()) ELSE repos.k END
+@@ K19 bare value not CASE
+UPDATE aveloxis_data.repos SET k = NOW()
+@@ K20 other-row k through FROM
+UPDATE aveloxis_data.repos r SET k = CASE WHEN $1 THEN r2.k ELSE r.k END FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ C01 fill as CASE
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL THEN $1 ELSE fe END
+@@ C02 CASE else other
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL THEN $1 ELSE $2 END
+@@ C03 CASE when on other column
+UPDATE aveloxis_data.repos SET fe = CASE WHEN pn IS NULL THEN $1 ELSE fe END
+@@ C04 CASE not-null inverted
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NOT NULL THEN $1 ELSE fe END
+@@ C05 CASE no else
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL THEN $1 END
+@@ C06 nested CASE result
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL THEN CASE WHEN $2 THEN $1 ELSE fe END ELSE fe END
+@@ C07 CASE with OR in condition
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL OR $2 THEN $1 ELSE fe END
+@@ C08 CASE with AND in condition
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL AND $2 THEN $1 ELSE fe END
+@@ C09 CASE guard (fe IS NULL OR fe = '')
+UPDATE aveloxis_data.repos SET fe = CASE WHEN (fe IS NULL OR fe = '') THEN $1 ELSE fe END
+@@ C10 CASE guard fe IS NULL OR pn = ''
+UPDATE aveloxis_data.repos SET fe = CASE WHEN (fe IS NULL OR pn = '') THEN $1 ELSE fe END
+@@ C11 CASE guard NOT(fe IS NULL)
+UPDATE aveloxis_data.repos SET fe = CASE WHEN NOT (fe IS NOT NULL) THEN $1 ELSE fe END
+@@ C12 CASE guard coalesce(fe,'x')=''
+UPDATE aveloxis_data.repos SET fe = CASE WHEN COALESCE(fe, 'x') = '' THEN $1 ELSE fe END
+@@ C13 CASE guard '' = fe only (misses null? no: non-null empty only, fine) / fe = ' '
+UPDATE aveloxis_data.repos SET fe = CASE WHEN COALESCE(fe, '') = ' ' THEN $1 ELSE fe END
+@@ C14 CASE guard fe IS NULL OR fe <> ''
+UPDATE aveloxis_data.repos SET fe = CASE WHEN (fe IS NULL OR fe <> '') THEN $1 ELSE fe END
+@@ C15 guard commuted '' = COALESCE(fe,'')
+UPDATE aveloxis_data.repos SET fe = $1 WHERE '' = COALESCE(fe, '')
+@@ C16 guard IS NOT DISTINCT FROM NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NOT DISTINCT FROM NULL
+@@ C17 guard OR'd
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL OR repo_id = $2
+@@ C18 guard on r2 (other row empty)
+UPDATE aveloxis_data.repos r SET fe = $1 FROM aveloxis_data.repos r2 WHERE r2.fe IS NULL AND r2.repo_id = r.repo_id + 1
+@@ C19 guard (fe IS NULL OR fe = '') with other op
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe IS NULL OR fe >= '')
+@@ C20 guard fe IS NULL OR fe = 'x'
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe IS NULL OR fe = 'x')
+@@ C21 guard NULLIF(fe, 'x') IS NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE NULLIF(fe, 'x') IS NULL
+@@ C22 guard coalesce(fe, '') = '' with ANY op: coalesce(fe,'') LIKE ''
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') <= ''
+@@ C23 guard with 3-arg coalesce
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, pn, '') = ''
+@@ C24 guard in a NOT
+UPDATE aveloxis_data.repos SET fe = $1 WHERE NOT (fe IS NULL)
+@@ C25 guard pg operator schema-qualified OPERATOR(myschema.=)
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') OPERATOR(myschema.=) ''
+@@ C26 guard (fe IS NULL OR fe = '') three-way OR
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe IS NULL OR fe = '' OR repo_id = 5)
+@@ C27 guard fe IS NULL OR '' = fe
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe = '' OR fe IS NULL)
+@@ C28 guard = ANY
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe = ANY('{}')
+@@ C29 guard col = '' alone (not null-covering; still only empties)
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe = ''
+@@ C30 fe coalesce three args
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1, $2)
+@@ C31 fe COALESCE(NULLIF(fe,''), stored other col)
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, ''), pn)
+@@ C32 fe guarded, merge-update with guard in ON
+MERGE INTO aveloxis_data.repos r USING (SELECT $1::int AS id, $2::text AS c) v ON v.id = r.repo_id AND r.fe IS NULL WHEN MATCHED THEN UPDATE SET fe = v.c
+@@ C33 merge WHEN MATCHED AND guard
+MERGE INTO aveloxis_data.repos r USING (SELECT $1::int AS id, $2::text AS c) v ON v.id = r.repo_id WHEN MATCHED AND r.fe IS NULL THEN UPDATE SET fe = v.c

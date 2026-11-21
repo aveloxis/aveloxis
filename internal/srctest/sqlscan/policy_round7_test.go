@@ -91,12 +91,14 @@ func r7table(t *testing.T, cases map[string]string) {
 	}
 }
 
-// Q7-2: AlwaysRefresh's "nothing of the stored value" reaches a FROM item
-// that reads the target: the table again, a view over it (at any remove),
-// a WITH query or a sub-select that reads it. A column of such an item is
-// the stored value unless the item's outputs are enumerated and the column
-// is not one that can hold it. (Confirmed on PostgreSQL 18: the self-join,
-// the WITH and the renaming sub-select each wrote a stored value back.)
+// Q7-2, and round 8's inversion of it: an AlwaysRefresh value is made of
+// incoming leaves. A FROM item that reads the target (the table again, a
+// view over it at any remove, a WITH query or a sub-select that reads it)
+// is not a clean item, and NO column of it is taken: round 7 enumerated
+// such an item's outputs to let the ones that could not hold the column
+// through, and round 8 found three ways past the enumeration. (Confirmed
+// on PostgreSQL 18: the self-join, the WITH and the renaming sub-select
+// each wrote a stored value back.)
 func TestAlwaysRefreshFollowsAFromItemToTheTarget(t *testing.T) {
 	const up = `UPDATE aveloxis_data.repos r SET ar = `
 	r7table(t, map[string]string{
@@ -106,10 +108,12 @@ func TestAlwaysRefreshFollowsAFromItemToTheTarget(t *testing.T) {
 		up + `to_jsonb(r2)->>'ar' FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id`: KindAssign,
 		up + `(r2).ar FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id`:             KindAssign,
 		up + `(SELECT r2.*)::text FROM aveloxis_data.repos r2`:                              KindAssign,
-		// ANOTHER column of it is not this column's stored value (as SET
-		// ar = fe is not).
-		up + `r2.fe FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id`: "pass",
+		// ANOTHER column of the ROW BEING WRITTEN is not this column's
+		// stored value. Another column of the table read AGAIN is a column
+		// of an item that is not clean (round 8: no enumeration).
+		up + `r2.fe FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id`: KindAssign,
 		`UPDATE aveloxis_data.repos SET ar = fe`:                              "pass",
+		`UPDATE aveloxis_data.repos r SET ar = r.fe`:                          "pass",
 		// A view over it, at any remove: every column may be the stored one.
 		up + `v.ar FROM aveloxis_data.v_repos v WHERE v.repo_id = r.repo_id`:          KindAssign,
 		up + `v.renamed FROM aveloxis_data.vv_repos v WHERE v.repo_id = r.repo_id`:    KindAssign,
@@ -125,16 +129,17 @@ func TestAlwaysRefreshFollowsAFromItemToTheTarget(t *testing.T) {
 		`WITH a AS (SELECT * FROM aveloxis_data.repos), b AS (SELECT * FROM a) ` + up + `b.ar FROM b WHERE b.repo_id = r.repo_id`:  KindAssign,
 		`WITH old AS (SELECT repo_id, ar FROM aveloxis_data.repos) ` + up + `(SELECT o.ar FROM old o WHERE o.repo_id = r.repo_id)`: KindAssign,
 		`WITH gone AS (DELETE FROM aveloxis_data.repos WHERE repo_id < 0 RETURNING *) ` + up + `gone.ar FROM gone`:                 KindAssign,
-		// The same, with the outputs enumerated and the column not the
-		// stored one: the store's own form (a derived table that counts or
-		// picks from the table, or reads another column).
-		`WITH n AS (SELECT repo_id, count(*) AS c FROM aveloxis_data.repos GROUP BY repo_id) ` + up + `n.c::text FROM n WHERE n.repo_id = r.repo_id`: "pass",
-		up + `s.x FROM (SELECT repo_id, fe AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`:                                             "pass",
+		// The same, with an output that is not the stored column: refused
+		// since round 8 (an item that reads the target hands on nothing).
+		// The store's own derived tables read OTHER tables.
+		`WITH n AS (SELECT repo_id, count(*) AS c FROM aveloxis_data.repos GROUP BY repo_id) ` + up + `n.c::text FROM n WHERE n.repo_id = r.repo_id`: KindAssign,
+		up + `s.x FROM (SELECT repo_id, fe AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`:                                             KindAssign,
+		`WITH n AS (SELECT repo_id, count(*) AS c FROM aveloxis_data.other GROUP BY repo_id) ` + up + `n.c::text FROM n WHERE n.repo_id = r.repo_id`: "pass",
 		// A sub-select written in place.
 		up + `s.x FROM (SELECT repo_id, ar AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`:             KindAssign,
 		up + `s.x FROM (SELECT repo_id, upper(ar) AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`:      KindAssign,
 		up + `x FROM (SELECT repo_id AS id, ar AS x FROM aveloxis_data.repos) s WHERE s.id = r.repo_id`:              KindAssign, // bare
-		up + `s.repo_id::text FROM (SELECT repo_id, ar AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`: "pass",
+		up + `s.repo_id::text FROM (SELECT repo_id, ar AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id`: KindAssign,
 		up + `to_jsonb(s)::text FROM (SELECT repo_id, fe FROM aveloxis_data.repos) s`:                                KindAssign, // the whole row
 		up + `s.j::text FROM (SELECT to_jsonb(r3) AS j FROM aveloxis_data.repos r3) s`:                               KindAssign, // a whole row inside
 		up + `s.j::text FROM (SELECT to_jsonb(repos) AS j FROM aveloxis_data.repos) s`:                               KindAssign,
@@ -158,24 +163,24 @@ func TestAlwaysRefreshFollowsAFromItemToTheTarget(t *testing.T) {
 	})
 }
 
-// What reads the target through FROM is, for the other policies, what it
-// was: not the row's own stored value, and not incoming. A fill may take
-// what it fills an empty column with from anywhere (an established value
-// is never overwritten: the registry's reason for every FillEmptyOnly
-// column); every other shape needs the row's OWN stored value where it
-// says "stored".
+// What reads the target through FROM is, for the other policies, neither
+// the row's own stored value nor incoming. Round 8: that holds for what a
+// fill fills WITH as well (it was allowed to come from anywhere; no
+// statement of the store fills from another row, and "incoming" is one
+// closed list for every policy).
 func TestAnotherRowsValueIsNotTheRowsOwn(t *testing.T) {
 	const from = ` FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id + 1`
 	r7table(t, map[string]string{
-		`UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, r2.fe)` + from:                  "pass",
-		`UPDATE aveloxis_data.repos r SET fe = COALESCE(r2.fe, $1)` + from:                    KindAssign,
-		`UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r2.pnn)` + from:                  KindAssign,
-		`UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), r2.pn)` + from:        KindAssign,
-		`UPDATE aveloxis_data.repos r SET g = GREATEST($1, r2.g)` + from:                      KindAssign,
-		`UPDATE aveloxis_data.repos r SET e = LEAST(r2.e, $1)` + from:                         KindAssign,
-		`UPDATE aveloxis_data.repos r SET k = CASE WHEN TRUE THEN r2.k ELSE NOW() END` + from: KindAssign,
-		`UPDATE aveloxis_data.repos r SET fe = r2.fe` + from + ` AND r.fe IS NULL`:            KindAssign,
-		`UPDATE aveloxis_data.repos r SET io = r2.io` + from:                                  KindAssign,
+		`UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, r2.fe)` + from:                    KindAssign,
+		`UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, o.fe) FROM aveloxis_data.other o`: "pass",
+		`UPDATE aveloxis_data.repos r SET fe = COALESCE(r2.fe, $1)` + from:                      KindAssign,
+		`UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r2.pnn)` + from:                    KindAssign,
+		`UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), r2.pn)` + from:          KindAssign,
+		`UPDATE aveloxis_data.repos r SET g = GREATEST($1, r2.g)` + from:                        KindAssign,
+		`UPDATE aveloxis_data.repos r SET e = LEAST(r2.e, $1)` + from:                           KindAssign,
+		`UPDATE aveloxis_data.repos r SET k = CASE WHEN TRUE THEN r2.k ELSE NOW() END` + from:   KindAssign,
+		`UPDATE aveloxis_data.repos r SET fe = r2.fe` + from + ` AND r.fe IS NULL`:              KindAssign,
+		`UPDATE aveloxis_data.repos r SET io = r2.io` + from:                                    KindAssign,
 	})
 }
 
@@ -445,7 +450,16 @@ func TestBodiesScopeNamesAsPostgreSQLDoes(t *testing.T) {
 		// Text run by EXECUTE has none of the body's variables: ar there is
 		// the column (it was read as the variable, and so as not stored).
 		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN EXECUTE 'UPDATE aveloxis_data.repos SET ar = ar || ''x'''; END $$": KindAssign,
-		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET ar = ar || 'x'; END $$":             "pass",
+		// (In the body itself ar IS the variable: not the stored value,
+		// and since round 8 not an incoming leaf either: what a variable
+		// holds is not known.)
+		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET ar = ar || 'x'; END $$":        KindAssign,
+		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1); END $$": "pass",
+		// The same told apart the other way, by a fill: in the body fe is
+		// the variable, so the shape's "stored" operand is not the column;
+		// in the EXECUTEd text it is the column, and the fill conforms.
+		"DO $$\n#variable_conflict use_variable\nDECLARE fe text;\nBEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$":             KindAssign,
+		"DO $$\n#variable_conflict use_variable\nDECLARE fe text;\nBEGIN EXECUTE 'UPDATE aveloxis_data.repos SET fe = COALESCE(fe, ''x'')'; END $$": "pass",
 		// Nor has a function created inside a body, by a statement of it
 		// or by its EXECUTE.
 		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN CREATE FUNCTION aveloxis_data.g() RETURNS void LANGUAGE sql AS 'UPDATE aveloxis_data.repos SET ar = ar || 1'; END $$":                KindAssign,

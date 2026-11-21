@@ -31,10 +31,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 )
+
+// scancodeOutputMaxBytes is the largest scancode report that is ingested.
+// PROVISIONAL. A record is about 1.5 KB per file with a finding; the Linux
+// kernel's some 80,000 files make a report of about 120 MB; 256 MiB is
+// twice that. Ingestion holds about two and a half times the report (its
+// text, then the decoded records and the rows made of them), so the bound
+// on what one ingestion holds is about 640 MiB. Past it the repository's
+// scan fails by name and its previous results stand.
+const scancodeOutputMaxBytes = 256 << 20
+
+// decodeScancodeReport reads and decodes a report no larger than
+// scancodeOutputMaxBytes. The file's text is released when this returns:
+// the decoded report holds its own copies.
+func decodeScancodeReport(outputPath string) (scancodeOutput, error) {
+	var raw scancodeOutput
+	data, err := readToolOutputWithin(outputPath, scancodeOutputMaxBytes)
+	if err != nil {
+		return raw, fmt.Errorf("reading scancode output: %w", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return raw, fmt.Errorf("parsing scancode output: %w", err)
+	}
+	return raw, nil
+}
 
 // ingestScancodeOutput parses a scancode JSON output file and
 // writes scancode_scans + scancode_file_results, rotating any
@@ -55,13 +78,14 @@ func ingestScancodeOutput(ctx context.Context, store ScancodeStore, repoID int64
 		// parse on a dead ctx is all this still buys.
 		return "", ctx.Err()
 	}
-	data, err := os.ReadFile(outputPath)
+	// The report holds one record per file with a finding, so its size is
+	// the repository's to choose, and this runs in the process every
+	// collection worker shares: it is taken up to scancodeOutputMaxBytes
+	// and refused, by name, past it (0.29.215; a million small files with
+	// a copyright line each made a 1.5 GB report and 3.3 GiB resident).
+	raw, err := decodeScancodeReport(outputPath)
 	if err != nil {
-		return "", fmt.Errorf("reading scancode output: %w", err)
-	}
-	var raw scancodeOutput
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", fmt.Errorf("parsing scancode output: %w", err)
+		return "", err
 	}
 
 	var version string

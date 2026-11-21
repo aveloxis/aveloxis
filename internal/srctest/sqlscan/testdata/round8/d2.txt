@@ -1,0 +1,32 @@
+@@ P01 drop partition child of registered
+DROP TABLE aveloxis_data.repos_part
+@@ P02 truncate partition child
+TRUNCATE aveloxis_data.repos_part
+@@ P03 drop ancestor cascade (drops registered child)
+DROP TABLE aveloxis_data.anc CASCADE
+@@ P04 truncate ancestor (truncates children too, no CASCADE needed)
+TRUNCATE aveloxis_data.anc
+@@ P05 update ancestor (updates registered child's rows; only ancestor's columns)
+UPDATE aveloxis_data.anc SET id = 1
+@@ P06 delete from ancestor (deletes registered rows)
+DELETE FROM aveloxis_data.anc
+@@ P07 child no inherit
+ALTER TABLE aveloxis_data.repos_part NO INHERIT aveloxis_data.repos
+@@ P08 alter ancestor alter column type (rewrites children)
+ALTER TABLE aveloxis_data.anc ALTER COLUMN id TYPE bigint
+@@ P09 alter child partition drop column / alter type ar
+ALTER TABLE aveloxis_data.repos_part ALTER COLUMN ar TYPE int USING 0
+@@ P10 rename partition child / set schema
+ALTER TABLE aveloxis_data.repos_part RENAME TO zzz
+@@ P11 ar from partition child in FROM
+UPDATE aveloxis_data.repos r SET ar = p.ar FROM aveloxis_data.repos_part p WHERE p.repo_id = r.repo_id
+@@ P12 ar from ancestor in FROM (ancestor shows only its own columns: ok)
+UPDATE aveloxis_data.repos r SET ar = p.id FROM aveloxis_data.anc p
+@@ P13 trigger on partition child
+CREATE TRIGGER t BEFORE UPDATE ON aveloxis_data.repos_part FOR EACH ROW EXECUTE FUNCTION f()
+@@ P14 rule on child
+CREATE RULE r AS ON UPDATE TO aveloxis_data.repos_part DO INSTEAD NOTHING
+@@ P15 copy into child
+COPY aveloxis_data.repos_part (ar) FROM STDIN
+@@ P16 fk on child col
+ALTER TABLE aveloxis_data.repos_part ADD FOREIGN KEY (ar) REFERENCES aveloxis_data.other (id) ON DELETE SET NULL

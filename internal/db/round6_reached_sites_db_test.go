@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,11 +92,21 @@ func TestOneStatementWritersChangeTheirRowAndNoOther(t *testing.T) {
 		return text(`SELECT string_agg(cntrb_login || ':' || (cntrb_last_enriched_at IS NOT NULL) || ':' || (cntrb_last_search_attempted_at IS NOT NULL), ',' ORDER BY cntrb_login)
 			FROM aveloxis_data.contributors WHERE cntrb_id = ANY($1::uuid[])`, []string{mine, other})
 	}
+	// A login that differs from the named one only by case is another
+	// contributor's (cntrb_login is unique as written): the mark is by the
+	// login as given (round 8: a case-folding match passed).
+	variant := seedR6Contributor(t, store, strings.ToUpper(tag), "", nil)
+	enriched := func(id string) string {
+		return text(`SELECT (cntrb_last_enriched_at IS NOT NULL)::text FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, id)
+	}
 	if err := store.MarkContributorEnriched(ctx, tag); err != nil {
 		t.Fatal(err)
 	}
 	if got := stamps(); got != tag+":true:false,"+tag+"-other:false:false" {
 		t.Errorf("after the enrichment mark: %q; want it on the named login alone", got)
+	}
+	if got := enriched(variant); got != "false" {
+		t.Errorf("the contributor whose login differs only by case was marked enriched (%s)", got)
 	}
 	if err := store.MarkContributorSearchAttempted(ctx, other); err != nil {
 		t.Fatal(err)
@@ -192,9 +203,11 @@ func TestLinkingAContributorMergesTheDuplicateAndLinksTheWinner(t *testing.T) {
 	login := fmt.Sprintf("r6-link-%d", uid)
 	target := seedR6Contributor(t, store, login+"-a", "", nil)
 	other := seedR6Contributor(t, store, login+"-b", login+"@example.org", uid)
+	r8MergeFields(t, store, target, other)
 	if err := store.LinkContributorToGitHubUser(ctx, target, login, uid); err != nil {
 		t.Fatal(err)
 	}
+	r8MergedAsBestOf(t, store, target, other)
 	if r6Deleted(t, store, target)+r6Deleted(t, store, other) != 1 {
 		t.Errorf("after the link, exactly one of the two rows is soft-deleted: target %d, other %d", r6Deleted(t, store, target), r6Deleted(t, store, other))
 	}
@@ -215,9 +228,11 @@ func TestRenamingAContributorMergesTheDuplicateAndRecordsTheLogin(t *testing.T) 
 	login := fmt.Sprintf("r6-rename-%d", uid)
 	target := seedR6Contributor(t, store, login+"-old", "", nil)
 	other := seedR6Contributor(t, store, login+"-dup", login+"@example.org", uid)
+	r8MergeFields(t, store, target, other)
 	if err := store.RenameContributorGhLogin(ctx, target, login+"-new", uid); err != nil {
 		t.Fatal(err)
 	}
+	r8MergedAsBestOf(t, store, target, other)
 	if r6Deleted(t, store, target)+r6Deleted(t, store, other) != 1 {
 		t.Errorf("after the rename, exactly one of the two rows is soft-deleted: target %d, other %d", r6Deleted(t, store, target), r6Deleted(t, store, other))
 	}
@@ -253,6 +268,50 @@ func TestUpsertContributorFullUpdatesTheRowThatHasTheLogin(t *testing.T) {
 	if gh != uid || canonical != login+"@example.org" {
 		t.Errorf("the row after the update: gh_user_id %d, canonical %q", gh, canonical)
 	}
+	// What the row has is kept (round 8: nothing asserted it). The same
+	// login met again under another id, with another GitHub user id and
+	// another address: gh_user_id and cntrb_canonical are filled when
+	// empty and never replaced (SR-6: an identity is not rewritten by a
+	// later, possibly mistaken, resolution).
+	if _, id, err := store.UpsertContributorFull(ctx, "0100000a-0000-0000-0000-000000000007", login, uid+1, "another@example.org"); err != nil || id != have {
+		t.Fatalf("the second meeting: id %s, %v", id, err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(gh_user_id, 0), COALESCE(cntrb_canonical, '') FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, have).Scan(&gh, &canonical); err != nil {
+		t.Fatal(err)
+	}
+	if gh != uid || canonical != login+"@example.org" {
+		t.Errorf("after a second meeting with other values: gh_user_id %d (want the established %d), canonical %q (want the established one)", gh, uid, canonical)
+	}
+}
+
+// r8MergeFields gives the two rows of a merge test what tells a best-of
+// merge from a copy: the target (made the older, so it is the winner by
+// pickMergeWinner's rule when neither has the deterministic id) has a
+// company and no location; the other has both.
+func r8MergeFields(t *testing.T, store *PostgresStore, target, other string) {
+	t.Helper()
+	ctx := context.Background()
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.contributors SET cntrb_company = 'the target company', cntrb_location = '', data_collection_date = NOW() - INTERVAL '2 days' WHERE cntrb_id = $1::uuid`, target)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.contributors SET cntrb_company = 'the other company', cntrb_location = 'the other location', data_collection_date = NOW() - INTERVAL '1 day' WHERE cntrb_id = $1::uuid`, other)
+}
+
+// r8MergedAsBestOf: the surviving row keeps what it had (its company) and
+// takes from the loser only what it lacked (the location).
+func r8MergedAsBestOf(t *testing.T, store *PostgresStore, target, other string) {
+	t.Helper()
+	if r6Deleted(t, store, target) != 0 || r6Deleted(t, store, other) != 1 {
+		t.Fatalf("the older row (the target) should have won the merge: target deleted %d, other deleted %d", r6Deleted(t, store, target), r6Deleted(t, store, other))
+	}
+	var company, location string
+	if err := store.pool.QueryRow(context.Background(), `SELECT COALESCE(cntrb_company, ''), COALESCE(cntrb_location, '') FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, target).Scan(&company, &location); err != nil {
+		t.Fatal(err)
+	}
+	if company != "the target company" {
+		t.Errorf("the winner's company is %q after the merge; what the winner had is kept", company)
+	}
+	if location != "the other location" {
+		t.Errorf("the winner's location is %q after the merge; what the winner lacked is taken from the loser", location)
+	}
 }
 
 // A GitLab identity in a contributor batch fills the contributor's GitLab
@@ -280,6 +339,34 @@ func TestAContributorBatchWithAGitLabIdentityFillsTheGitLabColumns(t *testing.T)
 	}
 	if glID != uid {
 		t.Errorf("gl_id = %d, want %d", glID, uid)
+	}
+	// What is established is kept (round 8: nothing asserted it). The
+	// identity's address was given once; a later batch that brings none
+	// does not blank it. And a contributor's gl_id, once set, is not
+	// replaced by what a later batch carries.
+	identity := func(email string) model.Contributor {
+		return model.Contributor{ID: PlatformUUID(int(model.PlatformGitLab), uid), Login: login,
+			Identities: []model.ContributorIdentity{{Platform: model.PlatformGitLab, UserID: uid, Login: login, Type: "User", Email: email}}}
+	}
+	if err := store.UpsertContributorBatch(ctx, []model.Contributor{identity("first@example.org")}); err != nil {
+		t.Fatal(err)
+	}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.contributors SET gl_id = 4242 WHERE cntrb_login = $1`, login)
+	if err := store.UpsertContributorBatch(ctx, []model.Contributor{identity("")}); err != nil {
+		t.Fatal(err)
+	}
+	var email string
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(email, '') FROM aveloxis_data.contributor_identities WHERE platform_id = $1 AND platform_user_id = $2`, int16(model.PlatformGitLab), uid).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	if email != "first@example.org" {
+		t.Errorf("the identity's address is %q after a batch that brought none; want the one it had", email)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(gl_id, 0) FROM aveloxis_data.contributors WHERE cntrb_login = $1`, login).Scan(&glID); err != nil {
+		t.Fatal(err)
+	}
+	if glID != 4242 {
+		t.Errorf("gl_id = %d after a later batch; want the established 4242", glID)
 	}
 }
 

@@ -797,7 +797,10 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	// subprocesses running as orphans. groupKilled is the one shared
 	// block (v0.29.68 review round 14).
 	groupKilled(cloneCmd)
-	if out, err := cloneCmd.CombinedOutput(); err != nil {
+	// git's output is kept as a bounded head and tail, not whole.
+	cloneOut := newBoundedCapture()
+	cloneCmd.Stdout, cloneCmd.Stderr = cloneOut, cloneOut
+	if err := cloneCmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			// Shutdown killed the clone: a clean release, not a strike
 			// (pass 37 — the strike fed the quadratic claim backoff and,
@@ -809,7 +812,7 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 		}
 		w.logger.Warn("scancode runOne git clone failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-			"error", err, "git_output", string(out))
+			"error", err, "git_output", cloneOut.String())
 		w.recordFailureBestEffort(ctx, job.RepoID)
 		return false
 	}
@@ -1693,7 +1696,7 @@ func salvageScancodeOutput(outputPath string) (filesCount int, headerErrors []st
 	if !fileExistsAndNonEmpty(outputPath) {
 		return 0, nil, false
 	}
-	data, err := os.ReadFile(outputPath)
+	data, err := readToolOutputWithin(outputPath, scancodeOutputMaxBytes)
 	if err != nil {
 		return 0, nil, false
 	}

@@ -5,7 +5,7 @@ p1.txt	cte-over-target ar	assign
 p1.txt	subselect-in-from ar	assign
 p1.txt	view-in-subselect ar	assign
 p1.txt	view-in-from ar	assign
-p1.txt	fe guarded bare from selfjoin	pass
+p1.txt	fe guarded bare from selfjoin	assign
 p1.txt	pnn incoming is $ but stored is from-other	assign
 p1.txt	g with selfjoin	pass
 p1.txt	conflict alias x	pass
@@ -50,7 +50,7 @@ p2.txt	D07 add generated identity on io	pass
 p2.txt	D08 rename col into registered	alter-column
 p2.txt	D09 rename col from registered	alter-column
 p2.txt	D10 drop column cascade	alter-column
-p2.txt	D11 like + swap	rename-table
+p2.txt	D11 like + swap	child-target+rename-table
 p2.txt	D12 drop type cascade	drop-type
 p2.txt	D13 create or replace view named like registered (unqualified)	pass
 p2.txt	D14 create policy	pass
@@ -91,21 +91,21 @@ p3.txt	R08 variable_conflict use_column in string literal later in the body	assi
 p3.txt	R09 hash-operator lookalike: x # variable_conflict use_column as expression	pass
 p3.txt	R10 two directives: use_column then use_variable (last wins in PG?)	assign
 p3.txt	R11 label-qualified	assign
-p3.txt	R12 loop record	pass
-p3.txt	R13 loop record over target (stored through a record)	pass
+p3.txt	R12 loop record	assign
+p3.txt	R13 loop record over target (stored through a record)	assign
 p3.txt	R14 sql fn param named fe: guard is column (ok accept)	pass
 p3.txt	R15 sql fn named like table, qualified param	assign
 p3.txt	R16 insert as excluded	assign
 p3.txt	R17 conflict update pnn stored qualified by schema.table	pass
 p3.txt	R18 update from with other schema's repos (same bare name)	assign
 p3.txt	R19 update: FROM function named like target	assign
-p3.txt	R20 lateral	pass
+p3.txt	R20 lateral	assign
 p3.txt	R21 set op subselect	assign
 p3.txt	R22 whole row field	assign
 p3.txt	R23 whole-row via from alias of self	assign
 p3.txt	R24 returning (no effect)	pass
 p3.txt	R25 merge when not matched by source update	assign
-p3.txt	R26 merge: source alias same as column; fe fill reading source	pass
+p3.txt	R26 merge: source alias same as column; fe fill reading source	assign
 p3.txt	R27 trigger NEW.ar := OLD.ar	trigger-assign
 p3.txt	R28 rule on other with OLD	assign
 p3.txt	R29 quoted mixed case alias	assign
@@ -184,7 +184,7 @@ fp.txt	F45 io insert do nothing	pass
 fp.txt	F46 io untouched in conflict	pass
 fp.txt	F47 comment inside	pass
 fp.txt	F48 delete then insert snapshot	pass
-fp.txt	F49 temp staging across statements in ONE text	pass
+fp.txt	F49 temp staging across statements in ONE text	assign
 fp.txt	F50 guard IS NULL then additional OR in parens elsewhere	pass
 fp.txt	F51 fe: store UpdateRepoMetadata created_at shape	pass
 fp.txt	F52 fe with FOR UPDATE CTE lock first	pass

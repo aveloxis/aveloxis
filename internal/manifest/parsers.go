@@ -6,6 +6,7 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -1346,7 +1347,7 @@ func ReadManifest(path string) ([]byte, error) {
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
 			size = info.Size()
 		}
-		max := (*bound)(size)
+		max := (*bound)(path, size)
 		if max < 1 {
 			max = 1
 		}
@@ -1357,14 +1358,16 @@ func ReadManifest(path string) ([]byte, error) {
 
 // readBound is the process's bound on one read of a manifest, when it has
 // one; nil in every process that does not install it.
-var readBound atomic.Pointer[func(size int64) int64]
+var readBound atomic.Pointer[func(path string, size int64) int64]
 
 // SetReadBound installs, for the whole process, how many bytes one read of a
 // manifest or lockfile may take (0.29.214), and returns what removes it
 // again. It is for the process that exists to read one clone under a memory
 // limit (the collector's manifest reader): bound is asked before each read
-// for the room left now, with the length of the file about to be read (-1
-// when that is not known), and every reader in this package (they all read
+// for the room left now, with the path and the length of the file about to
+// be read (-1 when that is not known; the path tells the bound what kind of
+// file it is, since reading some kinds costs many times their length:
+// 0.29.215), and every reader in this package (they all read
 // through ReadManifest) then refuses a file longer than that from its
 // length, and stops reading one that grows at it (ReadManifestWithin). The
 // refusal is a *ManifestTooLargeError, which the roster reports as a
@@ -1380,7 +1383,7 @@ var readBound atomic.Pointer[func(size int64) int64]
 // again, and several readers treat a file they cannot read as declaring
 // nothing): a bound made of the room a heap limit leaves frees what it can
 // before it refuses.
-func SetReadBound(bound func(size int64) int64) (restore func()) {
+func SetReadBound(bound func(path string, size int64) int64) (restore func()) {
 	prev := readBound.Swap(&bound)
 	return func() { readBound.Store(prev) }
 }
@@ -1430,11 +1433,29 @@ func ReadManifestWithin(path string, max int64) ([]byte, error) {
 		} else if info.Mode().IsRegular() && info.Size() > max {
 			return nil, &ManifestTooLargeError{Path: path, Size: info.Size(), Max: max}
 		}
-		if data, err = io.ReadAll(io.LimitReader(f, max+1)); err != nil {
-			return nil, err
-		}
-		if int64(len(data)) > max {
-			return nil, &ManifestTooLargeError{Path: path, Size: -1, Max: max}
+		if info, err := f.Stat(); err == nil && info.Mode().IsRegular() {
+			// A regular file is read into ONE buffer of its length (and a
+			// byte, to see that it grew). io.ReadAll grows its buffer by
+			// doubling and copying, which held two to three times the
+			// file between two looks of a memory watchdog (0.29.215,
+			// review round 8: 243 MiB read at a 256 MiB limit reached 828
+			// MiB resident).
+			data = make([]byte, info.Size()+1)
+			n, rerr := io.ReadFull(f, data)
+			if rerr == nil {
+				return nil, &ManifestTooLargeError{Path: path, Size: -1, Max: max} // it grew past the length it had
+			}
+			if !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
+				return nil, rerr
+			}
+			data = data[:n]
+		} else {
+			if data, err = io.ReadAll(io.LimitReader(f, max+1)); err != nil {
+				return nil, err
+			}
+			if int64(len(data)) > max {
+				return nil, &ManifestTooLargeError{Path: path, Size: -1, Max: max}
+			}
 		}
 	}
 	data = decodeIfUTF16(data)
@@ -2604,7 +2625,13 @@ func parseComposerJSONVersionsIn(root, path string) ([]model.LibyearDep, error) 
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return nil, err
 	}
-	own := composerOwnRepositoryPackages(root, filepath.Dir(path), pkg.Repositories)
+	own, unread := composerRepositoryPackages(root, filepath.Dir(path), pkg.Repositories)
+	if unread != nil {
+		// Which of this file's requirements the clone itself supplies is
+		// not known, so none of them can be said to be Packagist's: the
+		// file is one that could not be read, and the reason names the part.
+		return nil, unread
+	}
 	var deps []model.LibyearDep
 	for name, version := range pkg.Require {
 		if isComposerPlatformName(name) {
@@ -2633,9 +2660,36 @@ func parseComposerJSONVersionsIn(root, path string) ([]model.LibyearDep, error) 
 // is not read: its requirement stays a Packagist one (declined in review
 // round 1 with this reason: knowing the name would take a fetch).
 func composerOwnRepositoryPackages(root, dir string, raw json.RawMessage) map[string]bool {
-	out := map[string]bool{}
+	out, _ := composerRepositoryPackages(root, dir, raw)
+	return out
+}
+
+// errComposerPartUnread: a composer.json of one of the manifest's path
+// repositories is there and could not be read.
+var errComposerPartUnread = errors.New("a composer.json of one of this file's path repositories could not be read, so which of its requirements the repository itself supplies is not known; nothing was taken from the file")
+
+// composerRepositoryPackages is composerOwnRepositoryPackages that also
+// says when a path repository's composer.json EXISTS and was not read (it
+// is over MaxBuildFileBytes, the process's read bound refused it, or the
+// read failed): unread is then errComposerPartUnread naming the first such
+// file, wrapping why. A directory with no composer.json names no package,
+// and that is an answer; a file that could not be read is not (SR-5; round
+// 8: it was passed over as if absent, and a requirement the clone supplies
+// was inventoried as Packagist's package of that name).
+func composerRepositoryPackages(root, dir string, raw json.RawMessage) (out map[string]bool, unread error) {
+	out = map[string]bool{}
 	if len(raw) == 0 {
-		return out
+		return out, nil
+	}
+	notRead := func(file string, why error) {
+		if unread != nil {
+			return
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			rel = filepath.Base(file)
+		}
+		unread = fmt.Errorf("%w: %s: %w", errComposerPartUnread, filepath.ToSlash(rel), why)
 	}
 	type repository struct {
 		Type    string          `json:"type"`
@@ -2647,7 +2701,7 @@ func composerOwnRepositoryPackages(root, dir string, raw json.RawMessage) map[st
 	if json.Unmarshal(raw, &list) != nil {
 		var keyed map[string]json.RawMessage
 		if json.Unmarshal(raw, &keyed) != nil {
-			return out
+			return out, nil
 		}
 		for _, v := range keyed {
 			list = append(list, v)
@@ -2691,18 +2745,28 @@ func composerOwnRepositoryPackages(root, dir string, raw json.RawMessage) map[st
 			matches := composerExpand(root, pattern)
 			for _, m := range matches {
 				file := filepath.Join(m, "composer.json")
-				if !regularBuildFile(root, file) {
+				if !regularFileInClone(root, file) {
+					continue // none there, or not a file of the clone
+				}
+				if buildFileTooLarge(file) {
+					notRead(file, fmt.Errorf("it is larger than a build file is (%d bytes)", MaxBuildFileBytes))
 					continue
 				}
 				body, err := ReadManifest(file)
+				if err != nil {
+					if !errors.Is(err, fs.ErrNotExist) {
+						notRead(file, err)
+					}
+					continue
+				}
 				named.Name = ""
-				if err == nil && json.Unmarshal(body, &named) == nil && named.Name != "" {
+				if json.Unmarshal(body, &named) == nil && named.Name != "" {
 					out[strings.ToLower(named.Name)] = true
 				}
 			}
 		}
 	}
-	return out
+	return out, unread
 }
 
 // composerEntriesLooked is how many directory entries the expansions have

@@ -179,10 +179,24 @@ const AnyRegisteredTable = "(any registered table)"
 // File and the declaration the statement stands in, and Statement: the one
 // statement that holds the violation, as SQL. Statement is compared as
 // PostgreSQL's parse tree with the places removed: the target, the SET
-// list, FROM, WHERE, ON CONFLICT, RETURNING, everything; spacing, comments
-// and the case of keywords do not matter, and nothing else is overlooked.
-// A statement whose WHERE was changed or dropped is therefore another
-// statement: its violation is reported AND the Exception is stale.
+// list, FROM, WHERE, ON CONFLICT, RETURNING, everything. What the
+// comparison overlooks is what PostgreSQL's own parser overlooks, all of it
+// without meaning: spacing, comments, the case of keywords and of unquoted
+// names, whether a name is quoted (or written U&"") when it need not be,
+// parentheses that group nothing, how a string constant is spelled ('x',
+// E'x', $$x$$), how a number is (01, 1), int for integer and the like,
+// CAST(x AS t) for x::t, ISNULL for IS NULL. Nothing that changes what the
+// statement does is overlooked: the order of conjuncts, of SET items and of
+// WITH queries, which placeholder stands where, ONLY, an alias, a cast
+// added, RETURNING. A statement whose WHERE was changed or dropped is
+// therefore another statement: its violation is reported AND the Exception
+// is stale.
+//
+// What an Exception does NOT pin, said plainly: the ARGUMENTS the statement
+// is sent with (the text is the same whatever is bound to $1; no reader of
+// text sees them), and, within a body, WHERE in the body the statement
+// stands (under which IF, in which loop): InBody says only whether it
+// stands in one at all.
 //
 // For an assignment, Fragment is the assigned expression, whole: it says
 // WHICH assignment of the statement is the excused one, and must be an
@@ -218,7 +232,14 @@ type Exception struct {
 	// Statement: the one statement that holds the violation, whole.
 	// REQUIRED for every kind.
 	Statement string
-	Reason    string
+	// InBody: the statement stands inside a body (a DO block, a function's
+	// body, text a body EXECUTEs) and not at the top of the text it is
+	// sent in. An Exception written for a statement of the one kind does
+	// not excuse the same statement of the other (round 8: the excused
+	// statement moved under IF ... THEN in a DO block was still excused,
+	// though when it runs is then the block's to say).
+	InBody bool
+	Reason string
 }
 
 // Pins reports whether sql holds the Exception's statement: some statement
@@ -264,6 +285,10 @@ type Violation struct {
 	SQL       string
 	Want      Policy
 	Detail    string
+	// InBody: the statement stands inside a body (a DO block, a function,
+	// text a body EXECUTEs) and not at the top of the text: what an
+	// Exception's InBody must say.
+	InBody bool
 	// fragment and statement are the trees an Exception is compared with.
 	fragment, statement string
 }
@@ -307,12 +332,17 @@ type Catalog struct {
 	defined map[string]bool
 	// temp: session tables a write may name as pg_temp.<name> (Temp).
 	temp map[string]bool
+	// copies: what a table made by CREATE TABLE ... AS (or SELECT INTO) was
+	// filled from. It is not behind the table (a write of the copy writes
+	// no row of the source), but a value READ from the copy is a value of
+	// the source as it stood (round 8).
+	copies map[string][]string
 }
 
 // NewCatalog is an empty catalog.
 func NewCatalog() *Catalog {
 	return &Catalog{kind: map[string]string{}, sources: map[string][]string{}, parents: map[string][]string{},
-		refs: map[string][]string{}, defined: map[string]bool{}, temp: map[string]bool{}}
+		refs: map[string][]string{}, defined: map[string]bool{}, temp: map[string]bool{}, copies: map[string][]string{}}
 }
 
 // Temp declares temporary tables that some text creates and ANOTHER text
@@ -405,6 +435,8 @@ func (c *Catalog) add(defs []Def) {
 			continue
 		}
 		switch d.Kind {
+		case "commit", "rollback":
+			// The end of a transaction defines nothing.
 		case "ref":
 			c.refs[d.Name] = append(c.refs[d.Name], d.Refs...)
 		case "rename":
@@ -434,6 +466,7 @@ func (c *Catalog) add(defs []Def) {
 			if d.Kind == "table" {
 				c.defined[d.Name] = true
 				c.refs[d.Name] = append(c.refs[d.Name], d.Refs...)
+				c.copies[d.Name] = append(c.copies[d.Name], d.Sources...)
 			}
 		}
 	}
@@ -484,6 +517,16 @@ func Check(stmts []Stmt, registry []Registered, exceptions []Exception) Report {
 	return CheckIn(cat, stmts, registry, exceptions)
 }
 
+// sortedSet is a set's members in order.
+func sortedSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // dmlKinds are the writes of rows, whose target must be a base table.
 var dmlKinds = map[string]bool{"update": true, "insert": true, "delete": true, "merge": true, "copy": true, "truncate": true}
 
@@ -524,31 +567,69 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 		// (round 7: a temporary definition anywhere in the text counted,
 		// one dropped before the write and one in a function body that is
 		// never called included).
+		// tempHere: the write is of a session table this text made itself,
+		// earlier, at the same level, and that still stands where the
+		// write does. Round 8: it is a PLAIN one only. A temporary table
+		// that is a child of another table (made INHERITS, or ALTERed to
+		// INHERIT) holds that table's rows, and neither the statement
+		// that makes it one nor a later write of it is passed over; one
+		// made ON COMMIT DROP is gone after the text's COMMIT, and any one
+		// after a ROLLBACK that undoes its creation, so the name then
+		// means another relation; renamed, the old name is not it; and a
+		// move to another schema makes it no session table.
 		tempHere := func(w *Write) bool {
-			if w.scope == nil || (w.Schema != "" && w.Schema != "pg_temp") {
+			if w.scope == nil || (w.Schema != "" && w.Schema != "pg_temp") || w.Kind == "set-schema" {
 				return false
+			}
+			for _, a := range w.Alters {
+				if a.Column == "" {
+					// ALTER ... INHERIT / ATTACH: it is made another
+					// table's child by this very statement.
+					return false
+				}
 			}
 			for _, d := range defs {
 				named := (d.Temp && d.Name == w.Table) || d.Name == "pg_temp."+w.Table
 				if !named || d.Kind != "table" || d.env != w.scope.env || d.seq >= w.seq {
 					continue
 				}
-				dropped := false
+				gone := len(d.Parents) > 0
 				for j := range ws {
 					x := &ws[j]
-					if x.Kind == "drop" && (x.Schema == "" || x.Schema == "pg_temp") && x.Table == w.Table && x.scope != nil && x.scope.env == d.env && x.seq > d.seq && x.seq < w.seq {
-						dropped = true
+					if x.Table != w.Table || (x.Schema != "" && x.Schema != "pg_temp") || x.seq <= d.seq || x.seq >= w.seq {
+						continue
+					}
+					if x.Kind == "drop" && x.scope != nil && x.scope.env == d.env {
+						gone = true
+					}
+					// Renamed or moved since it was created: no longer a
+					// table of that name. (One CREATED a child has Parents,
+					// above: the statement that creates it is not passed
+					// over either, since it stands after its own definition.)
+					if x.Kind == "rename-table" || x.Kind == "set-schema" {
+						gone = true
+					}
+					for _, a := range x.Alters {
+						if a.Column == "" {
+							gone = true
+						}
 					}
 				}
-				if !dropped {
+				for _, e := range defs {
+					if e.seq > d.seq && e.seq < w.seq && e.env == d.env && (e.Kind == "rollback" || (e.Kind == "commit" && d.OnCommitDrop)) {
+						gone = true
+					}
+				}
+				if !gone {
 					return true
 				}
 			}
 			return false
 		}
 		var stmtText, stmtSource string
+		inBody := false
 		violate := func(v Violation) {
-			v.File, v.Decl, v.SQL = st.File, st.Decl, st.SQL
+			v.File, v.Decl, v.SQL, v.InBody = st.File, st.Decl, st.SQL, inBody
 			if v.Statement == "" {
 				v.Statement = stmtSource
 			}
@@ -560,7 +641,7 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 				if !exs[i].ok || ex.Table != v.Table || ex.Column != v.Column || ex.Kind != v.Kind || (ex.File != "" && ex.File != st.File) || (ex.Decl != "" && ex.Decl != st.Decl) {
 					continue
 				}
-				if exs[i].statement != v.statement || exs[i].fragment != v.fragment {
+				if exs[i].statement != v.statement || exs[i].fragment != v.fragment || ex.InBody != v.InBody {
 					continue
 				}
 				used[i] = true
@@ -571,6 +652,7 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 		for i := range ws {
 			w := &ws[i]
 			w.cat = cat
+			inBody = w.scope != nil && w.scope.env != nil
 			// The statement an Exception pins: the whole one the write
 			// stands in (a WITH and all under it), not the innermost.
 			stmtTree := canon(w.top)
@@ -642,6 +724,32 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 					table(KindUnknownTarget, q, "the target of "+strings.ToUpper(w.Kind)+" is not a relation the catalog knows: it may be a view, a partition or a foreign table over a registered table, and nothing can tell. Create it in the schema, or take a reviewed Exception")
 				default:
 					table(KindViewTarget, q, "the target of "+strings.ToUpper(w.Kind)+" is a "+kind+", not a base table (behind it: "+strings.Join(cat.behind(q), ", ")+"): a write through it writes those tables under the names it chooses, which no policy can be checked on")
+				}
+			}
+			// A table that is a partition or a child of a registered table,
+			// or a parent of one, holds (or is held in) that table's rows:
+			// what would be held against the registered table is held
+			// against this one for it (round 8: only a write of a child's
+			// ROWS was; DROP, TRUNCATE of a parent, a trigger, a rule, an
+			// ALTER, a foreign key's action on one passed).
+			if !regTables[q] && cat.Kind(q) == "table" && (dmlKinds[w.Kind] || w.Kind == "drop" || w.Kind == "rule" || w.Kind == "trigger" ||
+				w.Kind == "rename-table" || w.Kind == "set-schema" || len(w.Alters) > 0 || len(w.FKs) > 0) {
+				for _, t := range sortedSet(regTables) {
+					child, parent := false, false
+					for _, b := range cat.behind(q) {
+						child = child || b == t
+					}
+					for _, b := range cat.behind(t) {
+						parent = parent || b == q
+					}
+					switch {
+					case child && dmlKinds[w.Kind]:
+						// Held above, as a write of the child's rows.
+					case child:
+						table(KindChildTarget, t, q+" is a partition or a child of "+t+": "+strings.ToUpper(w.Kind)+" of it changes that table's rows, or what is done to them, and no policy is checked on it")
+					case parent:
+						table(KindChildTarget, t, t+" is a partition or a child of "+q+": "+strings.ToUpper(w.Kind)+" of the parent reaches its rows too (a DROP ... CASCADE drops it), and no policy is checked on it")
+					}
 				}
 			}
 			if w.Kind == "truncate" && w.Cascade {
@@ -951,6 +1059,10 @@ func valueConforms(w *Write, val any, col string, want Policy) (bool, string) {
 	if len(also) > 0 {
 		return false, fmt.Sprintf("expression matches %s — registered policy is %s", strings.Join(also, "+"), want)
 	}
+	if want == AlwaysRefresh {
+		// The one policy with no shape: say which leaf is not incoming.
+		return false, "the value is not made of incoming values alone: " + w.notIncoming(val, col) + " — conform, or take a reviewed Exception"
+	}
 	return false, fmt.Sprintf("unrecognized write shape for %s — conform, extend the tested shape set, or take a reviewed Exception", want)
 }
 
@@ -971,11 +1083,11 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 	case FillEmptyOnly:
 		if _, args, ok := twoArgs(val, "CoalesceExpr"); ok {
 			// Text form: COALESCE(NULLIF(stored, ''), incoming)
-			if inner, ok := nullifEmpty(args[0]); ok && operand(inner) == "stored" && !w.mentionsStored(args[1], col) {
+			if inner, ok := nullifEmpty(args[0]); ok && operand(inner) == "stored" && w.notIncoming(args[1], col) == "" {
 				return true
 			}
 			// Nullable form: COALESCE(stored, incoming)
-			return operand(args[0]) == "stored" && !w.mentionsStored(args[1], col)
+			return operand(args[0]) == "stored" && w.notIncoming(args[1], col) == ""
 		}
 		// The same fill spelled as a CASE (round 7): CASE WHEN <the column
 		// is empty> THEN incoming ELSE stored END, the condition being one
@@ -983,9 +1095,13 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 		if k, c := wrapped(val); k == "CaseExpr" && c["arg"] == nil && len(jlist(c["args"])) == 1 {
 			_, when := wrapped(jlist(c["args"])[0])
 			return when != nil && w.isEmptyGuard(when["expr"], col) && when["result"] != nil &&
-				!w.mentionsStored(when["result"], col) && operand(c["defresult"]) == "stored"
+				w.notIncoming(when["result"], col) == "" && operand(c["defresult"]) == "stored"
 		}
 		// Guarded bare form: SET col = $N ... WHERE COALESCE(col,'')=''.
+		// The value is one incoming OPERAND (a placeholder, EXCLUDED's, an
+		// incoming batch's column), which is narrower than what the
+		// COALESCE form may fill with: the guard stands apart from the
+		// value, and the fewer forms it is read with the better.
 		return operand(val) == "incoming" && w.GuardsEmpty(col)
 	case PreferNonemptyIncoming:
 		if _, args, ok := twoArgs(val, "CoalesceExpr"); ok {
@@ -1017,10 +1133,9 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 		return (aargs == [2]string{"incoming", "stored"} && bargs == [2]string{"stored", "incoming"}) ||
 			(aargs == [2]string{"stored", "incoming"} && bargs == [2]string{"incoming", "stored"})
 	case AlwaysRefresh:
-		// Nothing of the stored value, of this row or another: a column
-		// that reaches the value through a FROM item which reads the
-		// target counts (round 7).
-		return !w.storedIn(val, col, nil, true)
+		// Made of incoming leaves and nothing else (round 8: the closed
+		// list, notIncoming).
+		return w.notIncoming(val, col) == ""
 	case EarliestOfStoredAndIncoming:
 		mm, args, ok := twoArgs(val, "MinMaxExpr")
 		if !ok || jstr(mm["op"]) != "IS_LEAST" {
@@ -1215,10 +1330,9 @@ func (w *Write) classify(parts []string, inner [][]fromItem) refClass {
 	}
 	switch len(parts) {
 	case 1:
-		// In a sub-select the sub-select's own relations come first, and
-		// what columns they have is not known here: a bare name there is
-		// taken for the stored value all the same (the only reader of a
-		// reference inside a sub-select, storedIn, denies on it).
+		// A bare name at the top of an assignment or of the write's WHERE
+		// is the target's column (PostgreSQL stops a statement in which it
+		// could also be a FROM item's).
 		if is, conflict := w.variable(parts[0]); is {
 			switch conflict {
 			case "use_variable":
@@ -1237,6 +1351,12 @@ func (w *Write) classify(parts []string, inner [][]fromItem) refClass {
 			}
 		}
 		if w.Kind == "conflict-update" && q == "excluded" && w.Alias != "excluded" {
+			// EXCLUDED holds what the INSERT's source reads: incoming only
+			// when that source is (round 8: INSERT ... SELECT FROM the
+			// target handed one row's stored value to another).
+			if !w.excludedIncoming() {
+				return refUnresolved
+			}
 			return refIncoming
 		}
 		isTarget, isFrom, isVar := q == w.targetName(), fromNamed(own, q), w.qualifiesVariable(q)
@@ -1286,7 +1406,8 @@ func (w *Write) classify(parts []string, inner [][]fromItem) refClass {
 //     qualified by that item's name. Any of them may carry one cast
 //     ($1::text), and may stand in TRIM(...) / btrim(...) of one argument
 //     (a value handed in with its outer spaces removed is still the value
-//     handed in);
+//     handed in), and that TRIM may carry one cast of its own: two casts
+//     in all, one each side of the TRIM, never two in a row;
 //   - "stored": a reference the resolver gives to the target's own <col>;
 //   - "other": anything else, a column of another relation, a variable and
 //     an unresolved reference included. TRIM of the STORED value is
@@ -1372,361 +1493,517 @@ func (w *Write) incomingItem(q string) bool {
 }
 
 // ---------------------------------------------------------------------
-// Provenance: what a FROM item reads.
-
-// itemRead is what one FROM item can hand the assignment of the target's
-// stored values.
-type itemRead struct {
-	// reads: the item reads the target table: it IS the target under
-	// another alias, or a view over it (the catalog's, transitively), or a
-	// sub-select or WITH query that reads it by any of these.
-	reads bool
-	// self: the item is the target table itself, written in place. Its
-	// columns are the table's, under their own names.
-	self bool
-	// known: the item's output columns are enumerated; tainted are those
-	// that may hold the protected column's stored value. When not known,
-	// every column of the item may.
-	known   bool
-	tainted map[string]bool
-}
-
-// may: a column of the item named c may hold the stored value of col.
-func (ir itemRead) may(c, col string) bool {
-	switch {
-	case !ir.reads:
-		return false
-	case ir.self:
-		return c == col
-	case !ir.known:
-		return true
-	}
-	return ir.tainted[c]
-}
-
-// isTarget: the relation name (schema.name, or a bare name) is the write's
-// target table, or may be (a bare name of the table's is taken for it).
-func (w *Write) isTarget(rel string) bool {
-	return rel == w.Qualified() || (!strings.Contains(rel, ".") && rel == w.Table)
-}
-
-// relReadsTarget: the relation named rel reads the target: it is it, a view
-// (or materialized view, or partition) over it by the catalog, or a WITH
-// query of the statement that reads it. seen stops a WITH that names itself.
-func (w *Write) relReadsTarget(rel string, seen map[string]bool) bool {
-	if w.scope != nil && !strings.Contains(rel, ".") {
-		if q, ok := w.scope.ctes[rel]; ok {
-			if seen[rel] {
-				return false
-			}
-			seen[rel] = true
-			for _, inner := range relsIn(q) {
-				if w.relReadsTarget(inner, seen) {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	if w.isTarget(rel) {
-		return true
-	}
-	if w.cat != nil {
-		for _, b := range w.cat.behind(rel) {
-			if w.isTarget(b) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// read says what a FROM item can hand over of col's stored value.
-func (w *Write) read(it fromItem, col string) itemRead {
-	var ir itemRead
-	for _, rel := range it.rels {
-		ir.reads = ir.reads || w.relReadsTarget(rel, map[string]bool{})
-	}
-	if !ir.reads {
-		return ir
-	}
-	var ctes map[string]any
-	if w.scope != nil {
-		ctes = w.scope.ctes
-	}
-	_, isCTE := ctes[it.name]
-	isCTE = isCTE && it.schema == ""
-	if it.direct && !it.colnames && !isCTE && w.isTarget(relName(jnode{"schemaname": it.schema, "relname": it.name})) {
-		ir.self = true
-		return ir
-	}
-	if it.colnames {
-		return ir
-	}
-	// A sub-select written in place, or a WITH query named: its outputs
-	// are read when it is one plain SELECT that reads the target as itself.
-	q := it.sub
-	if it.direct && isCTE {
-		q = ctes[it.name]
-	}
-	ir.tainted, ir.known = w.taintedOutputs(q, col)
-	return ir
-}
-
-// taintedOutputs enumerates the output columns of a query that reads the
-// target, and says which may hold col's stored value. known is false when
-// that cannot be told: the query is not one plain SELECT (a set operation,
-// VALUES, a WITH of its own, a data-modifying statement), one of its FROM
-// items reads the target other than as the target itself written in place
-// (through a view, a sub-select, a WITH query, a join's alias), an output
-// is `*`, or an output that may hold the value has no name of its own.
-func (w *Write) taintedOutputs(q any, col string) (tainted map[string]bool, known bool) {
-	k, sel := wrapped(q)
-	if k != "SelectStmt" || sel["larg"] != nil || sel["rarg"] != nil || sel["withClause"] != nil || sel["valuesLists"] != nil {
-		return nil, false
-	}
-	from := fromItems(sel["fromClause"])
-	names := map[string]bool{}
-	for _, it := range from {
-		reads := false
-		for _, rel := range it.rels {
-			reads = reads || w.relReadsTarget(rel, map[string]bool{})
-		}
-		if reads && !(it.direct && !it.colnames && w.isTarget(relName(jnode{"schemaname": it.schema, "relname": it.name}))) {
-			return nil, false
-		}
-		if it.alias != "" {
-			names[it.alias] = true
-		} else {
-			names[it.name] = true
-		}
-	}
-	// carries: an output's expression may hold the stored value: it names
-	// a column called col, a whole row, `*`, or holds a query of its own.
-	var carries func(v any) bool
-	carries = func(v any) bool {
-		switch t := v.(type) {
-		case []any:
-			for _, e := range t {
-				if carries(e) {
-					return true
-				}
-			}
-		case jnode:
-			kind, body := wrapped(t)
-			switch kind {
-			case "SubLink", "SelectStmt":
-				return true
-			case "ColumnRef":
-				parts, ok := columnRef(t)
-				if !ok {
-					return true // a `*`
-				}
-				return parts[len(parts)-1] == col || (len(parts) == 1 && names[parts[0]])
-			}
-			if kind != "" {
-				t = body
-			}
-			for _, key := range sortedKeys(t) {
-				if carries(t[key]) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	// Every output that may hold the value has a name here, so a column of
-	// the item holds it exactly when its name is one of those.
-	tainted = map[string]bool{}
-	for _, e := range jlist(sel["targetList"]) {
-		tk, rt := wrapped(e)
-		if tk != "ResTarget" {
-			return nil, false
-		}
-		if !carries(rt["val"]) {
-			continue
-		}
-		name := jstr(rt["name"])
-		if name == "" {
-			parts, ok := columnRef(rt["val"])
-			if !ok {
-				// A `*`, or an expression PostgreSQL names after what it
-				// is (a function's name, "?column?"): not a name to go by.
-				return nil, false
-			}
-			name = parts[len(parts)-1]
-		}
-		tainted[name] = true
-	}
-	return tainted, true
-}
-
-// mentionsStored reports whether the value can read the STORED value of
-// col OF THE ROW BEING WRITTEN: it holds, at any depth, a reference the
-// resolver gives to the target's column or cannot resolve; the target's
-// whole row (r, r.*, its name); or the target TABLE itself, in a
-// sub-select. It denies: what cannot be told to be something else counts.
+// Incoming: the closed list.
 //
-// AlwaysRefresh asks more (storedIn with wide): the stored value of ANY
-// row, by any route: a column of a FROM item that reads the target (the
-// table again under another alias, a view over it, a sub-select or WITH
-// query that reads it), unless that item's outputs are enumerated and the
-// column is not one that may hold it; and a sub-select of the value that
-// reads the target through a view or a WITH query.
-func (w *Write) mentionsStored(v any, col string) bool {
-	return w.storedIn(v, col, nil, false)
+// Rounds 6 to 8 each found a route by which a STORED value reached a value
+// the checks took for a new one: a FROM item, then a LATERAL sibling, a
+// WITH query's column list, INSERT ... SELECT from the target read back as
+// EXCLUDED, a bare name in a sub-select. The rule was a list of the ways a
+// stored value can arrive, and a list of routes is never whole. It is the
+// other way round now: notIncoming says what a value may be MADE OF, and
+// anything else fails.
+//
+// A value is incoming when every leaf of it is one of:
+//
+//   - a placeholder ($n), a constant, DEFAULT, or a function of no schema
+//     (or pg_catalog's) over such leaves: NOW(), COALESCE, a cast, an
+//     operator. (What a function READS is not known to any reader of text;
+//     a function of another schema is refused.)
+//   - EXCLUDED.<any column>, in ON CONFLICT DO UPDATE, when the INSERT's own
+//     source is incoming by this same definition (excludedIncoming): a
+//     VALUES list, or a SELECT over clean items only. INSERT ... SELECT FROM
+//     the target hands one row's stored values to another as EXCLUDED.
+//   - a column QUALIFIED by a clean item of the FROM list it stands in.
+//
+// A clean item reads no stored value of the target, of any row:
+//
+//   - an incoming batch (fromItem.incoming: unnest of placeholders, VALUES
+//     of placeholders, a sub-select of those). WITH ORDINALITY's counter is
+//     the position of a value handed in, and counts as one;
+//   - a schema-qualified BASE TABLE the catalog knows that is not the
+//     target, nor a partition, child or ancestor of it; or a view or
+//     materialized view over such tables only;
+//   - a WITH query of the statement, or a sub-select written in place,
+//     whose every item is clean and whose every leaf is incoming (so a
+//     column list, AS old(a, b), cannot rename a stored value into one);
+//   - pg_temp.<name> for a declared session table.
+//
+// Not clean, so a column of it is refused: the target under another alias,
+// a relation the catalog does not know, a name with no schema that is not
+// a WITH query, a function in FROM other than an incoming batch, a
+// data-modifying WITH. And when ANY item of the write's own FROM list is
+// not clean, no column of that list is taken, because a LATERAL item or a
+// bare name can carry a sibling's value.
+//
+// One leaf that is not incoming passes: ANOTHER column of the row being
+// written (SET ar = lower(repo_name)). It is a stored value, but not this
+// column's, of this row or any other. Written bare, it passes only when
+// every item of the write's own FROM list is clean, since the name could
+// be an item's column. The column's own name, bare or qualified by the
+// target, is its stored value and is refused, as is the target's whole
+// row. Variables and parameters of a body are refused: what one holds is
+// not known.
+
+type incomingMode int
+
+const (
+	// inWrite: the value itself and its sub-selects: the row being
+	// written, EXCLUDED and the write's own FROM items can be named.
+	inWrite incomingMode = iota
+	// inItem: the query of an item of the write's own FROM list: its
+	// siblings can be named; the row being written cannot.
+	inItem
+	// inClosed: a query nothing outside can be named in: an INSERT's
+	// source, a WITH query.
+	inClosed
+)
+
+type incomingWalk struct {
+	w   *Write
+	col string
+	why string
+	// visiting: the WITH queries and own items being judged (a recursive
+	// WITH names itself; while it is being judged it is taken as clean).
+	visiting map[string]bool
+	depth    int
 }
 
-func (w *Write) storedIn(v any, col string, inner [][]fromItem, wide bool) bool {
+type incomingEnv struct {
+	mode  incomingMode
+	inner [][]fromItem
+}
+
+func (iw *incomingWalk) fail(format string, args ...any) {
+	if iw.why == "" {
+		iw.why = fmt.Sprintf(format, args...)
+	}
+}
+
+// notIncoming is "" when every leaf of the value is incoming, and otherwise
+// says which leaf is not.
+func (w *Write) notIncoming(v any, col string) string {
+	iw := &incomingWalk{w: w, col: col, visiting: map[string]bool{}}
+	iw.value(v, incomingEnv{mode: inWrite})
+	return iw.why
+}
+
+// excludedIncoming: the INSERT this ON CONFLICT DO UPDATE belongs to takes
+// its rows from nothing but incoming values, so EXCLUDED holds only those.
+func (w *Write) excludedIncoming() bool {
+	if w.excluded != nil {
+		return *w.excluded
+	}
+	ok := true
+	if w.source != nil {
+		iw := &incomingWalk{w: w, visiting: map[string]bool{}}
+		iw.query(w.source, incomingEnv{mode: inClosed})
+		ok = iw.why == ""
+	}
+	w.excluded = &ok
+	return ok
+}
+
+// maxIncomingDepth bounds the walk of a value: a value nested deeper is
+// refused (PostgreSQL's own parser gave the tree, so it is finite; this is
+// against a WITH that names itself through another).
+const maxIncomingDepth = 2000
+
+func (iw *incomingWalk) value(v any, env incomingEnv) {
+	if iw.why != "" {
+		return
+	}
+	iw.depth++
+	defer func() { iw.depth-- }()
+	if iw.depth > maxIncomingDepth {
+		iw.fail("the value is nested too deep to be read")
+		return
+	}
 	switch t := v.(type) {
 	case []any:
 		for _, e := range t {
-			if w.storedIn(e, col, inner, wide) {
-				return true
-			}
+			iw.value(e, env)
 		}
 	case jnode:
 		kind, body := wrapped(t)
 		switch kind {
-		case "RangeVar":
-			if jstr(body["relname"]) == w.Table && (jstr(body["schemaname"]) == "" || jstr(body["schemaname"]) == w.Schema) {
-				return true
-			}
-			if wide && w.relReadsTarget(relName(body), map[string]bool{}) {
-				return true
-			}
-		case "SelectStmt":
-			inner = append(append([][]fromItem{}, inner...), fromItems(body["fromClause"]))
+		case "ParamRef", "A_Const", "SetToDefault", "SQLValueFunction", "TypeName":
+			return
+		case "TypeCast":
+			iw.value(body["arg"], env)
+			return
 		case "ColumnRef":
-			return w.refReadsStored(body, col, inner, wide)
+			iw.ref(body, env)
+			return
+		case "SelectStmt":
+			iw.query(t, env)
+			return
+		case "RangeVar", "RangeSubselect", "RangeFunction", "RangeTableFunc", "RangeTableSample", "JsonTable":
+			iw.fail("a relation where a value stands")
+			return
+		case "FuncCall":
+			names := jlist(body["funcname"])
+			if len(names) > 1 {
+				if schema, _ := sval(names[0]); schema != "pg_catalog" || len(names) > 2 {
+					iw.fail("a function of a schema (%s): what it reads is not known", render(t))
+					return
+				}
+			}
+		case "UpdateStmt", "InsertStmt", "DeleteStmt", "MergeStmt":
+			iw.fail("a data-modifying statement where a value stands")
+			return
+		}
+		if kind != "" {
+			t = body
 		}
 		for _, k := range sortedKeys(t) {
-			if w.storedIn(t[k], col, inner, wide) {
-				return true
-			}
+			iw.value(t[k], env)
 		}
 	}
-	return false
 }
 
-// refReadsStored: one column reference can read the stored value of col.
-func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem, wide bool) bool {
-	fields := jlist(ref["fields"])
+// query judges a SELECT (or VALUES, or a set operation of them): every item
+// of its FROM clean, every output and condition made of incoming leaves.
+func (iw *incomingWalk) query(q any, env incomingEnv) {
+	if iw.why != "" {
+		return
+	}
+	if list, ok := q.([]any); ok {
+		// Two WITH queries of one name: what the name reads is what either
+		// reads.
+		for _, e := range list {
+			iw.query(e, env)
+		}
+		return
+	}
+	kind, sel := wrapped(q)
+	if kind != "SelectStmt" {
+		iw.fail("a query that is not a SELECT (%s): a data-modifying statement hands on the rows it wrote", kind)
+		return
+	}
+	iw.selectBody(sel, env)
+}
+
+// selectBody judges a SELECT's fields. The arms of a set operation are held
+// in place, as fields with no wrapper, and each is the query.
+func (iw *incomingWalk) selectBody(sel jnode, env incomingEnv) {
+	if iw.why != "" {
+		return
+	}
+	for _, arm := range []string{"larg", "rarg"} {
+		if a, ok := sel[arm].(jnode); ok {
+			if k, b := wrapped(a); k == "SelectStmt" {
+				a = b
+			}
+			iw.selectBody(a, env)
+		}
+	}
+	items := fromItems(sel["fromClause"])
+	in := env
+	in.inner = append(append([][]fromItem{}, env.inner...), items)
+	for _, it := range items {
+		iw.item(it, in)
+	}
+	// What the query hands on is what it SELECTS (or its VALUES). Its
+	// conditions (WHERE, ON, GROUP BY, HAVING, ORDER BY, LIMIT) pick which
+	// rows; they are not the value, and are not walked: a condition may
+	// read anything, the stored value included, as the write's own WHERE
+	// may. (Every relation a JOIN names is an item above, whatever its ON
+	// says.)
+	iw.value(sel["targetList"], in)
+	iw.value(sel["valuesLists"], in)
+}
+
+// item judges one FROM item: it is clean, or the walk fails.
+func (iw *incomingWalk) item(it fromItem, env incomingEnv) {
+	if iw.why != "" || it.incoming {
+		return
+	}
+	name := it.alias
+	if name == "" {
+		name = it.name
+	}
+	switch {
+	case it.fn:
+		iw.fail("the FROM item %s is a function that is not unnest of placeholders: what it reads is not known", name)
+	case it.direct:
+		iw.relation(it.schema, it.name)
+	case it.sub != nil:
+		// A sub-select written in place names what stands around it in
+		// the mode it is met in: an item of the write's own FROM list
+		// (inItem, from ownClean) can name its siblings, which are all
+		// judged; one inside a sub-select of the value (inWrite) can name
+		// the row being written, so a bare name it selects is refused.
+		iw.query(it.sub, env)
+	}
+	// What is left is a join's alias: its parts are items of their own.
+}
+
+// relation judges a relation written in place.
+func (iw *incomingWalk) relation(schema, name string) {
+	w := iw.w
+	if schema == "" {
+		var q any
+		ok := false
+		if w.scope != nil {
+			q, ok = w.scope.ctes[name]
+		}
+		if !ok {
+			iw.fail("the relation %s names no schema and is no WITH query of the statement: which relation it is, the text does not say", name)
+			return
+		}
+		if iw.visiting["with "+name] {
+			return
+		}
+		iw.visiting["with "+name] = true
+		iw.query(q, incomingEnv{mode: inClosed})
+		delete(iw.visiting, "with "+name)
+		if iw.why != "" {
+			iw.why = "the WITH query " + name + " is not incoming: " + iw.why
+		}
+		return
+	}
+	q := schema + "." + name
+	if schema == "pg_temp" {
+		if w.cat == nil || !w.cat.temp[name] {
+			iw.fail("%s is not a declared session table", q)
+		}
+		return
+	}
+	if w.cat == nil {
+		iw.fail("the relation %s is read with no catalog to say what it is", q)
+		return
+	}
+	base := func(rel string) bool {
+		if w.cat.Kind(rel) != "table" {
+			iw.fail("%s is not a base table the catalog knows (it knows it as %q)", rel, w.cat.Kind(rel))
+			return false
+		}
+		target := w.Qualified()
+		related := rel == target
+		for _, b := range w.cat.behind(rel) {
+			related = related || b == target
+		}
+		for _, b := range w.cat.behind(target) {
+			related = related || b == rel
+		}
+		if related {
+			iw.fail("%s is the table being written (or a partition, child or parent of it): its columns are stored values", rel)
+			return false
+		}
+		// A table the catalog saw filled from other relations (CREATE
+		// TABLE ... AS) holds what they held.
+		for _, src := range w.cat.copies[rel] {
+			if iw.visiting["copy "+rel] {
+				continue
+			}
+			iw.visiting["copy "+rel] = true
+			schema, name := "", src
+			if i := strings.IndexByte(src, '.'); i >= 0 {
+				schema, name = src[:i], src[i+1:]
+			}
+			iw.relation(schema, name)
+			delete(iw.visiting, "copy "+rel)
+			if iw.why != "" {
+				iw.why = rel + " was filled from what is not incoming: " + iw.why
+				return false
+			}
+		}
+		return true
+	}
+	switch kind := w.cat.Kind(q); kind {
+	case "table":
+		base(q)
+	case "view", "matview":
+		behind := w.cat.behind(q)
+		if len(behind) == 0 {
+			iw.fail("the %s %s: what it reads is not known to the catalog", kind, q)
+			return
+		}
+		for _, b := range behind {
+			if k := w.cat.Kind(b); k == "view" || k == "matview" {
+				continue // its own sources are in the list too
+			}
+			if !base(b) {
+				iw.why = "the " + kind + " " + q + " reads what is not incoming: " + iw.why
+				return
+			}
+		}
+	default:
+		iw.fail("the relation %s is not one the catalog knows (%q): it may be a view over the table being written", q, kind)
+	}
+}
+
+// ownClean: every item of the write's own FROM list is clean.
+func (iw *incomingWalk) ownClean() bool {
+	if iw.w.scope == nil {
+		return true
+	}
+	if iw.visiting["own"] {
+		return true
+	}
+	iw.visiting["own"] = true
+	defer delete(iw.visiting, "own")
+	env := incomingEnv{mode: inItem}
+	for _, it := range iw.w.scope.from {
+		iw.item(it, env)
+	}
+	return iw.why == ""
+}
+
+// ref judges one column reference.
+func (iw *incomingWalk) ref(ref jnode, env incomingEnv) {
+	w := iw.w
 	var parts []string
 	star := false
-	for _, f := range fields {
+	for _, f := range jlist(ref["fields"]) {
 		if s, ok := sval(f); ok {
 			parts = append(parts, s)
 		} else {
 			star = true
 		}
 	}
-	shadowed := func(q string) bool {
-		for _, items := range inner {
-			if fromNamed(items, q) {
-				return true
+	text := strings.Join(parts, ".")
+	if star {
+		text += ".*"
+		parts = append(parts, "*")
+	}
+	innerNamed := func(match func(fromItem) bool) bool {
+		for i := len(env.inner) - 1; i >= 0; i-- {
+			for _, it := range env.inner[i] {
+				if match(it) {
+					return true
+				}
 			}
 		}
 		return false
+	}
+	byName := func(q string) func(fromItem) bool {
+		return func(it fromItem) bool { return it.alias == q || (it.alias == "" && it.name == q) }
 	}
 	var own []fromItem
 	if w.scope != nil {
 		own = w.scope.from
 	}
-	// reading: the own FROM items named q that read the target (wide only).
-	reading := func(q string) []itemRead {
-		var out []itemRead
-		if !wide || shadowed(q) {
-			return nil
-		}
+	// ownNamed: exactly one item of the write's FROM list is named so. Two
+	// of one name is a name PostgreSQL refuses ("specified more than
+	// once"); it resolves to neither here.
+	ownCount := func(match func(fromItem) bool) int {
+		n := 0
 		for _, it := range own {
-			if it.alias == q || (it.alias == "" && it.name == q) {
-				if ir := w.read(it, col); ir.reads {
-					out = append(out, ir)
-				}
+			if match(it) {
+				n++
 			}
 		}
-		return out
+		return n
 	}
-	// wholeRow: the qualifier parts name the target's row.
-	wholeRow := func(q []string) bool {
-		switch len(q) {
-		case 0:
-			// A bare * at the top of the assignment is no expression; in a
-			// sub-select it is that sub-select's rows.
-			return len(inner) == 0
-		case 1:
-			if shadowed(q[0]) {
-				return false
+	ownNamed := func(match func(fromItem) bool) bool { return ownCount(match) == 1 }
+	// outside: a qualifier that names nothing of the queries the reference
+	// stands in: what it can be depends on where the walk is.
+	outside := func(isTarget bool, match func(fromItem) bool, q string) {
+		switch env.mode {
+		case inClosed:
+			iw.fail("%s: its qualifier names nothing of the query it stands in", text)
+		case inItem:
+			if !ownNamed(match) {
+				iw.fail("%s: its qualifier names no item of the FROM list (the row being written cannot be named there)", text)
+				return
 			}
-			if q[0] == w.targetName() {
-				return true
-			}
-			// The whole row of an item that reads the target holds
-			// whatever the item reads of it.
-			if len(reading(q[0])) > 0 {
-				return true
-			}
-			// A name in scope as another relation, or a variable, is that.
-			return !fromNamed(own, q[0]) && !w.qualifiesVariable(q[0]) && !(w.Kind == "conflict-update" && q[0] == "excluded")
-		case 2:
-			return q[0] == w.Schema && q[1] == w.Table
-		}
-		return true
-	}
-	if star {
-		return wholeRow(parts)
-	}
-	if len(parts) == 0 {
-		return true
-	}
-	last := parts[len(parts)-1]
-	if wide {
-		switch len(parts) {
-		case 1:
-			// A bare name, where the assignment stands, may be a column of
-			// any FROM item: of one that reads the target, when that item
-			// may hold the stored value under this name.
-			if len(inner) == 0 {
-				for _, it := range own {
-					if ir := w.read(it, col); ir.reads && !ir.self && ir.may(last, col) {
-						return true
-					}
+			iw.ownClean()
+		case inWrite:
+			isFrom, isVar := ownNamed(match), q != "" && w.qualifiesVariable(q)
+			isExcluded := q == "excluded" && w.Kind == "conflict-update" && w.Alias != "excluded"
+			n := 0
+			for _, is := range []bool{isTarget, isFrom, isVar, isExcluded} {
+				if is {
+					n++
 				}
 			}
-		case 2:
-			for _, ir := range reading(parts[0]) {
-				if ir.may(last, col) {
-					return true
+			switch {
+			case n != 1:
+				iw.fail("%s: its qualifier names nothing in scope, or more than one thing", text)
+			case isExcluded:
+				if !w.excludedIncoming() {
+					iw.fail("%s: EXCLUDED holds what the INSERT's own source reads, and that source is not made of incoming values alone (it reads a table that is, or may be, the one being written)", text)
 				}
-			}
-		case 3:
-			if !shadowed(parts[1]) {
-				for _, it := range own {
-					if it.alias == "" && it.schema == parts[0] && it.name == parts[1] {
-						if ir := w.read(it, col); ir.may(last, col) {
-							return true
-						}
-					}
+			case isFrom:
+				if !iw.ownClean() {
+					iw.why = text + ": an item of the FROM list is not clean (" + iw.why + ")"
+				}
+			case isVar:
+				iw.fail("%s is a variable or a parameter of the body: what it holds is not known", text)
+			case isTarget:
+				// Another column of the row being written is not the
+				// column's own stored value; the column itself and the
+				// whole row are.
+				if last := parts[len(parts)-1]; last == iw.col || last == "*" {
+					iw.fail("%s is the stored value of the row being written", text)
 				}
 			}
 		}
 	}
-	if last == col {
-		switch w.classify(parts, inner) {
-		case refStored, refUnresolved:
-			return true
-		}
-		return false
-	}
-	// A reference that is not to a column of this name can still be the
-	// target's whole row, written as its name: to_jsonb(r), (r).col; or,
-	// for AlwaysRefresh, the whole row of an item that reads the target.
 	switch len(parts) {
+	case 0:
+		iw.fail("a column reference that is not read")
 	case 1:
-		return !shadowed(parts[0]) && (parts[0] == w.targetName() || len(reading(parts[0])) > 0)
+		name := parts[0]
+		if is, conflict := w.variable(name); is && !star && conflict != "use_column" {
+			iw.fail("the bare name %s is a variable of the body (or may be: the body does not say which wins): what it holds is not known", name)
+			return
+		}
+		if star {
+			// A bare *: every column of the query's own items, which are
+			// judged; at the top of a value it is no expression.
+			if len(env.inner) == 0 {
+				iw.fail("a bare * where a value stands")
+			}
+			return
+		}
+		// A relation's name written alone is its whole row.
+		if innerNamed(byName(name)) {
+			return
+		}
+		if env.mode != inClosed && ownNamed(byName(name)) {
+			outside(false, byName(name), "")
+			return
+		}
+		if env.mode == inWrite && name == w.targetName() {
+			iw.fail("%s is the whole row being written", name)
+			return
+		}
+		if env.mode != inWrite {
+			// Nothing outside can be named bare but an item that is judged.
+			if len(env.inner) == 0 {
+				iw.fail("the bare name %s where no FROM item can give it", name)
+			} else if env.mode == inItem {
+				iw.ownClean()
+			}
+			return
+		}
+		// A bare name here is a column of the row being written or of an
+		// item in scope. The column itself is the stored value. Any other
+		// is another column of the row (not this column's stored value)
+		// or an item's column, which is clean when every item is.
+		if name == iw.col {
+			iw.fail("the bare name %s is, or may be, the stored value of the row being written: an incoming value of that name must be qualified by the item it comes from", name)
+			return
+		}
+		if !iw.ownClean() {
+			iw.why = "the bare name " + name + " may be a column of an item of the FROM list that is not clean (" + iw.why + ")"
+		}
 	case 2:
-		return w.Alias == "" && parts[0] == w.Schema && parts[1] == w.Table
+		q := parts[0]
+		if innerNamed(byName(q)) {
+			return
+		}
+		outside(q == w.targetName(), byName(q), q)
+	case 3:
+		s, t := parts[0], parts[1]
+		named := func(it fromItem) bool { return it.alias == "" && it.schema == s && it.name == t }
+		if innerNamed(named) {
+			return
+		}
+		outside(w.Alias == "" && w.Schema != "" && s == w.Schema && t == w.Table, named, "")
+	default:
+		iw.fail("%s: a reference of more parts than schema.table.column", text)
 	}
-	return false
 }

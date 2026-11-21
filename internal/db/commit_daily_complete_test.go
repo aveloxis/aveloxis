@@ -236,22 +236,54 @@ func TestCommitDailyCompleteColumnMigrationStampsOnce(t *testing.T) {
 			t.Fatalf("migration errors: %v", errs)
 		}
 	}
-	// The column exists (this test DB was built from schema.sql; a view
-	// depends on it, so the test cannot drop it to walk the upgrade path):
-	// a run changes nothing — the unstamped repository with rows stays
-	// unstamped. The stamp the upgrade run makes is its own function.
+	// The column exists (this test DB was built from schema.sql): a run
+	// changes nothing, and the unstamped repository with rows stays
+	// unstamped.
 	run()
 	if stamp(withRows.repoID) != nil || stamp(without.repoID) != nil {
 		t.Fatal("with the column present the migration stamps nothing")
 	}
+	// The upgrade run, walked by the migration's own transactional body
+	// (0.29.215: the test sent the stamp itself, so the write-policy judge
+	// never saw production send it). A view depends on the column, so the
+	// column is dropped with what depends on it inside a transaction that
+	// is rolled back: the step adds it and stamps, and the rows are read
+	// in that transaction.
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE aveloxis_data.repos DROP COLUMN commit_daily_complete_at CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	stamped, added, err := addColumnWithOneTimeStampTx(ctx, tx, "aveloxis_data", "repos", "commit_daily_complete_at", "TIMESTAMPTZ", stampCommitDailyCompleteWhereFilledSQL)
+	if err != nil || !added || stamped < 1 {
+		t.Fatalf("the upgrade run adds the column and stamps: stamped=%d added=%v err=%v", stamped, added, err)
+	}
+	inTx := func(id int64) *time.Time {
+		t.Helper()
+		var at *time.Time
+		if err := tx.QueryRow(ctx, `SELECT commit_daily_complete_at FROM aveloxis_data.repos WHERE repo_id = $1`, id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	if inTx(withRows.repoID) == nil {
+		t.Fatal("the upgrade stamp marks a repository that has daily rows")
+	}
+	if inTx(without.repoID) != nil {
+		t.Fatal("a repository without rows is not stamped")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The same stamp, kept this time, for the "once" half below.
 	if _, err := store.pool.Exec(ctx, stampCommitDailyCompleteWhereFilledSQL); err != nil {
 		t.Fatal(err)
 	}
-	if stamp(withRows.repoID) == nil {
-		t.Fatal("the upgrade stamp marks a repository that has daily rows")
-	}
-	if stamp(without.repoID) != nil {
-		t.Fatal("a repository without rows is not stamped")
+	if stamp(withRows.repoID) == nil || stamp(without.repoID) != nil {
+		t.Fatal("the stamp marks exactly the repository that has daily rows")
 	}
 	// Once: NULL again with rows present (the partial case) stays NULL on
 	// the next run of the migration.

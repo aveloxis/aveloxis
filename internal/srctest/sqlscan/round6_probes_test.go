@@ -66,10 +66,17 @@ func round6Cases(t *testing.T, name string) []round6Case {
 	return out
 }
 
+// round6Tables are the base tables the round-6 probes name.
+var round6Tables = []string{"aveloxis_data.repos", "aveloxis_data.other", "s.stg"}
+
 // round6Verdict is how the judge takes a case: "pass", or the kinds of what
 // it holds against it.
 func round6Verdict(c round6Case) string {
-	cat := CatalogOf(c.stmts).Table("aveloxis_data.repos")
+	// s.stg, s.o and the others: the tables the probes READ. Since round 8
+	// a relation a value reads must be one the catalog knows (as a target
+	// must), so the probes' own tables are declared, and a case is held
+	// for what it does, not for naming a table nobody declared.
+	cat := CatalogOf(c.stmts).Table(round6Tables...)
 	rep := CheckIn(cat, c.stmts, round6Registry, nil)
 	set := map[string]bool{}
 	for range rep.Unparsed {
@@ -153,7 +160,7 @@ func TestTheRound6ProbesAreHeldAgainst(t *testing.T) {
 	refused := map[string]bool{}
 	for _, c := range round6Cases(t, "fp.txt") {
 		// The conforming statements write tables of their own.
-		cat := CatalogOf(c.stmts).Table("aveloxis_data.repos", "aveloxis_data.log", "aveloxis_data.other", "aveloxis_data.repo_info")
+		cat := CatalogOf(c.stmts).Table(append([]string{"aveloxis_data.log", "aveloxis_data.repo_info"}, round6Tables...)...)
 		rep := CheckIn(cat, c.stmts, round6Registry, nil)
 		if len(rep.Violations)+len(rep.Unparsed) > 0 {
 			refused[c.tag] = true

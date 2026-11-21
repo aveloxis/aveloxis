@@ -155,8 +155,9 @@ type CoverageView struct {
 	LockfilesUnread *LockfilesUnread `json:"lockfiles_unread"`
 }
 
-// LockfilesUnread is why the last reading of a repository's lockfiles did
-// not finish, and when they were last read to the end (null when never).
+// LockfilesUnread is why the latest reading of a repository's lockfiles did
+// not finish, and when the lockfile rows that are stored were read: null
+// when none is stored. The key is always sent.
 type LockfilesUnread struct {
 	Reason     string     `json:"reason"`
 	LastReadAt *time.Time `json:"last_read_at"`
@@ -229,7 +230,7 @@ func Coverage(in CoverageInputs) CoverageView {
 			v.DependenciesWithoutRow[kind] = n
 		}
 		if cov.LockfilesUnreadReason != "" {
-			v.LockfilesUnread = &LockfilesUnread{Reason: cov.LockfilesUnreadReason, LastReadAt: cov.LockfilesReadAt}
+			v.LockfilesUnread = &LockfilesUnread{Reason: cov.LockfilesUnreadReason, LastReadAt: utcOrNil(cov.LockfilesLastRead)}
 		}
 	}
 
@@ -298,8 +299,11 @@ var lockfileUnreadReasonWordings = map[string]string{
 	model.InventoryAttemptReadCPULimit:    "reading them took more processor time than allowed",
 	model.InventoryAttemptReadMemoryLimit: "reading them took more memory than allowed",
 	model.InventoryAttemptReadTimedOut:    "reading them took too long",
-	model.InventoryAttemptReadFailed:      "they could not be read",
-	model.InventoryAttemptRootUnreadable:  "the clone could not be read",
+	// Not "they could not be read": the never-read sentence already says
+	// that, and read "Lockfiles could not be read (they could not be read)."
+	model.InventoryAttemptReadFailed:     "the reader failed",
+	model.InventoryAttemptRootUnreadable: "the clone could not be read",
+	model.LockfileUnreadNotReached:       "the reader was stopped before it reached them",
 }
 
 // LockfileUnreadReasonWording is the wording of why the lockfiles went
@@ -316,8 +320,11 @@ func LockfileUnreadReasonWording(reason string) string {
 // there is nothing to caution about (operator, 2026-11-20: a caution in
 // these two cases and nothing otherwise). The two sentences:
 //
-//   - an earlier reading exists, so the stored lockfile rows are that old;
-//   - none ever finished, so there are no lockfile rows at all.
+//   - lockfile rows are stored, so they are as old as the date;
+//   - none is stored, so transitive dependencies are not checked.
+//
+// Which of the two is the store's to decide, from what is stored
+// (model.DependencyCoverage.LockfilesLastRead).
 //
 // One function, so that every surface says the same thing; the web client
 // builds the same sentences from the API's lockfiles_unread object.
@@ -326,10 +333,34 @@ func CoverageLockfileCaution(v *CoverageView) string {
 		return ""
 	}
 	reason := LockfileUnreadReasonWording(v.LockfilesUnread.Reason)
+	p := lockfileCautionParts
 	if at := v.LockfilesUnread.LastReadAt; at != nil {
-		return "Lockfiles last read " + at.UTC().Format(coverageDate) + "; the latest read did not finish (" + reason + "). Versions and transitive dependencies may be out of date."
+		return p["behind_before_date"] + at.UTC().Format(coverageDate) + p["behind_before_reason"] + reason + p["behind_after_reason"]
 	}
-	return "Lockfiles could not be read (" + reason + "). Transitive dependencies are not checked."
+	return p["never_before_reason"] + reason + p["never_after_reason"]
+}
+
+// lockfileCautionParts are the fixed words of the two cautions, around the
+// date and the reason. A map, like the wording maps above, so that the web
+// client's copy (aveloxis-gui lib/wordings.js lockfileCautionParts) is held
+// to it word for word by the same cross-repository test (round 8: the two
+// sentences were written out twice and compared by nothing).
+var lockfileCautionParts = map[string]string{
+	"behind_before_date":   "Lockfiles last read ",
+	"behind_before_reason": "; the latest read did not finish (",
+	"behind_after_reason":  "). Versions and transitive dependencies may be out of date.",
+	"never_before_reason":  "Lockfiles could not be read (",
+	"never_after_reason":   "). Transitive dependencies are not checked.",
+}
+
+// utcOrNil is the time in UTC: the date a surface prints, and the instant
+// the API sends, do not depend on the zone the database driver handed it in.
+func utcOrNil(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 const coverageDate = "2006-01-02"

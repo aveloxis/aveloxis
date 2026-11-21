@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.214 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.215 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=84582877"></script>
+      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -751,6 +751,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -2293,7 +2294,7 @@ a half against its own reference table below:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code></p></td>
 <td><p>integer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1024</span></code></p></td>
-<td><p>0.29.213: the memory, in mebibytes, that the same process may hold. It limits the process’s Go heap, checked ten times a second; its resident memory has been measured at up to about 1.3 times the setting, so with <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> allow about 1.3 x N times this. A single file larger than the memory left is not read: it is recorded as one manifest or lockfile that could not be read, and the rest of the repository is read. The largest honest builds measured hold about 30 MiB. Lockfiles are what can need more. At the default, the largest file read in tests was about: <code class="docutils literal notranslate"><span class="pre">composer.lock</span></code> 512 MB, <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> 448 MB, <code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code> 320 MB, <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code> 96 MB, <code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code> 80 MB, <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> 64 to 79 MB, <code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code> 64 MB (one run each, on one machine; treat them as approximate). A repository whose lockfile reading is stopped keeps its previous lockfile rows and shows a caution on its page until the setting is raised. <code class="docutils literal notranslate"><span class="pre">0</span></code> or a negative number is refused at load.</p></td>
+<td><p>0.29.213: the memory, in mebibytes, that the process reading one repository’s manifests and lockfiles may hold (its Go heap, checked ten times a second). Since 0.29.215 a manifest or lockfile is read only when its size times its format’s cost fits in the memory left; a larger one is recorded as one file that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution on the repository’s page. The costs, and so the largest file the default reads: <code class="docutils literal notranslate"><span class="pre">composer.lock</span></code> 2 (about 512 MB), <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> 2.6 (394 MB), <code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code> 3 (341 MB), <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code> 10 (102 MB), <code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code> 12.5 (82 MB), <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> 14 (73 MB), <code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code> 15 (68 MB), other lockfiles 8 (128 MB), manifests 3. The largest honest builds measured hold about 30 MiB. With <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code>, allow somewhat more than N times the setting on the host: for honest files the process’s resident memory has been measured at up to about a quarter above its heap. <code class="docutils literal notranslate"><span class="pre">0</span></code> or a negative number is refused at load.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repository_host_registration_check</span></code></p></td>
 <td><p>boolean</p></td>

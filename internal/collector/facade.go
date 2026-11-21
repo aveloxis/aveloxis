@@ -13,10 +13,10 @@ package collector
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -345,8 +345,10 @@ func fetchBareClone(ctx context.Context, path string) (string, error) {
 	// could not read the terminal anyway; a prompt would stop it.
 	cmd.Env = gitCloneEnv()
 	groupTerminated(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// Bounded (boundedCapture): what git and the remote print is not
+	// this program's to size.
+	stderr := newBoundedCapture()
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		sweepGroup(cmd)
@@ -355,7 +357,7 @@ func fetchBareClone(ctx context.Context, path string) (string, error) {
 		// Git exited 0 and something it started still held stderr after
 		// sweptWaitDelay. The refs advanced: not a failed fetch, which
 		// would cost the clone. The caller logs the note.
-		stderr.WriteString("\nerror: a process git started still held its stderr " + sweptWaitDelay.String() + " after the fetch exited\n")
+		_, _ = io.WriteString(stderr, "\nerror: a process git started still held its stderr "+sweptWaitDelay.String()+" after the fetch exited\n")
 		err = nil
 	}
 	return stderr.String(), err
@@ -505,10 +507,10 @@ func (f *FacadeCollector) freshClone(ctx context.Context, gitURL, cloneURL, path
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	var stderr bytes.Buffer
+	stderr := newBoundedCapture()
 	cmd := exec.CommandContext(ctx, "git", "-c", gitNoRedirects, "clone", "--bare", "--", cloneURL, path)
 	cmd.Env = gitCloneEnv()
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return withRemoteNotice(fmt.Errorf("%w: %s", execErr(ctx, err), stderr.String()), stderr.String())
 	}

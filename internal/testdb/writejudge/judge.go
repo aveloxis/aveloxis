@@ -13,27 +13,42 @@
 // The static check (internal/db/column_write_policy_test.go) reads the
 // store's Go and decides what text each SQL argument holds. Six review
 // rounds found that reading Go cannot be made complete. This judge reads
-// no Go. It is a pgx tracer on every pool the store builds while a DB-tier
+// no Go. It is a pgx tracer on every pool and connection the module opens
+// (internal/db/open.go, the one file that opens them) while a DB-tier
 // package's tests run, and sees the text of every statement the library is
 // handed. Each statement that PRODUCTION code sends is parsed by
 // PostgreSQL's parser and judged by sqlscan.CheckIn with Policies and
 // Exceptions; the verdict is given once, after the package's tests
 // (testdb.Main).
 //
-// Whose statement it is (Origin, 0.29.214): production's unless a test
-// wrote it. The frames of the stack that are in this module, outside this
-// package, are read from the library outwards. A _test.go frame that only
-// FORWARDS (a method named as a library function that takes SQL is: Exec,
-// Query, QueryRow, SendBatch, CopyFrom, Prepare, on a test's stand-in for
-// a transaction or pool) is passed over: the text it was handed is its
-// caller's. The first frame left decides. In a _test.go file: the
-// statement is a fixture's (a test may write a protected column any way it
-// likes) and is not judged. Otherwise it is production's, and that frame's
-// line is the call that sent it: what the coverage requirement compares
-// with the static list of such calls in internal/db (Sites). A stack with
-// NO such frame (a goroutine or a callback that starts at a library
-// function: `go pool.Exec(ctx, sql)`) is production's too, with its origin
-// unknown: the judge does not take what it cannot place for a fixture.
+// Whose statement it is (Origin, 0.29.215): production's unless a test
+// wrote it, decided by the SHAPE of the stack, since a stack does not show
+// where a text came from. The frames that are in this module, outside this
+// package, are read from the library outwards:
+//
+//   - the nearest frame is production's (a non-test file): the statement is
+//     production's, and that frame's line is the call that sent it: what
+//     the coverage requirement compares with the static list of such calls
+//     in internal/db (Sites);
+//   - the nearest frames are a test's and NO production frame is beyond
+//     them: a test sent it. It is a fixture's (a test may write a protected
+//     column any way it likes) and is not judged;
+//   - the nearest frames are a test's and a production frame IS beyond
+//     them (test, production, test, library): production called into test
+//     code, which called the library. That is either a test's stand-in for
+//     a transaction or a pool handing on what production gave it, however
+//     the stand-in is written (a method of any name, a closure, a helper, a
+//     generic: 0.29.214 knew only a method named as the library's, and took
+//     the rest for fixtures), or a test's own closure that a production
+//     wrapper runs. The first is production's statement. So it is taken for
+//     production's, sent from the production frame beyond the test's,
+//     UNLESS the test frame nearest the library belongs to a declaration on
+//     the short list FixtureSenders: the tests that hand a production
+//     wrapper a closure holding their OWN SQL, each with its reason;
+//   - NO frame of this module at all (a goroutine or a callback that
+//     starts at a library function: `go pool.Exec(ctx, sql)`): production's,
+//     with its origin unknown. The judge does not take what it cannot place
+//     for a fixture.
 //
 // What it sees, from pgx v5.11's source: the text of Query / QueryRow /
 // Exec as the caller gave it (the trace is taken BEFORE a
@@ -49,10 +64,14 @@ package writejudge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -76,6 +95,9 @@ type Sent struct {
 	SQL     string
 	Frames  []Frame // production frames, innermost first
 	Batched bool
+	// Via, when test code stood between the library and the innermost
+	// production frame, is that test frame ("file:line declaration").
+	Via string
 	// Seq is the statement's place among everything recorded (the first
 	// time it was seen): what "production made that table EARLIER" is
 	// decided by.
@@ -93,29 +115,166 @@ type Judge struct {
 	// fixtureDDL are the fixtures' own statements that define a relation
 	// (see Verdict: a scratch table a test made and dropped is known to
 	// the catalog by these).
-	fixtureDDL map[string]bool
+	// Each with its place among everything recorded: they are given to the
+	// catalog in the order they were sent (0.29.215: a map was walked, so
+	// an ALTER could reach the catalog before the CREATE it alters, and
+	// then defined nothing).
+	fixtureDDL map[string]int
 	// rewritten are the findings against production statements sent with a
 	// query rewriter other than the library's own named arguments.
 	rewritten map[string]bool
 	fixtures  int
 	sends     int
+	// through counts the statements that reached the library through test
+	// code under a production frame; via is, for those judged as
+	// production's, the test frame they came through (for the finding).
+	through map[string]int
+	via     map[string]Frame
+	// spill, in a re-executed test binary (InstallChild), is the file each
+	// thing this judge records is also appended to, for the process that
+	// owns the database to judge (AdoptChildren).
+	spill string
 }
 
 // New is a judge that is not installed (a test of the judge builds one).
 func New() *Judge {
-	return &Judge{sent: map[string]*Sent{}, fixtureDDL: map[string]bool{}, rewritten: map[string]bool{}}
+	return &Judge{sent: map[string]*Sent{}, fixtureDDL: map[string]int{}, rewritten: map[string]bool{}, through: map[string]int{}, via: map[string]Frame{}}
 }
 
 var installed *Judge
 
-// Install puts a judge on every pool the store builds from here on, and
+// Install puts a judge on every pool and connection the module opens from
+// here on (internal/db's openers hand each configuration to the seam), and
 // returns it. internal/testdb calls it once, before a DB-tier package's
-// tests.
+// tests (InstallChild in a re-executed test binary).
 func Install() *Judge {
 	j := New()
 	installed = j
 	stmttrace.Wrap = func(inner pgx.QueryTracer) pgx.QueryTracer { return Tracer{Inner: inner, Judge: j} }
 	return j
+}
+
+// ChildDirEnv names the directory in which the re-executed test binaries
+// of a run leave what they sent (0.29.215). A helper-process test starts
+// the test binary again; that child runs against its ancestor's database
+// (testdb.Main), and until 0.29.215 it ran with no judge at all: what
+// production code sent there was neither judged nor counted as reached.
+// The process that owns the database makes the directory and sets the
+// variable before its tests; every descendant inherits it.
+const ChildDirEnv = "AVELOXIS_WRITE_JUDGE_CHILD_DIR"
+
+// InstallChild is Install for a re-executed test binary: the judge is on
+// every pool the child opens, and every thing it records is ALSO appended,
+// as it is recorded, to a file of the child's own in ChildDirEnv (one
+// line, one write: a child that ends by os.Exit, or is killed, has lost
+// nothing but a statement whose record was being written at that
+// instant). The child gives no verdict: it has no catalog of its own to
+// judge in, and its ancestor gives one over everything (AdoptChildren).
+// With the variable unset (a binary started by something other than a
+// test run) the judge records and spills nothing.
+func InstallChild() *Judge {
+	j := Install()
+	if dir := os.Getenv(ChildDirEnv); dir != "" {
+		j.spill = filepath.Join(dir, fmt.Sprintf("child-%d.jsonl", os.Getpid()))
+	}
+	return j
+}
+
+// spilled is one line of a child's file.
+type spilled struct {
+	SQL       string  `json:"sql,omitempty"`
+	Frames    []Frame `json:"frames,omitempty"`
+	Batched   bool    `json:"batched,omitempty"`
+	FixtureOf string  `json:"fixture_ddl,omitempty"`
+	Rewritten string  `json:"rewritten,omitempty"`
+}
+
+// spillLocked appends one record to the child's file. The caller holds
+// j.mu. A failure is itself spilled nowhere, so it goes to standard
+// error, which a helper-process test's parent usually shows.
+func (j *Judge) spillLocked(rec spilled) {
+	if j.spill == "" {
+		return
+	}
+	line, err := json.Marshal(rec)
+	if err == nil {
+		var f *os.File
+		if f, err = os.OpenFile(j.spill, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, err = f.Write(append(line, '\n'))
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "writejudge: a re-executed test binary could not hand a statement to its ancestor's judge (%v): it will not be judged\n", err)
+	}
+}
+
+// AdoptChildren takes into this judge everything the re-executed test
+// binaries left in dir: their production statements (after this
+// process's own, in the order each child sent them), the relations their
+// fixtures defined, and what was held against a rewriter. It returns how
+// many records it took.
+func (j *Judge) AdoptChildren(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "child-") || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return n, err
+		}
+		lines := strings.Split(string(b), "\n")
+		for i, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var rec spilled
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				// Only a line being written when its child was killed is
+				// cut short, and that is the file's last, with no line end.
+				if i < len(lines)-1 {
+					return n, fmt.Errorf("%s line %d is not a record: %w", e.Name(), i+1, err)
+				}
+				continue
+			}
+			n++
+			j.mu.Lock()
+			switch {
+			case rec.Rewritten != "":
+				j.rewritten[rec.Rewritten] = true
+			case rec.FixtureOf != "":
+				j.fixtures++
+				j.sends++
+				if _, seen := j.fixtureDDL[rec.FixtureOf]; !seen {
+					j.fixtureDDL[rec.FixtureOf] = j.sends
+				}
+			case len(rec.Frames) > 0:
+				j.sends++
+				key := sentKey(rec.SQL, rec.Frames)
+				if _, seen := j.sent[key]; !seen {
+					j.sent[key] = &Sent{SQL: rec.SQL, Frames: rec.Frames, Batched: rec.Batched, Seq: j.sends}
+				}
+			}
+			j.mu.Unlock()
+		}
+	}
+	return n, nil
+}
+
+func sentKey(sql string, frames []Frame) string {
+	var key strings.Builder
+	key.WriteString(sql)
+	for _, f := range frames {
+		fmt.Fprintf(&key, "\x00%s:%d", f.File, f.Line)
+	}
+	return key.String()
 }
 
 // Installed is the judge Install put in place, or nil.
@@ -131,7 +290,10 @@ const self = module + "internal/testdb/writejudge."
 // declaration: "…/internal/db.(*PostgresStore).SidelineRepo.func1" is
 // "PostgresStore.SidelineRepo".
 func DeclOf(function string) string {
-	name := function
+	// A generic's type arguments first: they hold dots and slashes of
+	// their own ("(*wrap[go.shape.int]).Query", "f[example.com/x.T]"), and
+	// until 0.29.215 the receiver's name was cut at one of them.
+	name := withoutTypeArguments(function)
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
@@ -155,6 +317,23 @@ func DeclOf(function string) string {
 	return strings.Join(parts, ".")
 }
 
+// withoutTypeArguments is a function's name with every [...] removed.
+func withoutTypeArguments(function string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range function {
+		switch {
+		case r == '[':
+			depth++
+		case r == ']' && depth > 0:
+			depth--
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // rel is a frame's file as the source tools name it: relative to the
 // module root, slash separated.
 func rel(file string) string {
@@ -173,54 +352,54 @@ type StackFrame struct {
 	Line           int
 }
 
-// forwards are the names of the library's functions that take SQL (or
-// rows for a table): a method of one of these names in a test file, on a
-// test's stand-in for a transaction, a connection or a pool, hands on the
-// text it was given.
-var forwards = map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "SendBatch": true, "CopyFrom": true, "Prepare": true}
-
-// forwardingTestFrame: a METHOD named as a library function that takes
-// SQL, declared in a _test.go file.
-func forwardingTestFrame(f StackFrame) bool {
-	if !strings.HasSuffix(f.File, "_test.go") {
-		return false
-	}
-	typ, method, isMethod := strings.Cut(DeclOf(f.Function), ".")
-	// The declaration's own frame, not a closure inside it.
-	return isMethod && typ != "" && forwards[method] && strings.HasSuffix(f.Function, "."+method)
-}
+// FixtureSenders are the test declarations whose own SQL reaches the
+// library from under a production frame: a test hands a production wrapper
+// (a transaction, a retry) a closure, and the closure sends the test's
+// statement. Keyed "file\x00declaration" of the test frame nearest the
+// library, as rel and DeclOf name them; each with its reason. Anything else
+// of that stack shape is a stand-in handing on production's text, and is
+// judged (see the package comment). A new such test is found by its
+// statement being held against production with "handed down through test
+// code at ..." in the finding.
+var FixtureSenders = map[string]string{}
 
 // Origin says whose statement a stack sent (the frames from the library
 // outwards): a fixture's, or production's with every production frame of
-// the stack, innermost first. The rule is the package comment's.
-func Origin(stack []StackFrame) (frames []Frame, fixture bool) {
-	decided := false
+// the stack, innermost first, and, when test code stands between the
+// library and the innermost production frame, that test frame (via). The
+// rule is the package comment's.
+func Origin(stack []StackFrame) (frames []Frame, via *Frame, fixture bool) {
+	var nearestTest *Frame
+	any := false
 	for _, f := range stack {
 		if !strings.HasPrefix(f.Function, module) || strings.HasPrefix(f.Function, self) {
 			continue
 		}
-		test := strings.HasSuffix(f.File, "_test.go")
-		if !decided {
-			if forwardingTestFrame(f) {
-				continue
+		any = true
+		at := Frame{File: rel(f.File), Line: f.Line, Decl: DeclOf(f.Function)}
+		if strings.HasSuffix(f.File, "_test.go") {
+			if len(frames) == 0 && nearestTest == nil {
+				nearestTest = &at
 			}
-			if test {
-				return nil, true
-			}
-			decided = true
+			continue
 		}
-		if !test {
-			frames = append(frames, Frame{File: rel(f.File), Line: f.Line, Decl: DeclOf(f.Function)})
-		}
+		frames = append(frames, at)
 	}
-	if !decided {
-		return []Frame{UnknownOrigin}, false
+	switch {
+	case !any:
+		return []Frame{UnknownOrigin}, nil, false
+	case len(frames) == 0:
+		return nil, nil, true // only test frames: a test sent it
+	case nearestTest == nil:
+		return frames, nil, false // production nearest the library
+	case FixtureSenders[nearestTest.File+"\x00"+nearestTest.Decl] != "":
+		return nil, nearestTest, true
 	}
-	return frames, false
+	return frames, nearestTest, false
 }
 
 // originHere is Origin of the calling goroutine's stack.
-func originHere(skip int) ([]Frame, bool) {
+func originHere(skip int) ([]Frame, *Frame, bool) {
 	pcs := make([]uintptr, 96)
 	n := runtime.Callers(skip, pcs)
 	it := runtime.CallersFrames(pcs[:n])
@@ -236,11 +415,33 @@ func originHere(skip int) ([]Frame, bool) {
 }
 
 func (j *Judge) record(sql string, batched bool, args []any) {
-	frames, fixture := originHere(4)
+	frames, via, fixture := originHere(4)
 	if fixture {
 		frames = nil
 	}
+	if via != nil {
+		j.mu.Lock()
+		j.through[fmt.Sprintf("%s\x00%s\x00%v", via.File, via.Decl, fixture)]++
+		if !fixture {
+			j.via[sentKey(sql, frames)] = *via
+		}
+		j.mu.Unlock()
+	}
 	j.RecordFrom(frames, sql, batched, args)
+}
+
+// Through is how many statements reached the library through test code
+// standing under a production frame, by the test frame nearest the library
+// ("file\x00declaration\x00true" for one on FixtureSenders, taken for a
+// fixture; "...\x00false" for one judged as production's).
+func (j *Judge) Through() map[string]int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := map[string]int{}
+	for k, n := range j.through {
+		out[k] = n
+	}
+	return out
 }
 
 // RecordFrom records one statement sent from the given production frames
@@ -255,25 +456,29 @@ func (j *Judge) RecordFrom(frames []Frame, sql string, batched bool, args []any)
 		for _, a := range args {
 			if why := rewriterFinding(a); why != "" {
 				at := frames[0]
-				j.rewritten[fmt.Sprintf("%s:%d (%s) sent a statement with %s among its arguments: the library ran what it returned, which was not judged:\n  %.300s",
-					at.File, at.Line, at.Decl, why, strings.Join(strings.Fields(sql), " "))] = true
+				msg := fmt.Sprintf("%s:%d (%s) sent a statement with %s among its arguments: the library ran what it returned, which was not judged:\n  %.300s",
+					at.File, at.Line, at.Decl, why, strings.Join(strings.Fields(sql), " "))
+				if !j.rewritten[msg] {
+					j.spillLocked(spilled{Rewritten: msg})
+				}
+				j.rewritten[msg] = true
 			}
 		}
 	}
 	if !production {
 		j.fixtures++
 		if up := strings.ToUpper(sql); strings.Contains(up, "CREATE ") || strings.Contains(up, "ALTER ") {
-			j.fixtureDDL[sql] = true
+			if _, seen := j.fixtureDDL[sql]; !seen {
+				j.spillLocked(spilled{FixtureOf: sql})
+				j.fixtureDDL[sql] = j.sends
+			}
 		}
 		return
 	}
-	var key strings.Builder
-	key.WriteString(sql)
-	for _, f := range frames {
-		fmt.Fprintf(&key, "\x00%s:%d", f.File, f.Line)
-	}
-	if _, seen := j.sent[key.String()]; !seen {
-		j.sent[key.String()] = &Sent{SQL: sql, Frames: frames, Batched: batched, Seq: j.sends}
+	key := sentKey(sql, frames)
+	if _, seen := j.sent[key]; !seen {
+		j.sent[key] = &Sent{SQL: sql, Frames: frames, Batched: batched, Seq: j.sends}
+		j.spillLocked(spilled{SQL: sql, Frames: frames, Batched: batched})
 	}
 }
 
@@ -307,6 +512,9 @@ func (j *Judge) Statements() []*Sent {
 	out := make([]*Sent, len(keys))
 	for i, k := range keys {
 		out[i] = j.sent[k]
+		if v, ok := j.via[k]; ok && out[i].Via == "" {
+			out[i].Via = fmt.Sprintf("%s:%d %s", v.File, v.Line, v.Decl)
+		}
 	}
 	return out
 }
@@ -421,12 +629,18 @@ func (t Tracer) TracePrepareEnd(ctx context.Context, c *pgx.Conn, d pgx.TracePre
 	}
 }
 
+// StatementSeam marks the tracer as the seam's (stmttrace.Seamed): the
+// openers do not wrap it a second time, and put it back when a pool's
+// BeforeConnect hook replaced it.
+func (Tracer) StatementSeam() {}
+
 // The tracer is every tracer of the library that carries SQL or rows.
 var (
 	_ pgx.QueryTracer    = Tracer{}
 	_ pgx.BatchTracer    = Tracer{}
 	_ pgx.CopyFromTracer = Tracer{}
 	_ pgx.PrepareTracer  = Tracer{}
+	_ stmttrace.Seamed   = Tracer{}
 )
 
 // Violations is what the policies hold against the statements sent. A
@@ -500,8 +714,12 @@ func Violations(cat *sqlscan.Catalog, sent []*Sent, policies []sqlscan.Registere
 				if v.Column == "" {
 					what = v.Table
 				}
-				out = append(out, fmt.Sprintf("%s:%d (%s) SENT a statement that writes %s against its policy %s (%s):\n  expr: %s\n  %s\n  statement: %.300s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason, naming this file and declaration",
-					at.File, at.Line, at.Decl, what, v.Want, v.Kind, v.Expr, v.Detail, strings.Join(strings.Fields(s.SQL), " ")))
+				through := ""
+				if s.Via != "" {
+					through = "\n  handed down through test code at " + s.Via + ": production called into a test's code, which called the library. If that code only hands on what production gave it, this is production's statement. If it is the TEST'S OWN SQL in a closure a production wrapper runs, register the test in writejudge.FixtureSenders with the reason."
+				}
+				out = append(out, fmt.Sprintf("%s:%d (%s) SENT a statement that writes %s against its policy %s (%s):\n  expr: %s\n  %s\n  statement: %.300s%s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason, naming this file and declaration",
+					at.File, at.Line, at.Decl, what, v.Want, v.Kind, v.Expr, v.Detail, strings.Join(strings.Fields(s.SQL), " "), through))
 			}
 		}
 	}
@@ -548,12 +766,35 @@ type Sites struct {
 	// by its text sent under its OWN declaration (0.29.214: three calls
 	// queue the same stamp, and a batch from any one marked all three).
 	BatchTextDecls map[string]bool
+	// Texts are the TextKey of every statement production code sent,
+	// batched or not (0.29.215). A call site is reached by ANY statement
+	// sent through it, and a site that a builder feeds can send many: the
+	// texts are what says which of them a test in fact sent (internal/db:
+	// the shrink-only list of statement texts no test sent).
+	Texts map[string]bool
 }
 
 // NewSites is an empty record.
 func NewSites() *Sites {
-	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}, BatchTextDecls: map[string]bool{}}
+	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}, BatchTextDecls: map[string]bool{}, Texts: map[string]bool{}}
 }
+
+// TextKey names a statement by its text, white space folded: the first
+// sixteen hex digits of its SHA-256. It is how the texts a run sent are
+// compared with the texts the static reading reads, without the record
+// holding every statement whole.
+//
+// One part of one statement is left out of the key: the release in the
+// tool-version default (`ALTER COLUMN tool_version SET DEFAULT '0.29.215'`).
+// That text changes at every version bump, and a key that changed with it
+// made the list of unsent texts stale at every release (0.29.215's closing
+// run, the first after the list existed).
+func TextKey(sql string) string {
+	sum := sha256.Sum256([]byte(toolVersionDefault.ReplaceAllString(Fold(sql), "${1}'<release>'")))
+	return hex.EncodeToString(sum[:8])
+}
+
+var toolVersionDefault = regexp.MustCompile(`(ALTER COLUMN tool_version SET DEFAULT )'[^']*'`)
 
 // Fold is a statement with its white space folded: how batch texts are
 // compared.
@@ -565,6 +806,7 @@ const storeDir = "internal/db/"
 func SitesOf(sent []*Sent) *Sites {
 	s := NewSites()
 	for _, st := range sent {
+		s.Texts[TextKey(st.SQL)] = true
 		if at := st.Frames[0]; strings.HasPrefix(at.File, storeDir) {
 			s.Lines[fmt.Sprintf("%s:%d", at.File, at.Line)] = true
 		}
@@ -599,6 +841,7 @@ func (s *Sites) Write(dir, name string) error {
 	put("T", s.BatchTexts)
 	put("D", s.BatchDecls)
 	put("X", s.BatchTextDecls)
+	put("S", s.Texts)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -649,6 +892,8 @@ func ReadSites(dir string) (*Sites, int, error) {
 				union.BatchDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
 			case "X":
 				union.BatchTextDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
+			case "S":
+				union.Texts[rest] = true
 			}
 		}
 	}
@@ -672,6 +917,12 @@ func packageName() string {
 // what the fixtures defined while the tests ran. When SitesDirEnv is set
 // it also writes what the run reached.
 func (j *Judge) Verdict(ctx context.Context, dsn string) error {
+	// What this run's re-executed test binaries sent is this run's too.
+	if dir := os.Getenv(ChildDirEnv); dir != "" && j == installed {
+		if _, err := j.AdoptChildren(dir); err != nil {
+			return fmt.Errorf("the write-policy judge could not read what the re-executed test binaries sent (%s): %w", dir, err)
+		}
+	}
 	sent := j.Statements()
 	if len(sent) == 0 && j.Fixtures() == 0 {
 		// The package's tests sent nothing through the store: there is
@@ -682,11 +933,9 @@ func (j *Judge) Verdict(ctx context.Context, dsn string) error {
 	if err != nil {
 		return fmt.Errorf("the write-policy judge could not read the test database's catalog: %w", err)
 	}
-	j.mu.Lock()
-	for ddl := range j.fixtureDDL {
+	for _, ddl := range j.fixtureDefinitions() {
 		_ = cat.Add(ddl) // a fixture's text that is not read defines nothing
 	}
-	j.mu.Unlock()
 	withWhatTheRunDeclared(cat, sent)
 	failures := Violations(cat, sent, Policies, Exceptions)
 	failures = append(failures, j.Rewriters()...)
@@ -697,6 +946,19 @@ func (j *Judge) Verdict(ctx context.Context, dsn string) error {
 		return fmt.Errorf("the write-policy judge (internal/testdb/writejudge) holds %d thing(s) against what production code sent during the tests:\n%s", len(failures), strings.Join(failures, "\n"))
 	}
 	return nil
+}
+
+// fixtureDefinitions are the fixtures' statements that define or alter a
+// relation, in the order they were sent.
+func (j *Judge) fixtureDefinitions() []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]string, 0, len(j.fixtureDDL))
+	for ddl := range j.fixtureDDL {
+		out = append(out, ddl)
+	}
+	sort.Slice(out, func(i, k int) bool { return j.fixtureDDL[out[i]] < j.fixtureDDL[out[k]] })
+	return out
 }
 
 // learnWhatProductionMade puts in the catalog the relations PRODUCTION
@@ -747,6 +1009,34 @@ func (j *Judge) writeSites(sent []*Sent) error {
 		return nil
 	}
 	return SitesOf(sent).Write(dir, packageName())
+}
+
+// WriteThrough leaves, beside the package's record when the closing suite
+// asked for records (SitesDirEnv), what reached the library through test
+// code under a production frame (Through): "file, declaration, taken for a
+// fixture, how many", one line each; no file when there was none. It is
+// written whether or not the tests passed: it is how the tests on
+// FixtureSenders are found, and how a reader of the suite's folder sees
+// what was judged as production's on the strength of the stack's shape.
+func (j *Judge) WriteThrough() error {
+	dir := os.Getenv(SitesDirEnv)
+	through := j.Through()
+	if dir == "" || j != installed || len(through) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(through))
+	for k := range through {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s\t%d\n", strings.ReplaceAll(k, "\x00", "\t"), through[k])
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, packageName()+".through"), []byte(b.String()), 0o644)
 }
 
 // DatabaseCatalog is the catalog of the database itself: every base table,

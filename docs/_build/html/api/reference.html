@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.214 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.215 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=84582877"></script>
+      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -751,6 +751,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -2047,12 +2048,14 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
 repository’s lockfiles went unread at the last analysis. With
-<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
-dependencies are as old as that time; with it null, the
-repository has lockfiles and none was ever read, so transitive
-dependencies are not checked. Absent on an older server: show
-nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, lockfile rows are stored and the exact
+versions and transitive dependencies are as old as that time;
+with it null, no lockfile row is stored, so transitive
+dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
+(null, never absent). Since 0.29.215 it is the date of the
+lockfile rows that are stored, whichever reading stored them,
+and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -2186,12 +2189,14 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>{repo_id}.coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
 repository’s lockfiles went unread at the last analysis. With
-<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
-dependencies are as old as that time; with it null, the
-repository has lockfiles and none was ever read, so transitive
-dependencies are not checked. Absent on an older server: show
-nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, lockfile rows are stored and the exact
+versions and transitive dependencies are as old as that time;
+with it null, no lockfile row is stored, so transitive
+dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
+(null, never absent). Since 0.29.215 it is the date of the
+lockfile rows that are stored, whichever reading stored them,
+and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>{repo_id}.coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>{repo_id}.archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>{repo_id}.last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -3201,12 +3206,14 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
 repository’s lockfiles went unread at the last analysis. With
-<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
-dependencies are as old as that time; with it null, the
-repository has lockfiles and none was ever read, so transitive
-dependencies are not checked. Absent on an older server: show
-nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, lockfile rows are stored and the exact
+versions and transitive dependencies are as old as that time;
+with it null, no lockfile row is stored, so transitive
+dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
+(null, never absent). Since 0.29.215 it is the date of the
+lockfile rows that are stored, whichever reading stored them,
+and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>counts</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>counts.current</strong> (<em>integer, required</em>)</p></li>

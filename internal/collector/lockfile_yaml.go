@@ -112,6 +112,16 @@ func yamlPairs(n *yaml.Node) ([]yamlPair, error) {
 			return nil, err
 		}
 		if first, again := at[key]; again {
+			// The value this one replaces is still part of the document,
+			// and no caller will visit it now: what makes a document one
+			// these readers refuse (a key written twice, an alias) is
+			// looked for in ALL of it here. Round 8: it was dropped unread,
+			// and a file the decoder had refused was read. (This looks
+			// deeper than the decoder did, which skipped fields it had no
+			// place for: a file with both oddities is refused.)
+			if err := yamlRefusedWithin(out[first].val, 0); err != nil {
+				return nil, err
+			}
 			out[first].val = v
 			continue
 		}
@@ -119,6 +129,43 @@ func yamlPairs(n *yaml.Node) ([]yamlPair, error) {
 		out = append(out, yamlPair{key, v})
 	}
 	return out, nil
+}
+
+// yamlNestingLimit bounds yamlRefusedWithin's recursion; yaml.v3 itself
+// refuses a document nested deeper than 10,000.
+const yamlNestingLimit = 10000
+
+// yamlRefusedWithin is the error a document is refused for anywhere inside
+// n: an alias or a merge key, or a mapping key written twice (yamlPairs).
+// One visit of each node.
+func yamlRefusedWithin(n *yaml.Node, depth int) error {
+	if n == nil {
+		return nil
+	}
+	if depth > yamlNestingLimit {
+		return errYAMLLockKind
+	}
+	switch n.Kind {
+	case yaml.AliasNode:
+		return errYAMLLockAlias
+	case yaml.MappingNode:
+		pairs, err := yamlPairs(n)
+		if err != nil {
+			return err
+		}
+		for _, p := range pairs {
+			if err := yamlRefusedWithin(p.val, depth+1); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode:
+		for _, item := range n.Content {
+			if err := yamlRefusedWithin(item, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // yamlString is a scalar as the decoder gives it to a string: its text as

@@ -1599,7 +1599,8 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_libyear (
     -- v0.29.181: why a Maven dependency has no version when its pom gives
     -- it none and a parent pom or BOM that might manage it could not be
     -- obtained: inherited_not_found, inherited_lookup_failed or
-    -- inherited_repository_refused. NULL otherwise.
+    -- inherited_repository_refused; 0.29.215 adds profile_managed,
+    -- platforms_disagree and value_not_read (docs/schema.md). NULL otherwise.
     version_reason   TEXT,
     -- v0.29.185: the package repository hosts whose fetched poms this
     -- version was worked out through (a parent from one, a BOM from

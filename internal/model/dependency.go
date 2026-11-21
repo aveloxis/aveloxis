@@ -268,4 +268,30 @@ const (
 	// VersionReasonInheritedRepositoryRefused: the repository that holds it
 	// may not be fetched from.
 	VersionReasonInheritedRepositoryRefused = "inherited_repository_refused"
+	// VersionReasonProfileManaged (0.29.215): a Maven profile of the build
+	// manages the dependency (or imports a BOM, or declares it with a
+	// version), and this reader does not know which profiles a build
+	// activates. A version that the pom, its parents or its BOMs would give
+	// when no profile is active is withheld.
+	VersionReasonProfileManaged = "profile_managed"
+	// VersionReasonPlatformsDisagree (0.29.215): Gradle. More than one thing
+	// gives the dependency a version and they do not agree in a way this
+	// reader can settle: two platforms recommend versions that Gradle's
+	// version ordering, as this reader implements it, does not order; or a
+	// platform and Spring's dependency-management plugin each manage it, at
+	// different versions.
+	VersionReasonPlatformsDisagree = "platforms_disagree"
+	// VersionReasonValueNotRead (0.29.215): Gradle. The version is written
+	// as a value this reader does not read whole: one expression of more
+	// tokens than it follows (a map or list of thousands of entries, a
+	// string built from thousands of parts).
+	VersionReasonValueNotRead = "value_not_read"
 )
+
+// VersionReasons are the values repo_deps_libyear.version_reason takes, the
+// empty one apart: the one list a reader of rows it did not make holds them
+// to (the manifest reader's parent, internal/collector).
+func VersionReasons() []string {
+	return []string{VersionReasonInheritedNotFound, VersionReasonInheritedLookupFailed, VersionReasonInheritedRepositoryRefused,
+		VersionReasonProfileManaged, VersionReasonPlatformsDisagree, VersionReasonValueNotRead}
+}

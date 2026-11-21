@@ -378,3 +378,33 @@ func TestBareShellFragmentFinderHasEveryArm(t *testing.T) {
 		t.Errorf("prose with the program names as English words and backticked commands must yield nothing; got %q", got)
 	}
 }
+
+// No note prints a backslash before a quotation mark (review round 8): three
+// notes were written `\\\"` inside an interpreted string and rendered as
+// \"Lockfiles last read ...\" on the operator's terminal. Outside backticks
+// only: a command in backticks may escape a quote for the shell.
+func TestNoLadderNotePrintsAnEscapedQuotationMark(t *testing.T) {
+	examined := 0
+	for version, steps := range deployChecklists {
+		for _, s := range steps {
+			examined++
+			prose := s.desc
+			for {
+				open := strings.Index(prose, "`")
+				if open < 0 {
+					break
+				}
+				end := strings.Index(prose[open+1:], "`")
+				if end < 0 {
+					break
+				}
+				prose = prose[:open] + prose[open+1+end+1:]
+			}
+			if at := strings.Index(prose, `\"`); at >= 0 {
+				from := max(0, at-40)
+				t.Errorf("ladder %s, step %q: the note prints a backslash before a quotation mark: ...%s...", version, s.cmd, prose[from:min(len(prose), at+40)])
+			}
+		}
+	}
+	srctest.MinCount(t, "ladder steps examined", examined, 100)
+}

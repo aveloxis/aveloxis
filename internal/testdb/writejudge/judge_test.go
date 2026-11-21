@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/db/stmttrace"
 	"github.com/aveloxis/aveloxis/internal/srctest/sqlscan"
 	"github.com/jackc/pgx/v5"
 )
@@ -25,6 +26,11 @@ func TestDeclOfNamesADeclarationAsTheSourceReadingDoes(t *testing.T) {
 		"github.com/aveloxis/aveloxis/internal/db.glob..func3":                           "glob",
 		"github.com/aveloxis/aveloxis/internal/db.runKeysetWindows[...]":                 "runKeysetWindows",
 		"github.com/aveloxis/aveloxis/internal/db.(*PostgresStore).Close.gowrap1":        "PostgresStore.Close",
+		// Round 8: a generic's type arguments hold dots of their own; the
+		// receiver was cut at one of them and its method lost.
+		"github.com/aveloxis/aveloxis/internal/db.(*wrap[go.shape.int]).Query":                         "wrap.Query",
+		"github.com/aveloxis/aveloxis/internal/db.keyed[example.com/x/y.T,go.shape.string].Exec.func1": "keyed.Exec",
+		"github.com/aveloxis/aveloxis/internal/db.runKeysetWindows[go.shape.struct { A int }].func2":   "runKeysetWindows",
 	} {
 		if got := DeclOf(function); got != want {
 			t.Errorf("DeclOf(%q) = %q, want %q", function, got, want)
@@ -172,6 +178,14 @@ func TestSitesAreWrittenPerPackageAndReadAsAUnion(t *testing.T) {
 	if !union.BatchTexts["INSERT INTO t VALUES ($1)"] || !union.BatchDecls["internal/db/b.go\x00PostgresStore.B"] || !union.BatchDecls["internal/db/send.go\x00send"] {
 		t.Errorf("batch texts %v, declarations %v", union.BatchTexts, union.BatchDecls)
 	}
+	// Every production statement's text, by key, whoever sent it and
+	// batched or not; white space is folded before the key is taken.
+	if len(union.Texts) != 4 || !union.Texts[TextKey("INSERT INTO t VALUES ($1)")] || !union.Texts[TextKey("SELECT 2")] || union.Texts[TextKey("SELECT 4")] {
+		t.Errorf("texts %v; want the keys of the four statements sent", union.Texts)
+	}
+	if TextKey("SELECT  1\n") != TextKey("SELECT 1") || TextKey("SELECT 1") == TextKey("SELECT 2") || len(TextKey("SELECT 1")) != 16 {
+		t.Error("TextKey is the folded text's key: 16 hex digits, the same for the same statement")
+	}
 	if _, _, err := ReadSites(filepath.Join(dir, "missing")); err == nil {
 		t.Error("a directory that does not exist was read as an empty union")
 	}
@@ -190,49 +204,86 @@ func TestOriginSaysWhoseStatementAStackSent(t *testing.T) {
 	}
 	runner := StackFrame{Function: "testing.tRunner", File: "/go/src/testing/testing.go", Line: 9}
 	own := StackFrame{Function: self + "Tracer.TraceQueryStart", File: "/src/internal/testdb/writejudge/judge.go", Line: 3}
+	// One test hands a production wrapper a closure holding its own SQL.
+	before := FixtureSenders
+	FixtureSenders = map[string]string{"internal/db/store_test.go\x00TestOwnClosure": "its closure, run by retryOnDeadlock, sends the test's own seed rows"}
+	t.Cleanup(func() { FixtureSenders = before })
 	for name, c := range map[string]struct {
 		stack   []StackFrame
 		fixture bool
 		origin  string // "file:line decl" of the innermost production frame
 		frames  int
+		via     string // the test declaration the statement came through, under a production frame
 	}{
-		"a test sends it itself": {[]StackFrame{own, lib, test("TestX", 5), runner}, true, "", 0},
+		"a test sends it itself":                  {[]StackFrame{own, lib, test("TestX", 5), runner}, true, "", 0, ""},
+		"a test sends it through its own helpers": {[]StackFrame{own, lib, test("mustExecRetry.func1", 9), test("mustExecRetry", 8), test("TestX", 5), runner}, true, "", 0, ""},
 		"a production function a test called": {[]StackFrame{own, lib, prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, false,
-			"internal/db/store.go:40 PostgresStore.Save", 1},
+			"internal/db/store.go:40 PostgresStore.Save", 1, ""},
 		"a production helper under a production function": {[]StackFrame{own, lib, prod("execStep.func1", 12), prod("migrate", 90), test("TestX", 5), runner}, false,
-			"internal/db/store.go:12 execStep", 2},
-		// The documented fixture: the test's own closure, run by a
-		// production helper (a retry or transaction wrapper). The frame
-		// nearest the library is the test's, and the text is the test's.
-		"a test's closure run by a production helper": {[]StackFrame{own, lib, test("TestX.func1", 7), prod("retryOnDeadlock", 30), test("TestX", 5), runner}, true, "", 0},
-		// Round 7: a test's stand-in for a transaction that hands on what
-		// production gave it hides nothing.
+			"internal/db/store.go:12 execStep", 2, ""},
+		// Test code UNDER a production frame. Unless the test is on
+		// FixtureSenders, the text is taken for production's (round 8:
+		// 0.29.214 knew a stand-in only as a method named like the
+		// library's, and took every other spelling for a fixture).
+		"a registered test's closure run by a production helper": {[]StackFrame{own, lib, test("TestOwnClosure.func1", 7), prod("retryOnDeadlock", 30), test("TestOwnClosure", 5), runner}, true, "", 0, "TestOwnClosure"},
+		"an unregistered test's closure run by a production helper": {[]StackFrame{own, lib, test("TestX.func1", 7), prod("retryOnDeadlock", 30), test("TestX", 5), runner}, false,
+			"internal/db/store.go:30 retryOnDeadlock", 1, "TestX"},
 		"a forwarding test double under a production function": {[]StackFrame{own, lib, test("zzWrapTx.Exec", 3), prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, false,
-			"internal/db/store.go:40 PostgresStore.Save", 1},
+			"internal/db/store.go:40 PostgresStore.Save", 1, "zzWrapTx.Exec"},
 		"a forwarding test double on a pointer": {[]StackFrame{own, lib, test("(*zzWrapTx).QueryRow", 3), prod("lockProbe", 8), test("TestX", 5), runner}, false,
-			"internal/db/store.go:8 lockProbe", 1},
-		"a forwarding test double a test called itself": {[]StackFrame{own, lib, test("zzWrapTx.Exec", 3), test("TestX", 5), runner}, true, "", 0},
-		// Not forwarding: a test method of another name, a test FUNCTION
-		// named Exec, and a closure inside a forwarding method.
-		"a test method of another name under production": {[]StackFrame{own, lib, test("zzWrapTx.doIt", 3), prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, true, "", 0},
-		"a test function named Exec":                     {[]StackFrame{own, lib, test("Exec", 3), prod("(*PostgresStore).Save", 40), runner}, true, "", 0},
-		"a closure inside a forwarding method":           {[]StackFrame{own, lib, test("zzWrapTx.Exec.func1", 3), prod("(*PostgresStore).Save", 40), runner}, true, "", 0},
+			"internal/db/store.go:8 lockProbe", 1, "zzWrapTx.QueryRow"},
+		"a double that forwards under another method name": {[]StackFrame{own, lib, test("zzWrapTx.doIt", 3), prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, false,
+			"internal/db/store.go:40 PostgresStore.Save", 1, "zzWrapTx.doIt"},
+		"a double that forwards inside a closure (a retry)": {[]StackFrame{own, lib, test("zzWrapTx.Exec.func1", 4), test("zzRetry", 9), test("zzWrapTx.Exec", 3), prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, false,
+			"internal/db/store.go:40 PostgresStore.Save", 1, "zzWrapTx.Exec"},
+		"a double that forwards through a free helper": {[]StackFrame{own, lib, test("zzForward", 6), test("zzWrapTx.Exec", 3), prod("(*PostgresStore).Save", 40), test("TestX", 5), runner}, false,
+			"internal/db/store.go:40 PostgresStore.Save", 1, "zzForward"},
+		"a generic double": {[]StackFrame{own, lib, test("(*zzWrap[go.shape.int]).Query", 3), prod("(*PostgresStore).Load", 41), test("TestX", 5), runner}, false,
+			"internal/db/store.go:41 PostgresStore.Load", 1, "zzWrap.Query"},
+		"a test function named Exec under production": {[]StackFrame{own, lib, test("Exec", 3), prod("(*PostgresStore).Save", 40), runner}, false,
+			"internal/db/store.go:40 PostgresStore.Save", 1, "Exec"},
+		// A double with no production frame beyond it was handed its text
+		// by a test.
+		"a forwarding test double a test called itself": {[]StackFrame{own, lib, test("zzWrapTx.Exec", 3), test("TestX", 5), runner}, true, "", 0, ""},
+		"only a forwarding double":                      {[]StackFrame{own, lib, test("zzWrapTx.Exec", 3), runner}, true, "", 0, ""},
 		// Round 7: no frame of this module at all (`go pool.Exec(...)`).
 		"no frame of the module": {[]StackFrame{own, lib, {Function: "runtime.goexit", File: "/go/src/runtime/asm.s", Line: 1}}, false,
-			UnknownOrigin.File + ":0 " + UnknownOrigin.Decl, 1},
-		"only a forwarding double": {[]StackFrame{own, lib, test("zzWrapTx.Exec", 3), runner}, false,
-			UnknownOrigin.File + ":0 " + UnknownOrigin.Decl, 1},
+			UnknownOrigin.File + ":0 " + UnknownOrigin.Decl, 1, ""},
 	} {
-		frames, fixture := Origin(c.stack)
+		frames, via, fixture := Origin(c.stack)
 		if fixture != c.fixture || len(frames) != c.frames {
 			t.Errorf("%s: fixture %v with %d frames (%v), want fixture %v with %d", name, fixture, len(frames), frames, c.fixture, c.frames)
 			continue
+		}
+		if got := ""; via != nil || c.via != "" {
+			if via != nil {
+				got = via.Decl
+			}
+			if got != c.via {
+				t.Errorf("%s: came through %q, want %q", name, got, c.via)
+			}
 		}
 		if !fixture {
 			if got := frames[0].File + ":" + itoa(frames[0].Line) + " " + frames[0].Decl; got != c.origin {
 				t.Errorf("%s: origin %q, want %q", name, got, c.origin)
 			}
 		}
+	}
+}
+
+// What is held against a statement that came through test code says so,
+// and names the list a test's own closure belongs on.
+func TestAFindingSaysWhenItCameThroughTestCode(t *testing.T) {
+	policies := []sqlscan.Registered{{Table: "s.t", Column: "c", Policy: sqlscan.InsertOnly, Reason: "pin"}}
+	cat := sqlscan.NewCatalog().Table("s.t")
+	sent := []*Sent{{SQL: "UPDATE s.t SET c = 1", Frames: []Frame{{File: "internal/db/store.go", Line: 30, Decl: "retryOnDeadlock"}}, Via: "internal/db/store_test.go:7 TestX"}}
+	got := Violations(cat, sent, policies, nil)
+	if len(got) != 1 || !strings.Contains(got[0], "handed down through test code at internal/db/store_test.go:7 TestX") || !strings.Contains(got[0], "FixtureSenders") {
+		t.Errorf("the finding does not say it came through test code, or where to register a test's own closure: %v", got)
+	}
+	sent[0].Via = ""
+	if got := Violations(cat, sent, policies, nil); len(got) != 1 || strings.Contains(got[0], "handed down") {
+		t.Errorf("a statement that did not come through test code: %v", got)
 	}
 }
 
@@ -252,7 +303,7 @@ func itoa(n int) string {
 func TestAStatementOfUnknownOriginIsJudged(t *testing.T) {
 	policies := []sqlscan.Registered{{Table: "s.t", Column: "c", Policy: sqlscan.InsertOnly, Reason: "pin"}}
 	cat := sqlscan.NewCatalog().Table("s.t")
-	frames, fixture := Origin([]StackFrame{{Function: "github.com/jackc/pgx/v5/pgxpool.(*Pool).Exec"}, {Function: "runtime.goexit"}})
+	frames, _, fixture := Origin([]StackFrame{{Function: "github.com/jackc/pgx/v5/pgxpool.(*Pool).Exec"}, {Function: "runtime.goexit"}})
 	if fixture {
 		t.Fatal("a stack with no frame of this module was taken for a fixture")
 	}
@@ -376,4 +427,98 @@ func TestOnlyTheInstalledJudgeWritesThePackagesRecord(t *testing.T) {
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Errorf("the installed judge left %d files in the records folder, want its one record", len(entries))
 	}
+}
+
+// What a re-executed test binary's judge records is appended to its file
+// as it is recorded, and another judge takes it all in: production
+// statements with their frames, a fixture's definitions, a finding
+// against a rewriter. A last line cut short (the child was killed while
+// writing it) is passed over; a damaged line elsewhere is an error.
+func TestAChildsJudgeSpillsAndAnAncestorsAdopts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(ChildDirEnv, dir)
+	before := installed
+	t.Cleanup(func() { installed = before; stmttrace.Wrap = nil })
+	child := InstallChild()
+	at := []Frame{{File: "internal/db/zz.go", Line: 3, Decl: "zzWriter"}}
+	child.RecordFrom(at, "UPDATE aveloxis_data.repos SET platform_repo_id = 0", true, nil)
+	child.RecordFrom(at, "UPDATE aveloxis_data.repos SET platform_repo_id = 0", true, nil) // the same again: one record
+	child.RecordFrom(nil, "CREATE TABLE zz_scratch (a int)", false, nil)
+	child.RecordFrom(at, "SELECT 1", false, []any{pgx.NamedArgs{"a": 1}})
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("the child left %v (%v); want its one file", entries, err)
+	}
+	file := filepath.Join(dir, entries[0].Name())
+	whole, _ := os.ReadFile(file)
+	if n := strings.Count(string(whole), "\n"); n != 4 {
+		t.Fatalf("the child's file has %d lines, want 4 (the write, the definition, the rewriter finding, the read):\n%s", n, whole)
+	}
+
+	parent := New()
+	n, err := parent.AdoptChildren(dir)
+	if err != nil || n != 4 {
+		t.Fatalf("AdoptChildren = %d, %v; want the 4 records", n, err)
+	}
+	sent := parent.Statements()
+	if len(sent) != 2 {
+		t.Fatalf("the ancestor holds %d production statements, want 2: %+v", len(sent), sent)
+	}
+	var write *Sent
+	for _, s := range sent {
+		if strings.HasPrefix(s.SQL, "UPDATE") {
+			write = s
+		}
+	}
+	if write == nil || !write.Batched || len(write.Frames) != 1 || write.Frames[0] != at[0] || write.Seq == 0 {
+		t.Errorf("the adopted write is %+v; want it batched, from the child's frame, with a place in the order", write)
+	}
+	if len(parent.Rewriters()) != 1 || parent.Fixtures() != 1 || parent.fixtureDDL["CREATE TABLE zz_scratch (a int)"] == 0 {
+		t.Errorf("adopted: rewriter findings %v, fixtures %d, definitions %v", parent.Rewriters(), parent.Fixtures(), parent.fixtureDDL)
+	}
+	cat := sqlscan.NewCatalog().Table("aveloxis_data.repos")
+	if got := Violations(cat, sent, Policies, Exceptions); len(got) == 0 {
+		t.Error("the child's forbidden write, adopted, is held against nothing")
+	}
+	if got := SitesOf(sent); !got.Lines["internal/db/zz.go:3"] {
+		t.Errorf("the child's line is not among what the run reached: %v", got.Lines)
+	}
+
+	// Killed while writing its last line: that line is lost, the rest stand.
+	if err := os.WriteFile(file, append(whole, []byte(`{"sql":"SELECT 2","fra`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := New().AdoptChildren(dir); err != nil || n != 4 {
+		t.Errorf("with a last line cut short: %d, %v; want the 4 whole records and no error", n, err)
+	}
+	// Damage anywhere else is not passed over.
+	if err := os.WriteFile(file, append([]byte("not a record\n"), whole...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New().AdoptChildren(dir); err == nil {
+		t.Error("a damaged line in the middle of a child's file was passed over")
+	}
+
+	// With no directory named, a child's judge records and spills nothing.
+	t.Setenv(ChildDirEnv, "")
+	if j := InstallChild(); j.spill != "" {
+		t.Errorf("with %s unset the child spills to %q", ChildDirEnv, j.spill)
+	}
+}
+
+// The key of the tool-version default does not change with the release, and
+// every other difference in a statement still changes its key.
+func TestTextKeyLeavesOutTheReleaseOfTheToolVersionDefault(t *testing.T) {
+	a := TextKey(`ALTER TABLE "aveloxis_data"."repos" ALTER COLUMN tool_version SET DEFAULT '0.29.214'::text`)
+	b := TextKey(`ALTER TABLE "aveloxis_data"."repos"   ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`)
+	if a != b {
+		t.Errorf("two releases of the tool-version default have the keys %s and %s", a, b)
+	}
+	if c := TextKey(`ALTER TABLE "aveloxis_data"."issues" ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`); c == b {
+		t.Error("another table's default has the same key")
+	}
+	if TextKey(`UPDATE t SET v = '0.29.214'`) == TextKey(`UPDATE t SET v = '0.29.215'`) {
+		t.Error("a release in any other statement must change the key")
+	}
+	t.Log("odd-name sample key:", TextKey(`ALTER TABLE "aveloxis_ops"."odd ""name" ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`))
 }

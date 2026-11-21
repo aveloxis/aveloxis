@@ -1,0 +1,66 @@
+@@ Q01 two variable_conflict lines, last use_column: fe is the column -> stored -> fill ok
+DO $$ #variable_conflict use_variable
+#variable_conflict use_column
+DECLARE fe text; BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$
+@@ Q02 two lines, last use_variable: fe is variable -> COALESCE(var, 'x') not stored -> must be refused
+DO $$ #variable_conflict use_column
+#variable_conflict use_variable
+DECLARE fe text; BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$
+@@ Q03 variable_conflict inside a comment after the real one
+DO $$ #variable_conflict use_column
+/* #variable_conflict use_variable */
+DECLARE fe text; BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$
+@@ Q04 variable_conflict in a string
+DO $$ #variable_conflict use_column
+DECLARE fe text := '#variable_conflict use_variable'; BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$
+@@ Q05 nested block declares the variable (inner DECLARE)
+DO $$ BEGIN DECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = ar; END; END $$
+@@ Q06 EXECUTE static inherits no vars: ar is column -> AR violation
+DO $$ DECLARE ar text; BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET ar = ar'; END $$
+@@ Q07 EXECUTE with USING
+DO $$ DECLARE v text; BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET ar = $1' USING v; END $$
+@@ Q08 EXECUTE computed
+DO $$ DECLARE v text; BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET ar = ' || quote_literal(v); END $$
+@@ Q09 EXECUTE format
+DO $$ BEGIN EXECUTE format('UPDATE %I.repos SET ar = ar', 'aveloxis_data'); END $$
+@@ Q10 loop record holds stored (documented not followed)
+DO $$ DECLARE r record; BEGIN FOR r IN SELECT repo_id, ar FROM aveloxis_data.repos LOOP UPDATE aveloxis_data.repos SET ar = r.ar WHERE repo_id = r.repo_id; END LOOP; END $$
+@@ Q11 AR with variable named ar, use_variable
+DO $$ #variable_conflict use_variable
+DECLARE ar text := 'x'; BEGIN UPDATE aveloxis_data.repos SET ar = ar; END $$
+@@ Q12 sql function param named ar: yields to column -> stored
+CREATE FUNCTION aveloxis_data.f(ar text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = ar $$
+@@ Q13 sql function param qualified f.ar
+CREATE FUNCTION aveloxis_data.f(ar text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = f.ar $$
+@@ Q14 sql function $1
+CREATE FUNCTION aveloxis_data.f(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = $1 $$
+@@ Q15 plpgsql function param qualified by function name where FROM item has same name
+CREATE FUNCTION aveloxis_data.f(ar text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN UPDATE aveloxis_data.repos SET ar = f.ar FROM aveloxis_data.repos f WHERE f.repo_id = repos.repo_id; END $$
+@@ Q16 block label qualifies variable; label same as FROM alias?
+DO $$ <<b>> DECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = b.ar FROM aveloxis_data.repos b WHERE b.repo_id = repos.repo_id; END $$
+@@ Q17 block label qualifies variable (no FROM)
+DO $$ <<b>> DECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = b.ar; END $$
+@@ Q18 trigger assign
+CREATE FUNCTION aveloxis_data.tf() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.ar := OLD.ar; RETURN NEW; END $$
+@@ Q19 trigger assign conforming for ar (NEW.ar := 'x') still reported for every registered col named ar?
+CREATE FUNCTION aveloxis_data.tf() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.ar := 'x'; RETURN NEW; END $$
+@@ Q20 function BEGIN ATOMIC
+CREATE FUNCTION aveloxis_data.f(v text) RETURNS void LANGUAGE sql BEGIN ATOMIC UPDATE aveloxis_data.repos SET ar = ar; END
+@@ Q21 CREATE PROCEDURE plpgsql
+CREATE PROCEDURE aveloxis_data.p() LANGUAGE plpgsql AS $$ BEGIN UPDATE aveloxis_data.repos SET io = 1; END $$
+@@ Q22 CALL / SELECT function (documented)
+SELECT aveloxis_data.f()
+@@ Q23 with ctes shadow: CTE named like the target used in FROM, reads other
+WITH repos AS (SELECT id AS repo_id, ar FROM aveloxis_data.other) UPDATE aveloxis_data.repos r SET ar = repos.ar FROM repos WHERE repos.repo_id = r.repo_id
+@@ Q24 two CTEs of one name in different subselects, one reads target
+UPDATE aveloxis_data.repos r SET ar = (WITH c AS (SELECT ar AS z FROM aveloxis_data.repos) SELECT z FROM c LIMIT 1)
+@@ Q25 nested WITH name reuse: outer c harmless, FROM item c is inner? 
+WITH c AS (SELECT 1 AS repo_id, 'x' AS z) UPDATE aveloxis_data.repos r SET ar = c.z FROM c WHERE c.repo_id = r.repo_id AND EXISTS (WITH c AS (SELECT ar AS z FROM aveloxis_data.repos) SELECT 1 FROM c)
+@@ Q26 conflict-update AR referencing target in RETURNING only
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar RETURNING repos.ar
+@@ Q27 update set from sub-select multi-assign (ROW)
+UPDATE aveloxis_data.repos SET (ar, fe) = ($1, $2)
+@@ Q28 update set from sub-select multi-assign subquery
+UPDATE aveloxis_data.repos SET (ar) = (SELECT $1)
+@@ Q29 UPDATE SET ar = DEFAULT
+UPDATE aveloxis_data.repos SET ar = DEFAULT, fe = DEFAULT, io = DEFAULT, g = DEFAULT, pn = DEFAULT

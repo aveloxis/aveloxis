@@ -52,6 +52,15 @@ var Policies = []sqlscan.Registered{
 		Reason: "the pattern-library version that produced msg_text_clean — travels with it on every write so --rule-rerun can find stale-rule rows"},
 	{Table: "aveloxis_data.messages", Column: "msg_updated", Policy: sqlscan.GreatestNonNull,
 		Reason: "the provider's comment edit time only increases; a stale replayed envelope must not regress it — it is the comparator the msg_text freshness guard reads (round 14)"},
+	// 0.29.215 (review round 8, J8-3): the forge's numeric user ID is the
+	// contributor's identity (SR-6: never fabricate identity; cntrb_id is
+	// computed from it and is immutable). Every writer but one already
+	// wrote it `COALESCE(col, $n)`, and the column had no policy: a test
+	// mutant that overwrote an established ID passed every check.
+	{Table: "aveloxis_data.contributors", Column: "gh_user_id", Policy: sqlscan.FillEmptyOnly,
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215)"},
+	{Table: "aveloxis_data.contributors", Column: "gl_id", Policy: sqlscan.FillEmptyOnly,
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215)"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.FillEmptyOnly,
 		Reason: "R2 audit trail — the login as FIRST observed, so an established value never changes. " +
 			"Tightened from PreferNonemptyIncoming on 2026-09-11 (F4): the commit-resolver branch that " +

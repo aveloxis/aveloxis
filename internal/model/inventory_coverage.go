@@ -75,6 +75,13 @@ type ManifestFailure struct {
 	// could match another manifest's rows. An instruction to the writer, not
 	// part of the stored record.
 	NoCarry bool `json:"-"`
+	// TooLarge says the file was not read because reading it would have
+	// taken more memory than the reader had left (0.29.215): the one kind
+	// of failure that raising collection.manifest_read_memory_mb cures. Not
+	// part of the stored record (the reason there is ManifestFailedRead);
+	// it is how the lockfile phase knows to record that the lockfiles were
+	// not all read, and why.
+	TooLarge bool `json:"-"`
 }
 
 // Why a manifest failed.
@@ -174,12 +181,21 @@ type LockfileReading struct {
 	NotCompleted string
 }
 
+// LockfileUnreadNotReached (0.29.215) is why a lockfile reading did not
+// finish when it never STARTED: the reader was stopped while it read the
+// names or the declarations, before it reached the lockfiles. The four
+// manifest_read_* reasons say what stopped a reading of the lockfiles
+// themselves; given for one that did not start, a caution said "reading
+// them took more memory than allowed" about lockfiles nothing had read.
+const LockfileUnreadNotReached = "lockfiles_not_reached"
+
 // LockfileUnreadReasons are the values LockfileReading.NotCompleted takes:
 // the four ways the process that reads a clone can end without a result,
-// and the clone's root being unreadable.
+// the clone's root being unreadable, and the reader being stopped before it
+// reached the lockfiles.
 func LockfileUnreadReasons() []string {
 	return []string{InventoryAttemptReadCPULimit, InventoryAttemptReadMemoryLimit, InventoryAttemptReadTimedOut,
-		InventoryAttemptReadFailed, InventoryAttemptRootUnreadable}
+		InventoryAttemptReadFailed, InventoryAttemptRootUnreadable, LockfileUnreadNotReached}
 }
 
 // DependencyCoverage is a repository's stored coverage record.
@@ -198,15 +214,24 @@ type DependencyCoverage struct {
 	// the inventory is older than the last attempt to refresh it.
 	LastAttemptAt     *time.Time
 	LastAttemptResult string
-	// LockfilesReadAt (0.29.214) is when the repository's lockfiles were
-	// last read to the end and their stored rows replaced; nil when they
-	// never have been since the column existed, or when the last reading
-	// found the repository has none. LockfilesUnreadReason is why the last
-	// reading did NOT finish (one of LockfileUnreadReasons), and is empty
-	// when it did: then the stored lockfile rows are as old as
-	// LockfilesReadAt, or (with no date) there are none and transitive
-	// dependencies are not checked.
+	// LockfilesReadAt (0.29.214) is the column: when a reading of the
+	// repository's lockfiles last finished and found some; nil when none
+	// has since the column existed (it is not backfilled), or when the last
+	// reading found the repository has none. LockfilesUnreadReason is why
+	// the LATEST reading did not finish (one of LockfileUnreadReasons), and
+	// is empty when it did.
+	//
+	// LockfilesLastRead (0.29.215) is what a reader shows: when the lockfile
+	// rows that are STORED were read, and nil when none is stored. The store
+	// decides it from what is stored, not from the column alone: the column
+	// when it is set, else the date of the stored snapshot (rows written
+	// before the column existed), and nothing when no lockfile row is
+	// stored, whatever the column says. So a reason with a date means the
+	// stored rows are that old ("behind"), and a reason with none means
+	// there are no lockfile rows and transitive dependencies are not
+	// checked ("never read").
 	LockfilesReadAt       *time.Time
+	LockfilesLastRead     *time.Time
 	LockfilesUnreadReason string
 	// Scan is the scan half; ScanAttemptAt is nil when no scan has written
 	// one (a repository not scanned since 0.29.161).

@@ -38,6 +38,67 @@ import (
 // decides by the rules as Gradle users know them, stated where they are
 // applied below. Platforms are BOMs, read by the Maven reference
 // (oraclePoms), which is independent too.
+//
+// Round 8: WHAT THE GRADLE REFERENCE BELIEVES about versions that BOMs
+// manage. Until now the reference had the reader's own rule (one mechanism,
+// the highest of plain numbers), and four findings were beliefs the two
+// shared. The rules are written from the Gradle user manual ("Sharing
+// dependency versions between projects: platforms", "Declaring versions and
+// ranges", "Dependency constraints and conflict resolution") and the Spring
+// dependency-management plugin's reference, AS REMEMBERED: Gradle cannot be
+// run where this suite runs, and nothing here was checked against a build.
+//
+//	G1 VERIFIED-BY-DOCS-FROM-MEMORY. platform(bom) adds the BOM's managed
+//	   versions as constraints (recommendations). Gradle settles all the
+//	   versions asked of one module together and the HIGHEST wins, whatever
+//	   the order written.
+//	G2 VERIFIED-BY-DOCS-FROM-MEMORY. enforcedPlatform(bom) forces its
+//	   versions over every other, a written one included. UNSURE: two
+//	   enforced platforms that differ (taken here as not determined).
+//	G3 VERIFIED-BY-DOCS-FROM-MEMORY. A version written on the dependency
+//	   takes part in the same settling: a platform that recommends a higher
+//	   one raises it. So a platform that is NOT KNOWN could raise it too:
+//	   the written version is kept as what the build DECLARES (the
+//	   inventory's meaning for every written version), and this is a known
+//	   difference from what Gradle would resolve (DISAGREEMENT E1).
+//	G4 VERIFIED-BY-DOCS-FROM-MEMORY. Version ordering: a version is split at
+//	   . - _ + and where digits meet letters; numbers compare as numbers; a
+//	   number is above a word; a version with a further numeric part is
+//	   above, with a further word below ("1.0-rc" < "1.0" < "1.0.1");
+//	   separators do not count. UNSURE: the full table of special words
+//	   (dev lowest; rc < snapshot < final < ga < release < sp highest,
+//	   without regard to case) and that other words compare by case-
+//	   sensitive text.
+//	G5 VERIFIED-BY-DOCS-FROM-MEMORY. Spring's dependency-management plugin
+//	   is not G1: mavenBom imports are applied in order and a LATER one
+//	   overrides an earlier one for the same artifact. A version given
+//	   outright (dependencies { dependency 'g:a:v' }) overrides every import.
+//	G6 VERIFIED-BY-DOCS-FROM-MEMORY. With the Spring Boot plugin and the
+//	   dependency-management plugin both applied, spring-boot-dependencies
+//	   of the Boot plugin's version is imported, when the plugins are
+//	   applied: before the build's own imports, wherever the blocks are.
+//	G7 UNSURE. The plugin leaves a version written on the dependency alone
+//	   (its default; overrideable in the plugin's configuration, not read).
+//	G8 UNSURE. When a platform and the plugin both manage a dependency with
+//	   no version: the plugin sets the version, and the platform's
+//	   constraint then takes part in conflict resolution, so the higher
+//	   would win. That is not implemented on either side: the same version
+//	   from both is taken, anything else is "platforms_disagree"
+//	   (DISAGREEMENT E2: withheld where Gradle would answer).
+//
+// What is not known withholds exactly where it could change the answer:
+// any platform for G1 (it could be the highest), an enforced one for G2, and
+// for G5 only a BOM imported AFTER the one that answers.
+//
+// DISAGREEMENTS that remain between the reference and the reader: none in
+// the trees generated. Of both with Gradle: E1 and E2 above; E3: the
+// configuration a platform is declared on is not looked at (a platform on
+// testImplementation manages implementation dependencies here); E4: a
+// build's own resolutionStrategy, constraints { } blocks, strictly/prefer on
+// a declaration and BOM imports of a parent project's dependencyManagement
+// are not read; E5: mavenBom imports given to subprojects from above are
+// ordered before the project's own, which is right for subprojects { } and
+// not checked for other ways of sharing.
 
 // refScope is what is known where a file is read.
 type refScope struct {
@@ -77,8 +138,14 @@ var (
 	refDep      = regexp.MustCompile(`^implementation (.+)$`)
 	refQuoted   = regexp.MustCompile(`^(?:'([^']*)'|"([^"]*)")$`)
 	refPlatform = regexp.MustCompile(`^platform\((.+)\)$`)
-	refRef      = regexp.MustCompile(`\$\{([^}]+)\}|\$(\w+)`)
-	refConst    = regexp.MustCompile(`^const val (\w+) = "([^"]*)"$`)
+	// Round 8.
+	refEnforced   = regexp.MustCompile(`^implementation enforcedPlatform\('([^']*)'\)$`)
+	refMavenBom   = regexp.MustCompile(`^dependencyManagement \{ imports \{ mavenBom '([^']*)' \} \}$`)
+	refManagedDep = regexp.MustCompile(`^dependencyManagement \{ dependencies \{ dependency '([^:']*):([^:']*):([^']*)' \} \}$`)
+	refBootPlugin = regexp.MustCompile(`^plugins \{ id 'org.springframework.boot' version '([^']*)' \}$`)
+	refPart       = regexp.MustCompile(`[0-9]+|[^0-9._+\-]+`)
+	refRef        = regexp.MustCompile(`\$\{([^}]+)\}|\$(\w+)`)
+	refConst      = regexp.MustCompile(`^const val (\w+) = "([^"]*)"$`)
 )
 
 // interpolate replaces $name and ${name}; ok is false when a name is not
@@ -153,6 +220,10 @@ func (g *refGradle) run(path string, s *refScope, depth int, applied map[string]
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
 		switch {
+		case block == "" && (strings.HasPrefix(line, "dependencyManagement { ") || strings.HasPrefix(line, "plugins { ")):
+			// One-line statements of the Spring plugin (G5, G6), kept in
+			// the order written.
+			own = append(own, line)
 		case line == "subprojects {" || line == "dependencies {":
 			block += "/" + strings.TrimSuffix(line, " {")
 		case line == "}":
@@ -350,50 +421,129 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 	path := filepath.Join(g.root, filepath.FromSlash(rel))
 	scope, inherited := g.at(filepath.Dir(path))
 	lines, forSubprojects := g.run(path, &scope, 0, map[string]bool{})
-	// The file's own platforms come first (those it gives its subprojects
-	// are its own too), then the ones from above.
-	var platforms []string
+	// The BOMs of the build, by mechanism. Gradle's platforms (G1, G2): the
+	// file's own, those it gives its subprojects, those from above; their
+	// order does not matter. The Spring plugin's (G5, G6): the Boot
+	// plugin's first, then the imports as written.
+	type bomRef struct {
+		coord    string
+		enforced bool
+	}
+	var platformRefs, springRefs []bomRef
+	explicit := map[string]string{}
+	boot, management := "", false
 	for _, line := range append(append([]string{}, lines...), forSubprojects...) {
-		if p := g.resolvePlatformLine(line, scope); p != "" {
-			platforms = append(platforms, p)
+		if m := refEnforced.FindStringSubmatch(line); m != nil {
+			platformRefs = append(platformRefs, bomRef{m[1], true})
+		} else if p := g.resolvePlatformLine(line, scope); p != "" {
+			platformRefs = append(platformRefs, bomRef{p, false})
 		}
+		if m := refMavenBom.FindStringSubmatch(line); m != nil {
+			springRefs = append(springRefs, bomRef{coord: m[1]})
+		}
+		if m := refManagedDep.FindStringSubmatch(line); m != nil {
+			explicit[m[1]+":"+m[2]] = m[3]
+		}
+		if m := refBootPlugin.FindStringSubmatch(line); m != nil {
+			boot = m[1]
+		}
+		management = management || line == "plugins { id 'io.spring.dependency-management' version '1.1.4' }"
 	}
-	platforms = append(platforms, inherited...)
+	for _, p := range inherited {
+		platformRefs = append(platformRefs, bomRef{p, false})
+	}
+	if boot != "" && management {
+		springRefs = append([]bomRef{{coord: "org.springframework.boot:spring-boot-dependencies:" + boot}}, springRefs...)
+	}
 
-	// Each platform is a BOM: a pom of the clone with those coordinates, or
-	// one a repository has. unknown[i] is why platform i's content is not
-	// known ("" when it is, or when it is simply on no repository).
+	// Each is a BOM: a pom of the clone with those coordinates, or one a
+	// repository has (the Maven reference's obtain). missing is why its
+	// content is not known ("" for one that is simply on no repository,
+	// which says nothing and is left out).
 	type platform struct {
-		ctx     *oracleCtx
-		missing string
+		ctx      *oracleCtx
+		missing  string
+		enforced bool
 	}
-	var boms []platform
 	worst := ""
-	for _, coord := range platforms {
-		parts := strings.Split(coord, ":")
-		if len(parts) != 3 || parts[2] == "" {
-			continue
-		}
-		bom, ambiguous := g.poms.byCoordinates(parts[0], parts[1], parts[2])
-		reason, unknown := "", ""
-		if ambiguous {
-			unknown = "inherited_not_found"
-		} else if bom == nil {
-			bom, reason, unknown = g.poms.remote(parts[0], parts[1], parts[2])
-		}
-		worst = oracleWorse(worst, reason)
-		if bom == nil {
-			if unknown != "" {
-				boms = append(boms, platform{missing: unknown})
+	load := func(refs []bomRef) []platform {
+		var boms []platform
+		for _, r := range refs {
+			parts := strings.Split(r.coord, ":")
+			if len(parts) != 3 || parts[2] == "" {
+				continue
 			}
-			continue
+			bom, reason, unknown := g.poms.obtain(parts[0], parts[1], parts[2], nil)
+			worst = oracleWorse(worst, reason)
+			if bom == nil {
+				if unknown != "" {
+					boms = append(boms, platform{missing: unknown, enforced: r.enforced})
+				}
+				continue
+			}
+			c := g.poms.ctx(bom)
+			// Everything that could not be obtained anywhere in this BOM.
+			q := &oracleQuestion{searched: map[string]bool{}, gap: c.gap}
+			c.lookup(q, "\x00", "\x00", 0)
+			worst = oracleWorse(worst, q.gap)
+			boms = append(boms, platform{ctx: c, enforced: r.enforced})
 		}
-		c := g.poms.ctx(bom)
-		// Everything that could not be obtained anywhere in this BOM.
-		q := &oracleQuestion{searched: map[string]bool{}, gap: c.gap}
-		c.lookup(q, "\x00", "\x00", 0)
-		worst = oracleWorse(worst, q.gap)
-		boms = append(boms, platform{ctx: c})
+		return boms
+	}
+	springBoms := load(springRefs)
+	platforms := load(platformRefs)
+
+	// said is what a set of platforms says of one module.
+	type said struct {
+		versions []string
+		hosts    map[string][]string
+		unknown  string
+		notOne   bool
+	}
+	ask := func(group, artifact string, enforcedOnly bool) said {
+		s := said{hosts: map[string][]string{}}
+		for _, p := range platforms {
+			if enforcedOnly && !p.enforced {
+				continue
+			}
+			if p.ctx == nil {
+				s.unknown = oracleWorse(s.unknown, p.missing)
+				continue
+			}
+			q := &oracleQuestion{searched: map[string]bool{}, gap: p.ctx.gap}
+			v, found, via, stop := p.ctx.lookup(q, group, artifact, 0)
+			s.unknown = oracleWorse(s.unknown, q.before)
+			switch {
+			case stop, found && refNotOneVersion(v):
+				s.notOne = true
+			case found:
+				if _, seen := s.hosts[v]; !seen {
+					s.versions = append(s.versions, v)
+				}
+				s.hosts[v] = oracleHosts(p.ctx.chain, append(append([]string{}, via...), s.hosts[v]...))
+			}
+		}
+		return s
+	}
+	// verdict of one mechanism: "" nothing, "v" a version, "?" not known
+	// (why), "-" managed at what is not one version.
+	type verdict struct {
+		kind, version, why string
+		hosts              []string
+	}
+	settle := func(s said) verdict {
+		switch {
+		case s.unknown != "" && (len(s.versions) > 0 || s.notOne):
+			return verdict{kind: "?", why: s.unknown}
+		case s.notOne:
+			return verdict{kind: "-"}
+		case len(s.versions) == 0:
+			return verdict{}
+		}
+		if v, ok := refHighest(s.versions); ok {
+			return verdict{kind: "v", version: v, hosts: s.hosts[v]}
+		}
+		return verdict{kind: "?", why: "platforms_disagree"}
 	}
 
 	var out []oracleAnswer
@@ -405,53 +555,84 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 		if refNotOneVersion(a.Version) {
 			a.Version = ""
 		}
-		if a.Version == "" && !written {
-			// No version written: the platforms, all of them together
-			// (round 7). Gradle takes the highest version any of them
-			// recommends, so one whose answer is not known withholds the
-			// answer wherever it is written, and so does one that manages
-			// the dependency at something that is not one version.
-			unknown, notOne := "", false
-			var versions []string
-			hosts := map[string][]string{}
-			for _, p := range boms {
+		defer func() { out = append(out, a) }()
+		if a.Version != "" {
+			// G2, G3: written. One enforced version replaces it; with
+			// nothing enforced, a higher recommendation raises it.
+			enf := ask(group, artifact, true)
+			if enf.unknown != "" || enf.notOne || len(enf.versions) > 0 {
+				if enf.unknown == "" && !enf.notOne && len(enf.versions) == 1 && enf.versions[0] != a.Version {
+					a.Version, a.Source, a.Hosts = enf.versions[0], "managed", append([]string{}, enf.hosts[enf.versions[0]]...)
+				}
+				return
+			}
+			all := ask(group, artifact, false)
+			if v, ok := refHighest(all.versions); ok && refCompare(v, a.Version) > 0 {
+				a.Version, a.Source, a.Hosts = v, "managed", append([]string{}, all.hosts[v]...)
+			}
+			return
+		}
+		if written {
+			return // written with a version that could not be read
+		}
+		// G1, G2: the platforms.
+		var byPlatforms verdict
+		if enf := ask(group, artifact, true); enf.unknown != "" {
+			byPlatforms = verdict{kind: "?", why: enf.unknown}
+		} else if enf.notOne || len(enf.versions) > 0 {
+			byPlatforms = settle(enf)
+		} else {
+			byPlatforms = settle(ask(group, artifact, false))
+		}
+		// G5: the version given outright, else the LAST BOM that manages it.
+		var byPlugin verdict
+		if v, given := explicit[group+":"+artifact]; given {
+			byPlugin = verdict{kind: "v", version: v}
+		} else {
+			for k := len(springBoms) - 1; k >= 0 && byPlugin.kind == ""; k-- {
+				p := springBoms[k]
 				if p.ctx == nil {
-					unknown = oracleWorse(unknown, p.missing)
-					continue
+					byPlugin = verdict{kind: "?", why: p.missing}
+					break
 				}
 				q := &oracleQuestion{searched: map[string]bool{}, gap: p.ctx.gap}
 				v, found, via, stop := p.ctx.lookup(q, group, artifact, 0)
-				unknown = oracleWorse(unknown, q.before)
 				switch {
+				case q.before != "":
+					byPlugin = verdict{kind: "?", why: q.before}
 				case stop, found && refNotOneVersion(v):
-					notOne = true
+					byPlugin = verdict{kind: "-"}
 				case found:
-					if _, seen := hosts[v]; !seen {
-						versions = append(versions, v)
-					}
-					hosts[v] = oracleHosts(p.ctx.chain, append(append([]string{}, via...), hosts[v]...))
-				}
-			}
-			switch {
-			case unknown != "" && (len(versions) > 0 || notOne):
-				a.Reason = unknown
-				g.withheld++
-			case notOne, len(versions) == 0:
-				a.Reason = worst
-			default:
-				if v, ok := refHighest(versions); ok {
-					a.Version, a.Source = v, "managed"
-					a.Hosts = append([]string{}, hosts[v]...)
-				} else {
-					a.Reason = worst
+					byPlugin = verdict{kind: "v", version: v, hosts: oracleHosts(p.ctx.chain, via)}
 				}
 			}
 		}
-		out = append(out, a)
+		// G8.
+		final := byPlatforms
+		switch {
+		case byPlatforms.kind == "":
+			final = byPlugin
+		case byPlugin.kind == "", byPlatforms.kind == "?":
+		case byPlugin.kind == "?":
+			final = byPlugin
+		case byPlatforms.kind == "v" && byPlugin.kind == "v" && byPlatforms.version == byPlugin.version:
+			final.hosts = oracleHosts(nil, append(append([]string{}, byPlatforms.hosts...), byPlugin.hosts...))
+		default:
+			final = verdict{kind: "?", why: "platforms_disagree"}
+		}
+		switch final.kind {
+		case "v":
+			a.Version, a.Source, a.Hosts = final.version, "managed", append([]string{}, final.hosts...)
+		case "?":
+			a.Reason = final.why
+			g.withheld++
+		default:
+			a.Reason = worst
+		}
 	}
 	for _, line := range lines {
 		m := refDep.FindStringSubmatch(line)
-		if m == nil || refPlatform.MatchString(m[1]) {
+		if m == nil || refPlatform.MatchString(m[1]) || refEnforced.MatchString(line) {
 			continue
 		}
 		arg := m[1]
@@ -563,6 +744,10 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 				// Round 7: a platform that is never asked for.
 				sb.WriteString("  implementation platform('t:snap:1-SNAPSHOT')\n")
 			}
+			if rng.Intn(6) == 0 {
+				// Round 8 (G2).
+				sb.WriteString("  implementation enforcedPlatform('t:" + pick([]string{"bomA", "bomB", "gone1", "rb1", "bomR"}) + ":1')\n")
+			}
 			for i, n := range names {
 				switch rng.Intn(5) {
 				case 0:
@@ -573,6 +758,9 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 					fmt.Fprintf(&sb, "  implementation 'g:m%d'\n", i)
 				case 3:
 					fmt.Fprintf(&sb, "  implementation 'g:lit%d:%s'\n", i, pick(literals))
+				case 4:
+					// Round 8 (G3): written, and a platform may manage it.
+					fmt.Fprintf(&sb, "  implementation 'g:m%d:%s'\n", i, pick([]string{"1.0", "5.0", "6.1", "6.1.Final", "7.5", "9.9"}))
 				}
 			}
 			if rng.Intn(2) == 0 {
@@ -585,6 +773,26 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 			sb.WriteString("}\n")
 		}
 		writeAssigns(assigns[half:])
+		if withDeps {
+			// Round 8 (G5, G6): the Spring plugin's statements, anywhere
+			// among each other; the Boot plugin with or without the
+			// dependency-management plugin.
+			var spring []string
+			for i, n := 0, rng.Intn(3)*rng.Intn(2); i < n; i++ {
+				spring = append(spring, "dependencyManagement { imports { mavenBom 't:"+pick([]string{"bomA", "bomB", "gone1", "rb1", "bomR"})+":1' } }\n")
+			}
+			if rng.Intn(8) == 0 {
+				spring = append(spring, fmt.Sprintf("dependencyManagement { dependencies { dependency 'g:m%d:3.3' } }\n", rng.Intn(len(names))))
+			}
+			if rng.Intn(5) == 0 {
+				spring = append(spring, "plugins { id 'org.springframework.boot' version '3.3.0' }\n")
+				if rng.Intn(4) != 0 {
+					spring = append(spring, "plugins { id 'io.spring.dependency-management' version '1.1.4' }\n")
+				}
+			}
+			rng.Shuffle(len(spring), func(i, j int) { spring[i], spring[j] = spring[j], spring[i] })
+			sb.WriteString(strings.Join(spring, ""))
+		}
 		return sb.String()
 	}
 	catalogue := func() string {
@@ -633,7 +841,7 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 		s := "<project><groupId>t</groupId><artifactId>" + artifact + "</artifactId><version>1</version><dependencyManagement><dependencies>"
 		for i := range names {
 			if rng.Intn(2) == 0 {
-				s += entry(i, pick([]string{"5.0", "6.1", "[1,2)", "7.0"}))
+				s += entry(i, pick([]string{"5.0", "6.1", "[1,2)", "7.0", "6.1.Final", "6.1-rc1", "6-1", "6.1.1"}))
 			}
 		}
 		if rng.Intn(3) == 0 {
@@ -659,8 +867,11 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 		}
 		return r
 	}
-	src = &oracleSource{poms: map[string]*RemotePom{"t:rb1:1": fetched("rb1"), "t:bomR:1": fetched("bomR")}, outcomes: map[string]RemoteOutcome{}}
-	for _, k := range []string{"t:gone1:1", "t:gone2:1", "t:rb1:1", "t:bomR:1"} {
+	bootBOM := fetched("spring-boot-dependencies")
+	bootBOM.Group, bootBOM.Version = "org.springframework.boot", "3.3.0"
+	src = &oracleSource{poms: map[string]*RemotePom{"t:rb1:1": fetched("rb1"), "t:bomR:1": fetched("bomR"),
+		"org.springframework.boot:spring-boot-dependencies:3.3.0": bootBOM}, outcomes: map[string]RemoteOutcome{}}
+	for _, k := range []string{"t:gone1:1", "t:gone2:1", "t:rb1:1", "t:bomR:1", "org.springframework.boot:spring-boot-dependencies:3.3.0"} {
 		switch rng.Intn(6) {
 		case 0, 1:
 			src.outcomes[k] = RemoteFailed
@@ -675,9 +886,8 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 	return files, builds, src
 }
 
-// refGradleTrees is how many random clones the test compares, each in
-// three read orders.
-const refGradleTrees = 600
+// refGradleTrees (race_off_test.go, race_on_test.go) is how many random
+// clones the test compares, each in three read orders.
 
 func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261122))
@@ -740,42 +950,72 @@ func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 	}
 }
 
-// refHighest is the highest of several versions when each is digits in
-// groups separated by dots, compared as numbers group by group; a version
-// the longer one begins with is the lower. Anything else is not ordered.
+// refHighest is the highest of several versions by G4. ok is false when
+// two different texts stand equal highest.
 func refHighest(versions []string) (string, bool) {
-	if len(versions) == 1 {
-		return versions[0], true
-	}
-	num := func(v string) ([]int, bool) {
-		var out []int
-		for _, part := range strings.Split(v, ".") {
-			n, err := strconv.Atoi(part)
-			if err != nil || n < 0 || strings.TrimLeft(part, "0123456789") != "" {
-				return nil, false
-			}
-			out = append(out, n)
-		}
-		return out, true
-	}
-	best := -1
-	var bestN []int
+	best, tied := "", false
 	for i, v := range versions {
-		n, ok := num(v)
-		if !ok {
-			return "", false
+		c := 1
+		if i > 0 {
+			c = refCompare(v, best)
 		}
-		less := func(a, b []int) bool {
-			for k := 0; k < len(a) && k < len(b); k++ {
-				if a[k] != b[k] {
-					return a[k] < b[k]
-				}
-			}
-			return len(a) < len(b)
-		}
-		if best < 0 || less(bestN, n) {
-			best, bestN = i, n
+		switch {
+		case c > 0:
+			best, tied = v, false
+		case c == 0 && v != best:
+			tied = true
 		}
 	}
-	return versions[best], true
+	return best, len(versions) > 0 && !tied
+}
+
+// refCompare is G4, written from the rule and not from the reader.
+func refCompare(a, b string) int {
+	special := map[string]int{"dev": -1, "rc": 1, "snapshot": 2, "final": 3, "ga": 4, "release": 5, "sp": 6}
+	pa, pb := refPart.FindAllString(a, -1), refPart.FindAllString(b, -1)
+	number := func(p string) (int, bool) {
+		n, err := strconv.Atoi(p)
+		return n, err == nil
+	}
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		if i >= len(pa) || i >= len(pb) {
+			// A further number makes a version the higher, a further word
+			// the lower.
+			longer, sign := pa, 1
+			if i >= len(pa) {
+				longer, sign = pb, -1
+			}
+			if _, isNumber := number(longer[i]); !isNumber {
+				sign = -sign
+			}
+			return sign
+		}
+		x, xNumber := number(pa[i])
+		y, yNumber := number(pb[i])
+		switch {
+		case xNumber && yNumber:
+			if x != y {
+				if x < y {
+					return -1
+				}
+				return 1
+			}
+		case xNumber:
+			return 1
+		case yNumber:
+			return -1
+		default:
+			rx, ry := special[strings.ToLower(pa[i])], special[strings.ToLower(pb[i])]
+			if rx != ry {
+				if rx < ry {
+					return -1
+				}
+				return 1
+			}
+			if rx == 0 && pa[i] != pb[i] {
+				return strings.Compare(pa[i], pb[i])
+			}
+		}
+	}
+	return 0
 }

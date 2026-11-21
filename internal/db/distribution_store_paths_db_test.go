@@ -117,6 +117,13 @@ func TestADistributionScanIsStoredRotatedAndReadBack(t *testing.T) {
 		t.Errorf("repositories with a pypi distribution %d -> %d, want one more", count(before, "pypi"), count(after, "pypi"))
 	}
 
+	// A neighbour with a distribution row of its own: this repository's
+	// scan rotates this repository's rows and no other's (round 8: the test
+	// looked at its own repository's history only, and a rotation of every
+	// repository's rows passed).
+	neighbour, _, _ := pathsRepo(t, store, "dist-nb", "aveloxis_data.repo_distribution_history", "aveloxis_data.repo_distribution")
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_distribution (repo_id, ecosystem, package_name, source) VALUES ($1, 'pypi', 'zz-paths-neighbour', 'deps.dev')`, neighbour)
+
 	// A second scan replaces the rows and rotates the first ones into
 	// history; a row for the same key is updated in place within a scan.
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET distribution_last_run = NULL WHERE repo_id = $1`, repoID)
@@ -147,6 +154,12 @@ func TestADistributionScanIsStoredRotatedAndReadBack(t *testing.T) {
 	}
 	if h := pathsInt(t, store, `SELECT COUNT(*) FROM aveloxis_data.repo_distribution_manifest_history WHERE repo_id = $1`, repoID); h != 2 {
 		t.Errorf("%d history rows of the first scan's manifests, want 2", h)
+	}
+	if h := pathsInt(t, store, `SELECT COUNT(*) FROM aveloxis_data.repo_distribution_history WHERE package_name = 'zz-paths-neighbour'`); h != 0 {
+		t.Errorf("%d history rows of the NEIGHBOUR's distribution after this repository's scan, want 0", h)
+	}
+	if n := pathsInt(t, store, `SELECT COUNT(*) FROM aveloxis_data.repo_distribution WHERE repo_id = $1`, neighbour); n != 1 {
+		t.Errorf("the neighbour has %d distribution rows after this repository's scan, want its 1", n)
 	}
 	if got := pathsText(t, store, `SELECT distribution_scan_complete::text FROM aveloxis_data.repos WHERE repo_id = $1`, repoID); got != "false" {
 		t.Errorf("distribution_scan_complete after a scan that says it is not complete: %q", got)

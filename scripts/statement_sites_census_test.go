@@ -44,7 +44,7 @@ func TestTheClosingSuiteChecksStatementSites(t *testing.T) {
 	if err == nil {
 		t.Errorf("a green suite whose packages recorded nothing passed the census:\n%s", report)
 	}
-	for _, want := range []string{"the write-policy judge's coverage", "holds no record of what internal/db reached", "sites-check.txt"} {
+	for _, want := range []string{"the write-policy judge's coverage", "holds no record of what internal/db reached", "hold 0 statement texts", "sites-check.txt"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the census report lacks %q:\n%s", want, report)
 		}
@@ -53,9 +53,10 @@ func TestTheClosingSuiteChecksStatementSites(t *testing.T) {
 	// write its record, into the folder the check then reads.
 	script := srctest.Read(t, "scripts/skip-census.sh")
 	for _, want := range []string{
-		`AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} ./... -count=1 -json`,
+		`AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} -timeout "${SKIP_CENSUS_TIMEOUT:-20m}" ./... -count=1 -json`,
 		`AVELOXIS_STATEMENT_SITES_CHECK="$SITES"`,
-		`go test ./internal/db/ -run '^TestTheSuiteReachesEveryStatementSite$' -count=1`,
+		`go test ./internal/db/ -run '^(TestTheSuiteReachesEveryStatementSite|TestTheSuiteSendsEveryStatementText)$' -count=1`,
+		`statement texts read in internal/db; [0-9]* not sent by any DB-tier package`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/skip-census.sh lacks %q", want)

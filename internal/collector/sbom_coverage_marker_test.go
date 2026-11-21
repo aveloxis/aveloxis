@@ -165,6 +165,29 @@ func TestSPDXCarriesTheCoverageMarker(t *testing.T) {
 	if !strings.Contains(doc.Comment, "manifests_failed=2") || !strings.Contains(doc.Comment, "manifests_carried=1") || strings.Contains(doc.Comment, "attempt_reason") {
 		t.Errorf("the carried-manifest fixture: %q", doc.Comment)
 	}
+	// The lockfile caution's two facts (0.29.214) are in the SPDX marker
+	// too, in both cases, and absent when there is nothing to caution about.
+	if strings.Contains(doc.Comment, "lockfiles_") {
+		t.Errorf("a document with nothing to caution about says something of lockfiles: %q", doc.Comment)
+	}
+	read := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	behind := *carriedManifest()
+	behind.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.InventoryAttemptReadMemoryLimit, LastReadAt: &read}
+	repo.Coverage = &behind
+	raw, _ = generateSPDX(repo, deps, scan, sbomSeedGraph())
+	_ = json.Unmarshal(raw, &doc)
+	if !strings.Contains(doc.Comment, "lockfiles_unread_reason=manifest_read_memory_limit") || !strings.Contains(doc.Comment, "lockfiles_last_read_at=2026-11-02T09:00:00Z") {
+		t.Errorf("behind: %q", doc.Comment)
+	}
+	assertSPDXSchemaConstraints(t, loadSchema(t, "spdx-2.3.schema.json"), raw)
+	never := *carriedManifest()
+	never.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.LockfileUnreadNotReached}
+	repo.Coverage = &never
+	raw, _ = generateSPDX(repo, deps, scan, nil)
+	_ = json.Unmarshal(raw, &doc)
+	if !strings.Contains(doc.Comment, "lockfiles_unread_reason=lockfiles_not_reached") || strings.Contains(doc.Comment, "lockfiles_last_read_at") {
+		t.Errorf("never read: %q", doc.Comment)
+	}
 	repo.Coverage = nil
 	raw, _ = generateSPDX(repo, deps, scan, nil)
 	if strings.Contains(string(raw), "aveloxis:coverage") || strings.Contains(string(raw), `"comment": ""`) {

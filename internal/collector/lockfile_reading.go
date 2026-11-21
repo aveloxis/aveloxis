@@ -80,8 +80,14 @@ func (ac *AnalysisCollector) lockfileReadingEnded(ctx context.Context, repoID in
 		}
 	}
 	err := rec.RecordLockfileReading(ctx, repoID, reading)
-	if err == nil || errors.Is(err, context.Canceled) {
-		return // recorded, or a `stop serve`
+	if err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		// A `stop serve`: not a failure, and said all the same, since the
+		// coverage record now says nothing of this reading (0.29.215).
+		ac.logger.Warn("how the reading of the lockfiles ended was not recorded: the analysis was stopped first", "repo_id", repoID)
+		return
 	}
 	ac.logger.Warn("how the reading of the lockfiles ended could not be recorded", "repo_id", repoID, "error", err)
 }

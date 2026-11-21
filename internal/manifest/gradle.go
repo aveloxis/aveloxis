@@ -180,6 +180,26 @@ type gradleBuild struct {
 	// dependencies block: Spring's dependencyManagement { imports {
 	// mavenBom "g:a:v" } }, and the Spring Boot plugin's own.
 	boms []gradleDecl
+	// managed are the versions Spring's dependency-management plugin is
+	// given outright: dependencyManagement { dependencies { dependency
+	// 'g:a:v' } }, and dependencySet's entries. "group:artifact" -> version;
+	// "" for an entry whose version could not be read. They override every
+	// imported BOM (gradleTree.applyPlatforms).
+	managed map[string]string
+	// set is the dependencySet whose entries are being read.
+	setGroup, setVersion string
+	// unread are the variables this file assigns a value too long to be
+	// read (gradleValueTokens, gradleMapTokens): a version written with one
+	// is not read, and says so (model.VersionReasonValueNotRead).
+	unread map[string]bool
+	// seq counts the statements the assignments pass has looked at; setAt is
+	// where each variable was last assigned, and firstApply and lastApply
+	// where the file's first and last "apply from:" stand (0: none). What an
+	// applied script assigns comes after what the file assigned before
+	// applying it (applyOrder).
+	seq                   int
+	setAt                 map[string]int
+	firstApply, lastApply int
 	// plugins are the plugins block's ids and versions ("" when none is
 	// written).
 	plugins map[string]string
@@ -225,8 +245,9 @@ type gradleIndex struct {
 	// one thing about it (a statement can be most of the file, and begin
 	// again at every brace inside it):
 	//
-	// partner[k] is the place of the parenthesis that closes the one at k
-	// (-1: none, or not an opening parenthesis): unparen.
+	// partner[k] is the place of the parenthesis or square bracket that
+	// closes the one at k (-1: none, or not an opening one): unparen, and
+	// whether a value is one map (encloses).
 	// depth[k] is the brackets open before flat[k], from the start of the
 	// file; commas[d] are the places of the commas at depth d and froms[d]
 	// those of them that the word `from` follows: a statement's parts are
@@ -263,7 +284,7 @@ func (x *gradleIndex) finish() {
 	x.partner, x.depth = make([]int32, m), make([]int32, m+1)
 	x.nextString, x.nextApply, x.lastVersion = make([]int32, m+1), make([]int32, m+1), make([]int32, m+1)
 	x.commas, x.froms = map[int32][]int32{}, map[int32][]int32{}
-	var open []int32
+	var open, openSquare []int32
 	last := int32(-1)
 	for k, t := range x.flat {
 		x.partner[k] = -1
@@ -280,6 +301,7 @@ func (x *gradleIndex) finish() {
 			open = append(open, int32(k))
 			x.depth[k+1]++
 		case "[":
+			openSquare = append(openSquare, int32(k))
 			x.depth[k+1]++
 		case ")":
 			if len(open) > 0 {
@@ -288,6 +310,10 @@ func (x *gradleIndex) finish() {
 			}
 			x.depth[k+1]--
 		case "]":
+			if len(openSquare) > 0 {
+				x.partner[openSquare[len(openSquare)-1]] = int32(k)
+				openSquare = openSquare[:len(openSquare)-1]
+			}
 			x.depth[k+1]--
 		case ",":
 			d := x.depth[k]
@@ -528,10 +554,13 @@ func (b *gradleBuild) statement(toks []gradleTok, i int) (stmt []gradleTok, next
 type gradleLevel struct {
 	inDeps, inRepos        bool
 	forPlugins, repoShared bool
+	// inManagement: inside Spring's dependencyManagement { } block, where a
+	// dependencies block holds managed versions and not dependencies.
+	inManagement bool
 }
 
 func (above gradleLevel) enter(name string) gradleLevel {
-	lv := gradleLevel{forPlugins: above.forPlugins, repoShared: above.repoShared}
+	lv := gradleLevel{forPlugins: above.forPlugins, repoShared: above.repoShared, inManagement: above.inManagement || name == "dependencyManagement"}
 	switch name {
 	case "pluginManagement", "buildscript":
 		lv.forPlugins = true
@@ -687,6 +716,20 @@ const gradleInterpolatedLimit = pomInterpolatedLimit
 // statement whole took time in the square of the file's size (`val x by
 // extra a +`, line after line: 573 KB in 269 s). With these bounds each is
 // read in constant time once it is longer than a value can be.
+//
+// What each is for (round 8). gradleValueTokens is what ONE value can be,
+// twice the bytes one may have; a variable given a longer one is not read,
+// and a dependency whose version is written with it says so
+// (model.VersionReasonValueNotRead; the log names the file). A MAP of
+// values has no such bound when it is the file's own tokens: it is a map
+// only when the bracket that opens it is closed by its last token
+// (encloses), which the index answers in one step, so a map is read once,
+// whatever its length, and a statement that merely begins like one and runs
+// on to the end of the file is not read as one. Until 0.29.215 a map was
+// bounded at 1<<14 tokens, and an honest ext map of 4,096 versions, which
+// every earlier release read, was silently not read. gradleMapTokens is
+// what is left of that bound: tokens that are not a file's (a slice read
+// the slow way) are scanned for the closing bracket no further than it.
 const (
 	gradleValueTokens = 2 * gradleInterpolatedLimit
 	gradleMapTokens   = 1 << 14
@@ -733,14 +776,148 @@ func readGradleIndexed(idx *gradleIndex, outer *gradleVars, libs *gradleLibs) *g
 }
 
 func readGradleWith(toks []gradleTok, idx *gradleIndex, outer *gradleVars, libs *gradleLibs) *gradleBuild {
+	return readGradleAfter(toks, idx, outer, nil, false, libs)
+}
+
+// readGradleAfter reads a file whose applied scripts have been read: outer
+// holds what they assign in front of applied (the scope the file started
+// from). ordered is false for a reading that does not know which of outer's
+// layers are the applied scripts' (applied is then not looked at).
+func readGradleAfter(toks []gradleTok, idx *gradleIndex, outer, applied *gradleVars, ordered bool, libs *gradleLibs) *gradleBuild {
 	b := &gradleBuild{outer: outer, own: map[string]string{}, conflicted: map[string]bool{}, libs: libs,
-		reads: map[string]gradleRead{}, idx: idx}
+		reads: map[string]gradleRead{}, idx: idx, setAt: map[string]int{}}
 	// Two passes: the assignments first, so a variable assigned below its
 	// use (or in a later ext block) is known when the declarations are read.
 	b.walk(toks, false)
+	if ordered {
+		b.applyOrder(applied)
+	}
 	b.walk(toks, true)
 	b.springBootBOM()
 	return b
+}
+
+// applyOrder puts what the applied scripts assign in its place among the
+// file's own assignments. Gradle runs a build file from the top: a script
+// applied AFTER the file assigned a variable assigns over it, and one
+// applied before is assigned over. The reader keeps the file's own
+// assignments in front of everything the scripts assign, which is right only
+// for the second (round 8: `ext.v = '1.0.0'` and then `apply from:` a script
+// that sets it to 2.0.0 read as 1.0.0).
+//
+// For each variable both assign: assigned by the file before its first
+// "apply from:", the scripts' value stands; after its last, the file's; in
+// between, it is not known which script it is (the scripts' assignments are
+// one scope here), and the variable is not read.
+func (b *gradleBuild) applyOrder(stop *gradleVars) {
+	if b.firstApply == 0 {
+		return
+	}
+	for name, at := range b.setAt {
+		v, ok, settled := b.outer.findUntil(stop, name)
+		if !settled || at > b.lastApply {
+			continue
+		}
+		own, has := b.own[name]
+		switch {
+		case at < b.firstApply && ok:
+			b.own[name] = v
+			delete(b.conflicted, name)
+		case at < b.firstApply:
+			b.conflicted[name] = true // the scripts left it with two values
+		case !ok || !has || own != v:
+			b.conflicted[name] = true
+		}
+	}
+}
+
+// findUntil is find over the layers in front of stop: what was pushed onto
+// stop to make s.
+func (s *gradleVars) findUntil(stop *gradleVars, name string) (value string, ok, settled bool) {
+	for ; s != nil && s != stop; s = s.parent {
+		if s.seg != nil {
+			if v, has, done, _ := s.seg.find(name); done {
+				return v, has, true
+			}
+			continue
+		}
+		if s.gone[name] {
+			return "", false, true
+		}
+		if v, has := s.own[name]; has {
+			return v, true, true
+		}
+	}
+	return "", false, false
+}
+
+// managedEntry reads one statement of a dependencyManagement block's
+// dependencies: dependency 'g:a:v' (or its map form), dependencySet(group:
+// 'g', version: 'v') or dependencySet('g:v'), and entry 'a' inside one.
+func (b *gradleBuild) managedEntry(toks []gradleTok, i int, head, block string) {
+	stmt, _ := b.statement(toks, i)
+	if len(stmt) < 2 {
+		return
+	}
+	args := b.unparen(stmt[1:])
+	note := func(group, artifact, version string) {
+		group, artifact = strings.TrimSpace(group), strings.TrimSpace(artifact)
+		if group == "" || artifact == "" || strings.ContainsAny(group+artifact, "\x00${}()\"' \t") {
+			return
+		}
+		if !gradleIsVersion(version) {
+			version = ""
+		}
+		if b.managed == nil {
+			b.managed = map[string]string{}
+		}
+		// The plugin takes the last one given; so does this.
+		b.managed[group+":"+artifact] = version
+	}
+	switch {
+	case head == "dependency" && block != "dependencySet":
+		before := len(b.decls)
+		b.arguments("dependency", args, false)
+		for _, d := range b.decls[before:] {
+			note(d.group, d.artifact, d.version)
+		}
+		b.decls = b.decls[:before]
+	case head == "dependencySet":
+		b.setGroup, b.setVersion = "", ""
+		if len(args) > 0 && args[0].kind == 's' && len(args) == 1 {
+			// 'group:version'
+			text := args[0].text
+			if args[0].interp {
+				text, _ = b.interpolate(text)
+			}
+			b.setGroup, b.setVersion, _ = strings.Cut(text, ":")
+			return
+		}
+		parts, _ := b.parts(args, 0)
+		for _, part := range parts {
+			if len(part) < 3 || part[0].kind != 'i' || part[1].kind != 'p' || (part[1].text != ":" && part[1].text != "=") {
+				continue
+			}
+			v, _, ok := b.value(part[2:])
+			if !ok {
+				continue
+			}
+			switch part[0].text {
+			case "group":
+				b.setGroup = v
+			case "version":
+				b.setVersion = v
+			}
+		}
+	case head == "entry" && block == "dependencySet":
+		if args[0].kind == 's' && b.setGroup != "" {
+			name := args[0].text
+			if args[0].interp {
+				name, _ = b.interpolate(name)
+			}
+			note(b.setGroup, name, b.setVersion)
+		}
+	}
 }
 
 // walk goes over the statements of the file, keeping the stack of named
@@ -843,6 +1020,11 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 		inDeps := at.inDeps
 		b.inShared = shared > 0
 		switch {
+		case decls && at.inManagement && (inDeps || top() == "dependencySet"):
+			// dependencyManagement { dependencies { dependency 'g:a:v' } }: a
+			// managed version, not a dependency (round 8: it was read as one,
+			// a row for a package the build may not use at all).
+			b.managedEntry(toks, i, head, top())
 		case decls && inDeps:
 			if next, ok := b.declaration(toks, i); ok {
 				i = next - 1
@@ -1245,6 +1427,13 @@ func (b *gradleBuild) coordinate(config string, toks []gradleTok, platform bool)
 		}
 		if v, ok := b.interpolate(raw); ok {
 			version = v
+		} else if b.writtenWithUnread(raw) {
+			before := len(b.decls)
+			b.add(config, group, artifact, "", strings.ReplaceAll(written, "\x00", "$"), platform)
+			if len(b.decls) > before {
+				b.decls[len(b.decls)-1].reason = model.VersionReasonValueNotRead
+			}
+			return
 		}
 	} else if at := strings.IndexByte(artifact, '@'); at >= 0 {
 		artifact = artifact[:at]
@@ -1385,6 +1574,9 @@ func (b *gradleBuild) set(name, value string) {
 	if b.conflicted[name] {
 		return
 	}
+	if b.setAt != nil {
+		b.setAt[name] = b.seq
+	}
 	if earlier, assigned := b.own[name]; assigned && earlier != value {
 		b.conflicted[name] = true
 		return
@@ -1413,8 +1605,16 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 		return
 	}
 	head := stmt[0].text
+	b.seq++
 	if head == "apply" {
+		before := len(b.applies)
 		b.applyFrom(b.unparen(stmt[1:]))
+		if len(b.applies) > before {
+			if b.firstApply == 0 {
+				b.firstApply = b.seq
+			}
+			b.lastApply = b.seq
+		}
 		return
 	}
 	// set("name", "value") on ext or extra, or inside their block.
@@ -1500,22 +1700,26 @@ func (b *gradleBuild) applyFrom(args []gradleTok) {
 // ([a: '1', b: '2'] or mapOf("a" to "1")), whose entries become name.a.
 func (b *gradleBuild) assign(name string, toks []gradleTok) {
 	name = gradleVarName(name)
-	if name == "" || len(toks) == 0 || len(toks) > gradleMapTokens {
+	if name == "" || len(toks) == 0 {
 		return
 	}
 	inner := toks
 	isMap := false
 	switch {
 	case toks[0].kind == 'p' && toks[0].text == "[":
-		if last := toks[len(toks)-1]; last.kind == 'p' && last.text == "]" {
+		if b.encloses(toks, 0) {
 			inner, isMap = toks[1:len(toks)-1], true
 		}
 	case toks[0].kind == 'i' && (toks[0].text == "mapOf" || toks[0].text == "mutableMapOf") && len(toks) >= 3:
-		inner, isMap = gradleUnparen(toks[1:]), true
+		if toks[1].kind == 'p' && toks[1].text == "(" && b.encloses(toks, 1) {
+			inner, isMap = toks[2:len(toks)-1], true
+		}
 	}
 	if !isMap {
 		if v, _, ok := b.value(toks); ok {
 			b.set(name, v)
+		} else if len(toks) > gradleValueTokens {
+			b.notRead(name)
 		}
 		return
 	}
@@ -1531,6 +1735,77 @@ func (b *gradleBuild) assign(name string, toks []gradleTok) {
 			b.set(name+"."+entry[0].text, v)
 		}
 	}
+}
+
+// encloses reports whether the bracket at toks[open] is closed by the last
+// token of toks: what follows it is one bracketed list, and nothing after.
+func (b *gradleBuild) encloses(toks []gradleTok, open int) bool {
+	if at, ok := b.idx.place(toks); ok {
+		return int(b.idx.partner[at+open]) == at+len(toks)-1
+	}
+	if len(toks) > gradleMapTokens {
+		return false
+	}
+	// As the index pairs them (gradleIndex.finish): a parenthesis with the
+	// last one left open, a square bracket likewise, each kind on its own.
+	var round, square []int
+	for j := open; j < len(toks); j++ {
+		if toks[j].kind != 'p' {
+			continue
+		}
+		switch toks[j].text {
+		case "(":
+			round = append(round, j)
+		case "[":
+			square = append(square, j)
+		case ")":
+			if len(round) > 0 {
+				if round[len(round)-1] == open {
+					return j == len(toks)-1
+				}
+				round = round[:len(round)-1]
+			}
+		case "]":
+			if len(square) > 0 {
+				if square[len(square)-1] == open {
+					return j == len(toks)-1
+				}
+				square = square[:len(square)-1]
+			}
+		}
+	}
+	return false
+}
+
+// notRead records a variable whose value is longer than is read.
+func (b *gradleBuild) notRead(name string) {
+	if b.unread == nil {
+		b.unread = map[string]bool{}
+	}
+	b.unread[name] = true
+}
+
+// writtenWithUnread reports a version written with a variable whose value
+// was not read (notRead): the variable itself, or an entry of it when it is
+// a map.
+func (b *gradleBuild) writtenWithUnread(raw string) bool {
+	for name := range b.unread {
+		for _, lead := range []string{"$" + name, "${" + name} {
+			for at := strings.Index(raw, lead); at >= 0; {
+				rest := raw[at+len(lead):]
+				// The name whole: not the start of a longer one.
+				if rest == "" || !(rest[0] == '_' || rest[0] >= '0' && rest[0] <= '9' || rest[0] >= 'a' && rest[0] <= 'z' || rest[0] >= 'A' && rest[0] <= 'Z') {
+					return true
+				}
+				next := strings.Index(rest, lead)
+				if next < 0 {
+					break
+				}
+				at += len(lead) + next
+			}
+		}
+	}
+	return false
 }
 
 // gradleScope is the scope a configuration's dependencies have, from its

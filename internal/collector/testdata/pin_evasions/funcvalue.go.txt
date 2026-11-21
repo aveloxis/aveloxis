@@ -1,0 +1,5 @@
+package collector
+
+import "os"
+
+func PinEvasionFUNCVALUE(dir string) int { read := os.ReadFile; b, _ := read(dir + "/package.json"); return len(b) }

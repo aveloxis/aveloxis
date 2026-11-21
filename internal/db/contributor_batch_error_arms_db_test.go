@@ -419,3 +419,38 @@ func TestAnEmailOnlyContributorYieldsToTheAliasAnotherWriterCommitted(t *testing
 		t.Errorf("the alias points at %s after the race, want it left with %s", got, owner)
 	}
 }
+
+// An address a SOFT-DELETED contributor has (a merge's loser) does not
+// answer for the address: the function makes, or finds, an active one
+// (round 8: no deleted row was seeded, and a lookup that took any row
+// passed). A dead owner is an id nothing resolves to.
+func TestAnEmailOnlyContributorIsNotADeletedRow(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	tag := pathsTag("dead")
+	email := tag + "@example.org"
+	dead := seedR6Contributor(t, store, tag+"-dead", email, nil)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.contributors SET cntrb_deleted = 1 WHERE cntrb_id = $1::uuid`, dead)
+	t.Cleanup(func() {
+		c := context.Background()
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.contributors_aliases WHERE alias_email = $1`, email)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_email = $1 AND cntrb_login = ''`, email)
+	})
+	id, err := store.CreateEmailOnlyContributor(ctx, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" || id == dead {
+		t.Fatalf("the function returned %q for an address only a deleted contributor (%s) has; want a new, active one", id, dead)
+	}
+	if r6Deleted(t, store, id) != 0 {
+		t.Errorf("the contributor returned is soft-deleted")
+	}
+	if got := pathsText(t, store, `SELECT cntrb_id::text FROM aveloxis_data.contributors_aliases WHERE alias_email = $1`, email); got != id {
+		t.Errorf("the address's alias points at %s, want the contributor returned, %s", got, id)
+	}
+	// A second call finds that one.
+	if again, err := store.CreateEmailOnlyContributor(ctx, email); err != nil || again != id {
+		t.Errorf("a second call returned %q (%v), want the same contributor", again, err)
+	}
+}

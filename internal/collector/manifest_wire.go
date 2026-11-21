@@ -82,6 +82,10 @@ type manifestRequest struct {
 	// Version is the version of the program that asks (db.ToolVersion). The
 	// child serves only its own version (ManifestChildMain).
 	Version string `json:"version"`
+	// Build is the file the asking process is (programBuild), "" when it
+	// could not tell: a child that is another file answers as it does to
+	// another version.
+	Build string `json:"build,omitempty"`
 	// Passes are the readings wanted, done in this order by one child: the
 	// names, the declarations, the lockfiles (manifestPass*). Each ends with
 	// its own done frame, so that a child stopped in a later pass leaves the
@@ -202,7 +206,8 @@ type manifestWireEdge struct {
 // stored record).
 type manifestWireFailure struct {
 	model.ManifestFailure
-	NoCarry bool `json:"no_carry,omitempty"`
+	NoCarry  bool `json:"no_carry,omitempty"`
+	TooLarge bool `json:"too_large,omitempty"`
 }
 
 type manifestNameCount struct {

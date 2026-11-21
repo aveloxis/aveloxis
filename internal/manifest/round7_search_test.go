@@ -135,10 +135,25 @@ const (
 	searchSmall = 32 << 10
 	// searchSlow: a unit is read again at four times the size when its
 	// small reading takes this long. A linear reader takes about a
-	// millisecond for 32 KB.
-	searchSlow = 40 * time.Millisecond
+	// millisecond for 32 KB; this is eight of them. (Round 8: it was 40 ms,
+	// and a quadratic reader that takes 10 ms for 32 KB, which is eleven
+	// minutes for a file of MaxBuildFileBytes, was never looked at twice.)
+	searchSlow = 8 * time.Millisecond
 	// searchLimit: between linear (4) and quadratic (16).
 	searchLimit = 8
+	// A time floor cannot see a quadratic reader whose small reading is as
+	// quick as a linear one's. So one unit in searchDeepEvery that is under
+	// the floor is read at searchDeep times the size as well: a linear
+	// reader takes searchDeep times as long, a quadratic one its square,
+	// and the bound between them is searchDeepLimit times the small
+	// reading, taken as no less than searchDeepFloor (a reading quicker
+	// than that is mostly the cost of opening the file). What passes is a
+	// reader that is under MaxBuildFileBytes/searchSmall squared times
+	// searchDeepFloor/4 at the largest file read: some four seconds.
+	searchDeepEvery = 16
+	searchDeep      = 16
+	searchDeepLimit = 64
+	searchDeepFloor = 250 * time.Microsecond
 )
 
 func TestNoRepeatedUnitIsReadInSuperLinearTime(t *testing.T) {
@@ -153,7 +168,7 @@ func TestNoRepeatedUnitIsReadInSuperLinearTime(t *testing.T) {
 		seed = v
 	}
 	rng := rand.New(rand.NewSource(seed))
-	tried, slow := 0, 0
+	tried, slow, deep := 0, 0, 0
 	for _, family := range searchFamilies {
 		words := append(append([]string{}, family.words...), searchCommon...)
 		var units []string
@@ -201,6 +216,19 @@ func TestNoRepeatedUnitIsReadInSuperLinearTime(t *testing.T) {
 				tried++
 				small := at(searchSmall)
 				if small < searchSlow {
+					if k%searchDeepEvery != 0 {
+						continue
+					}
+					deep++
+					bound := func(small time.Duration) time.Duration { return searchDeepLimit * max(small, searchDeepFloor) }
+					if big := at(searchDeep * searchSmall); big > bound(small) {
+						// Once more, as below.
+						small, big = at(searchSmall), at(searchDeep*searchSmall)
+						if big > bound(small) {
+							t.Errorf("%s: %q after %q, repeated: %d bytes in %v, %d bytes in %v (x%.1f); a linear reader takes about %d times",
+								file, unit, prefix, searchSmall, small, searchDeep*searchSmall, big, float64(big)/float64(small), searchDeep)
+						}
+					}
 					continue
 				}
 				slow++
@@ -216,8 +244,8 @@ func TestNoRepeatedUnitIsReadInSuperLinearTime(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d units read (seed %d), %d slow enough at %d bytes to be read at four times the size", tried, seed, slow, searchSmall)
-	if only == "" && tried < 15000 {
-		t.Errorf("%d units tried: the search has lost its units", tried)
+	t.Logf("%d units read (seed %d), %d slow enough at %d bytes to be read at four times the size, %d of the others read at %d times", tried, seed, slow, searchSmall, deep, searchDeep)
+	if only == "" && (tried < 15000 || deep < tried/(2*searchDeepEvery)) {
+		t.Errorf("%d units tried and %d read at %d times the size: the search has lost its units", tried, deep, searchDeep)
 	}
 }

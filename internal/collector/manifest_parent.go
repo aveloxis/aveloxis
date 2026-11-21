@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -193,6 +194,46 @@ func manifestChildProgram(goos string, executable func() (string, error)) (strin
 	return executable()
 }
 
+// manifestChildFallback is the file started when the one manifestChildCommand
+// names could not be: this program's path, when what failed was the running
+// program's link, and nothing otherwise. A variable for a test.
+var manifestChildFallback = func(failed string) (string, error) {
+	if failed != procSelfExe {
+		return "", nil
+	}
+	return os.Executable()
+}
+
+var manifestFallbackSaid atomic.Bool
+
+// programBuild identifies the FILE a program is: its length and the time it
+// was last written. Two builds of one version are two files (0.29.215: the
+// handshake compared db.ToolVersion alone, so a `go install` of the same
+// version under a running serve was started as the reader although it is
+// another program). Not a digest of the contents: the child takes it at
+// every start, of a file of tens of megabytes. "" when the file cannot be
+// examined, and then nothing is compared.
+func programBuild(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// manifestParentBuild is this process's build, taken ONCE, the first time
+// it is asked (the self-test at serve's start asks): of the running
+// program's link on Linux, which is the running program whatever has been
+// done to its name since, and elsewhere of the file at this program's path
+// as it then is. A variable so that a test can ask as another build.
+var manifestParentBuild = sync.OnceValue(func() string {
+	exe, err := manifestChildProgram(runtime.GOOS, os.Executable)
+	if err != nil {
+		return ""
+	}
+	return programBuild(exe)
+})
+
 // manifestChildEnv is the child's whole environment: nothing. It reads no
 // variable, and what the parent's environment holds (a database password,
 // forge tokens in a container's variables) is not the child's to see.
@@ -208,6 +249,13 @@ type manifestRun struct {
 	// it has no result.
 	finished map[string]bool
 	rootErr  map[string]error
+	// passFail: the pass ran to its end in the child and its result could
+	// not be KEPT by this process (the lockfile pass's, when the temporary
+	// file it is kept in could not be made or written). It is that pass's
+	// failure alone: the passes that finished stand (0.29.215; it was
+	// treated as the child breaking the protocol, which discards them all
+	// and blames the reader).
+	passFail map[string]error
 	// cpu, heapPeak and maxRSS are what the child says the passes cost it.
 	cpu      time.Duration
 	heapPeak int64
@@ -234,6 +282,9 @@ func (r *manifestRun) close() {
 // otherwise why the child did not get that far (runErr, what
 // runManifestChild returned with this run).
 func (r *manifestRun) passErr(pass string, runErr error) error {
+	if r != nil && r.passFail[pass] != nil {
+		return r.passFail[pass]
+	}
 	if r != nil && r.finished[pass] {
 		if err := r.rootErr[pass]; err != nil {
 			return &errManifestRoot{err}
@@ -260,6 +311,7 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	req.PomSource = src != nil
 	req.ParentPID = os.Getpid()
 	req.Version = manifestParentVersion
+	req.Build = manifestParentBuild()
 
 	// The child's working directory is not this process's (below), so the
 	// clone is named to it in full: a relative clone path (a relative
@@ -277,17 +329,21 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(childCtx, exe, args...)
-	cmd.Env = manifestChildEnv()
-	cmd.Dir = string(filepath.Separator) // not serve's working directory: the child reads no relative path
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, manifestChildFailed("the manifest reader could not be started: %v", err)
 	}
 	defer inW.Close()
-	cmd.Stdin = inR
 	stderr := &cappedBuffer{limit: manifestStderrLimit}
-	cmd.Stderr = stderr
+	command := func(exe string) *exec.Cmd {
+		cmd := exec.CommandContext(childCtx, exe, args...)
+		cmd.Env = manifestChildEnv()
+		cmd.Dir = string(filepath.Separator) // not serve's working directory: the child reads no relative path
+		cmd.Stdin = inR
+		cmd.Stderr = stderr
+		return cmd
+	}
+	cmd := command(exe)
 	// Standard error is copied by a goroutine of os/exec, and Wait waits
 	// for that copy to end. A process the child left behind in another
 	// session, holding the descriptor, keeps this function for at most
@@ -298,6 +354,27 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	// behind: inside that bound, which the comment here did not state.)
 	started := time.Now()
 	swept, err := startSweptCommand(cmd)
+	if err != nil && ctx.Err() == nil {
+		// The running program's link could not be started (a host without
+		// procfs, a container that hides it, an emulator that does not
+		// answer for it): the file at this program's path is started
+		// instead, and the build check in the child is then what catches a
+		// file replaced under a running serve (0.29.215).
+		if alt, altErr := manifestChildFallback(exe); altErr == nil && alt != "" {
+			first := err
+			cmd = command(alt)
+			if swept, err = startSweptCommand(cmd); err == nil {
+				if manifestFallbackSaid.CompareAndSwap(false, true) {
+					logger.Warn("the manifest reader could not be started from the running program's link and is started from this program's path instead (said once)",
+						"link", exe, "error", first, "program", alt,
+						"consequence", "a binary replaced under a running serve is another program; the reader refuses it and says so until serve is restarted")
+				}
+				exe = alt
+			} else {
+				err = fmt.Errorf("%v; and from %s: %v", first, alt, err)
+			}
+		}
+	}
 	_ = inR.Close()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -370,14 +447,20 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	case code == manifestExitVersion:
 		// The file this process started is not this process's version.
 		onDisk := stderr.text()
+		// A child of this version and another build says its build too;
+		// this process's is then said beside it.
+		running := manifestParentVersion
+		if strings.Contains(onDisk, " build ") {
+			running += " build " + manifestParentBuild()
+		}
 		err := &errManifestChild{Attempt: model.InventoryAttemptReadFailed, Stale: true,
-			detail: fmt.Sprintf("the aveloxis binary on disk (%s) is version %s, this process is version %s: restart serve", exe, onDisk, manifestParentVersion)}
+			detail: fmt.Sprintf("the aveloxis binary on disk (%s) is version %s, this process is version %s: restart serve", exe, onDisk, running)}
 		level := slog.LevelDebug
 		if manifestStaleSaid.CompareAndSwap(false, true) {
 			level = slog.LevelError
 		}
 		logger.Log(ctx, level, "the manifest reader is another version of aveloxis — no repository's manifests or lockfiles are read until serve is restarted (said once at this level)",
-			"binary", exe, "binary_version", onDisk, "running_version", manifestParentVersion, "to_do", "restart serve (aveloxis stop all, then start), so that the running program is the one on disk")
+			"binary", exe, "binary_version", onDisk, "running_version", running, "to_do", "restart serve (aveloxis stop all, then start), so that the running program is the one on disk")
 		run.close()
 		return &manifestRun{}, err
 	case code == manifestExitCPU:
@@ -445,7 +528,7 @@ const (
 // round 7). It is held instead to the size of the lockfiles in the clone
 // (manifestCheck.lockPart), and every pass to the clock.
 func manifestConverse(req manifestRequest, limits ManifestLimits, src manifest.PomSource, logger *slog.Logger, out *bufio.Reader, in *os.File, answering *manifestAnswering) (run *manifestRun, complete bool, err error) {
-	run = &manifestRun{finished: map[string]bool{}, rootErr: map[string]error{}}
+	run = &manifestRun{finished: map[string]bool{}, rootErr: map[string]error{}, passFail: map[string]error{}}
 	if len(req.Passes) == 0 {
 		return run, false, errors.New("no pass was asked for")
 	}
@@ -527,15 +610,24 @@ func manifestConverse(req manifestRequest, limits ManifestLimits, src manifest.P
 				return nil, false, fmt.Errorf("it ended the %q pass while on the %q pass", f.Done.Pass, pass)
 			}
 			run.cpu, run.heapPeak, run.maxRSS = time.Duration(f.Done.CPUNanos), f.Done.HeapPeakBytes, f.Done.MaxRSSBytes
-			if f.Done.RootError != "" {
+			switch {
+			case f.Done.RootError != "":
 				run.rootErr[pass] = errors.New(f.Done.RootError)
-			} else {
+				run.finished[pass] = true
+			case pending.spoolLost:
+				if err := check.done(pass, f.Done, pending); err != nil {
+					return nil, false, err
+				}
+				fail := manifestChildFailed("the lockfiles were read and could not be kept on this host: the temporary file for them (in %s) could not be made or written: %v", os.TempDir(), pending.spoolErr)
+				run.passFail[pass] = fail
+				pending.discard() // nothing of it is handed to the run
+			default:
 				if err := check.done(pass, f.Done, pending); err != nil {
 					return nil, false, err
 				}
 				pending.into(run, f.Done)
+				run.finished[pass] = true
 			}
-			run.finished[pass] = true
 			if cur++; cur == len(req.Passes) {
 				pending = nil
 				return run, true, nil
@@ -575,6 +667,7 @@ type manifestPending struct {
 	lockPaths  map[string]bool
 	lockBytes  int64
 	spoolErr   error
+	spoolLost  bool // something of the lockfile pass could not be kept
 }
 
 // discard lets go of a pass's result that will not be used.
@@ -634,7 +727,7 @@ func (r *manifestPending) add(p *manifestPart, body []byte) error {
 		d.Deps = append(d.Deps, p.Deps...)
 		d.Unused = append(d.Unused, p.Unused...)
 		for _, f := range p.Failed {
-			f.ManifestFailure.NoCarry = f.NoCarry
+			f.ManifestFailure.NoCarry, f.ManifestFailure.TooLarge = f.NoCarry, f.TooLarge
 			d.Failed = append(d.Failed, f.ManifestFailure)
 		}
 		d.TreeHosts = append(d.TreeHosts, p.TreeHosts...)
@@ -656,15 +749,20 @@ func (r *manifestPending) add(p *manifestPart, body []byte) error {
 			r.gotEdges[e.L]++
 		}
 		for _, f := range p.Failed {
+			f.ManifestFailure.NoCarry, f.ManifestFailure.TooLarge = f.NoCarry, f.TooLarge
 			r.locks.Failed = append(r.locks.Failed, f.ManifestFailure)
 			r.lockPaths[f.Path] = true
 		}
 		if len(p.Lockfiles)+len(p.Entries)+len(p.Edges) > 0 {
-			if r.spoolErr != nil {
-				return fmt.Errorf("the lockfiles it read cannot be kept on this host: no temporary file could be made: %v", r.spoolErr)
+			// A spool that cannot be made or written is this HOST's
+			// trouble, not the reader's: the pass goes on being checked,
+			// nothing more of it is kept, and it ends as its own failure
+			// (passFail), with the other passes standing.
+			if r.spoolErr == nil {
+				r.spoolErr = r.locks.spool.add(body)
 			}
-			if err := r.locks.spool.add(body); err != nil {
-				return fmt.Errorf("the lockfiles it read cannot be kept on this host: %v", err)
+			if r.spoolErr != nil {
+				r.spoolLost = true
 			}
 		}
 	}
@@ -772,9 +870,7 @@ func (c *manifestCheck) part(pass string, p *manifestPart, pending *manifestPend
 			if !c.managers[d.Manager] {
 				return fmt.Errorf("a declaration is of a package manager the roster does not have: %q", d.Manager)
 			}
-			switch d.VersionReason {
-			case "", model.VersionReasonInheritedNotFound, model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedRepositoryRefused:
-			default:
+			if d.VersionReason != "" && !slices.Contains(model.VersionReasons(), d.VersionReason) {
 				return fmt.Errorf("a declaration gives a reason this program does not have: %q", d.VersionReason)
 			}
 		}
@@ -835,7 +931,11 @@ func (c *manifestCheck) lockPart(p *manifestPart, pending *manifestPending) erro
 		if err != nil {
 			return fmt.Errorf("a lockfile it says it read is not a file of the clone (path %q): %v", h.Path, err)
 		}
-		pending.lockBytes += size
+		// A binary lockfile is never read by the child and sends nothing
+		// but its name: it earns the spool no room.
+		if !spec.binaryOnly {
+			pending.lockBytes += size
+		}
 	}
 	entries, edges := map[int]int{}, map[int]int{}
 	// The child reads one lockfile at a time and sends it whole before the
@@ -879,8 +979,12 @@ func (c *manifestCheck) lockPart(p *manifestPart, pending *manifestPending) erro
 		}
 	}
 	for _, f := range p.Failed {
-		if _, ok := lockfileKinds[f.Kind]; !ok || !lockPath(f.Path, f.Kind) || f.NoCarry || f.RowsCarried != 0 ||
-			(f.Reason != model.ManifestFailedRead && f.Reason != model.ManifestFailedParse) {
+		// NoCarry: a lockfile at a path that cannot be stored, failed under
+		// its sanitized path (0.29.215). TooLarge: one not read for its
+		// size; a file that was not read failed to be READ.
+		if _, ok := lockfileKinds[f.Kind]; !ok || !lockPath(f.Path, f.Kind) || f.RowsCarried != 0 ||
+			(f.Reason != model.ManifestFailedRead && f.Reason != model.ManifestFailedParse) ||
+			((f.NoCarry || f.TooLarge) && f.Reason != model.ManifestFailedRead) {
 			return fmt.Errorf("a failed lockfile is not one the pass records (path %q, kind %q, reason %q)", f.Path, f.Kind, f.Reason)
 		}
 		seen[f.Path] = true

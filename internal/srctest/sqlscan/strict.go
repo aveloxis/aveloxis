@@ -1066,6 +1066,10 @@ type Choice struct {
 	// Text: the parameter is a string (its inputs are compared as text;
 	// otherwise as numbers).
 	Text bool
+	// Switch, when not zero, numbers the switch on the parameter this is a
+	// case of: the cases of one switch are one place where the builder
+	// chooses (they exclude one another), not as many places as cases.
+	Switch int
 }
 
 // builderChoices are the conditions in fn's own body that read one of its
@@ -1084,6 +1088,26 @@ type Choice struct {
 // Not followed: a condition in a function the builder CALLS on a value it
 // was handed (populatedPredicate's switch on a data type). That remains
 // the registration's word, and its sentence must say so.
+//
+// 0.29.215 (review round 8: six builders met the rule above and still
+// returned, for an input nobody registered, a statement nobody judged).
+// "Both sides of each condition" says nothing of two conditions TOGETHER,
+// and a builder can choose its text without an if at all. So an open
+// builder has at most ONE such condition (CheckSites), and each of these
+// is a choice that no input can be shown to exercise:
+//
+//   - a `for cond { ... }` on a parameter (an if, spelled as a loop);
+//   - an index or a map lookup BY a parameter, or by a call that is handed
+//     one (`texts[n]`, `m[k]`, `texts[min(n, 1)]`): the text is picked from
+//     a list;
+//   - in a loop whose bound or range is a parameter (how a count repeats a
+//     fragment): a `return`, `break` or `goto`, and any condition on the
+//     loop's own variable other than a comparison with the constant 0 (the
+//     separator before every element but the first). `if i == 3` there
+//     picks a text for counts above three that no small count shows.
+//
+// A builder that needs any of them is not open: give it a finite domain,
+// where every input is run.
 func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
 	fd := t.ix.declOf[fn]
 	sig, _ := fn.Type().(*types.Signature)
@@ -1134,12 +1158,112 @@ func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
 		}
 		out = append(out, c)
 	}
+	switches := 0
+	never := func(o types.Object, what string) {
+		out = append(out, Choice{Param: o.Name(), Place: place[o], Expr: what})
+	}
+	// loopVars are the variables of the loops whose bound or range reads a
+	// parameter, each with that parameter.
+	loopVars := map[types.Object]types.Object{}
+	inCountedLoop := func(n ast.Node, by types.Object) {
+		ast.Inspect(n, func(m ast.Node) bool {
+			switch y := m.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.ReturnStmt:
+				never(by, "a return inside the loop that "+by.Name()+" bounds")
+			case *ast.BranchStmt:
+				if y.Tok == token.BREAK || y.Tok == token.GOTO {
+					never(by, y.Tok.String()+" inside the loop that "+by.Name()+" bounds")
+				}
+			}
+			return true
+		})
+	}
+	zeroCompare := func(cond ast.Expr, v types.Object) bool {
+		bin, ok := unparen(cond).(*ast.BinaryExpr)
+		if !ok {
+			return false
+		}
+		switch bin.Op {
+		case token.LSS, token.GTR, token.LEQ, token.GEQ, token.EQL, token.NEQ:
+		default:
+			return false
+		}
+		x, y := unparen(bin.X), unparen(bin.Y)
+		if id, isID := y.(*ast.Ident); isID && t.info.Uses[id] == v {
+			x, y = y, x
+		}
+		id, isID := x.(*ast.Ident)
+		if !isID || t.info.Uses[id] != v {
+			return false
+		}
+		tv, ok := t.info.Types[y]
+		return ok && tv.Value != nil && tv.Value.Kind() == constant.Int && constant.Sign(tv.Value) == 0
+	}
+	loopVarIn := func(e ast.Expr) (types.Object, bool) {
+		var found types.Object
+		ast.Inspect(e, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && found == nil {
+				if o := t.info.Uses[id]; o != nil && loopVars[o] != nil {
+					found = o
+				}
+			}
+			return true
+		})
+		return found, found != nil
+	}
+	condition := func(cond ast.Expr) {
+		add(cond)
+		if v, reads := loopVarIn(cond); reads && !zeroCompare(cond, v) {
+			never(loopVars[v], "a condition on the variable of the loop that "+loopVars[v].Name()+" bounds, other than a comparison with 0 ("+t.srcNode(cond)+")")
+		}
+	}
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncLit:
 			return true
+		case *ast.ForStmt:
+			if x.Cond == nil {
+				break
+			}
+			by, reads := paramIn(x.Cond)
+			if !reads {
+				break
+			}
+			if x.Init == nil && x.Post == nil {
+				never(by, "for "+t.srcNode(x.Cond)+" (a condition on the parameter, spelled as a loop)")
+				break
+			}
+			if as, ok := x.Init.(*ast.AssignStmt); ok {
+				for _, l := range as.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						if o := t.info.Defs[id]; o != nil {
+							loopVars[o] = by
+						}
+					}
+				}
+			}
+			inCountedLoop(x.Body, by)
+		case *ast.RangeStmt:
+			by, reads := paramIn(x.X)
+			if !reads {
+				break
+			}
+			for _, e := range []ast.Expr{x.Key, x.Value} {
+				if id, ok := e.(*ast.Ident); ok && id.Name != "_" {
+					if o := t.info.Defs[id]; o != nil {
+						loopVars[o] = by
+					}
+				}
+			}
+			inCountedLoop(x.Body, by)
+		case *ast.IndexExpr:
+			if by, reads := paramIn(x.Index); reads {
+				never(by, "an index or lookup by the parameter ("+t.srcNode(x)+"): the text is picked from a list")
+			}
 		case *ast.IfStmt:
-			add(x.Cond)
+			condition(x.Cond)
 		case *ast.SwitchStmt:
 			if x.Tag != nil {
 				if o, reads := paramIn(x.Tag); reads {
@@ -1150,6 +1274,7 @@ func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
 						tagIsParam = true
 					}
 					cases := 0
+					switches++
 					for _, st := range x.Body.List {
 						cc, _ := st.(*ast.CaseClause)
 						if cc == nil {
@@ -1157,7 +1282,7 @@ func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
 						}
 						for _, e := range cc.List {
 							cases++
-							c := Choice{Param: o.Name(), Place: place[o], Expr: "switch " + t.srcNode(x.Tag) + " case " + t.srcNode(e)}
+							c := Choice{Param: o.Name(), Place: place[o], Expr: "switch " + t.srcNode(x.Tag) + " case " + t.srcNode(e), Switch: switches}
 							if b, ok := o.Type().Underlying().(*types.Basic); ok && b.Info()&types.IsString != 0 {
 								c.Text = true
 							}
@@ -1175,7 +1300,7 @@ func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
 				for _, st := range x.Body.List {
 					if cc, _ := st.(*ast.CaseClause); cc != nil {
 						for _, e := range cc.List {
-							add(e)
+							condition(e)
 						}
 					}
 				}
@@ -2073,6 +2198,20 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 				// What the builder returns may depend on a condition on
 				// its input only where the registered inputs take both
 				// sides of it (Choice).
+				places, inSwitch := 0, map[int]bool{}
+				for _, c := range a.BuilderChoices {
+					if c.Switch == 0 || !inSwitch[c.Switch] {
+						places++
+					}
+					inSwitch[c.Switch] = c.Switch != 0
+				}
+				if places > 1 {
+					var all []string
+					for _, c := range a.BuilderChoices {
+						all = append(all, c.Expr)
+					}
+					bad("the open builder %s chooses its text in %d places (%s): inputs that take both sides of each say nothing of the places together, so what it returns for some input was not judged. An open builder has at most one condition on its input (the cases of one switch are one); give this one a finite domain (every input run), or make the choice at the caller between builders", s.Builder, places, strings.Join(all, "; "))
+				}
 				for _, c := range a.BuilderChoices {
 					if !c.Simple {
 						bad("the open builder %s chooses by its parameter %s in a condition that is not a comparison with a constant (%s): the registered inputs cannot be shown to exercise it. Compare the parameter with a constant, or make the choice at the caller between two builders", s.Builder, c.Param, c.Expr)

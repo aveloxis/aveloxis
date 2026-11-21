@@ -6,7 +6,6 @@ package collector
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,12 +84,8 @@ func TestUnreadLockfilesAreRecordedCautionedAndDoNotLockWhatIsGone(t *testing.T)
 		t.Fatal(err)
 	}
 	f.write(t, "package.json", `{"dependencies": {"express": "^5.0.0"}}`)
-	var big strings.Builder
-	for i := 0; big.Len() < 40<<20; i++ {
-		fmt.Fprintf(&big, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
-	}
-	f.write(t, "big/gradle.lockfile", big.String())
-	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 64`))
+	f.write(t, "big/yarn.lock", lockfileThatOutgrowsItsCost(outgrowingLockfileBytes))
+	SetManifestLimits(limitsFromConfig(t, outgrownMemorySetting))
 	t.Cleanup(func() { installedManifestLimits.Store(nil) })
 
 	read := f.ac.readClone(ctx, f.repoID, f.dir)
@@ -129,7 +124,13 @@ func TestUnreadLockfilesAreRecordedCautionedAndDoNotLockWhatIsGone(t *testing.T)
 	if cov.LockfilesReadAt == nil || !cov.LockfilesReadAt.Equal(firstRead) || cov.LockfilesUnreadReason != model.InventoryAttemptReadMemoryLimit {
 		t.Errorf("the record: at %v reason %q; want %v kept and the memory limit", cov.LockfilesReadAt, cov.LockfilesUnreadReason, firstRead)
 	}
-	want := "Lockfiles last read " + firstRead.UTC().Format("2006-01-02") + "; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date."
+	// Round 8 (D8-4): every lockfile read on the kept date is gone and so
+	// are its rows, so there is nothing that date dates. The true sentence
+	// is the never-read one; the store decides it from what is stored.
+	if cov.LockfilesLastRead != nil {
+		t.Errorf("no lockfile row is stored and the record dates them %v", cov.LockfilesLastRead)
+	}
+	want := "Lockfiles could not be read (reading them took more memory than allowed). Transitive dependencies are not checked."
 	if said != want {
 		t.Errorf("the caution:\n got %q\nwant %q", said, want)
 	}
@@ -140,6 +141,15 @@ func TestUnreadLockfilesAreRecordedCautionedAndDoNotLockWhatIsGone(t *testing.T)
 	// The limit is raised: the lockfiles are read, and there is nothing to
 	// caution about.
 	installedManifestLimits.Store(nil)
+	if manifestRaceEnabled {
+		// Under the race detector the same reading, of a lockfile that is
+		// no longer large: storing the large one's 150,000 packages costs
+		// the detector fifteen seconds, and what is judged here is that a
+		// reading which completes clears the caution, whatever its size.
+		// (That the SAME clone is read once there is room is
+		// TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy's.)
+		f.write(t, "big/yarn.lock", "# yarn lockfile v1\n\nleft-pad@1.0.0:\n  version \"1.0.0\"\n")
+	}
 	f.analyse(t)
 	cov, said = caution()
 	if cov.LockfilesUnreadReason != "" || said != "" || cov.LockfilesReadAt == nil || !cov.LockfilesReadAt.After(firstRead) {

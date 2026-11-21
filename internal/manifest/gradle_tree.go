@@ -94,6 +94,10 @@ type gradleKnown struct {
 	// and may be fetched from, declared by the build files above (for all
 	// their projects) and the settings file, the nearest first.
 	shared *gradleList[string]
+	// sharedUnasked: a build file above, or the settings file, declares for
+	// the projects here a repository that is never asked
+	// (repositoryUnasked).
+	sharedUnasked bool
 	// unread names a file this directory's build depends on (a settings
 	// file, a build file above, an applied script, a buildSrc source, a
 	// catalogue) that is too large to be read; "" when none is. A build file
@@ -179,6 +183,12 @@ func (t *gradleTree) noteUnread(path, why string) {
 // the file read again and again (a build file is read for itself, and once
 // more for the directories below it).
 func (t *gradleTree) scan(path, content string, outer *gradleVars, libs *gradleLibs) *gradleBuild {
+	return t.scanAfter(path, content, outer, nil, false, libs)
+}
+
+// scanAfter is scan for a file whose applied scripts have been read: outer
+// is applied with what they assign in front (readGradleAfter).
+func (t *gradleTree) scanAfter(path, content string, outer, applied *gradleVars, ordered bool, libs *gradleLibs) *gradleBuild {
 	t.fullReads++
 	idx, kept := t.toks[path]
 	if !kept {
@@ -191,7 +201,16 @@ func (t *gradleTree) scan(path, content string, outer *gradleVars, libs *gradleL
 			t.toks[path] = idx
 		}
 	}
-	return readGradleIndexed(idx, outer, libs)
+	b := readGradleAfter(idx.toks, idx, outer, applied, ordered, libs)
+	if len(b.unread) > 0 && t.logger != nil {
+		names := make([]string, 0, len(b.unread))
+		for name := range b.unread {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		t.logger.Warn("a Gradle file assigns a value longer than is read; a version written with it is not read (value_not_read)", "path", path, "variables", strings.Join(names, ", "))
+	}
+	return b
 }
 
 // readApplied is what reading the applied script at path gives with outer
@@ -287,9 +306,13 @@ func (t *gradleTree) content(path string) (string, bool) {
 	}
 	data, err := ReadManifest(path)
 	if err != nil {
-		if t.logger != nil {
-			t.logger.Warn("a file of the Gradle build could not be read: what it assigns is not known", "path", path, "error", err)
-		}
+		// The file is there (regularBuildFile said so) and was not read:
+		// that is not the same as its not being there (SR-5). The build is
+		// reported unread, as for a file over MaxBuildFileBytes. Before
+		// 0.29.215 this only logged, and a version catalogue the reader's
+		// memory bound refused left a build reading 1 dependency of 51 with
+		// nothing recorded (review round 8).
+		t.noteUnread(path, "could not be read: "+err.Error())
 		return "", false
 	}
 	t.opens++
@@ -333,21 +356,22 @@ func (t *gradleTree) declared(path string) ([]model.LibyearDep, error) {
 		}
 		return nil, fmt.Errorf("%w: %s", errGradleBuildPartUnread, filepath.ToSlash(rel))
 	}
-	b := t.scan(path, content, vars, known.libs)
+	b := t.scanAfter(path, content, vars, known.vars, true, known.libs)
 	t.noteRepositories(path, b)
 	if t.pom == nil {
 		return b.libyearDeps(), nil
 	}
 	own := b.platformDecls()
-	if len(own)+known.platforms.len() > 0 {
+	if len(own)+known.platforms.len() > 0 || len(b.managed) > 0 {
 		// The repositories a BOM of this file may be asked of: the file's
 		// own, then the ones shared from above.
 		var repos []string
+		unasked := known.sharedUnasked
 		for _, r := range b.repos {
 			repos = append(repos, r.fetchable()...)
+			unasked = unasked || repositoryUnasked(r.DeclaredRepository)
 		}
-		t.applyPlatforms(b, append(append([]gradleDecl{}, own...), known.platforms.flat()...),
-			uniqueStrings(append(repos, known.shared.flat()...)))
+		t.applyPlatforms(b, own, known.platforms.flat(), uniqueStrings(append(repos, known.shared.flat()...)), unasked)
 	}
 	return b.libyearDeps(), nil
 }
@@ -385,13 +409,14 @@ func (t *gradleTree) at(dir string) *gradleKnown {
 		if content, ok := t.content(p); ok {
 			pre := t.scan(p, content, k.vars, nil)
 			vars := t.applied(pre.applies, dir, k.vars, 0, newGradleSeen(p), nil)
-			b := t.scan(p, content, vars, nil)
+			b := t.scanAfter(p, content, vars, k.vars, true, nil)
 			k.vars = vars.push(b.result())
 			t.noteRepositories(p, b)
 			// A settings file's repositories are the whole build's.
 			var settings []string
 			for _, r := range b.repos {
 				settings = append(settings, r.fetchable()...)
+				k.sharedUnasked = k.sharedUnasked || repositoryUnasked(r.DeclaredRepository)
 			}
 			k.shared = k.shared.with(nil, settings)
 		}
@@ -417,13 +442,14 @@ func (t *gradleTree) below(up string) *gradleKnown {
 		if content, ok := t.content(p); ok {
 			pre := t.scan(p, content, k.vars, nil)
 			vars := t.applied(pre.applies, up, k.vars, 0, newGradleSeen(p), nil)
-			b := t.scan(p, content, vars, above.libs)
+			b := t.scanAfter(p, content, vars, k.vars, true, above.libs)
 			k.vars = vars.push(b.result())
 			t.noteRepositories(p, b)
 			var nearer []string
 			for _, r := range b.repos {
 				if r.shared {
 					nearer = append(nearer, r.fetchable()...)
+					k.sharedUnasked = k.sharedUnasked || repositoryUnasked(r.DeclaredRepository)
 				}
 			}
 			var platforms []gradleDecl
@@ -1111,73 +1137,114 @@ func gradleTOMLArray(raw string) []string {
 	return out
 }
 
-// applyPlatforms gives each version-less dependency of b the version its
-// platforms manage (summary/70, 4.6). A platform is a BOM: one of the
-// clone's poms, or one obtained through the walk's PomSource, read in its
-// own context as a pom's import is.
+// applyPlatforms gives each dependency of b the version the BOMs of its
+// build manage (summary/70, 4.6). A BOM is one of the clone's poms, or one
+// obtained through the walk's PomSource, read in its own context as a pom's
+// import is. A BOM that was obtained whole is marked a managed entry: its
+// versions are applied, and it leaves the inventory with a note, as a pom's
+// BOM import does. One that was not stays a row.
 //
-// A dependency the build gave a version to is not answered for, read or
-// not. A dependency no platform manages has no version; when a platform
-// could not be obtained it says why (the worst of the reasons), since that
-// platform might have managed it. A platform that was obtained whole is
-// marked a managed entry: its versions are applied, and it leaves the
-// inventory with a note, as a pom's BOM import does. One that was not
-// stays a row.
+// TWO MECHANISMS manage versions in a Gradle build, and they do not follow
+// the same rule (round 8: 0.29.214 put both under the first one's):
 //
-// WHICH PLATFORM'S VERSION (round 7). A platform's versions are
-// recommendations, and Gradle resolves the recommendations of all a
-// project's platforms together: the highest version recommended wins,
-// whatever order they are written in, and an enforcedPlatform's version
-// overrides the others'. (Until 0.29.214 the first platform written that
-// managed the artifact answered.) So:
+// (P) Gradle's own: platform(...) and enforcedPlatform(...). A platform's
+// versions are recommendations (constraints), and Gradle settles all the
+// versions asked of a module together: the highest wins, whatever order
+// they are written in, and an enforcedPlatform's version overrides the
+// others'. So, for a dependency written with no version:
 //
 //   - if an enforced platform's answer is not known, the version is not
 //     determined; if enforced platforms give one version, that is it; if
-//     they give more than one, it is not determined;
+//     they give more than one, it is not determined (platforms_disagree);
 //   - otherwise, if ANY platform's answer is not known (it could not be
 //     obtained, was not asked for, or holds a pom that could not be: the
 //     reason is stored), or a platform manages the artifact at something
 //     that is not one version (a range, a reference it cannot resolve), the
 //     version is not determined: what is not known could be the highest;
-//   - otherwise the one version given, or the highest of several when each
-//     is a plain release number (digits and dots: gradleHighest); several
-//     that cannot be ordered so are not determined.
+//   - otherwise the one version given, or the highest of several in
+//     Gradle's version ordering (gradleCompareVersions); two that are
+//     different texts and equal in that ordering are not ordered
+//     (platforms_disagree).
 //
-// This is Gradle's documented behaviour as this reader understands it; it
-// has NOT been checked against a running Gradle, and a build that settles
+// A dependency the build wrote WITH a version states that version, and a
+// platform read here that recommends a HIGHER one raises it (the highest
+// wins), as an enforced platform's version replaces it. A platform that
+// could not be obtained does not take the written version away: it stays
+// what the build declares, as every declared version in the inventory is.
+//
+// (S) Spring's dependency-management plugin: dependencyManagement { imports
+// { mavenBom ... } }, and spring-boot-dependencies when the Spring Boot
+// plugin is applied beside it. The plugin applies its BOMs in order, a
+// LATER one overriding an earlier one for the same artifact; Boot's is
+// applied when the plugins are, before the build's own imports; and a
+// version given outright (dependencies { dependency 'g:a:v' }) overrides
+// every import. So the LAST BOM that manages the artifact answers, and what
+// is not known matters only when it comes AFTER the answer: a later BOM that
+// could not be obtained could override, an earlier one could not. The
+// plugin leaves a version the build wrote alone.
+//
+// When both mechanisms manage a dependency that has no version: the same
+// version from both is that version; different versions, or one that is not
+// determined, leave it not determined (platforms_disagree, or the reason
+// what is not known has).
+//
+// This is each tool's documented behaviour as this reader understands it.
+// It has NOT been checked against a running Gradle, and a build that settles
 // versions in its own resolutionStrategy is beyond it.
-func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, declared []string) {
-	if t.pom == nil || len(platforms) == 0 {
+func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl, declared []string, unasked bool) {
+	if t.pom == nil || len(own)+len(inherited) == 0 && len(b.managed) == 0 {
 		return
 	}
-	// applied is one platform: the BOM, or, for one whose content is not
-	// known, why.
+	// applied is one BOM: its effective model, or, for one whose content is
+	// not known, why.
 	type applied struct {
 		ctx      *pomContext
 		missing  string
 		enforced bool
 	}
-	var boms []applied
+	spring := func(d gradleDecl) bool { return d.config == "mavenBom" || d.config == "plugin" }
+	// (S) in the order the plugin applies them: what the build files above
+	// give the project, then the Boot plugin's own, then the file's imports
+	// as written. (P) in any order.
+	var ordered []gradleDecl
+	for _, p := range inherited {
+		if spring(p) {
+			ordered = append(ordered, p)
+		}
+	}
+	for _, config := range []string{"plugin", "mavenBom"} {
+		for _, p := range own {
+			if p.config == config {
+				ordered = append(ordered, p)
+			}
+		}
+	}
+	nSpring := len(ordered)
+	for _, p := range append(append([]gradleDecl{}, own...), inherited...) {
+		if !spring(p) {
+			ordered = append(ordered, p)
+		}
+	}
+	var springBOMs, platforms []applied
 	rd := &pomReading{}
 	gap := ""
-	whole := map[string]bool{} // "g:a:v" of each platform obtained whole
-	for _, p := range platforms {
+	whole := map[string]bool{} // "g:a:v" of each BOM obtained whole
+	for i, p := range ordered {
 		if p.version == "" {
 			continue
 		}
-		bom, ambiguous := t.pom.byCoordinates(p.group, p.artifact, p.version)
-		unknown := ""
-		switch {
-		case ambiguous:
-			unknown = model.VersionReasonInheritedNotFound // two poms of the clone: neither is chosen, and neither is asked for
-		case bom == nil:
-			var reason string
-			bom, reason, unknown = t.pom.remotePom(p.group, p.artifact, p.version, func() []string { return declared })
-			gap = worseReason(gap, reason)
+		into := &platforms
+		if i < nSpring {
+			into = &springBOMs
 		}
+		// The one pom of the clone with the coordinates, else a
+		// repository's; two poms of the clone are neither chosen nor asked
+		// for (pomTree.obtain).
+		bom, reason, unknown := t.pom.obtain(p.group, p.artifact, p.version, pomAsker{declared: func() []string { return declared }, unasked: func() bool { return unasked }})
 		if bom == nil {
+			gap = worseReason(gap, reason)
 			if unknown != "" {
-				boms = append(boms, applied{missing: unknown, enforced: p.enforced})
+				*into = append(*into, applied{missing: unknown, enforced: p.enforced})
 			}
 			continue
 		}
@@ -1186,12 +1253,25 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 		// is known before anything is decided from it (a lookup of a
 		// coordinate nothing manages visits every import).
 		_, _, _, bomGap, _ := c.managed(rd, "\x00", "\x00")
-		boms = append(boms, applied{ctx: c, enforced: p.enforced})
+		*into = append(*into, applied{ctx: c, enforced: p.enforced})
 		if bomGap == "" {
 			whole[p.group+":"+p.artifact+":"+p.version] = true
 		} else {
 			gap = worseReason(gap, bomGap)
 		}
+	}
+	// answer is what one mechanism says of a dependency.
+	const (
+		saysNothing = iota
+		saysVersion
+		saysNotKnown // reason says why
+		saysNoVersion
+	)
+	type answer struct {
+		kind    int
+		version string
+		hosts   []string
+		reason  string
 	}
 	for i := range b.decls {
 		d := &b.decls[i]
@@ -1199,8 +1279,8 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 			d.managed = whole[d.group+":"+d.artifact+":"+d.version]
 			continue
 		}
-		if d.version != "" || d.versionWritten {
-			continue
+		if d.version == "" && d.versionWritten {
+			continue // written with a version that was not read: no BOM answers for it
 		}
 		// What the platforms say of this dependency, the enforced ones
 		// apart: the versions given (with the hosts each came through),
@@ -1213,7 +1293,7 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 			notOne   bool
 		}
 		var enforced, all said
-		for _, bom := range boms {
+		for _, bom := range platforms {
 			record := func(s *said, v string, found, stop bool, via []string, passed string) {
 				s.unknown = worseReason(s.unknown, passed)
 				switch {
@@ -1243,80 +1323,240 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 				record(&enforced, v, found, stop, via, passed)
 			}
 		}
-		decide := func(s said) (done bool) {
+		if d.version != "" {
+			// Written with a version. An enforced platform's replaces it; a
+			// higher recommendation raises it; what is not known leaves it.
+			if enforced.unknown == "" && !enforced.notOne && len(enforced.versions) == 1 {
+				if v := enforced.versions[0]; v != d.version {
+					d.version, d.source, d.hosts = v, SourceManaged, enforced.hosts[v]
+				}
+				continue
+			}
+			if len(enforced.versions) > 0 || enforced.notOne || enforced.unknown != "" {
+				continue
+			}
+			if v, ok := gradleHighest(all.versions); ok && gradleCompareVersions(v, d.version) > 0 {
+				d.version, d.source, d.hosts = v, SourceManaged, all.hosts[v]
+			}
+			continue
+		}
+		decide := func(s said) answer {
 			switch {
 			case s.unknown != "" && (len(s.versions) > 0 || s.notOne):
-				d.reason = s.unknown
-				return true
+				return answer{kind: saysNotKnown, reason: s.unknown}
 			case s.notOne:
-				d.reason = gap
-				return true
+				return answer{kind: saysNoVersion}
 			case len(s.versions) == 0:
-				return false
+				return answer{}
 			}
 			v, ok := gradleHighest(s.versions)
 			if !ok {
-				d.reason = gap // several, and no order among them that is known
-				return true
+				// Several, and no order among them that is known.
+				return answer{kind: saysNotKnown, reason: model.VersionReasonPlatformsDisagree}
 			}
-			d.version, d.source, d.hosts = v, SourceManaged, s.hosts[v]
-			return true
+			return answer{kind: saysVersion, version: v, hosts: s.hosts[v]}
 		}
-		// The enforced platforms decide when they say anything, or when
+		// (P): the enforced platforms decide when they say anything, or when
 		// what one of them says is not known.
-		if enforced.unknown != "" {
-			d.reason = enforced.unknown
-			continue
+		var byPlatforms answer
+		switch {
+		case enforced.unknown != "":
+			byPlatforms = answer{kind: saysNotKnown, reason: enforced.unknown}
+		case len(enforced.versions) > 0 || enforced.notOne:
+			byPlatforms = decide(enforced)
+		default:
+			byPlatforms = decide(all)
 		}
-		if len(enforced.versions) > 0 || enforced.notOne {
-			decide(enforced)
-			continue
+		// (S): a version given outright, else the last BOM that manages it.
+		var byPlugin answer
+		if v, given := b.managed[d.group+":"+d.artifact]; given {
+			byPlugin = answer{kind: saysVersion, version: v}
+			if v == "" {
+				byPlugin = answer{kind: saysNotKnown, reason: model.VersionReasonValueNotRead}
+			}
+		} else {
+			for k := len(springBOMs) - 1; k >= 0 && byPlugin.kind == saysNothing; k-- {
+				bom := springBOMs[k]
+				if bom.ctx == nil {
+					// Not known, and after every BOM that could answer: it
+					// could override them.
+					byPlugin = answer{kind: saysNotKnown, reason: bom.missing}
+					break
+				}
+				v, found, stop, via, g, passed := bom.ctx.ask(rd, d.group, d.artifact)
+				gap = worseReason(gap, g)
+				switch {
+				case passed != "":
+					// Inside this BOM a pom consulted before its answer (or,
+					// with no answer, any of its poms) is not known.
+					byPlugin = answer{kind: saysNotKnown, reason: passed}
+				case stop, found && !gradleIsVersion(v):
+					byPlugin = answer{kind: saysNoVersion}
+				case found:
+					byPlugin = answer{kind: saysVersion, version: v, hosts: mergeHosts(chainHosts(bom.ctx.chain), via)}
+				}
+			}
 		}
-		if !decide(all) {
+		final := byPlatforms
+		switch {
+		case byPlatforms.kind == saysNothing:
+			final = byPlugin
+		case byPlugin.kind == saysNothing:
+		case byPlatforms.kind == saysNotKnown:
+		case byPlugin.kind == saysNotKnown:
+			final = byPlugin
+		case byPlatforms.kind == saysVersion && byPlugin.kind == saysVersion && byPlatforms.version == byPlugin.version:
+			final.hosts = mergeHosts(byPlatforms.hosts, byPlugin.hosts)
+		default:
+			// Both manage it, and not at one version.
+			final = answer{kind: saysNotKnown, reason: model.VersionReasonPlatformsDisagree}
+		}
+		switch final.kind {
+		case saysVersion:
+			d.version, d.source, d.hosts = final.version, SourceManaged, final.hosts
+		case saysNotKnown:
+			d.reason = final.reason
+		default:
 			d.reason = gap
 		}
 	}
 }
 
 // gradleHighest is the highest of the versions several platforms recommend,
-// when that can be said: one version is itself; several are ordered only
-// when each is a plain release number (digits in groups separated by dots),
-// compared group by group as numbers, a shorter one that the longer begins
-// with being the lower (1.2 < 1.2.1). Anything else (a qualifier, a letter)
-// has an order in Gradle that this reader does not reproduce, and is not
-// ordered.
+// in Gradle's version ordering (gradleCompareVersions). ok is false when it
+// cannot be said: two of them that are different texts stand equal highest.
 func gradleHighest(versions []string) (string, bool) {
-	if len(versions) == 1 {
-		return versions[0], true
-	}
-	best := ""
-	var bestParts []string
+	best, tied := "", false
 	for _, v := range versions {
-		parts := strings.Split(v, ".")
-		for _, p := range parts {
-			if p == "" || strings.Trim(p, "0123456789") != "" {
-				return "", false
-			}
-		}
-		if best == "" || gradleNumbersLess(bestParts, parts) {
-			best, bestParts = v, parts
+		switch c := gradleCompareVersions(v, best); {
+		case best == "" || c > 0:
+			best, tied = v, false
+		case c == 0 && v != best:
+			tied = true
 		}
 	}
-	return best, best != ""
+	if best == "" || tied {
+		return "", false
+	}
+	return best, true
 }
 
-// gradleNumbersLess: a < b, group by group as numbers of any length.
-func gradleNumbersLess(a, b []string) bool {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		x, y := strings.TrimLeft(a[i], "0"), strings.TrimLeft(b[i], "0")
-		if len(x) != len(y) {
-			return len(x) < len(y)
-		}
-		if x != y {
-			return x < y
+// gradleCompareVersions orders two versions as Gradle does when it settles
+// the versions asked of one module (the user manual, "Declaring versions and
+// ranges", version ordering), as this reader understands the rules:
+//
+//  1. A version is split into parts at '.', '-', '_' and '+', and where a
+//     digit meets a letter ("1a1" is 1, a, 1). The separators themselves do
+//     not count: 1.a.1, 1-a+1 and 1a1 are equal.
+//  2. Parts are compared in turn. Two numbers compare as numbers (of any
+//     length). A number is higher than a word. Two words compare by rule 3.
+//  3. Some words have a place: "dev" is lower than every other word; "rc",
+//     "snapshot", "final", "ga", "release" and "sp", in that rising order,
+//     are higher than every other word. They are told apart from other
+//     words without regard to case. Any other two words compare as text
+//     (so capitals before small letters).
+//  4. When one version has parts left over: a number makes it the higher
+//     (1.1.0 is above 1.1), a word the lower (1.1-rc is below 1.1).
+//
+// Rules 1, 2 and 4 are stated as the manual states them. UNSURE: whether the
+// placed words of rule 3 keep their place against each other in every Gradle
+// release, and that the comparison of other words is case-sensitive. It
+// returns 0 for two versions it cannot tell apart, which a caller must not
+// read as "the same version" (gradleHighest).
+func gradleCompareVersions(a, b string) int {
+	pa, pb := gradleVersionParts(a), gradleVersionParts(b)
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		x, y := pa[i], pb[i]
+		xn, yn := gradleIsNumber(x), gradleIsNumber(y)
+		switch {
+		case xn && yn:
+			x, y = strings.TrimLeft(x, "0"), strings.TrimLeft(y, "0")
+			if len(x) != len(y) {
+				if len(x) < len(y) {
+					return -1
+				}
+				return 1
+			}
+			if x != y {
+				return strings.Compare(x, y)
+			}
+		case xn:
+			return 1
+		case yn:
+			return -1
+		default:
+			if rx, ry := gradleWordRank(x), gradleWordRank(y); rx != ry {
+				if rx < ry {
+					return -1
+				}
+				return 1
+			} else if rx == 0 && x != y {
+				return strings.Compare(x, y)
+			}
 		}
 	}
-	return len(a) < len(b)
+	switch {
+	case len(pa) == len(pb):
+		return 0
+	case len(pa) > len(pb):
+		if gradleIsNumber(pa[len(pb)]) {
+			return 1
+		}
+		return -1
+	}
+	if gradleIsNumber(pb[len(pa)]) {
+		return -1
+	}
+	return 1
+}
+
+func gradleVersionParts(v string) []string {
+	var parts []string
+	start := 0
+	flush := func(end int) {
+		if end > start {
+			parts = append(parts, v[start:end])
+		}
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '.' || c == '-' || c == '_' || c == '+':
+			flush(i)
+			start = i + 1
+		case i > start && (c >= '0' && c <= '9') != (v[i-1] >= '0' && v[i-1] <= '9'):
+			flush(i)
+			start = i
+		}
+	}
+	flush(len(v))
+	return parts
+}
+
+func gradleIsNumber(part string) bool {
+	return part != "" && strings.Trim(part, "0123456789") == ""
+}
+
+// gradleWordRank places the words Gradle's ordering knows: below every other
+// word (-1), among the others (0), or above them in a fixed order.
+func gradleWordRank(word string) int {
+	switch strings.ToLower(word) {
+	case "dev":
+		return -1
+	case "rc":
+		return 1
+	case "snapshot":
+		return 2
+	case "final":
+		return 3
+	case "ga":
+		return 4
+	case "release":
+		return 5
+	case "sp":
+		return 6
+	}
+	return 0
 }
 
 // fetchable is the entry's address when it serves dependencies and may be

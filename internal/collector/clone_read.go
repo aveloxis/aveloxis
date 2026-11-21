@@ -34,6 +34,8 @@ type cloneRead struct {
 	pomsErr error
 	// limits are the limits the child ran under.
 	limits ManifestLimits
+	// passes are the passes asked of the child, in the order it runs them.
+	passes []string
 }
 
 // readClone runs the child. It writes nothing and logs nothing about what
@@ -50,9 +52,11 @@ func (ac *AnalysisCollector) readClone(ctx context.Context, repoID int64, workDi
 		DevBuildDeps: ac.DevBuildDeps, GitHubActionsDeps: ac.GitHubActionsDeps, RemotePomLimit: maxRemotePomCoordinates}
 	if read.pomsErr != nil {
 		req.Passes = []string{manifestPassNames, manifestPassLockfiles}
+		read.passes = req.Passes
 		read.run, read.runErr = runManifestChild(ctx, req, read.limits, nil, ac.logger)
 		return read
 	}
+	read.passes = req.Passes
 	read.run, read.runErr = runManifestChild(ctx, req, read.limits, read.poms, ac.logger)
 	return read
 }
@@ -66,6 +70,19 @@ func (r *cloneRead) lockfiles() lockfileSet {
 		set = lockfileSet{WalkErr: err}
 	} else {
 		set = *r.run.locks
+	}
+	// The lockfile pass began when every pass asked for ahead of it had
+	// finished (the child runs them in order). With nothing kept of the run
+	// at all (it could not be started, or sent what the protocol does not),
+	// how far it got is not known, and its own failure is the reason.
+	set.Started = true
+	for _, pass := range r.passes {
+		if pass == manifestPassLockfiles {
+			break
+		}
+		if r.run != nil && !r.run.finished[pass] {
+			set.Started = false
+		}
 	}
 	// The lockfiles the clone holds, when the name pass listed them: what
 	// the stored rows are held to if the lockfiles went unread.

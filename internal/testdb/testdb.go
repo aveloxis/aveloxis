@@ -108,15 +108,46 @@ var sweepCalls atomic.Int64
 var originalBase string
 
 func run(runTests func() int, base string, prepare, verify func(ctx context.Context, dsn string) error) int {
-	if base == "" || ownedByAncestor(base) {
+	if base == "" {
+		return runTests()
+	}
+	if ownedByAncestor(base) {
+		// A re-executed test binary runs against its ancestor's database
+		// and is judged with it (0.29.215: it ran with no judge, so a
+		// production statement sent there was neither judged nor counted).
+		// It records and hands on; the ancestor gives the verdict.
+		writejudge.InstallChild()
 		return runTests()
 	}
 	originalBase = base
 	ctx := context.Background()
-	// The write-policy judge (0.29.213): on every pool the store builds
-	// from here on, the preparation's included. Every DB-tier package gets
-	// it here, with no code of its own.
+	// The write-policy judge (0.29.213): on every pool and connection the
+	// module opens from here on (internal/db's openers), the preparation's
+	// included. Every DB-tier package gets it here, with no code of its
+	// own.
 	judge := writejudge.Install()
+	// Where this run's re-executed test binaries leave what they sent.
+	children, err := os.MkdirTemp("", "aveloxis-judge-children-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: a directory for re-executed test binaries' statements: %v\n", err)
+		return 1
+	}
+	// The variable is put back as it was when this run ends: a run started
+	// inside another (testdb's own tests do) must not leave the outer one's
+	// children writing into a directory that is gone.
+	before, had := os.LookupEnv(writejudge.ChildDirEnv)
+	defer func() {
+		_ = os.RemoveAll(children)
+		if had {
+			_ = os.Setenv(writejudge.ChildDirEnv, before)
+		} else {
+			_ = os.Unsetenv(writejudge.ChildDirEnv)
+		}
+	}()
+	if err := os.Setenv(writejudge.ChildDirEnv, children); err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: naming %s: %v\n", children, err)
+		return 1
+	}
 	d, err := Create(ctx, base)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testdb: %v\n", err)
@@ -135,6 +166,9 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 		}
 	}
 	code := runTests()
+	if err := judge.WriteThrough(); err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: the record of statements that came through test code could not be written: %v\n", err)
+	}
 	if code == 0 && verify != nil {
 		if err := verify(ctx, d.DSN); err != nil {
 			fmt.Fprintf(os.Stderr, "testdb: the tests passed but left %s failing verification: %v\n", d.Name, err)

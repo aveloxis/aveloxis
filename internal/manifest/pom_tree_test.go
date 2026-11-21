@@ -131,14 +131,20 @@ func TestThePomParentIsVerifiedByItsCoordinates(t *testing.T) {
 		files   map[string]string
 		version string
 	}{
-		"the default ../pom.xml":                      {map[string]string{"pom.xml": parentPom, "app/pom.xml": child("")}, "2.15.2"},
-		"a relativePath to a file":                    {map[string]string{"build/parent.xml": parentPom, "app/pom.xml": child("<relativePath>../build/parent.xml</relativePath>")}, "2.15.2"},
-		"a relativePath to a directory":               {map[string]string{"build/pom.xml": parentPom, "app/pom.xml": child("<relativePath>../build</relativePath>")}, "2.15.2"},
-		"another project at the expected place":       {map[string]string{"pom.xml": impostor, "app/pom.xml": child("")}, ""},
-		"the same group, another artifact":            {map[string]string{"pom.xml": strings.Replace(parentPom, "<artifactId>parent</artifactId>", "<artifactId>other-parent</artifactId>", 1), "app/pom.xml": child("")}, ""},
-		"an empty relativePath: not in the tree":      {map[string]string{"pom.xml": parentPom, "app/pom.xml": child("<relativePath/>")}, ""},
-		"a relativePath above the clone":              {map[string]string{"app/pom.xml": child("<relativePath>../../../../etc/pom.xml</relativePath>")}, ""},
-		"the parent's version differs from the ref's": {map[string]string{"pom.xml": `<project><groupId>org.example</groupId><artifactId>parent</artifactId><version>9.0.0</version></project>`, "app/pom.xml": child("")}, ""},
+		"the default ../pom.xml":                {map[string]string{"pom.xml": parentPom, "app/pom.xml": child("")}, "2.15.2"},
+		"a relativePath to a file":              {map[string]string{"build/parent.xml": parentPom, "app/pom.xml": child("<relativePath>../build/parent.xml</relativePath>")}, "2.15.2"},
+		"a relativePath to a directory":         {map[string]string{"build/pom.xml": parentPom, "app/pom.xml": child("<relativePath>../build</relativePath>")}, "2.15.2"},
+		"another project at the expected place": {map[string]string{"pom.xml": impostor, "app/pom.xml": child("")}, ""},
+		"the same group, another artifact":      {map[string]string{"pom.xml": strings.Replace(parentPom, "<artifactId>parent</artifactId>", "<artifactId>other-parent</artifactId>", 1), "app/pom.xml": child("")}, ""},
+		// 0.29.215: an empty relativePath says "do not look at ../pom.xml";
+		// Maven still finds a parent that is part of the build by its
+		// coordinates, and so does this (round 8). With no pom of the clone
+		// under the coordinates there is none.
+		"an empty relativePath, the parent in the clone":        {map[string]string{"pom.xml": parentPom, "app/pom.xml": child("<relativePath/>")}, "2.15.2"},
+		"an empty relativePath, no such pom in the clone":       {map[string]string{"pom.xml": impostor, "app/pom.xml": child("<relativePath/>")}, ""},
+		"the parent elsewhere in the clone, by its coordinates": {map[string]string{"deep/down/pom.xml": parentPom, "app/pom.xml": child("")}, "2.15.2"},
+		"a relativePath above the clone":                        {map[string]string{"app/pom.xml": child("<relativePath>../../../../etc/pom.xml</relativePath>")}, ""},
+		"the parent's version differs from the ref's":           {map[string]string{"pom.xml": `<project><groupId>org.example</groupId><artifactId>parent</artifactId><version>9.0.0</version></project>`, "app/pom.xml": child("")}, ""},
 	} {
 		root := writeTree(t, c.files)
 		if got := pomDeps(t, root, "app/pom.xml")[jackson].Version; got != c.version {

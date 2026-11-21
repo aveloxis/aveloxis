@@ -2032,12 +2032,41 @@ SELECT repo_id, last_attempt_result, last_attempt_at, lockfiles_unread_reason, l
 
 **What to do.**
 
-- *Memory, and the repository has a very large lockfile.* This is the ordinary case. [The configuration page](../getting-started/configuration.md) lists the largest lockfile of each format the default reads; `pnpm-lock.yaml` and `pubspec.lock` need the most for their size (about thirteen times it). Raise `collection.manifest_read_memory_mb` and restart `serve`. The setting limits the child's Go heap; its resident memory has been measured at up to about 1.3 times the setting, so with `--workers N` allow about 1.3 x N times it. Until the lockfiles are read, the inventory is still replaced, the previous lockfile rows are kept for lockfiles still in the repository, and the caution stays on the page.
-- *One file larger than the memory left.* That file alone is not read; the log names it, and it shows as one manifest or lockfile that could not be read. The rest of the repository is read.
+- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A lockfile is read only when its size times its format's cost fits in `collection.manifest_read_memory_mb` ([the configuration page](../getting-started/configuration.md) lists the costs and the largest file of each format the default reads; `pnpm-lock.yaml` and `pubspec.lock` cost the most, about fourteen and fifteen times their size). A larger one is not read: the log says "lockfiles too large for the memory left to read them in were not read" with the repository, the other lockfiles are read, the previous rows of the unread one are kept, and the caution stays on the page. Raise the setting and restart `serve`.
+- *A manifest too large for the memory left.* That file alone is not read; the log names it, and it shows as one manifest that could not be read. The rest of the repository is read.
+- *After an upgrade: is the reader working?* At start `serve` logs `manifest reader ok` with the program, its version and build, and the limits. If the log has `manifest reader self-test FAILED` instead, or neither line, manifests are not being read: the line says why.
 - *Processor time.* The largest honest builds measured use about a second of the 180, and the largest lockfiles tested about 34 seconds. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
 - *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. On a system other than Linux, the commonest cause is an `aveloxis` file replaced on disk while `serve` was running: the child is started from the file on disk and refuses a request from another version. The log then says once, at ERROR: "the manifest reader is another version of aveloxis — no repository's manifests or lockfiles are read until serve is restarted". Restart `serve`. On Linux the child is started from the running program itself, and replacing the file has no effect until the restart.
 
 The reading is tried again at the repository's next collection. A repository that is stopped every time holds one worker for at most the clock allowance (one minute plus four times the processor limit: 13 minutes at the default, plus the time spent answering its requests for remote poms) once per collection.
+
+## After upgrading to 0.29.214: what changed in the data
+
+Two releases changed what is stored for Maven, Gradle and lockfiles, and how much could not be estimated before a fleet ran them. Both queries are read-only; run them after one full collection cycle.
+
+**Maven and Gradle dependencies with no version, by the reason recorded.** 0.29.213 and 0.29.214 withhold a version when a parent or BOM that would be consulted first is not known: its lookup failed (`inherited_lookup_failed`), its repository is refused (`inherited_repository_refused`), or it was never asked for (`inherited_not_found`: a snapshot, a version range, a coordinate that cannot be resolved). The same reasons were recorded before for a dependency no pom managed at all, so compare the counts with the ones from before the upgrade if you have them.
+
+```sql
+SELECT COALESCE(NULLIF(version_reason, ''), '(no reason)') AS version_reason,
+       COUNT(*) AS maven_rows_with_no_version,
+       COUNT(DISTINCT repo_id) AS repositories
+  FROM aveloxis_data.repo_deps_libyear
+ WHERE package_manager = 'maven' AND COALESCE(current_version, '') = ''
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+
+**Repositories whose lockfiles could not be read at the last analysis,** by reason, and whether lockfile rows are stored for them (the page then says "Lockfiles last read ...") or none is ("Lockfiles could not be read ...").
+
+```sql
+SELECT c.lockfiles_unread_reason,
+       EXISTS (SELECT 1 FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = c.repo_id) AS lockfile_rows_stored,
+       COUNT(*) AS repositories
+  FROM aveloxis_data.repo_dependency_coverage c
+ WHERE c.lockfiles_unread_reason IS NOT NULL
+ GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+What to do about a repository in the second list is in the section above.
 
 ## Next steps
 

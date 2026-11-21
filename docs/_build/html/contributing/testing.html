@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.214 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.215 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=84582877"></script>
+      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -751,6 +751,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -2115,33 +2116,89 @@ the whole of a finite domain (with the test showing an input outside it gives
 no statement), or, for an open one, representative inputs, where what varies
 may reach the text only through <code class="docutils literal notranslate"><span class="pre">pgx.Identifier{...}.Sanitize()</span></code>, a
 registered quoting function, or (a number) <code class="docutils literal notranslate"><span class="pre">%d</span></code> and base-ten <code class="docutils literal notranslate"><span class="pre">strconv</span></code>.
+An open builder may choose its text by its input in ONE place only (one
+comparison of a parameter with a constant, both sides taken by the
+registered inputs; the cases of one switch count as one), and a count may
+only repeat a fragment (<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">i</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> for the separator is the one condition a
+counted loop may hold). An index or map lookup by a parameter, a
+<code class="docutils literal notranslate"><span class="pre">for</span> <span class="pre">cond</span> <span class="pre">{}</span></code> on one, or a return inside a counted loop is refused
+(v0.29.215): give such a builder a finite domain.
 Nothing is registered on a person’s reading alone.</p></li>
-<li><p><strong>The run-time judge</strong> (<code class="docutils literal notranslate"><span class="pre">internal/testdb/writejudge</span></code>, v0.29.213) decides.
-It is a pgx tracer that <code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code> installs for EVERY DB-tier package,
-on every pool the store builds (the seam is <code class="docutils literal notranslate"><span class="pre">internal/db/stmttrace.Wrap</span></code>,
-nil in every binary): every statement PRODUCTION code sends (the first frame
-of the stack in this module is a non-test file) is parsed and judged by the
-same <code class="docutils literal notranslate"><span class="pre">CheckIn</span></code>, policies and Exceptions, in the test database’s own catalog,
-and a violation fails the package after its tests. A statement a test sends
-itself is a fixture and is not judged. A statement sent with a
-<code class="docutils literal notranslate"><span class="pre">pgx.QueryRewriter</span></code> among its arguments (<code class="docutils literal notranslate"><span class="pre">pgx.NamedArgs</span></code> included; nothing in
-the module uses one) is held against production, because the tracer sees the
-text before the rewriter runs. The policy registry and the Exceptions live in
-that package too (<code class="docutils literal notranslate"><span class="pre">writejudge.Policies</span></code>, <code class="docutils literal notranslate"><span class="pre">writejudge.Exceptions</span></code>): one
-registry for the judge and for the store’s static check.</p></li>
-<li><p><strong>The coverage requirement.</strong> The judge sees only what runs, so every call in
-<code class="docutils literal notranslate"><span class="pre">internal/db</span></code> of a library function that takes SQL (<code class="docutils literal notranslate"><span class="pre">sqlscan.RunnerCalls</span></code>)
-must have a statement sent through it by some DB-tier package’s tests, or
-stand on <code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unexecuted_statement_sites.txt</span></code>, which only
-shrinks. Each package records what it reached when
-<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_DIR</span></code> is set; <code class="docutils literal notranslate"><span class="pre">scripts/skip-census.sh</span></code> (the closing
-suite) sets it and then checks the union
-(<code class="docutils literal notranslate"><span class="pre">TestTheSuiteReachesEveryStatementSite</span></code>). A new store function that runs SQL
-therefore needs a DB-tier test, in any package, that reaches it. An ordinary
-<code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./internal/db/</span></code> judges but does not check coverage: one package
-cannot know what the others reach. To see what a whole run did not reach,
-set <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_OUT=file</span></code> with <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_CHECK</span></code>
-pointing at the folder of records.</p></li>
+<li><p><strong>The run-time judge</strong> (<code class="docutils literal notranslate"><span class="pre">internal/testdb/writejudge</span></code>, v0.29.213; as of
+v0.29.215) decides. It is a pgx tracer that <code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code> installs for EVERY
+DB-tier package, with no code in the package. Every statement PRODUCTION code
+sends is parsed and judged by the same <code class="docutils literal notranslate"><span class="pre">CheckIn</span></code>, policies and Exceptions, in
+the test database’s own catalog, and a violation fails the package after its
+tests.</p>
+<ul>
+<li><p><strong>One file opens every pool and connection</strong>: <code class="docutils literal notranslate"><span class="pre">internal/db/open.go</span></code>
+(<code class="docutils literal notranslate"><span class="pre">db.OpenPool</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenPoolConfig</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenConn</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenConnConfig</span></code>).
+Each hands its configuration to the seam <code class="docutils literal notranslate"><span class="pre">internal/db/stmttrace.Wrap</span></code>
+(nil in every binary, so nothing changes outside tests), and puts the seam
+back after a caller’s <code class="docutils literal notranslate"><span class="pre">BeforeConnect</span></code> hook. <code class="docutils literal notranslate"><span class="pre">scripts/pool_openers_test.go</span></code>
+fails on a pgx, pgxpool, pgconn, <code class="docutils literal notranslate"><span class="pre">stdlib</span></code> or <code class="docutils literal notranslate"><span class="pre">database/sql</span></code> constructor in
+any other non-test file, on one in a DB-tier package’s test files outside
+its reviewed list, on a dot-import of those packages, and on non-test code
+that gives a <code class="docutils literal notranslate"><span class="pre">Tracer</span></code> field a value anywhere but <code class="docutils literal notranslate"><span class="pre">open.go</span></code> and the store’s
+logging tracer. <strong>A test that needs a pool of its own opens it with
+<code class="docutils literal notranslate"><span class="pre">db.OpenPool</span></code> or <code class="docutils literal notranslate"><span class="pre">db.OpenPoolConfig</span></code></strong>, never with the library: a pool
+opened with the library carries no judge, and what production sends on it
+is not seen.</p></li>
+<li><p><strong>Whose statement it is</strong> (<code class="docutils literal notranslate"><span class="pre">writejudge.Origin</span></code>) is read from the shape of
+the stack. Only test frames: the test sent it, a fixture, not judged.
+Production code anywhere on the stack: production’s, judged. That includes
+test code that stands between production and the library: a test’s
+closure run by a production retry or transaction helper, and a test’s
+stand-in for a transaction that hands on what production gave it, in any
+spelling. The finding then names the test code it came through. A test
+that really sends its OWN text through a production helper registers
+itself, with the reason, in <code class="docutils literal notranslate"><span class="pre">writejudge.FixtureSenders</span></code> (file and
+declaration); the list is empty. No frame of the module at all (a bare
+<code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">pool.Exec(...)</span></code>): production’s.</p></li>
+<li><p><strong>A re-executed test binary is judged.</strong> A test that runs <code class="docutils literal notranslate"><span class="pre">os.Args[0]</span></code>
+again as a child (a subprocess under test) needs nothing extra: the child’s
+<code class="docutils literal notranslate"><span class="pre">testdb.Main</span></code> installs a judge that appends each record, one write per
+statement, to a file in a directory its ancestor named in
+<code class="docutils literal notranslate"><span class="pre">AVELOXIS_WRITE_JUDGE_CHILD_DIR</span></code>, and the ancestor’s verdict includes them.
+A child that calls <code class="docutils literal notranslate"><span class="pre">os.Exit</span></code> or is killed has already handed over what it
+sent. Do not clear that variable from a child’s environment.</p></li>
+<li><p>A statement sent with a <code class="docutils literal notranslate"><span class="pre">pgx.QueryRewriter</span></code> among its arguments
+(<code class="docutils literal notranslate"><span class="pre">pgx.NamedArgs</span></code> included; nothing in the module uses one) is held against
+production, because the tracer sees the text before the rewriter runs.</p></li>
+<li><p><strong>The registry</strong> is <code class="docutils literal notranslate"><span class="pre">internal/testdb/writejudge/registry.go</span></code>:
+<code class="docutils literal notranslate"><span class="pre">writejudge.Policies</span></code>, <code class="docutils literal notranslate"><span class="pre">writejudge.Exceptions</span></code>, and <code class="docutils literal notranslate"><span class="pre">writejudge.TempTables</span></code>
+(the temporary tables production declares). The judge and the store’s
+static check read the same one.</p></li>
+</ul>
+</li>
+<li><p><strong>The coverage requirement</strong> has two halves, both checked by
+<code class="docutils literal notranslate"><span class="pre">scripts/skip-census.sh</span></code> (the closing suite) over the union of what every
+DB-tier package recorded (<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_DIR</span></code>, set by the script).
+An ordinary <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./internal/db/</span></code> judges but checks neither: one package
+cannot know what the others reach.</p>
+<ul>
+<li><p><strong>Per call site.</strong> Every call in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code> of a library function that
+takes SQL (<code class="docutils literal notranslate"><span class="pre">sqlscan.RunnerCalls</span></code>) must have had a statement sent through
+it, or stand on <code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unexecuted_statement_sites.txt</span></code>
+(<code class="docutils literal notranslate"><span class="pre">TestTheSuiteReachesEveryStatementSite</span></code>). That list is empty and only
+shrinks. A new store function that runs SQL therefore needs a DB-tier
+test, in any package, that reaches it and asserts what the statement did.</p></li>
+<li><p><strong>Per statement text.</strong> A site is reached by ANY one statement sent
+through it; a site that a builder, a list of migration steps or a loop
+feeds can send many. So every text the static reader reads in the store
+must have been sent, or stand on
+<code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unsent_statement_texts.txt</span></code>
+(<code class="docutils literal notranslate"><span class="pre">TestTheSuiteSendsEveryStatementText</span></code>). That list only shrinks, a line is
+<code class="docutils literal notranslate"><span class="pre">file&lt;TAB&gt;declaration&lt;TAB&gt;key</span></code> (<code class="docutils literal notranslate"><span class="pre">writejudge.TextKey</span></code>: no line number, so an
+edit above a statement does not move it), and it NEVER excuses a text that
+writes a table with a registered column: such a statement must be sent by
+a test. A statement on the list was judged from its text alone.</p></li>
+<li><p>The closing suite prints both: <code class="docutils literal notranslate"><span class="pre">statement</span> <span class="pre">sites:</span> <span class="pre">N</span> <span class="pre">library</span> <span class="pre">calls</span> <span class="pre">that</span> <span class="pre">take</span> <span class="pre">SQL</span> <span class="pre">in</span> <span class="pre">internal/db;</span> <span class="pre">0</span> <span class="pre">not</span> <span class="pre">reached</span> <span class="pre">by</span> <span class="pre">any</span> <span class="pre">DB-tier</span> <span class="pre">package</span></code> and <code class="docutils literal notranslate"><span class="pre">statement</span> <span class="pre">texts:</span> <span class="pre">N</span> <span class="pre">statement</span> <span class="pre">texts</span> <span class="pre">read</span> <span class="pre">in</span> <span class="pre">internal/db;</span> <span class="pre">M</span> <span class="pre">not</span> <span class="pre">sent</span> <span class="pre">by</span> <span class="pre">any</span> <span class="pre">DB-tier</span> <span class="pre">package</span></code>, with M by kind. To see what a run did not reach or send, point
+<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_CHECK</span></code> at the folder of records and set
+<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_OUT=file</span></code> or <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_TEXTS_OUT=file</span></code>
+(the second writes lines in the list’s own form).</p></li>
+</ul>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.ParseWrites(sql)</span></code> — the writes of a statement, read from the
 parse tree PostgreSQL’s own parser gives (<code class="docutils literal notranslate"><span class="pre">pgread.go</span></code>; the parser is
 <code class="docutils literal notranslate"><span class="pre">github.com/wasilibs/go-pgquery</span></code>, the server’s grammar compiled to
@@ -2168,8 +2225,10 @@ mutations flag identically).</p>
 </section>
 <section id="column-write-policy-registry-v0-27-126">
 <h3>Column write-policy registry (v0.27.126)<a class="headerlink" href="#column-write-policy-registry-v0-27-126" title="Link to this heading"></a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">internal/db/column_write_policy_test.go</span></code> declares each protected column’s ONE
-write policy (<code class="docutils literal notranslate"><span class="pre">FillEmptyOnly</span></code> / <code class="docutils literal notranslate"><span class="pre">PreferNonemptyIncoming</span></code> /
+<p><code class="docutils literal notranslate"><span class="pre">internal/testdb/writejudge/registry.go</span></code> declares each protected column’s ONE
+write policy in <code class="docutils literal notranslate"><span class="pre">writejudge.Policies</span></code>, which the static test
+<code class="docutils literal notranslate"><span class="pre">internal/db/column_write_policy_test.go</span></code> and the run-time judge both read
+(<code class="docutils literal notranslate"><span class="pre">FillEmptyOnly</span></code> / <code class="docutils literal notranslate"><span class="pre">PreferNonemptyIncoming</span></code> /
 <code class="docutils literal notranslate"><span class="pre">PreferNonNullIncoming</span></code> / <code class="docutils literal notranslate"><span class="pre">GreatestNonNull</span></code> / <code class="docutils literal notranslate"><span class="pre">AlwaysRefresh</span></code> / <code class="docutils literal notranslate"><span class="pre">InsertOnly</span></code>);
 the sqlscan policy engine verifies every UPDATE SET assignment in the store
 corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
@@ -2196,9 +2255,11 @@ An exported function that hands a parameter to a statement call is refused:
 SQL does not enter the store from outside it.</p>
 <p>Triage protocol for a red run (in the failure message; never weaken a
 matcher): fix the SQL | correct the registered policy | add an <code class="docutils literal notranslate"><span class="pre">Exception</span></code>
-WITH a reason. An <code class="docutils literal notranslate"><span class="pre">Exception</span></code> with no <code class="docutils literal notranslate"><span class="pre">File</span></code> is for one statement, whole: its
-<code class="docutils literal notranslate"><span class="pre">Match</span></code> is the statement’s entire text, so it ends with any change to the
-statement. Exceptions that suppress nothing are reported STALE and fail
+WITH a reason. An <code class="docutils literal notranslate"><span class="pre">Exception</span></code> is for ONE statement, whole: its <code class="docutils literal notranslate"><span class="pre">Statement</span></code>
+field is the statement’s entire text (required for every kind), so it ends with
+any change to the statement; <code class="docutils literal notranslate"><span class="pre">InBody</span></code> says the statement stands inside a DO
+block or a function’s body, and an Exception of the one kind does not excuse
+the same statement of the other. Exceptions that suppress nothing are reported STALE and fail
 the run. New schema columns with a meaningful write discipline register at
 introduction (schema-migrations.md checklist step 7).</p>
 </section>

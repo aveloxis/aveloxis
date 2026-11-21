@@ -15,7 +15,6 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -170,12 +169,14 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	if err := os.MkdirAll(filepath.Dir(workDir), 0o755); err != nil {
 		return result, err
 	}
-	var stderr bytes.Buffer
+	// Bounded: git lists one line per path for some warnings (paths that
+	// collide on this filesystem), and the repository chooses its paths.
+	stderr := newBoundedCapture()
 	cmd := exec.CommandContext(ctx, "git", "clone", barePath, workDir)
 	// Skip LFS smudge filters — dependency/license scanners only need text
 	// source files. LFS objects with expired quotas cause fatal checkout failures.
 	cmd.Env = gitCloneEnv()
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		ac.recordInventoryAttempt(ctx, repoID, model.InventoryAttemptCloneUnavailable)
 		return result, fmt.Errorf("local clone failed: %w: %s", execErr(ctx, err), stderr.String())

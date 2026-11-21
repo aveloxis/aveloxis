@@ -25,7 +25,7 @@ import (
 func TestMain(m *testing.M) {
 	// An analysis reads manifests in a child that is this program started
 	// again (manifest_child.go): this test binary is that child when asked.
-	RunManifestChildIfAsked()
+	runManifestChildIfAskedInATest()
 	runMisbehavingManifestChildIfAsked() // manifest_child_test.go's stand-ins
 	SetOutboundPolicy(outboundtest.Policy())
 	os.Exit(testdb.Main(m, prepare.Deployment, prepare.Verify))

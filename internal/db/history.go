@@ -516,57 +516,101 @@ var lockfileUnreadReasons = func() map[string]bool {
 	return m
 }()
 
+// lockfileReadingArgs refuses a reading that is not exactly one of completed
+// and not-completed, or whose reason is not one of
+// model.LockfileUnreadReasons (SR-18), and gives the statement's arguments
+// for one that is.
+func lockfileReadingArgs(repoID int64, reading model.LockfileReading) ([]any, error) {
+	var reason *string
+	switch {
+	case reading.Completed && reading.NotCompleted != "":
+		return nil, fmt.Errorf("a lockfile reading both completed and did not (%q)", reading.NotCompleted)
+	case reading.Completed:
+	case !lockfileUnreadReasons[reading.NotCompleted]:
+		return nil, fmt.Errorf("lockfile reading reason %q is not one of %s", reading.NotCompleted, strings.Join(model.LockfileUnreadReasons(), ", "))
+	default:
+		reason = &reading.NotCompleted
+	}
+	return []any{repoID, reading.Completed, reading.Lockfiles, reason}, nil
+}
+
 // RecordLockfileReading keeps how one analysis's reading of a repository's
-// lockfiles ended (0.29.214). It is the only writer of lockfiles_read_at and
-// lockfiles_unread_reason, and touches nothing else of the coverage record.
-// A reading that is not exactly one of completed and not-completed, or whose
-// reason is not one of model.LockfileUnreadReasons, is refused (SR-18).
-//
-// One statement ($1 the repository, $2 whether the reading completed, $3
-// whether the clone holds lockfiles (known to, when it did not complete), $4
-// the reason, NULL when it completed):
+// lockfiles ended (0.29.214), by recordLockfileReadingOn's statement. It touches
+// nothing else of the coverage record. The caller does not call it on
+// shutdown.
+func (s *PostgresStore) RecordLockfileReading(ctx context.Context, repoID int64, reading model.LockfileReading) error {
+	args, err := lockfileReadingArgs(repoID, reading)
+	if err != nil {
+		return err
+	}
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		return recordLockfileReadingOn(ctx, s.pool, args)
+	})
+}
+
+// recordLockfileReadingIn writes a reading inside a transaction the caller
+// owns (0.29.215): the lockfile snapshot's replace records "completed" in
+// the transaction that replaces the rows, so that a stop between the two
+// cannot leave a caution standing over rows that were just replaced.
+func recordLockfileReadingIn(ctx context.Context, tx pgx.Tx, repoID int64, reading model.LockfileReading) error {
+	args, err := lockfileReadingArgs(repoID, reading)
+	if err != nil {
+		return err
+	}
+	return recordLockfileReadingOn(ctx, tx, args)
+}
+
+// recordLockfileReadingOn sends THE statement that writes lockfiles_read_at
+// and lockfiles_unread_reason: the only one in the module that assigns
+// either (TestTheLockfileReadingColumnsHaveOneWriter), on the pool for
+// RecordLockfileReading and inside the snapshot replace's transaction for
+// recordLockfileReadingIn. $1 the repository, $2 whether the reading
+// completed, $3 whether the clone holds lockfiles (known to, when it did not
+// complete), $4 the reason, NULL when it completed:
 //
 //   - Completed with lockfiles: read now, no reason.
 //   - Completed with none: no date and no reason (nothing to be behind on;
 //     a date here would later read as "last read" for lockfiles that did
 //     not then exist).
-//   - Not completed: the date is KEPT. The reason is written when the clone
-//     is known to hold a lockfile or an earlier reading read some; with
-//     neither, nothing is claimed (the repository may have no lockfile).
+//   - Not completed: the date is KEPT, and the reason is the LATEST
+//     reading's. It is claimed when there is something to be behind on or
+//     known to be unread: the clone is known to hold a lockfile, lockfile
+//     rows are STORED for the repository (0.29.215: also rows stored before
+//     the columns existed, which no date column records), an earlier
+//     reading read some, or an earlier reading already left a reason. With
+//     none of those nothing is claimed: the repository may have no lockfile
+//     at all.
+//
+// Both arms decide alike: the VALUES arm when the repository has no
+// coverage record yet, the SET arm against the row as it stands when the
+// statement reaches it (READ COMMITTED re-evaluates SET, so "date kept" and
+// "a reason is already there" are read from the current row).
 //
 // It moves the repository's cache state, as the attempt writer does: the
 // caution is on the coverage object cached answers carry.
-//
-// The caller does not call it on shutdown.
-func (s *PostgresStore) RecordLockfileReading(ctx context.Context, repoID int64, reading model.LockfileReading) error {
-	var reason *string
-	switch {
-	case reading.Completed && reading.NotCompleted != "":
-		return fmt.Errorf("a lockfile reading both completed and did not (%q)", reading.NotCompleted)
-	case reading.Completed:
-	case !lockfileUnreadReasons[reading.NotCompleted]:
-		return fmt.Errorf("lockfile reading reason %q is not one of %s", reading.NotCompleted, strings.Join(model.LockfileUnreadReasons(), ", "))
-	default:
-		reason = &reading.NotCompleted
-	}
-	return s.withRetry(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `
-			WITH written AS (
-				INSERT INTO aveloxis_data.repo_dependency_coverage AS c (repo_id, lockfiles_read_at, lockfiles_unread_reason)
-				VALUES ($1,
-				        CASE WHEN $2::boolean AND $3::boolean THEN NOW() END,
-				        CASE WHEN NOT $2::boolean AND $3::boolean THEN $4::text END)
-				ON CONFLICT (repo_id) DO UPDATE SET
-					lockfiles_read_at = CASE WHEN $2::boolean THEN EXCLUDED.lockfiles_read_at ELSE c.lockfiles_read_at END,
-					lockfiles_unread_reason = CASE
-						WHEN $2::boolean THEN NULL
-						WHEN $3::boolean OR c.lockfiles_read_at IS NOT NULL THEN $4::text
-						ELSE c.lockfiles_unread_reason END
-				RETURNING repo_id
-			)
-			`+stampRepoCacheStateSQL+` WHERE repo_id IN (SELECT repo_id FROM written)`, repoID, reading.Completed, reading.Lockfiles, reason)
-		return err
-	})
+func recordLockfileReadingOn(ctx context.Context, q rotationExecer, args []any) error {
+	_, err := q.Exec(ctx, `
+	WITH written AS (
+		INSERT INTO aveloxis_data.repo_dependency_coverage AS c (repo_id, lockfiles_read_at, lockfiles_unread_reason)
+		VALUES ($1,
+		        CASE WHEN $2::boolean AND $3::boolean THEN NOW() END,
+		        CASE WHEN NOT $2::boolean
+		                  AND ($3::boolean OR EXISTS (SELECT 1 FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = $1))
+		             THEN $4::text END)
+		ON CONFLICT (repo_id) DO UPDATE SET
+			lockfiles_read_at = CASE WHEN $2::boolean THEN EXCLUDED.lockfiles_read_at ELSE c.lockfiles_read_at END,
+			lockfiles_unread_reason = CASE
+				WHEN $2::boolean THEN NULL
+				WHEN $3::boolean
+				     OR c.lockfiles_unread_reason IS NOT NULL
+				     OR c.lockfiles_read_at IS NOT NULL
+				     OR EXISTS (SELECT 1 FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = c.repo_id)
+				THEN $4::text
+				ELSE NULL END
+		RETURNING repo_id
+	)
+	`+stampRepoCacheStateSQL+` WHERE repo_id IN (SELECT repo_id FROM written)`, args...)
+	return err
 }
 
 // GetRepoDependencyCoverage returns a repository's coverage record. found is
@@ -599,7 +643,17 @@ const coverageColumnsSQL = `c.analysed_at, c.manifests_found, c.manifests_parsed
 		       c.scan_targets_dropped, c.dependencies_unknown, c.first_scan_at,
 		       c.scan_targets_rejected, c.scan_closures_held, c.scan_targets_truncated, c.lockfiles_failed,
 		       c.maven_trees_not_whole, c.maven_tree_hosts,
-		       c.lockfiles_read_at, c.lockfiles_unread_reason`
+		       c.lockfiles_read_at, c.lockfiles_unread_reason, ` + lockfilesLastReadSQL
+
+// lockfilesLastReadSQL is when the lockfile rows STORED for the coverage
+// record's repository were read, and NULL when none is stored (0.29.215).
+// What is stored decides, not lockfiles_read_at alone: that column is not
+// backfilled, so rows stored before it existed have their snapshot's own
+// date (every row of a snapshot is written with NOW() by its one writer,
+// ReplaceRepoLockfileSnapshot); and a column left set over rows that have
+// since been removed dates nothing.
+const lockfilesLastReadSQL = `(SELECT COALESCE(c.lockfiles_read_at, MAX(l.data_collection_date))
+		          FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = c.repo_id HAVING COUNT(*) > 0)`
 
 // coverageScan receives one coverage record's columns and builds the record.
 // Every column is nullable for it, so a LEFT JOIN with no record scans too.
@@ -618,7 +672,7 @@ func (c *coverageScan) dests() []any {
 		&c.cov.ScanAttemptAt, &c.outcome, &c.partial, &c.cov.Scan.TargetsSent,
 		&c.cov.Scan.TargetsDropped, &c.cov.Scan.DependenciesUnknown, &c.cov.FirstScanAt,
 		&c.cov.Scan.TargetsRejected, &c.cov.Scan.ClosuresHeld, &c.cov.Scan.TargetsTruncated, &c.lockfilesFailed, &c.treesNotWhole, &c.treeHosts,
-		&c.cov.LockfilesReadAt, &c.lockfilesUnread}
+		&c.cov.LockfilesReadAt, &c.lockfilesUnread, &c.cov.LockfilesLastRead}
 }
 
 func (c *coverageScan) finish() (model.DependencyCoverage, error) {

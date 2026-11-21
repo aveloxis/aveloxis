@@ -37,9 +37,6 @@ func (f *faultTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandT
 	if strings.HasPrefix(sql, "ROLLBACK TO SAVEPOINT") {
 		f.rollbacks++
 	}
-	if f.renameCode != "" && strings.Contains(sql, "SET gh_login") {
-		return pgconn.CommandTag{}, &pgconn.PgError{Code: f.renameCode, Message: "injected"}
-	}
 	if f.identCode != "" && strings.Contains(sql, "contributor_identities") {
 		return pgconn.CommandTag{}, &pgconn.PgError{Code: f.identCode, Message: "injected"}
 	}
@@ -58,7 +55,15 @@ func (r faultRow) Scan(dest ...any) error {
 	return nil
 }
 
-func (f *faultTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+func (f *faultTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	// The rename-recovery UPDATE answers with the row's stored address
+	// since 0.29.216, so it arrives here and not at Exec.
+	if strings.Contains(sql, "SET gh_login") {
+		if f.renameCode != "" {
+			return faultRow{err: &pgconn.PgError{Code: f.renameCode, Message: "injected"}}
+		}
+		return faultRow{}
+	}
 	if f.insertCode != "" {
 		return faultRow{err: &pgconn.PgError{Code: f.insertCode, ConstraintName: f.insertConstraint, Message: "injected"}}
 	}

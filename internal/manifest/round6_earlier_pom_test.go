@@ -93,7 +93,7 @@ func TestAVersionBehindAPomThatCouldNotBeObtainedIsNotDetermined(t *testing.T) {
 		// dependency nothing manages says nothing more than it did.
 		"no source is installed": {src: nil, why: model.VersionReasonInheritedNotFound},
 	} {
-		got := r6Versions(t, files, "pom.xml", c.src)
+		got := r6Versions(t, oneBuild(files), "pom.xml", c.src)
 		if x := got["g:x"]; x.Version != c.version || x.VersionReason != c.why || x.VersionSource != c.source {
 			t.Errorf("%s: g:x has version %q (source %q, reason %q); want %q (source %q, reason %q)", name, x.Version, x.VersionSource, x.VersionReason, c.version, c.source, c.why)
 		}
@@ -119,7 +119,7 @@ func TestAVersionBehindAMissingParentIsNotDetermined(t *testing.T) {
 			r4dep("g", "x", "") + r4dep("g", "own", "") + "</dependencies></project>",
 		"bom/pom.xml": r6Bom("bom", "g", "x", "2.0"),
 	}
-	got := r6Versions(t, files, "pom.xml", outcomeSource{outcome: RemoteFailed})
+	got := r6Versions(t, oneBuild(files), "pom.xml", outcomeSource{outcome: RemoteFailed})
 	if x := got["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedLookupFailed {
 		t.Errorf("g:x has version %q, reason %q; want none and %q: the parent that could not be looked up comes before the BOM", x.Version, x.VersionReason, model.VersionReasonInheritedLookupFailed)
 	}
@@ -127,7 +127,7 @@ func TestAVersionBehindAMissingParentIsNotDetermined(t *testing.T) {
 		t.Errorf("g:own has version %q, reason %q; want 7.0: the pom's own entry is nearer than its parent", own.Version, own.VersionReason)
 	}
 	parent := &RemotePom{Group: "far", Artifact: "away", Version: "3", ServedBy: "repo.example"}
-	got = r6Versions(t, files, "pom.xml", outcomeSource{RemoteFailed, map[string]*RemotePom{"far:away:3": parent}})
+	got = r6Versions(t, oneBuild(files), "pom.xml", outcomeSource{RemoteFailed, map[string]*RemotePom{"far:away:3": parent}})
 	if x := got["g:x"]; x.Version != "2.0" || x.VersionReason != "" {
 		t.Errorf("with the parent obtained: g:x has version %q, reason %q; want 2.0", x.Version, x.VersionReason)
 	}
@@ -144,7 +144,7 @@ func TestAVersionBehindABOMThatIsNotWholeIsNotDetermined(t *testing.T) {
 			r4dep("g", "infirst", "5.0") + r4import("t", "inner", "1") + "</dependencies></dependencyManagement></project>",
 		"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
 	}
-	got := r6Versions(t, files, "pom.xml", outcomeSource{outcome: RemoteFailed})
+	got := r6Versions(t, oneBuild(files), "pom.xml", outcomeSource{outcome: RemoteFailed})
 	if x := got["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedLookupFailed {
 		t.Errorf("g:x has version %q, reason %q; want none and %q: first's import could not be looked up and comes before second", x.Version, x.VersionReason, model.VersionReasonInheritedLookupFailed)
 	}
@@ -160,11 +160,15 @@ func TestAVersionBehindABOMThatIsNotWholeIsNotDetermined(t *testing.T) {
 func TestAGradleVersionBehindAPlatformThatIsNotWholeIsNotDetermined(t *testing.T) {
 	files := map[string]string{
 		"build.gradle": "dependencies {\n  implementation platform('t:first:1')\n  implementation platform('t:second:1')\n  implementation 'g:x'\n  implementation 'g:infirst'\n}\n",
-		"first/pom.xml": "<project><groupId>t</groupId><artifactId>first</artifactId><version>1</version><dependencyManagement><dependencies>" +
-			r4dep("g", "infirst", "5.0") + r4import("t", "inner", "1") + "</dependencies></dependencyManagement></project>",
-		"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
 	}
-	got := r6Versions(t, files, "build.gradle", outcomeSource{outcome: RemoteFailed})
+	// The platforms are published ones (a pom of the clone is never a
+	// Gradle platform: 0.29.216).
+	published := map[string]*RemotePom{
+		"t:first:1": {Group: "t", Artifact: "first", Version: "1", Managed: []RemoteManaged{
+			{Group: "g", Artifact: "infirst", Version: "5.0"}, {Group: "t", Artifact: "inner", Version: "1", Import: true}}},
+		"t:second:1": {Group: "t", Artifact: "second", Version: "1", Managed: []RemoteManaged{{Group: "g", Artifact: "x", Version: "2.0"}}},
+	}
+	got := r6Versions(t, files, "build.gradle", outcomeSource{RemoteFailed, published})
 	if x := got["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedLookupFailed {
 		t.Errorf("g:x has version %q, reason %q; want none and %q", x.Version, x.VersionReason, model.VersionReasonInheritedLookupFailed)
 	}
@@ -173,7 +177,7 @@ func TestAGradleVersionBehindAPlatformThatIsNotWholeIsNotDetermined(t *testing.T
 	}
 	// With the inner import answered "not found", the second platform's
 	// version stands.
-	got = r6Versions(t, files, "build.gradle", outcomeSource{outcome: RemoteNotFound})
+	got = r6Versions(t, files, "build.gradle", outcomeSource{RemoteNotFound, published})
 	if x := got["g:x"]; x.Version != "2.0" {
 		t.Errorf("with the import not found: g:x has version %q, reason %q; want 2.0", x.Version, x.VersionReason)
 	}
@@ -184,18 +188,18 @@ func TestAGradleVersionBehindAPlatformThatIsNotWholeIsNotDetermined(t *testing.T
 // so one whose answer is not known withholds it wherever it is written.
 func TestAGradleVersionBehindAPlatformThatCouldNotBeObtainedIsNotDetermined(t *testing.T) {
 	files := map[string]string{
-		"build.gradle":   "dependencies {\n  implementation platform('t:first:1')\n  implementation platform('t:second:1')\n  implementation 'g:x'\n  implementation 'g:none'\n}\n",
-		"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
+		"build.gradle": "dependencies {\n  implementation platform('t:first:1')\n  implementation platform('t:second:1')\n  implementation 'g:x'\n  implementation 'g:none'\n}\n",
 	}
 	first := &RemotePom{Group: "t", Artifact: "first", Version: "1", Managed: []RemoteManaged{{Group: "g", Artifact: "x", Version: "1.0"}}, ServedBy: "repo.example"}
+	second := &RemotePom{Group: "t", Artifact: "second", Version: "1", Managed: []RemoteManaged{{Group: "g", Artifact: "x", Version: "2.0"}}, ServedBy: "repo.example"}
 	for name, c := range map[string]struct {
 		src          PomSource
 		version, why string
 		noneWhy      string
 	}{
-		"obtained":         {outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:first:1": first}}, "2.0", "", ""},
-		"lookup failed":    {outcomeSource{outcome: RemoteFailed}, "", model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed},
-		"on no repository": {outcomeSource{outcome: RemoteNotFound}, "2.0", "", model.VersionReasonInheritedNotFound},
+		"obtained":         {outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:first:1": first, "t:second:1": second}}, "2.0", "", ""},
+		"lookup failed":    {outcomeSource{RemoteFailed, map[string]*RemotePom{"t:second:1": second}}, "", model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed},
+		"on no repository": {outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:second:1": second}}, "2.0", "", model.VersionReasonInheritedNotFound},
 	} {
 		got := r6Versions(t, files, "build.gradle", c.src)
 		if x := got["g:x"]; x.Version != c.version || x.VersionReason != c.why {

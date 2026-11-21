@@ -1,0 +1,132 @@
+@@ N01 gh_user_id batch fill from unnest
+UPDATE aveloxis_data.contributors c SET gh_user_id = COALESCE(c.gh_user_id, v.uid) FROM unnest($1::uuid[], $2::bigint[]) AS v(id, uid) WHERE c.cntrb_id = v.id
+@@ N02 gh_user_id fill from identities (coalesce)
+UPDATE aveloxis_data.contributors c SET gh_user_id = COALESCE(c.gh_user_id, ci.platform_user_id) FROM aveloxis_data.contributor_identities ci WHERE ci.cntrb_id = c.cntrb_id AND ci.platform_id = 1 AND c.gh_user_id IS NULL
+@@ N03 gh_user_id guarded bare from identities
+UPDATE aveloxis_data.contributors c SET gh_user_id = ci.platform_user_id FROM aveloxis_data.contributor_identities ci WHERE ci.cntrb_id = c.cntrb_id AND ci.platform_id = 1 AND c.gh_user_id IS NULL
+@@ N04 gh_user_id fill, incoming 0 means none
+UPDATE aveloxis_data.contributors SET gh_user_id = COALESCE(gh_user_id, NULLIF($2::bigint, 0)) WHERE cntrb_id = $1::uuid
+@@ N05 gh_user_id fill treating stored 0 as empty
+UPDATE aveloxis_data.contributors SET gh_user_id = COALESCE(NULLIF(gh_user_id, 0), $2) WHERE cntrb_id = $1::uuid
+@@ N06 gh_user_id guarded bare
+UPDATE aveloxis_data.contributors SET gh_user_id = $2 WHERE cntrb_id = $1::uuid AND gh_user_id IS NULL
+@@ N07 gh_user_id guarded bare null-or-zero
+UPDATE aveloxis_data.contributors SET gh_user_id = $2 WHERE cntrb_id = $1::uuid AND (gh_user_id IS NULL OR gh_user_id = 0)
+@@ N08 gl_id on conflict
+INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gl_id) VALUES ($1::uuid, $2, $3) ON CONFLICT (cntrb_id) DO UPDATE SET gl_id = COALESCE(contributors.gl_id, EXCLUDED.gl_id)
+@@ N09 cntrb_login insert-select unnest on conflict fill
+INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_user_id) SELECT v.id, v.login, v.uid FROM unnest($1::uuid[], $2::text[], $3::bigint[]) AS v(id, login, uid) ON CONFLICT (cntrb_id) DO UPDATE SET cntrb_login = COALESCE(NULLIF(contributors.cntrb_login, ''), EXCLUDED.cntrb_login), gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)
+@@ N10 cntrb_login fill from alias table
+UPDATE aveloxis_data.contributors c SET cntrb_login = COALESCE(NULLIF(c.cntrb_login, ''), a.alias_login) FROM aveloxis_data.contributors_aliases a WHERE a.cntrb_id = c.cntrb_id
+@@ N11 stamp list
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = NOW() WHERE repo_id = ANY($1::bigint[])
+@@ N12 stamp in CTE with RETURNING feeding an insert
+WITH done AS (UPDATE aveloxis_data.repos SET vuln_scan_last_run = NOW() WHERE repo_id = $1 RETURNING repo_id) INSERT INTO aveloxis_ops.scan_log (repo_id, at) SELECT d.repo_id, NOW() FROM done d
+@@ N13 stamp from scan runs table
+UPDATE aveloxis_data.repos r SET vuln_scan_last_run = s.finished_at FROM aveloxis_scan.scan_runs s WHERE s.repo_id = r.repo_id AND s.run_id = $1
+@@ N14 stamp from scalar subselect qualified
+UPDATE aveloxis_data.repos r SET vuln_scan_last_run = (SELECT MAX(v.last_seen_at) FROM aveloxis_data.repo_deps_vulnerabilities v WHERE v.repo_id = r.repo_id) WHERE r.repo_id = $1
+@@ N15 stamp from scalar subselect bare names
+UPDATE aveloxis_data.repos r SET vuln_scan_last_run = (SELECT MAX(last_seen_at) FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = r.repo_id) WHERE r.repo_id = $1
+@@ N16 stamp reset
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = NULL WHERE repo_id = $1
+@@ N17 stamp interval arithmetic
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = NOW() - make_interval(days => $2) WHERE repo_id = $1
+@@ N18 stamp throttled by stored in WHERE
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = NOW() WHERE repo_id = $1 AND (vuln_scan_last_run IS NULL OR vuln_scan_last_run < NOW() - interval '1 hour')
+@@ N20 messages batch upsert select-star unnest
+INSERT INTO aveloxis_data.messages (msg_id, msg_text, msg_text_clean, msg_text_clean_rule) SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::int[]) ON CONFLICT (msg_id) DO UPDATE SET msg_text = EXCLUDED.msg_text, msg_text_clean = EXCLUDED.msg_text_clean, msg_text_clean_rule = EXCLUDED.msg_text_clean_rule
+@@ N21 messages upsert with changed guard
+INSERT INTO aveloxis_data.messages (msg_id, msg_text, msg_text_clean, msg_text_clean_rule) VALUES ($1,$2,$3,$4) ON CONFLICT (msg_id) DO UPDATE SET msg_text = EXCLUDED.msg_text, msg_text_clean = EXCLUDED.msg_text_clean, msg_text_clean_rule = EXCLUDED.msg_text_clean_rule WHERE messages.msg_text IS DISTINCT FROM EXCLUDED.msg_text
+@@ N22 clean rerun batch
+UPDATE aveloxis_data.messages m SET msg_text_clean = v.clean, msg_text_clean_rule = $3 FROM unnest($1::bigint[], $2::text[]) AS v(id, clean) WHERE m.msg_id = v.id AND m.msg_text_clean_rule IS DISTINCT FROM $3
+@@ N23 clean computed in SQL from raw
+UPDATE aveloxis_data.messages SET msg_text_clean = regexp_replace(msg_text, '^>.*$', '', 'gm'), msg_text_clean_rule = $2 WHERE msg_id = $1
+@@ N24 clean from staging table
+UPDATE aveloxis_data.messages m SET msg_text_clean = s.clean, msg_text_clean_rule = s.rule FROM aveloxis_ops.staging_clean s WHERE s.msg_id = m.msg_id
+@@ N25 clean from temp table unqualified
+UPDATE aveloxis_data.messages m SET msg_text_clean = s.clean, msg_text_clean_rule = s.rule FROM tmp_clean s WHERE s.msg_id = m.msg_id
+@@ N26 clean via CTE of VALUES
+WITH v(id, clean) AS (VALUES ($1::bigint, $2::text)) UPDATE aveloxis_data.messages m SET msg_text_clean = v.clean, msg_text_clean_rule = $3 FROM v WHERE m.msg_id = v.id
+@@ N27 rule reset with pick CTE skip locked
+WITH pick AS (SELECT msg_id FROM aveloxis_data.messages WHERE msg_text_clean_rule < $1 ORDER BY msg_id LIMIT 500 FOR UPDATE SKIP LOCKED) UPDATE aveloxis_data.messages m SET msg_text_clean = NULL, msg_text_clean_rule = $1 FROM pick WHERE pick.msg_id = m.msg_id
+@@ N28 batch value joined to pick CTE
+WITH pick AS (SELECT msg_id FROM aveloxis_data.messages WHERE msg_text_clean_rule < $3 ORDER BY msg_id LIMIT 500 FOR UPDATE SKIP LOCKED) UPDATE aveloxis_data.messages m SET msg_text_clean = v.clean, msg_text_clean_rule = $3 FROM pick JOIN unnest($1::bigint[], $2::text[]) AS v(id, clean) ON v.id = pick.msg_id WHERE pick.msg_id = m.msg_id
+@@ N29 msg_updated greatest batch
+UPDATE aveloxis_data.messages m SET msg_updated = GREATEST(m.msg_updated, v.u) FROM unnest($1::bigint[], $2::timestamptz[]) AS v(id, u) WHERE m.msg_id = v.id
+@@ N30 msg_updated greatest on conflict with freshness WHERE
+INSERT INTO aveloxis_data.messages (msg_id, msg_text, msg_updated) VALUES ($1,$2,$3) ON CONFLICT (msg_id) DO UPDATE SET msg_updated = GREATEST(messages.msg_updated, EXCLUDED.msg_updated), msg_text = EXCLUDED.msg_text WHERE EXCLUDED.msg_updated >= messages.msg_updated OR messages.msg_updated IS NULL
+@@ N31 msg_updated bare under newer-than guard
+INSERT INTO aveloxis_data.messages (msg_id, msg_text, msg_updated) VALUES ($1,$2,$3) ON CONFLICT (msg_id) DO UPDATE SET msg_updated = EXCLUDED.msg_updated, msg_text = EXCLUDED.msg_text WHERE EXCLUDED.msg_updated > messages.msg_updated
+@@ N32 updated_at greatest with coalesce-now incoming
+UPDATE aveloxis_data.repos SET updated_at = GREATEST(updated_at, COALESCE($2::timestamptz, NOW())) WHERE repo_id = $1
+@@ N33 repos identity upsert
+INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id, forked_from, updated_at, created_at, platform_repo_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (repo_git) DO UPDATE SET repo_owner = EXCLUDED.repo_owner, repo_name = EXCLUDED.repo_name, forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from), updated_at = GREATEST(repos.updated_at, EXCLUDED.updated_at), created_at = COALESCE(repos.created_at, EXCLUDED.created_at), platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id) RETURNING repo_id
+@@ N34 repos batch upsert from unnest
+INSERT INTO aveloxis_data.repos (repo_git, forked_from, updated_at, platform_repo_id) SELECT v.g, v.f, v.u, v.p FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::text[]) AS v(g, f, u, p) ON CONFLICT (repo_git) DO UPDATE SET forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), repos.forked_from), updated_at = GREATEST(repos.updated_at, EXCLUDED.updated_at), platform_repo_id = COALESCE(NULLIF(repos.platform_repo_id, ''), EXCLUDED.platform_repo_id)
+@@ N35 repos upsert on expression index
+INSERT INTO aveloxis_data.repos AS r (repo_git, platform_id, forked_from) VALUES ($1,$2,$3) ON CONFLICT (LOWER(repo_git)) WHERE platform_id IN (1, 2) DO UPDATE SET forked_from = COALESCE(NULLIF(EXCLUDED.forked_from, ''), r.forked_from)
+@@ N36 created_at fill from repo_info join
+UPDATE aveloxis_data.repos r SET created_at = COALESCE(r.created_at, i.created_at) FROM aveloxis_data.repo_info i WHERE i.repo_id = r.repo_id
+@@ N37 created_at fill to_timestamp
+UPDATE aveloxis_data.repos SET created_at = COALESCE(created_at, to_timestamp($2)) WHERE repo_id = $1
+@@ N38 created_at fill nullif zero time
+UPDATE aveloxis_data.repos SET created_at = COALESCE(created_at, NULLIF($2::timestamptz, '0001-01-01'::timestamptz)) WHERE repo_id = $1
+@@ N39 platform_repo_id fill from forge id changes
+UPDATE aveloxis_data.repos r SET platform_repo_id = COALESCE(NULLIF(r.platform_repo_id, ''), c.new_forge_id) FROM aveloxis_data.repo_forge_id_changes c WHERE c.repo_id = r.repo_id AND c.adopted_at IS NOT NULL
+@@ N40 platform_repo_id fill from number
+UPDATE aveloxis_data.repos SET platform_repo_id = COALESCE(NULLIF(platform_repo_id, ''), $2::bigint::text) WHERE repo_id = $1
+@@ N42 forked_from from another table
+UPDATE aveloxis_data.repos r SET forked_from = COALESCE(NULLIF(i.parent_url, ''), r.forked_from) FROM aveloxis_data.repo_info i WHERE i.repo_id = r.repo_id
+@@ N43 identities upsert
+INSERT INTO aveloxis_data.contributor_identities (cntrb_id, platform_id, platform_user_id, login, node_id, user_type) VALUES ($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id), user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type), login = EXCLUDED.login
+@@ N44 identities upsert aliased
+INSERT INTO aveloxis_data.contributor_identities AS ci (cntrb_id, platform_id, platform_user_id, node_id) VALUES ($1::uuid,$2,$3,$4) ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), ci.node_id)
+@@ N45 identities batch upsert
+INSERT INTO aveloxis_data.contributor_identities (cntrb_id, platform_id, platform_user_id, node_id, user_type) SELECT v.c, 1, v.u, v.n, v.t FROM unnest($1::uuid[], $2::bigint[], $3::text[], $4::text[]) AS v(c, u, n, t) ON CONFLICT (platform_id, platform_user_id) DO UPDATE SET node_id = COALESCE(NULLIF(EXCLUDED.node_id, ''), contributor_identities.node_id), user_type = COALESCE(NULLIF(EXCLUDED.user_type, ''), contributor_identities.user_type)
+@@ N46 first_detected on conflict least
+INSERT INTO aveloxis_data.repo_deps_vulnerabilities (repo_id, vuln_id, first_detected_at) VALUES ($1,$2,COALESCE($3, NOW())) ON CONFLICT (repo_id, vuln_id) DO UPDATE SET first_detected_at = LEAST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at)
+@@ N47 first_detected carried from predecessor row
+UPDATE aveloxis_data.repo_deps_vulnerabilities n SET first_detected_at = LEAST(n.first_detected_at, p.first_detected_at) FROM aveloxis_data.repo_deps_vulnerabilities p WHERE p.vuln_row_id = $1 AND n.vuln_row_id = $2
+@@ N48 entered_exposure class-transition CASE
+INSERT INTO aveloxis_data.repo_deps_vulnerabilities AS v (repo_id, vuln_id, class, entered_exposure_at) VALUES ($1,$2,$3,$4) ON CONFLICT (repo_id, vuln_id) DO UPDATE SET class = EXCLUDED.class, entered_exposure_at = CASE WHEN EXCLUDED.class = 'exposure' AND v.class <> 'exposure' THEN COALESCE(EXCLUDED.entered_exposure_at, NOW()) ELSE v.entered_exposure_at END
+@@ N49 entered_exposure nested CASE
+UPDATE aveloxis_data.repo_deps_vulnerabilities SET entered_exposure_at = CASE WHEN class = 'exposure' THEN CASE WHEN entered_exposure_at IS NULL THEN NOW() ELSE entered_exposure_at END ELSE entered_exposure_at END WHERE repo_id = $1
+@@ N50 package_key batch fill guarded
+UPDATE aveloxis_data.repo_deps_libyear l SET package_key = v.k FROM unnest($1::bigint[], $2::text[]) AS v(id, k) WHERE l.repo_deps_libyear_id = v.id AND l.package_key IS NULL
+@@ N51 package_key batch fill guarded empty
+UPDATE aveloxis_data.repo_deps_libyear l SET package_key = v.k FROM unnest($1::bigint[], $2::text[]) AS v(id, k) WHERE l.repo_deps_libyear_id = v.id AND COALESCE(l.package_key, '') = ''
+@@ N52 package_key from the lockfile table
+UPDATE aveloxis_data.repo_deps_libyear l SET package_key = COALESCE(NULLIF(l.package_key, ''), p.package_key) FROM aveloxis_data.repo_lockfile_packages p WHERE p.repo_id = l.repo_id AND p.name = l.name
+@@ N53 package_key from a schema function
+UPDATE aveloxis_data.repo_deps_libyear SET package_key = COALESCE(package_key, aveloxis_data.package_key_of(ecosystem, name)) WHERE repo_id = $1
+@@ N54 clones batch insert-select
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones, unique_clones, data_source) SELECT $1, v.ts, v.t, v.u, $5 FROM unnest($2::timestamptz[], $3::int[], $4::int[]) AS v(ts, t, u) ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones, unique_clones = EXCLUDED.unique_clones, tool_version = EXCLUDED.tool_version, data_collection_date = NOW()
+@@ N55 clones upsert only when changed
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones, unique_clones) VALUES ($1,$2,$3,$4) ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones, unique_clones = EXCLUDED.unique_clones, data_collection_date = NOW() WHERE (repo_clones.total_clones, repo_clones.unique_clones) IS DISTINCT FROM (EXCLUDED.total_clones, EXCLUDED.unique_clones)
+@@ N56 clones date from EXCLUDED default
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones) VALUES ($1,$2,$3) ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones, data_collection_date = EXCLUDED.data_collection_date
+@@ N57 weeks from jsonb elements
+INSERT INTO aveloxis_data.repo_traffic_weeks (repo_id, traffic_kind, week_start, uniques) SELECT $1, e->>'k', (e->>'w')::date, (e->>'u')::int FROM jsonb_array_elements($2::jsonb) AS e ON CONFLICT (repo_id, traffic_kind, week_start) DO UPDATE SET uniques = EXCLUDED.uniques, data_collection_date = NOW()
+@@ N58 clones move repo id
+UPDATE aveloxis_data.repo_clones SET repo_id = $2 WHERE repo_id = $1
+@@ N59 paths snapshot insert
+INSERT INTO aveloxis_data.repo_traffic_paths (repo_id, snapshot_date, path, title, total_views, unique_views) SELECT $1, $2::date, v.p, v.t, v.tv, v.uv FROM unnest($3::text[], $4::text[], $5::int[], $6::int[]) AS v(p, t, tv, uv)
+@@ N60 views heal from windows table
+UPDATE aveloxis_data.repo_views v SET unique_views = w.uniques, data_collection_date = NOW() FROM aveloxis_data.repo_traffic_windows w WHERE w.repo_id = v.repo_id AND w.window_start = v.view_timestamp::date
+@@ N62 DO-block backfill loop
+DO $$ DECLARE r record; BEGIN FOR r IN SELECT repo_id, MIN(created_at) AS c FROM aveloxis_data.repo_info GROUP BY 1 LOOP UPDATE aveloxis_data.repos SET created_at = COALESCE(created_at, r.c) WHERE repo_id = r.repo_id; END LOOP; END $$
+@@ N63 contributor merge winner takes loser gh id
+UPDATE aveloxis_data.contributors w SET gh_user_id = COALESCE(w.gh_user_id, l.gh_user_id) FROM aveloxis_data.contributors l WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid
+@@ N64 stamp batch at given time
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = $2::timestamptz WHERE repo_id = ANY($1::bigint[])
+@@ N66 clean from VALUES joined to a ref table
+UPDATE aveloxis_data.messages m SET msg_text_clean = v.clean, msg_text_clean_rule = $3 FROM (VALUES ($1::bigint, $2::text)) AS v(id, clean) JOIN aveloxis_data.issue_message_ref ref ON ref.msg_id = v.id WHERE m.msg_id = v.id
+@@ N67 rule from a pattern table scalar
+UPDATE aveloxis_data.messages SET msg_text_clean = $2, msg_text_clean_rule = (SELECT MAX(p.version) FROM aveloxis_ops.pattern_library p) WHERE msg_id = $1
+@@ N68 unique clones sentinel
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones, unique_clones) VALUES ($1,$2,$3,$4) ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones, unique_clones = NULLIF(EXCLUDED.unique_clones, -1), data_collection_date = NOW()
+@@ N69 gh id fill by insert-select from identities
+INSERT INTO aveloxis_data.contributors (cntrb_id, gh_user_id) SELECT ci.cntrb_id, ci.platform_user_id FROM aveloxis_data.contributor_identities ci WHERE ci.platform_id = 1 ON CONFLICT (cntrb_id) DO UPDATE SET gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)
+@@ N70 same, source joins contributors to filter
+INSERT INTO aveloxis_data.contributors (cntrb_id, gh_user_id) SELECT ci.cntrb_id, ci.platform_user_id FROM aveloxis_data.contributor_identities ci JOIN aveloxis_data.contributors c ON c.cntrb_id = ci.cntrb_id WHERE ci.platform_id = 1 AND c.gh_user_id IS NULL ON CONFLICT (cntrb_id) DO UPDATE SET gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)

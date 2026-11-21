@@ -1,0 +1,28 @@
+@@ U01 alias-less derived table in own FROM reading target
+UPDATE aveloxis_data.repos r SET ar = prev FROM (SELECT x.repo_id AS rid, x.ar AS prev FROM aveloxis_data.repos x) WHERE rid = r.repo_id + 1
+@@ U02 alias-less derived in INSERT source, EXCLUDED
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT rid, prev FROM (SELECT $1::int AS rid, x.ar AS prev FROM aveloxis_data.repos x WHERE x.repo_id = $2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ U03 alias-less derived in scalar sub of value
+UPDATE aveloxis_data.repos r SET ar = (SELECT prev FROM (SELECT x.ar AS prev FROM aveloxis_data.repos x WHERE x.repo_id = $1))
+@@ U04 control: aliased
+UPDATE aveloxis_data.repos r SET ar = s.prev FROM (SELECT x.repo_id AS rid, x.ar AS prev FROM aveloxis_data.repos x) s WHERE s.rid = r.repo_id + 1
+@@ U05 alias-less with star
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT * FROM (SELECT $1::int, x.ar FROM aveloxis_data.repos x WHERE x.repo_id = $2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ U06 alias-less derived, other policy fill from other row
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, prev) FROM (SELECT x.repo_id AS rid, x.fe AS prev FROM aveloxis_data.repos x) WHERE rid = r.repo_id + 1
+@@ U07 alias-less in CTE
+WITH c AS (SELECT rid, prev FROM (SELECT x.repo_id AS rid, x.ar AS prev FROM aveloxis_data.repos x)) UPDATE aveloxis_data.repos r SET ar = c.prev FROM c WHERE c.rid = r.repo_id + 1
+@@ U08 alias-less LATERAL sub w/ sibling clean
+UPDATE aveloxis_data.repos r SET ar = prev FROM aveloxis_data.other o, LATERAL (SELECT x.ar AS prev FROM aveloxis_data.repos x WHERE x.repo_id = o.id) WHERE o.id = r.repo_id
+@@ U09 alias-less VALUES
+UPDATE aveloxis_data.repos r SET ar = column2 FROM (VALUES ($1::int, $2::text)) WHERE column1 = r.repo_id
+@@ U10 alias-less in MERGE source
+MERGE INTO aveloxis_data.repos t USING (SELECT x.repo_id AS rid, x.ar AS prev FROM aveloxis_data.repos x) ON rid = t.repo_id + 1 WHEN MATCHED THEN UPDATE SET ar = prev
+@@ U11 alias-less join parenthesized (no alias) reading target
+UPDATE aveloxis_data.repos r SET ar = o.v FROM (aveloxis_data.other o JOIN aveloxis_data.repos x ON x.repo_id = o.id) WHERE o.id = r.repo_id
+@@ U12 alias-less TABLESAMPLE / ONLY
+UPDATE aveloxis_data.repos r SET ar = x.ar FROM ONLY aveloxis_data.repos x WHERE x.repo_id = r.repo_id + 1
+@@ U13 JSON_TABLE no alias reading target
+UPDATE aveloxis_data.repos r SET ar = v FROM JSON_TABLE((SELECT jsonb_agg(x.ar) FROM aveloxis_data.repos x), '$[*]' COLUMNS (v text PATH '$'))
+@@ U14 dedup-style house form, alias-less (real: move loser rows)
+INSERT INTO aveloxis_data.repos (repo_id, ar, fe) SELECT $2, ar, fe FROM (SELECT l.ar, l.fe FROM aveloxis_data.repos l WHERE l.repo_id = $1) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar

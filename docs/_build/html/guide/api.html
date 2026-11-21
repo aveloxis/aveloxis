@@ -350,6 +350,8 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
@@ -751,7 +753,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -1856,6 +1858,45 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-216">
+<h2>Changes for API clients in 0.29.216<a class="headerlink" href="#changes-for-api-clients-in-0-29-216" title="Link to this heading"></a></h2>
+<p><strong><code class="docutils literal notranslate"><span class="pre">coverage.clean_result</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> while <code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread</span></code> is set</strong>, on the
+three answers that carry the coverage object. A repository whose lockfiles went unread
+has not been shown to be free of vulnerabilities: its transitive dependencies were not
+checked, or were checked at versions that may be out of date. Nothing else in the object
+changes: <code class="docutils literal notranslate"><span class="pre">state</span></code>, <code class="docutils literal notranslate"><span class="pre">count_blank</span></code> and every count are as before, so a repository scanned
+with nothing found still reports <code class="docutils literal notranslate"><span class="pre">vulnerabilities:</span> <span class="pre">0</span></code> and <code class="docutils literal notranslate"><span class="pre">state:</span> <span class="pre">scanned</span></code>. A client that
+writes a “no vulnerabilities” sentence from <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> now writes the coverage state
+in its place (for example “Scanned.”), with the caution beside it. A client that decides
+the sentence from <code class="docutils literal notranslate"><span class="pre">state</span></code> alone should also require <code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code> to be <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread.reason</span></code> gains <strong><code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code></strong>: some lockfiles would
+have taken more memory to read than <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> allows, and
+every other lockfile was read at that analysis. The lockfiles left unread keep the rows
+of their last reading. No one date is true of the stored rows in this case, so show no
+date, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> holds: “Some lockfiles could not be read (reading them
+would take more memory than allowed). Their versions and transitive dependencies may be
+out of date.” 0.29.215 reported this case as <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, with the date
+of an earlier reading.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-215">
+<h2>Changes for API clients in 0.29.215<a class="headerlink" href="#changes-for-api-clients-in-0-29-215" title="Link to this heading"></a></h2>
+<p>A dependency’s <strong><code class="docutils literal notranslate"><span class="pre">version_reason</span></code></strong> (the libyear and dependency answers) can take three
+more values. Each means the row has no version because the build file names none that can
+be relied on:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code>: a Maven profile of the build manages the dependency, and which
+profiles a build activates is not known.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code>: Gradle; more than one platform gives the dependency a version and
+they do not agree in a way that can be settled.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>: Gradle; the version is written as an expression too large to be read
+whole.</p></li>
+</ul>
+<p>Show a value you do not know as written. A dependency that had a version before 0.29.215
+can have none after it, with one of these reasons, and the count of findings at a known
+version can fall with it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread.reason</span></code> gains <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code>, and <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
+changed meaning; both are described under 0.29.214 below.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-214">
 <h2>Changes for API clients in 0.29.214<a class="headerlink" href="#changes-for-api-clients-in-0-29-214" title="Link to this heading"></a></h2>
 <p>The <strong><code class="docutils literal notranslate"><span class="pre">coverage</span></code></strong> object (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/vulnerabilities</span></code>,

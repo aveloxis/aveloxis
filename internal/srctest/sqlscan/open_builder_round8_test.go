@@ -62,6 +62,13 @@ func TestAnOpenBuilderCannotPickItsTextByItsInput(t *testing.T) {
 		site          Site
 	}{`func b(n int) string { for i := 0; i < n; i++ { if i > 0 { return ` + bad + ` } }; return "SELECT 1" }`, `len(os.Args)`,
 		Site{Tuples: [][]string{{"1"}}, Open: "the row count"}}
+	// Round 9: the same loop left by break, which a reader of the loop's
+	// body alone took for the fragment-repeating shape.
+	cases["15 a break inside the loop a count bounds"] = struct {
+		builder, args string
+		site          Site
+	}{`func b(n int) string { q := "SELECT 1"; for i := 0; i < n; i++ { if i > 0 { q = ` + bad + `; break } }; return q }`, `len(os.Args)`,
+		Site{Tuples: [][]string{{"1"}}, Open: "the row count"}}
 	accepted := map[string]struct {
 		builder, args string
 		site          Site
@@ -81,8 +88,8 @@ func TestAnOpenBuilderCannotPickItsTextByItsInput(t *testing.T) {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	if len(names) != 14 {
-		t.Fatalf("%d cases, want the reviewer's 12 and the 2 added", len(names))
+	if len(names) != 15 {
+		t.Fatalf("%d cases, want the reviewer's 12 and the 3 added", len(names))
 	}
 	for _, name := range names {
 		c := cases[name]
@@ -106,6 +113,7 @@ func TestAnOpenBuilderCannotPickItsTextByItsInput(t *testing.T) {
 		"10 min() chooses":                                          "picked from a list",
 		"13 a switch, every case given, and a second condition":     "at most one condition",
 		"14 a return inside the loop a count bounds":                "a return inside the loop",
+		"15 a break inside the loop a count bounds":                 "break inside the loop",
 	} {
 		c, ok := cases[name]
 		if !ok {

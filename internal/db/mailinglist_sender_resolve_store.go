@@ -134,17 +134,8 @@ func ensureAliasTx(ctx context.Context, tx pgx.Tx, cntrbID, aliasEmail string) e
 	// statement still takes a fresh READ COMMITTED snapshot, so a rival
 	// creator committed while we blocked is visible to the repair's
 	// dead-owner guard and an ACTIVE owner is never stolen.
-	tag, err := tx.Exec(ctx, contributorAliasInsertSQL,
-		cntrbID, aliasEmail, MailingListToolSource, "Mailing List")
-	if err != nil {
+	if _, err := ensureAliasOn(ctx, tx, cntrbID, aliasEmail, MailingListToolSource, "Mailing List"); err != nil {
 		return fmt.Errorf("ensure alias %q: %w", aliasEmail, err)
-	}
-	if tag.RowsAffected() > 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, contributorAliasRepairSQL,
-		cntrbID, aliasEmail, MailingListToolSource, "Mailing List"); err != nil {
-		return fmt.Errorf("repair alias %q: %w", aliasEmail, err)
 	}
 	return nil
 }

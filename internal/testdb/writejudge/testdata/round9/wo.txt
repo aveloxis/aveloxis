@@ -1,0 +1,26 @@
+@@ V06w
+UPDATE aveloxis_data.repos r SET created_at = COALESCE(r.created_at, s.c) FROM (SELECT repo_id, MIN(created_at) AS c FROM aveloxis_data.repo_info GROUP BY repo_id) s WHERE s.repo_id = r.repo_id AND r.created_at IS NULL
+@@ V46w
+UPDATE aveloxis_data.repo_deps_libyear SET package_key = COALESCE(package_key, lower(name)) WHERE package_key IS NULL AND repo_id = $1
+@@ V10w
+UPDATE aveloxis_data.repos SET updated_at = GREATEST($2, updated_at) WHERE repo_id = $1
+@@ V12w (lower handed in)
+UPDATE aveloxis_data.repos SET forked_from = COALESCE(NULLIF($2, ''), forked_from) WHERE repo_id = $1
+@@ V17w
+UPDATE aveloxis_data.repos r SET vuln_scan_last_run = sub.last_seen FROM (SELECT v.repo_id, MAX(v.last_seen_at) AS last_seen FROM aveloxis_data.repo_deps_vulnerabilities v WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos rr WHERE rr.repo_id = v.repo_id AND rr.repo_archived IS NOT TRUE) GROUP BY v.repo_id) sub WHERE r.repo_id = sub.repo_id
+@@ V24w
+UPDATE aveloxis_data.messages m SET msg_text_clean = j.clean, msg_text_clean_rule = $3 FROM unnest($1::bigint[], $2::text[]) AS j(msg_id, clean) WHERE m.msg_id = j.msg_id
+@@ V30w
+INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login) VALUES ($1,$2) ON CONFLICT (cntrb_id) DO UPDATE SET cntrb_login = COALESCE(NULLIF(contributors.cntrb_login, ''), EXCLUDED.cntrb_login)
+@@ V32w
+UPDATE aveloxis_data.contributor_identities SET node_id = COALESCE(NULLIF($3, ''), node_id) WHERE platform_id = $1 AND platform_user_id = $2
+@@ V40w hand in
+UPDATE aveloxis_data.repo_deps_vulnerabilities SET first_detected_at = LEAST(first_detected_at, $2::timestamptz) WHERE repo_id = $1
+@@ V42w
+UPDATE aveloxis_data.repo_deps_vulnerabilities SET entered_exposure_at = CASE WHEN entered_exposure_at IS NULL THEN NOW() ELSE entered_exposure_at END WHERE repo_id = $1
+@@ V49w
+UPDATE aveloxis_data.repo_deps_libyear SET package_key = $2 WHERE package_key IS NULL AND repo_deps_libyear_id IN (SELECT repo_deps_libyear_id FROM aveloxis_data.repo_deps_libyear WHERE package_key IS NULL AND repo_deps_libyear_id > $1 ORDER BY 1 LIMIT 1000)
+@@ V50w
+UPDATE aveloxis_data.repos r SET platform_repo_id = $2 WHERE r.repo_id = $1 AND COALESCE(r.platform_repo_id, '') = ''
+@@ V06w2 doc way out literally (unqualified MIN(created_at) in the derived)
+UPDATE aveloxis_data.repos r SET created_at = COALESCE(r.created_at, s.c) FROM (SELECT i.repo_id, MIN(i.created_at) AS c FROM aveloxis_data.repo_info i GROUP BY i.repo_id) s WHERE s.repo_id = r.repo_id

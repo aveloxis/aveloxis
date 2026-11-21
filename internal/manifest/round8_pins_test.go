@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // Review round 8, R8-11: changes the suite did not notice.
@@ -40,24 +38,32 @@ func TestTwoLongReferenceKeyedListsOfOnePomEachAnswerForTheirOwn(t *testing.T) {
 	}
 }
 
-// M26. A Gradle platform that two poms of the clone could be is neither
-// chosen nor known to say nothing: behind it, in either mechanism, a
-// version is not determined.
-func TestAGradlePlatformTwoPomsOfTheCloneCouldBeIsNotKnown(t *testing.T) {
+// M26, restated in 0.29.216. No pom of the clone is a Gradle platform, so
+// two of them with a platform's coordinates are not two candidates: the
+// repositories answer, and their "not found" is an answer. (Until then the
+// two made the platform not known, and one alone was taken for it.)
+func TestTwoPomsOfTheCloneWithAPlatformsCoordinatesAreNotCandidates(t *testing.T) {
 	files := map[string]string{
-		"build.gradle":   "dependencies {\n implementation platform('t:dup:1')\n implementation platform('t:second:1')\n implementation 'g:x'\n}\n",
-		"dup1/pom.xml":   r6Bom("dup", "g", "x", "1.0"),
-		"dup2/pom.xml":   r6Bom("dup", "g", "x", "3.0"),
-		"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
+		"build.gradle": "dependencies {\n implementation platform('t:dup:1')\n implementation platform('t:second:1')\n implementation 'g:x'\n}\n",
+		"dup1/pom.xml": r6Bom("dup", "g", "x", "1.0"),
+		"dup2/pom.xml": r6Bom("dup", "g", "x", "3.0"),
 	}
-	for name, src := range map[string]PomSource{"no source": nil, "a source that has no such pom": outcomeSource{outcome: RemoteNotFound}} {
-		if x := r6Versions(t, files, "build.gradle", src)["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedNotFound {
-			t.Errorf("%s: g:x at %q (%s); want no version and inherited_not_found", name, x.Version, x.VersionReason)
+	second := &RemotePom{Group: "t", Artifact: "second", Version: "1", Managed: []RemoteManaged{{Group: "g", Artifact: "x", Version: "2.0"}}}
+	dup := &RemotePom{Group: "t", Artifact: "dup", Version: "1", Managed: []RemoteManaged{{Group: "g", Artifact: "x", Version: "2.5"}}}
+	for name, c := range map[string]struct {
+		has  map[string]*RemotePom
+		want string
+	}{
+		"on no repository": {map[string]*RemotePom{"t:second:1": second}, "2.0"},
+		"published":        {map[string]*RemotePom{"t:second:1": second, "t:dup:1": dup}, "2.5"},
+	} {
+		if x := r6Versions(t, files, "build.gradle", outcomeSource{RemoteNotFound, c.has})["g:x"]; x.Version != c.want {
+			t.Errorf("%s: g:x at %q (%s); want %s", name, x.Version, x.VersionReason, c.want)
 		}
 	}
 	files["build.gradle"] = "dependencyManagement {\n imports {\n  mavenBom 't:second:1'\n  mavenBom 't:dup:1'\n }\n}\ndependencies {\n implementation 'g:x'\n}\n"
-	if x := r6Versions(t, files, "build.gradle", outcomeSource{outcome: RemoteNotFound})["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedNotFound {
-		t.Errorf("a later mavenBom that two poms could be: g:x at %q (%s); want no version and inherited_not_found", x.Version, x.VersionReason)
+	if x := r6Versions(t, files, "build.gradle", outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:second:1": second}})["g:x"]; x.Version != "2.0" {
+		t.Errorf("a later mavenBom two poms of the clone name: g:x at %q (%s); want 2.0", x.Version, x.VersionReason)
 	}
 }
 

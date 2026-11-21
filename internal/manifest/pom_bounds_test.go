@@ -137,7 +137,7 @@ func TestABOMReachedByTwoRoutesStillAnswers(t *testing.T) {
   <dependency><groupId>x</groupId><artifactId>bottom</artifactId></dependency>
   <dependency><groupId>x</groupId><artifactId>absent</artifactId></dependency>
 </dependencies></project>`
-	root := writeTree(t, files)
+	root := writeTree(t, oneBuild(files))
 	got := map[string]string{}
 	for _, d := range readWithin(t, root, "pom.xml", 20*time.Second) {
 		got[d.Name] = d.Version

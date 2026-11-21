@@ -5,12 +5,15 @@ package writejudge
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/db/stmttrace"
+	"github.com/aveloxis/aveloxis/internal/srctest"
 	"github.com/aveloxis/aveloxis/internal/srctest/sqlscan"
 	"github.com/jackc/pgx/v5"
 )
@@ -177,14 +180,6 @@ func TestSitesAreWrittenPerPackageAndReadAsAUnion(t *testing.T) {
 	}
 	if !union.BatchTexts["INSERT INTO t VALUES ($1)"] || !union.BatchDecls["internal/db/b.go\x00PostgresStore.B"] || !union.BatchDecls["internal/db/send.go\x00send"] {
 		t.Errorf("batch texts %v, declarations %v", union.BatchTexts, union.BatchDecls)
-	}
-	// Every production statement's text, by key, whoever sent it and
-	// batched or not; white space is folded before the key is taken.
-	if len(union.Texts) != 4 || !union.Texts[TextKey("INSERT INTO t VALUES ($1)")] || !union.Texts[TextKey("SELECT 2")] || union.Texts[TextKey("SELECT 4")] {
-		t.Errorf("texts %v; want the keys of the four statements sent", union.Texts)
-	}
-	if TextKey("SELECT  1\n") != TextKey("SELECT 1") || TextKey("SELECT 1") == TextKey("SELECT 2") || len(TextKey("SELECT 1")) != 16 {
-		t.Error("TextKey is the folded text's key: 16 hex digits, the same for the same statement")
 	}
 	if _, _, err := ReadSites(filepath.Join(dir, "missing")); err == nil {
 		t.Error("a directory that does not exist was read as an empty union")
@@ -506,19 +501,87 @@ func TestAChildsJudgeSpillsAndAnAncestorsAdopts(t *testing.T) {
 	}
 }
 
-// The key of the tool-version default does not change with the release, and
-// every other difference in a statement still changes its key.
-func TestTextKeyLeavesOutTheReleaseOfTheToolVersionDefault(t *testing.T) {
-	a := TextKey(`ALTER TABLE "aveloxis_data"."repos" ALTER COLUMN tool_version SET DEFAULT '0.29.214'::text`)
-	b := TextKey(`ALTER TABLE "aveloxis_data"."repos"   ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`)
-	if a != b {
-		t.Errorf("two releases of the tool-version default have the keys %s and %s", a, b)
+// reviewedFixtureSenders is the reviewed copy of FixtureSenders: every entry
+// of that list stands here too, with the reason it was accepted in review.
+// One line of FixtureSenders excuses every statement its test hands a
+// production wrapper, so adding one is a decision, and this is where it is
+// written down (review round 9: the list was empty and nothing held it so).
+var reviewedFixtureSenders = map[string]string{}
+
+func TestFixtureSendersAreReviewedAndNameLiveTests(t *testing.T) {
+	for key, reason := range FixtureSenders {
+		if reviewedFixtureSenders[key] == "" {
+			t.Errorf("FixtureSenders has %q (%s) and reviewedFixtureSenders, in this test file, does not: an entry excuses every statement that test hands to production code, so it is added in both places, with the reason it was accepted", strings.ReplaceAll(key, "\x00", " "), reason)
+		}
+		if err := fixtureSenderIsLive(srctest.Root(t), key); err != nil {
+			t.Error(err)
+		}
 	}
-	if c := TextKey(`ALTER TABLE "aveloxis_data"."issues" ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`); c == b {
-		t.Error("another table's default has the same key")
+	for key := range reviewedFixtureSenders {
+		if FixtureSenders[key] == "" {
+			t.Errorf("reviewedFixtureSenders has %q and FixtureSenders does not: delete it here", strings.ReplaceAll(key, "\x00", " "))
+		}
 	}
-	if TextKey(`UPDATE t SET v = '0.29.214'`) == TextKey(`UPDATE t SET v = '0.29.215'`) {
-		t.Error("a release in any other statement must change the key")
+	// The check of an entry, on one that is live and on three that are not
+	// (the list is empty, so the loop above examines nothing by itself).
+	root := srctest.Root(t)
+	const here = "internal/testdb/writejudge/judge_test.go\x00"
+	if err := fixtureSenderIsLive(root, here+"TestFixtureSendersAreReviewedAndNameLiveTests"); err != nil {
+		t.Errorf("this test itself: %v", err)
 	}
-	t.Log("odd-name sample key:", TextKey(`ALTER TABLE "aveloxis_ops"."odd ""name" ALTER COLUMN tool_version SET DEFAULT '0.29.215'::text`))
+	for _, gone := range []string{here + "TestNoSuchTestAnywhere", "internal/testdb/writejudge/no_such_test.go\x00TestX", "internal/testdb/writejudge/judge.go\x00Install", "no separator"} {
+		if fixtureSenderIsLive(root, gone) == nil {
+			t.Errorf("%q was accepted as a live test declaration", gone)
+		}
+	}
+}
+
+// fixtureSenderIsLive: the entry "file\x00declaration" names a test file of
+// the module that declares that function.
+func fixtureSenderIsLive(root, key string) error {
+	file, decl, ok := strings.Cut(key, "\x00")
+	if !ok || !strings.HasSuffix(file, "_test.go") {
+		return fmt.Errorf("the FixtureSenders entry %q is not a test file and a declaration", key)
+	}
+	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+	if err != nil {
+		return fmt.Errorf("the FixtureSenders entry %q names a file that cannot be read: %w", strings.ReplaceAll(key, "\x00", " "), err)
+	}
+	if !regexp.MustCompile(`(?m)^func (\([^)]*\) )?` + regexp.QuoteMeta(decl) + `[\[(]`).Match(src) {
+		return fmt.Errorf("the FixtureSenders entry names %s in %s, which declares no such function: the test was renamed or removed, and the entry excuses nothing that exists", decl, file)
+	}
+	return nil
+}
+
+// Only the files the children wrote are read from their directory.
+func TestAdoptChildrenReadsOnlyTheChildrensFiles(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{"notes.txt": "not a record\nnor this\n", "child-1.txt": "{", "other-1.jsonl": "x\ny\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child-7-1.jsonl"), []byte(`{"sql":"SELECT 1","frames":[{"File":"internal/db/zz.go","Line":3,"Decl":"zz"}]}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := New()
+	if n, err := j.AdoptChildren(dir); err != nil || n != 1 || len(j.Statements()) != 1 {
+		t.Errorf("AdoptChildren = %d, %v, with %d statements; want the one record of the one child's file, the other files not read", n, err, len(j.Statements()))
+	}
+}
+
+// What production made is learned in the order it was SENT, whatever order
+// the statements are held in: a name made first as a materialized view is
+// one, though a later statement would make a table of it.
+func TestWhatProductionMadeIsLearnedInTheOrderSent(t *testing.T) {
+	at := []Frame{{File: "internal/db/zz.go", Line: 1, Decl: "zz"}}
+	table := &Sent{SQL: "CREATE TABLE zz_order.made (a int)", Frames: at, Seq: 2}
+	matview := &Sent{SQL: "CREATE MATERIALIZED VIEW zz_order.made AS SELECT 1 AS a", Frames: at, Seq: 1}
+	for name, sent := range map[string][]*Sent{"held in the order sent": {matview, table}, "held in the other order": {table, matview}} {
+		cat := sqlscan.NewCatalog()
+		learnWhatProductionMade(cat, sent)
+		if got := cat.Kind("zz_order.made"); got != "matview" {
+			t.Errorf("%s: zz_order.made is learned as a %q; want the materialized view it was made as first", name, got)
+		}
+	}
 }

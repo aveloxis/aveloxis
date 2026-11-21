@@ -93,29 +93,29 @@ func honestReactor(n int) (files map[string]string, src *mapPomSource, managed i
 }
 
 // honestGradle is n Gradle projects under a root whose subprojects block
-// applies one platform, a pom of the clone that imports thirty BOMs of the
-// clone; each project declares two dependencies the platform's BOMs manage
+// applies one platform, a published pom that imports thirty published
+// BOMs; each project declares two dependencies the platform's BOMs manage
 // and eight that nothing manages. (Review round 6: under the allowances,
-// 1,486 of 3,000 such build files were refused; before them, none.)
-func honestGradle(n int) (files map[string]string, managed, unmanaged int) {
+// 1,486 of 3,000 such build files were refused; before them, none. Until
+// 0.29.216 the platform and its BOMs were poms of the clone: Gradle takes a
+// platform named by coordinates from its repositories, and the reader no
+// longer takes a pom of the clone for one.)
+func honestGradle(n int) (files map[string]string, src *mapPomSource, managed, unmanaged int) {
 	files = map[string]string{
 		"settings.gradle": "rootProject.name = 'big'\n",
 		"build.gradle":    "subprojects {\n  dependencies {\n    implementation platform('com.acme:platform:1.0')\n  }\n}\n",
 	}
-	var platform strings.Builder
-	platform.WriteString("<project><groupId>com.acme</groupId><artifactId>platform</artifactId><version>1.0</version><packaging>pom</packaging><dependencyManagement><dependencies>")
+	src = &mapPomSource{poms: map[string]*manifest.RemotePom{}, other: manifest.RemoteNotFound}
+	platform := &manifest.RemotePom{Group: "com.acme", Artifact: "platform", Version: "1.0", ServedBy: "repo.example"}
 	for b := 0; b < 30; b++ {
-		fmt.Fprintf(&platform, "<dependency><groupId>com.acme</groupId><artifactId>bom%d</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>", b)
-		var bom strings.Builder
-		fmt.Fprintf(&bom, "<project><groupId>com.acme</groupId><artifactId>bom%d</artifactId><version>1.0</version><packaging>pom</packaging><dependencyManagement><dependencies>", b)
+		platform.Managed = append(platform.Managed, manifest.RemoteManaged{Group: "com.acme", Artifact: fmt.Sprintf("bom%d", b), Version: "1.0", Import: true})
+		bom := &manifest.RemotePom{Group: "com.acme", Artifact: fmt.Sprintf("bom%d", b), Version: "1.0", ServedBy: "repo.example"}
 		for i := 0; i < 50; i++ {
-			fmt.Fprintf(&bom, "<dependency><groupId>org.b%d</groupId><artifactId>a%d</artifactId><version>%d.%d</version></dependency>", b, i, b, i)
+			bom.Managed = append(bom.Managed, manifest.RemoteManaged{Group: fmt.Sprintf("org.b%d", b), Artifact: fmt.Sprintf("a%d", i), Version: fmt.Sprintf("%d.%d", b, i)})
 		}
-		bom.WriteString("</dependencies></dependencyManagement></project>")
-		files[fmt.Sprintf("platform/bom%d/pom.xml", b)] = bom.String()
+		src.poms[fmt.Sprintf("com.acme:bom%d:1.0", b)] = bom
 	}
-	platform.WriteString("</dependencies></dependencyManagement></project>")
-	files["platform/pom.xml"] = platform.String()
+	src.poms["com.acme:platform:1.0"] = platform
 	for p := 0; p < n; p++ {
 		var b strings.Builder
 		b.WriteString("dependencies {\n")
@@ -130,7 +130,7 @@ func honestGradle(n int) (files map[string]string, managed, unmanaged int) {
 		b.WriteString("}\n")
 		files[fmt.Sprintf("p%d/build.gradle", p)] = b.String()
 	}
-	return files, managed, unmanaged
+	return files, src, managed, unmanaged
 }
 
 func TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits(t *testing.T) {
@@ -180,10 +180,10 @@ func TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits(t *testing.T) {
 	}
 	t.Logf("the reactor asked for %d poms", len(src.asked))
 
-	gfiles, gManaged, gUnmanaged := honestGradle(3000)
+	gfiles, gsrc, gManaged, gUnmanaged := honestGradle(3000)
 	dir = writeClone(t, gfiles)
 	began = time.Now()
-	run, err = runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: maxRemotePomCoordinates}, ManifestLimits{}, nil, quiet)
+	run, err = runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: maxRemotePomCoordinates}, ManifestLimits{}, gsrc, quiet)
 	if err != nil {
 		t.Fatalf("the Gradle build: %v", err)
 	}
@@ -240,16 +240,22 @@ const (
 //
 //	pnpm-lock.yaml     read at 13 times its size, stopped at 11; factor 16.
 //	                   Holding the parsed document twice needs about 25.
-//	package-lock.json  read at 2 times its size, stopped at 1; factor 2.75 (see below).
+//	package-lock.json  read at 2 times its size, stopped at 1; factor 2.75.
 //	                   Holding the decoded document twice needs about 3
 //	                   (the text, and the document twice over).
+//
+// Since 0.29.216 the file cannot be read under a limit that small: the
+// reader's own check before a read prices a file at half again the
+// costliest shape of its kind (readCostFactor: 46 for a pnpm-lock.yaml, 14
+// for a package-lock.json) and refuses one the limit does not leave that
+// for. So the file is read under the least limit that check allows, where
+// nothing presses the collector, and what is asserted is weaker: that the
+// heap's samples stayed within TWICE these factors of the file's size (an
+// unpressed heap holds up to twice what is live). A parser that came to
+// hold the document twice is no longer stopped here; it is seen by the
+// measurements behind readCostMeasured when they are next taken.
 var lockfileHeapFactors = map[string]float64{
-	"pnpm-lock.yaml": 16,
-	// 2.75 since 0.29.215: the reader's own check before a read takes a
-	// package-lock.json to cost 2.6 times its length (readCostTenths) and
-	// refuses one that cannot have that, so the limit this test reads it
-	// under must leave that much. Holding the document twice still needs
-	// about 3.
+	"pnpm-lock.yaml":    16,
 	"package-lock.json": 2.75,
 }
 
@@ -288,24 +294,31 @@ func TestAnHonestLockfileIsHeldInAKnownMultipleOfItsSize(t *testing.T) {
 	for kind, factor := range lockfileHeapFactors {
 		body := honestLockfile(kind, sizes[kind])
 		dir := writeClone(t, map[string]string{kind: body})
-		read := func(what string, limits ManifestLimits) {
+		read := func(what string, limits ManifestLimits) (heapPeak int64) {
 			t.Helper()
 			began := time.Now()
 			run, err := runManifestChild(context.Background(), manifestRequest{Passes: manifestPassesAll, Dir: dir, RemotePomLimit: maxRemotePomCoordinates}, limits, nil, quiet)
 			if err != nil {
 				t.Errorf("%s of %.1f MB, %s: %v", kind, float64(len(body))/(1<<20), what, err)
-				return
+				return 0
 			}
 			if lerr := run.passErr(manifestPassLockfiles, nil); lerr != nil || len(heldLockfiles(*run.locks)) != 1 || len(heldLockfiles(*run.locks)[0].Result.Entries) < wantPackages {
 				t.Fatalf("%s, %s: %v, %d lockfiles", kind, what, lerr, len(heldLockfiles(*run.locks)))
 			}
 			t.Logf("%s of %.1f MB, %d packages, %s: heap samples at most %.1f times the file, %d MiB resident at most, %s of CPU; %s by the clock",
 				kind, float64(len(body))/(1<<20), len(heldLockfiles(*run.locks)[0].Result.Entries), what, float64(run.heapPeak)/float64(len(body)), run.maxRSS>>20, run.cpu.Round(time.Millisecond), time.Since(began).Round(time.Millisecond))
+			return run.heapPeak
 		}
 		read("under the default limits", ManifestLimits{})
 		if manifestRaceEnabled {
 			continue // the race detector's own memory is in the heap that is limited
 		}
-		read(fmt.Sprintf("under a memory limit of %.1f times its size", factor), ManifestLimits{HeapBytes: int64(factor * float64(len(body)))})
+		// The least limit the check before a read lets the file by under:
+		// its price, and what the child holds before it reads anything.
+		least := readCost(kind, int64(len(body))) + 16<<20
+		peak := read(fmt.Sprintf("under the least memory limit its price allows (%d MiB)", least>>20), ManifestLimits{HeapBytes: least})
+		if most := int64(2 * factor * float64(len(body))); peak > most {
+			t.Errorf("%s of %.1f MB: the heap reached %d MiB, more than twice %.2f times the file (%d MiB)", kind, float64(len(body))/(1<<20), peak>>20, factor, most>>20)
+		}
 	}
 }

@@ -1,0 +1,428 @@
+p1.txt	F01 current_setting	pass
+p1.txt	F02 currval	pass
+p1.txt	F03 query_to_xml reading target	pass
+p1.txt	F04 unqualified user function	pass
+p1.txt	F05 schema user function	assign
+p1.txt	F06 public schema fn	assign
+p1.txt	F07 pg_catalog fn	pass
+p1.txt	F08 three-part fn name	assign
+p1.txt	F09 row_to_json(excluded)	assign
+p1.txt	F10 (excluded).ar with stored source	assign
+p1.txt	F11 excluded.* in row	assign
+p1.txt	F12 to_jsonb(target alias)	assign
+p1.txt	F13 to_jsonb(target name no alias)	assign
+p1.txt	F14 to_jsonb(repos.*)	assign
+p1.txt	F15 (repos).ar	assign
+p1.txt	F16 (aveloxis_data.repos).ar	assign
+p1.txt	F17 aveloxis_data.repos.*	assign
+p1.txt	F18 scalar subselect with stored condition	pass
+p1.txt	F19 CASE condition reads stored	assign
+p1.txt	F20 CASE operand reads stored	assign
+p1.txt	F21 COALESCE stored non-final	assign
+p1.txt	F22 NULLIF($1, ar)	assign
+p1.txt	F23 GREATEST	assign
+p1.txt	F24 substr(ar,0,0)	assign
+p1.txt	F25 quoted ident "ar"	assign
+p1.txt	F26 case AR	assign
+p1.txt	F27 r.ar alias	assign
+p1.txt	F28 schema.table.col	assign
+p1.txt	F29 excluded as table alias	assign
+p1.txt	F30 other col bare	pass
+p1.txt	F31 other col qualified	pass
+p1.txt	F32 agg over target in scalar subselect	assign
+p1.txt	F33 window fn	pass
+p1.txt	F34 srf in select list	pass
+p1.txt	F35 history table copy	pass
+p1.txt	F36 CTAS copy	assign
+p1.txt	F37 CTAS renamed	assign
+p1.txt	F38 SELECT INTO copy	assign
+p1.txt	F39 LIKE table	pass
+p1.txt	F40 CTAS TABLE	assign
+p1.txt	F41 CTAS from view over target	assign
+p1.txt	F42 CTAS via WITH	assign
+p1.txt	F43 view over copy	assign
+p1.txt	F44 copy of copy	assign
+p1.txt	F45 CTAS no data	assign
+p1.txt	F46 CTAS moved schema	assign
+p1.txt	F47 foreign table	assign
+p1.txt	F48 view other	pass
+p1.txt	F49 view with target in WHERE	assign
+p1.txt	F50 view with scalar subselect on target	assign
+p1.txt	F51 view with function in FROM	pass
+p1.txt	F52 view with function in select list	pass
+p1.txt	F53 view over view over target	assign
+p1.txt	F54 recursive view	assign
+p1.txt	F55 matview other	pass
+p1.txt	F56 matview target	assign
+p1.txt	F57 ONLY other	pass
+p1.txt	F58 tablesample target	assign
+p1.txt	F59 quoted schema-qualified name as one ident	assign
+p1.txt	F60 uppercase quoted target under other name	assign
+p1.txt	F61 db-qualified target	assign
+p1.txt	F62 XMLTABLE / json_table in FROM	assign
+p1.txt	F63 scalar sub in SELECT of scalar sub w/ bare other col	pass
+p1.txt	F64 value reads other col of target via sub-select item alias equal to target alias (shadow)	pass
+p1.txt	F65 sublink ANY	assign
+p1.txt	F66 EXISTS as value	assign
+p1.txt	F67 ARRAY sublink	assign
+p1.txt	F68 nextval	pass
+p1.txt	F69 random	pass
+p1.txt	F70 operator schema-qualified	pass
+p1.txt	F71 cast to user type / domain with function	pass
+p1.txt	F72 collate	pass
+p1.txt	F73 ctid / tableoid system col of own row	pass
+p1.txt	F74 own row xmin	pass
+p1.txt	F75 VALUES sub in FROM w/ stored	pass
+p1.txt	F76 generate_series FROM	assign
+p1.txt	F77 jsonb_to_recordset	assign
+p1.txt	F78 unnest ordinality	pass
+p1.txt	F79 unnest of row type array	pass
+p1.txt	F80 ROWS FROM	pass
+p1.txt	F81 ROWS FROM w/ lateral fn reading sibling	assign
+p1.txt	F82 incoming derived with window	pass
+p2.txt	E01 VALUES with scalar sub on target	assign
+p2.txt	E02 SELECT join target	assign
+p2.txt	E03 moved CTE	assign
+p2.txt	E04 DEFAULT VALUES	pass
+p2.txt	E05 TABLE x	assign
+p2.txt	E06 TABLE other	pass
+p2.txt	E07 SELECT from other only	pass
+p2.txt	E08 SELECT other where exists target	pass
+p2.txt	E09 SELECT target bare col other	assign
+p2.txt	E10 house-style: move loser's rows (same table)	assign
+p2.txt	E11 union arm reads target	assign
+p2.txt	E12 nested union	assign
+p2.txt	E13 source with CTE reading target	assign
+p2.txt	E14 source with inner WITH reading target	assign
+p2.txt	E15 source SELECT with bare * from CTE with col list	assign
+p2.txt	E16 source: unnest clean, insert col from value in ORDER BY (cond)	pass
+p2.txt	E17 excluded other column when source clean	pass
+p2.txt	E18 excluded.ar where INSERT omits ar from column list (EXCLUDED.ar = default, fine)	pass
+p2.txt	E19 values source w/ bare col? (invalid in PG)	pass
+p2.txt	E20 source function schema	assign
+p2.txt	E21 source from LATERAL over other	pass
+p2.txt	E22 source from JSON_TABLE lateral over... only other	assign
+p2.txt	E23 JSON_TABLE correlated in scalar sub of the value	assign
+p2.txt	E24 XMLTABLE correlated	assign
+p2.txt	E25 JSON_TABLE reading target via sub-select inside its context arg	assign
+p2.txt	E26 join alias w/ target inside value sub	assign
+p2.txt	E27 MERGE update with source target	assign
+p2.txt	E28 MERGE update with clean source	pass
+p2.txt	E29 MERGE insert arm from target source	pass
+p2.txt	E30 MERGE source subselect target	assign
+p2.txt	E31 MERGE source unnest	pass
+p2.txt	E32 MERGE t.ar	assign
+p2.txt	E33 update from two items, one target, value from clean one	assign
+p2.txt	E34 update: bare other col with unclean FROM	assign
+p2.txt	E35 update: placeholder only with unclean FROM	pass
+p2.txt	E36 CTE data-modifying as FROM	assign
+p2.txt	E37 CTE recursive self	pass
+p2.txt	E38 CTE recursive via target in recursive arm	assign
+p2.txt	E39 mutual CTEs a->b->a with target hidden in b	assign
+p2.txt	E40 CTE name shadowed by inner WITH inside FROM subselect	assign
+p2.txt	E41 CTE named like a schema-qualified relation? item with schema and CTE of same name	assign
+p2.txt	E42 CTE in a sibling statement of the same text not visible	assign
+p2.txt	E43 CTE: clean, output is bare target col name from other	pass
+p2.txt	E44 CTE with MATERIALIZED and search clause	pass
+p2.txt	E45 CTE: insert returning into update (ins returns target rows)	assign
+p2.txt	E46 subselect in FROM with ORDER BY stored (cond) other out	pass
+p2.txt	E47 DISTINCT ON stored expr	pass
+p2.txt	E48 window def reading target? (windowClause)	pass
+p2.txt	E49 inline OVER reading target in ORDER BY (inside target list)	assign
+p2.txt	E50 agg FILTER / ORDER BY in agg reading r.ar	assign
+p2.txt	E51 unnest($1) alias same as target alias in own FROM	assign
+p2.txt	E52 own FROM item named excluded	assign
+p2.txt	E53 conflict-update: sub-select item named excluded reads target	assign
+p2.txt	E54 conflict-update referencing target name w/ alias	assign
+p2.txt	E55 conflict-update: repos.ar when alias given (PG errors)	assign
+p2.txt	E56 multi-assign row	assign
+p2.txt	E57 multi-assign row direct	assign
+p2.txt	E58 EXECUTE USING variable from stored	assign
+p2.txt	E59 sql function param $1	assign
+p2.txt	E60 sql fn named param	assign
+p2.txt	E61 PREPARE/EXECUTE	pass
+p3.txt	P-fe0-ph	pass
+p3.txt	P-fe0-othercol	pass
+p3.txt	P-fe0-othercolq	pass
+p3.txt	P-fe0-const	pass
+p3.txt	P-fe0-fnstored	assign
+p3.txt	P-fe0-caststored	assign
+p3.txt	P-fe0-subtarget	assign
+p3.txt	P-fe0-subother	pass
+p3.txt	P-fe0-subcond	pass
+p3.txt	P-fe0-fn	pass
+p3.txt	P-fe0-excl	assign
+p3.txt	P-fe0-wholerow	assign
+p3.txt	P-fe0-jsontable	assign
+p3.txt	P-fe1-ph	pass
+p3.txt	P-fe1-othercol	pass
+p3.txt	P-fe1-othercolq	pass
+p3.txt	P-fe1-const	pass
+p3.txt	P-fe1-fnstored	assign
+p3.txt	P-fe1-caststored	assign
+p3.txt	P-fe1-subtarget	assign
+p3.txt	P-fe1-subother	pass
+p3.txt	P-fe1-subcond	pass
+p3.txt	P-fe1-fn	pass
+p3.txt	P-fe1-excl	assign
+p3.txt	P-fe1-wholerow	assign
+p3.txt	P-fe1-jsontable	assign
+p3.txt	P-fe2-ph	pass
+p3.txt	P-fe2-othercol	pass
+p3.txt	P-fe2-othercolq	pass
+p3.txt	P-fe2-const	pass
+p3.txt	P-fe2-fnstored	assign
+p3.txt	P-fe2-caststored	assign
+p3.txt	P-fe2-subtarget	assign
+p3.txt	P-fe2-subother	pass
+p3.txt	P-fe2-subcond	pass
+p3.txt	P-fe2-fn	pass
+p3.txt	P-fe2-excl	assign
+p3.txt	P-fe2-wholerow	assign
+p3.txt	P-fe2-jsontable	assign
+p3.txt	P-pn0-ph	pass
+p3.txt	P-pn0-othercol	assign
+p3.txt	P-pn0-othercolq	assign
+p3.txt	P-pn0-const	assign
+p3.txt	P-pn0-fnstored	assign
+p3.txt	P-pn0-caststored	assign
+p3.txt	P-pn0-subtarget	assign
+p3.txt	P-pn0-subother	assign
+p3.txt	P-pn0-subcond	assign
+p3.txt	P-pn0-fn	assign
+p3.txt	P-pn0-excl	assign
+p3.txt	P-pn0-wholerow	assign
+p3.txt	P-pn0-jsontable	assign
+p3.txt	P-pnn0-ph	pass
+p3.txt	P-pnn0-othercol	assign
+p3.txt	P-pnn0-othercolq	assign
+p3.txt	P-pnn0-const	assign
+p3.txt	P-pnn0-fnstored	assign
+p3.txt	P-pnn0-caststored	assign
+p3.txt	P-pnn0-subtarget	assign
+p3.txt	P-pnn0-subother	assign
+p3.txt	P-pnn0-subcond	assign
+p3.txt	P-pnn0-fn	assign
+p3.txt	P-pnn0-excl	assign
+p3.txt	P-pnn0-wholerow	assign
+p3.txt	P-pnn0-jsontable	assign
+p3.txt	P-g0-ph	pass
+p3.txt	P-g0-othercol	assign
+p3.txt	P-g0-othercolq	assign
+p3.txt	P-g0-const	assign
+p3.txt	P-g0-fnstored	assign
+p3.txt	P-g0-caststored	assign
+p3.txt	P-g0-subtarget	assign
+p3.txt	P-g0-subother	assign
+p3.txt	P-g0-subcond	assign
+p3.txt	P-g0-fn	assign
+p3.txt	P-g0-excl	assign
+p3.txt	P-g0-wholerow	assign
+p3.txt	P-g0-jsontable	assign
+p3.txt	P-g1-ph	pass
+p3.txt	P-g1-othercol	assign
+p3.txt	P-g1-othercolq	assign
+p3.txt	P-g1-const	assign
+p3.txt	P-g1-fnstored	assign
+p3.txt	P-g1-caststored	assign
+p3.txt	P-g1-subtarget	assign
+p3.txt	P-g1-subother	assign
+p3.txt	P-g1-subcond	assign
+p3.txt	P-g1-fn	assign
+p3.txt	P-g1-excl	assign
+p3.txt	P-g1-wholerow	assign
+p3.txt	P-g1-jsontable	assign
+p3.txt	P-e0-ph	pass
+p3.txt	P-e0-othercol	assign
+p3.txt	P-e0-othercolq	assign
+p3.txt	P-e0-const	assign
+p3.txt	P-e0-fnstored	assign
+p3.txt	P-e0-caststored	assign
+p3.txt	P-e0-subtarget	assign
+p3.txt	P-e0-subother	assign
+p3.txt	P-e0-subcond	assign
+p3.txt	P-e0-fn	assign
+p3.txt	P-e0-excl	assign
+p3.txt	P-e0-wholerow	assign
+p3.txt	P-e0-jsontable	assign
+p3.txt	P-k0-ph	pass
+p3.txt	P-k0-othercol	assign
+p3.txt	P-k0-othercolq	assign
+p3.txt	P-k0-const	assign
+p3.txt	P-k0-fnstored	assign
+p3.txt	P-k0-caststored	assign
+p3.txt	P-k0-subtarget	assign
+p3.txt	P-k0-subother	assign
+p3.txt	P-k0-subcond	assign
+p3.txt	P-k0-fn	assign
+p3.txt	P-k0-excl	assign
+p3.txt	P-k0-wholerow	assign
+p3.txt	P-k0-jsontable	assign
+p3.txt	P-k1-ph	pass
+p3.txt	P-k1-othercol	assign
+p3.txt	P-k1-othercolq	assign
+p3.txt	P-k1-const	assign
+p3.txt	P-k1-fnstored	assign
+p3.txt	P-k1-caststored	assign
+p3.txt	P-k1-subtarget	assign
+p3.txt	P-k1-subother	assign
+p3.txt	P-k1-subcond	assign
+p3.txt	P-k1-fn	assign
+p3.txt	P-k1-excl	assign
+p3.txt	P-k1-wholerow	assign
+p3.txt	P-k1-jsontable	assign
+p3.txt	S-fe0-othercolq	assign
+p3.txt	S-fe0-const	assign
+p3.txt	S-fe0-fnstored	assign
+p3.txt	S-fe0-caststored	assign
+p3.txt	S-fe0-subtarget	assign
+p3.txt	S-fe1-othercolq	assign
+p3.txt	S-fe1-const	assign
+p3.txt	S-fe1-fnstored	assign
+p3.txt	S-fe1-caststored	assign
+p3.txt	S-fe1-subtarget	assign
+p3.txt	S-fe2-othercolq	assign
+p3.txt	S-fe2-const	assign
+p3.txt	S-fe2-fnstored	assign
+p3.txt	S-fe2-caststored	assign
+p3.txt	S-fe2-subtarget	assign
+p3.txt	S-pn0-othercolq	assign
+p3.txt	S-pn0-const	assign
+p3.txt	S-pn0-fnstored	assign
+p3.txt	S-pn0-caststored	assign
+p3.txt	S-pn0-subtarget	assign
+p3.txt	S-pnn0-othercolq	assign
+p3.txt	S-pnn0-const	assign
+p3.txt	S-pnn0-fnstored	assign
+p3.txt	S-pnn0-caststored	assign
+p3.txt	S-pnn0-subtarget	assign
+p3.txt	S-g0-othercolq	assign
+p3.txt	S-g0-const	assign
+p3.txt	S-g0-fnstored	assign
+p3.txt	S-g0-caststored	assign
+p3.txt	S-g0-subtarget	assign
+p3.txt	S-g1-othercolq	assign
+p3.txt	S-g1-const	assign
+p3.txt	S-g1-fnstored	assign
+p3.txt	S-g1-caststored	assign
+p3.txt	S-g1-subtarget	assign
+p3.txt	S-e0-othercolq	assign
+p3.txt	S-e0-const	assign
+p3.txt	S-e0-fnstored	assign
+p3.txt	S-e0-caststored	assign
+p3.txt	S-e0-subtarget	assign
+p3.txt	S-k0-othercolq	assign
+p3.txt	S-k0-const	assign
+p3.txt	S-k0-fnstored	assign
+p3.txt	S-k0-caststored	assign
+p3.txt	S-k0-subtarget	assign
+p3.txt	S-k1-othercolq	assign
+p3.txt	S-k1-const	assign
+p3.txt	S-k1-fnstored	assign
+p3.txt	S-k1-caststored	assign
+p3.txt	S-k1-subtarget	assign
+p3.txt	O-fe-swap	assign
+p3.txt	O-fe-3	assign
+p3.txt	O-pnn-swap	assign
+p3.txt	O-pnn-3	assign
+p3.txt	O-pn-swap	assign
+p3.txt	O-g-3	assign
+p3.txt	O-g-least	assign
+p3.txt	O-e-3	assign
+p3.txt	O-e-greatest	assign
+p3.txt	O-e-coalesce	assign
+p3.txt	O-k-noelse	assign
+p3.txt	O-k-clock	assign
+p3.txt	O-k-nowarg	assign
+p3.txt	O-k-bare-now	assign
+p3.txt	O-k-bare-ph	assign
+p3.txt	O-k-cond-sub	pass
+p3.txt	O-k-pgcat-now	assign
+p3.txt	O-k-curts-prec	assign
+p3.txt	O-k-localts	assign
+p3.txt	O-k-curdate	assign
+p3.txt	IO-update	assign
+p3.txt	IO-self	assign
+p3.txt	IO-conflict	assign
+p3.txt	IO-conflict-other	pass
+p3.txt	IO-insert	pass
+p3.txt	IO-merge	assign
+p3.txt	IO-delete	pass
+p3.txt	IO-copy	copy
+p3.txt	G00 WHERE fe IS NULL	pass
+p3.txt	G01 WHERE r.fe IS NULL	pass
+p3.txt	G02 WHERE repo_id = $2 AND fe IS NULL	pass
+p3.txt	G03 WHERE fe IS NULL OR repo_id = $2	assign
+p3.txt	G04 WHERE (fe IS NULL OR fe = '')	pass
+p3.txt	G05 WHERE (fe IS NULL OR fe = '' OR repo_id = 3)	assign
+p3.txt	G06 WHERE NOT (fe IS NOT NULL)	assign
+p3.txt	G07 WHERE fe IS NOT NULL	assign
+p3.txt	G08 WHERE EXISTS (SELECT 1 WHERE fe IS NULL)	assign
+p3.txt	G09 WHERE CASE WHEN fe IS NULL THEN true ELSE true END	assign
+p3.txt	G10 WHERE (fe IS NULL) IS TRUE	assign
+p3.txt	G11 WHERE fe IS NULL AND true	pass
+p3.txt	G12 WHERE fe IS NULL IS NOT FALSE	assign
+p3.txt	G13 WHERE COALESCE(fe, '') = ''	pass
+p3.txt	G14 WHERE COALESCE(fe, 'x') = ''	assign
+p3.txt	G15 WHERE COALESCE(fe, '') = 'x'	assign
+p3.txt	G16 WHERE NULLIF(fe, '') IS NULL	pass
+p3.txt	G17 WHERE NULLIF(fe, 'x') IS NULL	assign
+p3.txt	G18 WHERE fe = ''	assign
+p3.txt	G19 WHERE '' = COALESCE(fe, '')	pass
+p3.txt	G20 WHERE fe IS NOT DISTINCT FROM NULL	assign
+p3.txt	G21 WHERE fe ISNULL	pass
+p3.txt	G22 WHERE (r.fe, 1) IS NULL	assign
+p3.txt	G23 WHERE ROW(fe) IS NULL	assign
+p3.txt	G24 WHERE repos.fe IS NULL	assign
+p3.txt	G25 WHERE aveloxis_data.repos.fe IS NULL	assign
+p3.txt	G26 WHERE fe IS NULL AND (repo_id = 1 OR fe IS NOT NULL)	pass
+p3.txt	G27 WHERE (fe IS NULL OR fe = ' ')	assign
+p3.txt	G28 WHERE (fe IS NULL OR r.pn = '')	assign
+p3.txt	G29 WHERE COALESCE(fe, '') = '' OR TRUE	assign
+p3.txt	G30 WHERE (fe IS NULL) = false	assign
+p3.txt	G31 WHERE fe IS NULL = (repo_id > 0)	assign
+p3.txt	G32 WHERE fe::text IS NULL	assign
+p3.txt	G33 WHERE COALESCE(fe::text, '') = ''	assign
+p3.txt	GF1 guard in FROM join ON	assign
+p3.txt	GF2 guard other alias same col	assign
+p3.txt	GF3 guard bare with FROM item having fe (PG ambiguous)	pass
+p3.txt	GF4 guard CTE	assign
+p3.txt	GC1 conflict where	pass
+p3.txt	GC2 conflict where on excluded	assign
+p3.txt	GC3 conflict arbiter where (index predicate) not the update where	assign
+p3.txt	GC4 conflict bare fe (ambiguous in PG? no: bare = target)	pass
+p3.txt	GC5 conflict excluded source stored	assign
+p3.txt	GM1 merge guard in WHEN	assign
+p3.txt	GM2 merge guard in ON	assign
+p3.txt	CASEfill-1 wrong guard	assign
+p3.txt	CASEfill-2 extra when	assign
+p3.txt	CASEfill-3 inverted	assign
+p3.txt	CASEfill-4 inverted results	assign
+p3.txt	CASEfill-5 length guard	assign
+p4.txt	U01 alias-less derived table in own FROM reading target	assign
+p4.txt	U02 alias-less derived in INSERT source, EXCLUDED	assign
+p4.txt	U03 alias-less derived in scalar sub of value	assign
+p4.txt	U04 control: aliased	assign
+p4.txt	U05 alias-less with star	assign
+p4.txt	U06 alias-less derived, other policy fill from other row	assign
+p4.txt	U07 alias-less in CTE	assign
+p4.txt	U08 alias-less LATERAL sub w/ sibling clean	assign
+p4.txt	U09 alias-less VALUES	pass
+p4.txt	U10 alias-less in MERGE source	assign
+p4.txt	U11 alias-less join parenthesized (no alias) reading target	assign
+p4.txt	U12 alias-less TABLESAMPLE / ONLY	assign
+p4.txt	U13 JSON_TABLE no alias reading target	assign
+p4.txt	U14 dedup-style house form, alias-less (real: move loser rows)	assign
+p5.txt	K01 view over foreign table (M16 flip)	assign
+p5.txt	K02 view over unknown relation	assign
+p5.txt	K03 view over other + view over target	assign
+p5.txt	K04 view whose body uses alias-less derived over target	assign
+p5.txt	K05 CTAS from alias-less derived over target	assign
+p5.txt	K06 deep 1000 nested (M46 flip) -- see deep probe	pass
+p5.txt	K07 write THROUGH alias-less: UPDATE target is fine; DELETE USING alias-less	pass
+p5.txt	K08 alias-less derived containing a data-modifying CTE? (invalid) / INSERT source alias-less with RETURNING feed	assign
+p5.txt	K09 GreatestNonNull with incoming from alias-less (strict operand: should refuse)	assign
+p5.txt	K10 PN from alias-less	assign
+p5.txt	K11 fill guarded bare from alias-less	assign
+p5.txt	K12 generated sibling (catalog knows no columns)	pass
+p5.txt	K13 alias-less incoming batch lateral-with bare (S8-12 class)	pass

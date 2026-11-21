@@ -189,13 +189,26 @@ type LockfileReading struct {
 // them took more memory than allowed" about lockfiles nothing had read.
 const LockfileUnreadNotReached = "lockfiles_not_reached"
 
+// LockfileUnreadTooLarge (0.29.216) is why a lockfile reading is recorded
+// as not completed although it REPLACED the snapshot: one or more lockfiles
+// were left unread because reading them would have taken more memory than
+// the reader had left, and every other lockfile was read. 0.29.215 recorded
+// this as manifest_read_memory_limit, the reason of a reading that was
+// stopped and replaced nothing, and the page then dated today's rows by an
+// older reading. The record's two columns do not tell the two apart in
+// every case (a first reading that leaves one lockfile unread has no
+// lockfiles_read_at, like rows stored before the column existed), and a
+// client is sent only the reason and a date, so the reason says which it
+// is.
+const LockfileUnreadTooLarge = "lockfiles_too_large"
+
 // LockfileUnreadReasons are the values LockfileReading.NotCompleted takes:
 // the four ways the process that reads a clone can end without a result,
-// the clone's root being unreadable, and the reader being stopped before it
-// reached the lockfiles.
+// the clone's root being unreadable, the reader being stopped before it
+// reached the lockfiles, and some lockfiles being too large to read.
 func LockfileUnreadReasons() []string {
 	return []string{InventoryAttemptReadCPULimit, InventoryAttemptReadMemoryLimit, InventoryAttemptReadTimedOut,
-		InventoryAttemptReadFailed, InventoryAttemptRootUnreadable, LockfileUnreadNotReached}
+		InventoryAttemptReadFailed, InventoryAttemptRootUnreadable, LockfileUnreadNotReached, LockfileUnreadTooLarge}
 }
 
 // DependencyCoverage is a repository's stored coverage record.

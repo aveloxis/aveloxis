@@ -44,7 +44,7 @@ func TestUpsertContributorBatchUpdatesCanonical(t *testing.T) {
 	// fields. Pre-v0.19.8 the column was set on INSERT only.
 	if !strings.Contains(body, "cntrb_canonical = COALESCE") {
 		t.Error("UpsertContributorBatch's ON CONFLICT DO UPDATE clause must " +
-			"include `cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical)` " +
+			"include `cntrb_canonical = COALESCE(NULLIF(contributors.cntrb_canonical, ''), EXCLUDED.cntrb_canonical)` " +
 			"so runEnrichment's per-tick re-enrichment of existing thin " +
 			"contributors actually backfills the canonical email instead of " +
 			"silently dropping it. Without this, the v0.19.7 removal of the " +

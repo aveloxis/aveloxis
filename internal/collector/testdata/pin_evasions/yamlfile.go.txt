@@ -1,0 +1,19 @@
+package collector
+
+import (
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+// A decoder of another package handed a file opened without os.Open.
+func PinEvasionYAMLFILE(dir string) int {
+	f, err := os.CreateTemp(filepath.Join(dir, "sub"), "pnpm-lock.yaml")
+	if err != nil {
+		return 0
+	}
+	var v map[string]any
+	_ = yaml.NewDecoder(f).Decode(&v)
+	return len(v)
+}

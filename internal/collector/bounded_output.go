@@ -185,11 +185,19 @@ func readToolOutputWithin(path string, max int64) ([]byte, error) {
 	if info.Size() > max {
 		return nil, fmt.Errorf("%w: %s is %d bytes, more than the %d taken", errOutputPastBound, path, info.Size(), max)
 	}
-	buf := make([]byte, info.Size()+1)
-	n, err := io.ReadFull(f, buf)
+	return readMeasured(f, path, info.Size())
+}
+
+// readMeasured reads what r holds into one buffer of size bytes, the length
+// its file had when it was measured, and refuses a file that has grown past
+// that since (a tool still writing its report): one byte more than the
+// size is asked for, and getting it is the refusal.
+func readMeasured(r io.Reader, path string, size int64) ([]byte, error) {
+	buf := make([]byte, size+1)
+	n, err := io.ReadFull(r, buf)
 	if err == nil {
 		// It grew past the size it had when measured.
-		return nil, fmt.Errorf("%w: %s grew past %d bytes while it was read", errOutputPastBound, path, info.Size())
+		return nil, fmt.Errorf("%w: %s grew past %d bytes while it was read", errOutputPastBound, path, size)
 	}
 	if !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err

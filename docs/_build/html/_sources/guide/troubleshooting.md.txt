@@ -2016,33 +2016,40 @@ explicit `aveloxis migrate` with no ledger surgery needed.
 
 ## A repository's dependency analysis is stopped at a limit (`manifest_read_cpu_limit`, `manifest_read_memory_limit`)
 
-Since 0.29.213 a repository's manifests and lockfiles are read by a child process with a processor-time limit and a memory limit ([how it works](../architecture/analysis.md)). When the reading passes one, the analysis logs it with the repository and the limit's value, and nothing partial is stored.
+Since 0.29.213 a repository's manifests and lockfiles are read by a child process with a processor-time limit and a memory limit ([how it works](../architecture/analysis.md)). When the reading passes one, the analysis logs it with the repository and the limit's value, and what was stored before stays as it was. One case does store part of a reading (0.29.215): a lockfile too large for the memory limit is left unread on its own, and the other lockfiles are read and stored.
 
-**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, either the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"), or, when only the lockfiles could not be read, a caution: "Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date." (or "Lockfiles could not be read (...). Transitive dependencies are not checked." when none has ever been read).
+**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, either the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"), or, when only the lockfiles could not be read, a caution: "Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date." (or "Lockfiles could not be read (...). Transitive dependencies are not checked." when no lockfile row is stored for the repository; or, since 0.29.216, "Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date." when the others were read at that analysis). While a caution is up the page does not say that the repository has no vulnerabilities, although the count is still shown (0.29.216).
 
 **Which repositories.**
 
 ```sql
-SELECT repo_id, last_attempt_result, last_attempt_at, lockfiles_unread_reason, lockfiles_read_at
-  FROM aveloxis_data.repo_dependency_coverage
- WHERE last_attempt_result LIKE 'manifest_read_%'
-    OR lockfiles_unread_reason IS NOT NULL
- ORDER BY last_attempt_at DESC NULLS LAST;
+SELECT c.repo_id, c.last_attempt_result, c.last_attempt_at, c.lockfiles_unread_reason,
+       c.lockfiles_read_at AS last_reading_that_finished,
+       (SELECT MAX(l.data_collection_date) FROM aveloxis_data.repo_lockfiles l
+         WHERE l.repo_id = c.repo_id) AS stored_lockfile_rows_written
+  FROM aveloxis_data.repo_dependency_coverage c
+ WHERE c.last_attempt_result LIKE 'manifest_read_%'
+    OR c.lockfiles_unread_reason IS NOT NULL
+ ORDER BY c.last_attempt_at DESC NULLS LAST;
 ```
+
+`lockfiles_read_at` alone does not say what the page says: it is empty for rows stored before 0.29.214, and it is kept when the lockfiles it dates are later removed. The page's date is `lockfiles_read_at` when lockfile rows are stored and it is set, else the date the stored rows were written, and there is no date when no row is stored. `lockfiles_unread_reason` is one of the four `manifest_read_*` values, `root_unreadable`, `lockfiles_not_reached` (0.29.215: the reader was stopped while it read the manifests, before it began on the lockfiles) or `lockfiles_too_large` (0.29.216: the case of the first item below).
 
 **What to do.**
 
-- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A lockfile is read only when its size times its format's cost fits in `collection.manifest_read_memory_mb` ([the configuration page](../getting-started/configuration.md) lists the costs and the largest file of each format the default reads; `pnpm-lock.yaml` and `pubspec.lock` cost the most, about fourteen and fifteen times their size). A larger one is not read: the log says "lockfiles too large for the memory left to read them in were not read" with the repository, the other lockfiles are read, the previous rows of the unread one are kept, and the caution stays on the page. Raise the setting and restart `serve`.
+- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A lockfile is read only when its size times its format's cost fits in `collection.manifest_read_memory_mb` ([the configuration page](../getting-started/configuration.md) lists the costs and the largest file of each format the default reads; `pnpm-lock.yaml` and `pubspec.lock` cost the most, about fourteen and fifteen times their size). A larger one is not read: the log says "lockfiles too large for the memory left to read them in were not read" with the repository, the other lockfiles are read, the previous rows of the unread one are kept, and the caution stays on the page (reason `lockfiles_too_large` since 0.29.216; 0.29.215 recorded `manifest_read_memory_limit`). Raise the setting and restart `serve`.
 - *A manifest too large for the memory left.* That file alone is not read; the log names it, and it shows as one manifest that could not be read. The rest of the repository is read.
-- *After an upgrade: is the reader working?* At start `serve` logs `manifest reader ok` with the program, its version and build, and the limits. If the log has `manifest reader self-test FAILED` instead, or neither line, manifests are not being read: the line says why.
+- *After an upgrade: is the reader working?* At start `serve` logs `manifest reader ok` with the program, its version and build, and the limits. That line is logged at INFO, so with `"log_level": "warn"` or `"error"` it is not written: at those levels the check is that the log does NOT have `manifest reader self-test FAILED`, which is logged at ERROR and says why and what to do. At `info` or `debug`, a log with neither line means the start did not reach the test. The `ok` line says the reader started and answered at this version; it is not proof that the file on disk was replaced by the upgrade (`aveloxis version` is).
 - *Processor time.* The largest honest builds measured use about a second of the 180, and the largest lockfiles tested about 34 seconds. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
 - *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. On a system other than Linux, the commonest cause is an `aveloxis` file replaced on disk while `serve` was running: the child is started from the file on disk and refuses a request from another version. The log then says once, at ERROR: "the manifest reader is another version of aveloxis — no repository's manifests or lockfiles are read until serve is restarted". Restart `serve`. On Linux the child is started from the running program itself, and replacing the file has no effect until the restart.
 
 The reading is tried again at the repository's next collection. A repository that is stopped every time holds one worker for at most the clock allowance (one minute plus four times the processor limit: 13 minutes at the default, plus the time spent answering its requests for remote poms) once per collection.
 
-## After upgrading to 0.29.214: what changed in the data
+## After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data
 
-Two releases changed what is stored for Maven, Gradle and lockfiles, and how much could not be estimated before a fleet ran them. Both queries are read-only; run them after one full collection cycle.
+These releases changed what is stored for Maven, Gradle and lockfiles, and how much could not be estimated before a fleet ran them. Both queries are read-only; run them after one full collection cycle.
+
+Counts can FALL after 0.29.215, and that is the release working: a Maven or Gradle dependency that had a version before can have none now, with one of three new reasons, and a finding that rested on the withheld version closes. `profile_managed`: a Maven profile of the build manages the dependency, and which profiles a build activates is not known. `platforms_disagree`: Gradle; more than one platform gives it a version and they do not agree in a way that can be settled. `value_not_read`: Gradle; the version is written as an expression too large to be read whole. The first query counts them with the older reasons (Gradle rows are stored under `maven` too).
 
 **Maven and Gradle dependencies with no version, by the reason recorded.** 0.29.213 and 0.29.214 withhold a version when a parent or BOM that would be consulted first is not known: its lookup failed (`inherited_lookup_failed`), its repository is refused (`inherited_repository_refused`), or it was never asked for (`inherited_not_found`: a snapshot, a version range, a coordinate that cannot be resolved). The same reasons were recorded before for a dependency no pom managed at all, so compare the counts with the ones from before the upgrade if you have them.
 
@@ -2055,7 +2062,7 @@ SELECT COALESCE(NULLIF(version_reason, ''), '(no reason)') AS version_reason,
  GROUP BY 1 ORDER BY 2 DESC;
 ```
 
-**Repositories whose lockfiles could not be read at the last analysis,** by reason, and whether lockfile rows are stored for them (the page then says "Lockfiles last read ...") or none is ("Lockfiles could not be read ...").
+**Repositories whose lockfiles could not be read at the last analysis,** by reason, and whether lockfile rows are stored for them (the page then says "Lockfiles last read ...", or "Some lockfiles could not be read ..." for `lockfiles_too_large`) or none is ("Lockfiles could not be read ..."). Since 0.29.216 none of these repositories is described as having no vulnerabilities while its reason is set.
 
 ```sql
 SELECT c.lockfiles_unread_reason,

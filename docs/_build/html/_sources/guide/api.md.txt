@@ -8,6 +8,47 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.216
+
+**`coverage.clean_result` is `false` while `coverage.lockfiles_unread` is set**, on the
+three answers that carry the coverage object. A repository whose lockfiles went unread
+has not been shown to be free of vulnerabilities: its transitive dependencies were not
+checked, or were checked at versions that may be out of date. Nothing else in the object
+changes: `state`, `count_blank` and every count are as before, so a repository scanned
+with nothing found still reports `vulnerabilities: 0` and `state: scanned`. A client that
+writes a "no vulnerabilities" sentence from `clean_result` now writes the coverage state
+in its place (for example "Scanned."), with the caution beside it. A client that decides
+the sentence from `state` alone should also require `lockfiles_unread` to be `null`.
+
+`coverage.lockfiles_unread.reason` gains **`lockfiles_too_large`**: some lockfiles would
+have taken more memory to read than `collection.manifest_read_memory_mb` allows, and
+every other lockfile was read at that analysis. The lockfiles left unread keep the rows
+of their last reading. No one date is true of the stored rows in this case, so show no
+date, whatever `last_read_at` holds: "Some lockfiles could not be read (reading them
+would take more memory than allowed). Their versions and transitive dependencies may be
+out of date." 0.29.215 reported this case as `manifest_read_memory_limit`, with the date
+of an earlier reading.
+
+## Changes for API clients in 0.29.215
+
+A dependency's **`version_reason`** (the libyear and dependency answers) can take three
+more values. Each means the row has no version because the build file names none that can
+be relied on:
+
+- `profile_managed`: a Maven profile of the build manages the dependency, and which
+  profiles a build activates is not known.
+- `platforms_disagree`: Gradle; more than one platform gives the dependency a version and
+  they do not agree in a way that can be settled.
+- `value_not_read`: Gradle; the version is written as an expression too large to be read
+  whole.
+
+Show a value you do not know as written. A dependency that had a version before 0.29.215
+can have none after it, with one of these reasons, and the count of findings at a known
+version can fall with it.
+
+`coverage.lockfiles_unread.reason` gains `lockfiles_not_reached`, and `last_read_at`
+changed meaning; both are described under 0.29.214 below.
+
 ## Changes for API clients in 0.29.214
 
 The **`coverage`** object (`GET /api/v1/repos/{id}/vulnerabilities`,

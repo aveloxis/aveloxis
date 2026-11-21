@@ -58,9 +58,9 @@ var Policies = []sqlscan.Registered{
 	// wrote it `COALESCE(col, $n)`, and the column had no policy: a test
 	// mutant that overwrote an established ID passed every check.
 	{Table: "aveloxis_data.contributors", Column: "gh_user_id", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215)"},
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (the writers send NULL; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
 	{Table: "aveloxis_data.contributors", Column: "gl_id", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215)"},
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (the writers send NULL; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.FillEmptyOnly,
 		Reason: "R2 audit trail — the login as FIRST observed, so an established value never changes. " +
 			"Tightened from PreferNonemptyIncoming on 2026-09-11 (F4): the commit-resolver branch that " +
@@ -69,6 +69,29 @@ var Policies = []sqlscan.Registered{
 			"ON CONFLICT (cntrb_id) race arms in commit_resolver_store.go and contributors.go — now " +
 			"preserve the stored login and fill only an empty one, which also makes them structurally " +
 			"unable to trip the partial unique index (v0.18.29 Fix 3, v0.22.0)"},
+	// The contributor identity columns (operator, 2026-11-21; the contract
+	// is docs/architecture/contributor-resolution.md, R2 to R5 and "Three
+	// tables, three rename behaviors").
+	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Policy: sqlscan.FillEmptyOnly,
+		Reason: "which of a person's addresses the row holds is the first one observed (non-deterministic by design): a later address never replaces it, and is kept as a contributors_aliases row instead (R5; operator 2026-11-21). A merge keeps the winner's and fills an empty one from the loser"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Policy: sqlscan.FillEmptyOnly,
+		Reason: "the canonical address is filled once and kept; a merge keeps the winner's (operator 2026-11-21)"},
+	{Table: "aveloxis_data.contributors", Column: "gh_node_id", Policy: sqlscan.FillEmptyOnly,
+		Reason: "the forge's node ID never changes for a user: filled once from the identity row and kept (R4; operator 2026-11-21)"},
+	{Table: "aveloxis_data.contributors", Column: "gh_login", Policy: sqlscan.AlwaysRefresh,
+		Reason: "the current-display-name mirror: the latest observed login replaces the stored one, and the logins a person has had are kept in contributor_login_history (\"Three tables, three rename behaviors\"; operator 2026-11-21)"},
+	{Table: "aveloxis_data.contributor_identities", Column: "platform_id", Policy: sqlscan.InsertOnly,
+		Reason: "R4: half of the row's unique key"},
+	{Table: "aveloxis_data.contributor_identities", Column: "platform_user_id", Policy: sqlscan.InsertOnly,
+		Reason: "R4: half of the row's unique key"},
+	{Table: "aveloxis_data.contributor_identities", Column: "login", Policy: sqlscan.AlwaysRefresh,
+		Reason: "the identity row is the current state per platform user: a rename overwrites the login in place (documented: \"Three tables, three rename behaviors\")"},
+	{Table: "aveloxis_data.contributor_identities", Column: "email", Policy: sqlscan.PreferNonemptyIncoming,
+		Reason: "the documented statement: email = COALESCE(NULLIF(EXCLUDED.email,''), contributor_identities.email): a non-empty observation replaces, an empty one never clears"},
+	{Table: "aveloxis_data.contributors_aliases", Column: "canonical_email", Policy: sqlscan.InsertOnly,
+		Reason: "R5: written with the alias row"},
+	{Table: "aveloxis_data.contributors_aliases", Column: "alias_email", Policy: sqlscan.InsertOnly,
+		Reason: "R5: the row's unique key"},
 	{Table: "aveloxis_data.contributor_identities", Column: "node_id", Policy: sqlscan.PreferNonemptyIncoming,
 		Reason: "pre-v0.27.103 GraphQL-rail rows carry empty node_id; a non-empty observation heals them, empty never clobbers (v0.27.103)"},
 	{Table: "aveloxis_data.contributor_identities", Column: "user_type", Policy: sqlscan.PreferNonemptyIncoming,
@@ -190,6 +213,160 @@ var Exceptions = append(append([]sqlscan.Exception{
 	{Table: "aveloxis_data.contributor_identities", Column: "user_type", Kind: sqlscan.KindAssign, File: "internal/db/contributors.go", Decl: "ContributorResolver.Resolve",
 		Fragment: "COALESCE(NULLIF(user_type, ''), $4)", Statement: identityHealStatement,
 		Reason: "same in-place-heal rationale as node_id (v0.27.112)"},
+	// The contributor identity columns registered on 2026-11-21: the
+	// statements that are deliberately another shape than the column's
+	// policy. A merge fills from the LOSER's row (three statements, two
+	// columns each); three writers of gh_login do not refresh it; two fills
+	// of cntrb_canonical are guarded in a form that is not read; the alias
+	// repair rewrites canonical_email with the alias it re-points.
+	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Kind: sqlscan.KindAssign, File: "internal/db/cntrb_id_merge.go", Decl: "mergeOnePair",
+		Fragment: `COALESCE(NULLIF(w.cntrb_email, ''), l.cntrb_email)`,
+		Statement: `UPDATE aveloxis_data.contributors w
+		SET cntrb_email = COALESCE(NULLIF(w.cntrb_email, ''), l.cntrb_email),
+		    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+		    cntrb_company = COALESCE(NULLIF(w.cntrb_company, ''), l.cntrb_company),
+		    cntrb_location = COALESCE(NULLIF(w.cntrb_location, ''), l.cntrb_location),
+		    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name),
+		    data_collection_date = NOW()
+		FROM aveloxis_data.contributors l
+		WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/cntrb_id_merge.go", Decl: "mergeOnePair",
+		Fragment: `COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical)`,
+		Statement: `UPDATE aveloxis_data.contributors w
+		SET cntrb_email = COALESCE(NULLIF(w.cntrb_email, ''), l.cntrb_email),
+		    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+		    cntrb_company = COALESCE(NULLIF(w.cntrb_company, ''), l.cntrb_company),
+		    cntrb_location = COALESCE(NULLIF(w.cntrb_location, ''), l.cntrb_location),
+		    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name),
+		    data_collection_date = NOW()
+		FROM aveloxis_data.contributors l
+		WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "gh_login", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "PostgresStore.UpsertContributorFull",
+		Fragment: `COALESCE(NULLIF(EXCLUDED.gh_login,''), contributors.gh_login)`,
+		Statement: `INSERT INTO aveloxis_data.contributors
+					(cntrb_id, cntrb_login, gh_login, gh_user_id, cntrb_canonical,
+					 tool_source, data_source, data_collection_date)
+				VALUES ($1::uuid, $2, $2, $3, $4,
+					'aveloxis-commit-resolver', 'GitHub API', NOW())
+				ON CONFLICT (cntrb_id) DO UPDATE SET
+					gh_login = COALESCE(NULLIF(EXCLUDED.gh_login,''), contributors.gh_login),
+					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
+					gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)`,
+		Reason: "the commit resolver's insert, in the arm that lost a race to the same deterministic cntrb_id: the login it resolved replaces the stored one, and an empty one never clears the mirror (the latest observed login wins; an empty value is no observation)"},
+	{Table: "aveloxis_data.contributors_aliases", Column: "canonical_email", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "ensureAliasOn",
+		Fragment: `COALESCE(NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''), $2)`,
+		Statement: `UPDATE aveloxis_data.contributors_aliases a
+		SET cntrb_id = $1::uuid,
+		    canonical_email = COALESCE(
+		        NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''),
+		        $2),
+		    tool_source = $3,
+		    data_source = $4,
+		    data_collection_date = NOW()
+		FROM aveloxis_data.contributors dead
+		WHERE a.alias_email = $2
+		  AND dead.cntrb_id = a.cntrb_id
+		  AND COALESCE(dead.cntrb_deleted, 0) <> 0`,
+		Reason: "the alias repair: an alias whose owner is soft-deleted (a merge's loser; the WHERE, pinned here) is given to the active contributor with that contributor's canonical address. An active owner's alias is never touched. One declaration sends it for the pool and the transaction callers since 0.29.216 (EnsureContributorAlias, ensureAliasTx, keepObservedAddress)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "PostgresStore.SetContributorCanonical",
+		Fragment: `$2`,
+		Statement: `UPDATE aveloxis_data.contributors
+		SET cntrb_canonical = $2
+		WHERE cntrb_id = $1::uuid
+		  AND (cntrb_canonical IS NULL OR length(cntrb_canonical) < 2)`,
+		Reason: "a fill: the WHERE (pinned here) limits it to a stored value that is NULL or shorter than two characters, which no address is; the guard is not one of the forms read"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Kind: sqlscan.KindAssign, File: "internal/db/contributor_search_resolve.go", Decl: "PostgresStore.LinkContributorToGitHubUser",
+		Fragment: `COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email)`,
+		Statement: `UPDATE aveloxis_data.contributors AS w
+				SET cntrb_email     = COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email),
+				    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+				    cntrb_company   = COALESCE(NULLIF(w.cntrb_company, ''),   l.cntrb_company),
+				    cntrb_location  = COALESCE(NULLIF(w.cntrb_location, ''),  l.cntrb_location),
+				    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name)
+				FROM aveloxis_data.contributors AS l
+				WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/contributor_search_resolve.go", Decl: "PostgresStore.LinkContributorToGitHubUser",
+		Fragment: `COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical)`,
+		Statement: `UPDATE aveloxis_data.contributors AS w
+				SET cntrb_email     = COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email),
+				    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+				    cntrb_company   = COALESCE(NULLIF(w.cntrb_company, ''),   l.cntrb_company),
+				    cntrb_location  = COALESCE(NULLIF(w.cntrb_location, ''),  l.cntrb_location),
+				    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name)
+				FROM aveloxis_data.contributors AS l
+				WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "gh_login", Kind: sqlscan.KindAssign, File: "internal/db/contributor_search_resolve.go", Decl: "PostgresStore.LinkContributorToGitHubUser",
+		Fragment: `COALESCE(NULLIF(gh_login, ''), $3)`,
+		Statement: `UPDATE aveloxis_data.contributors
+			SET gh_user_id = COALESCE(gh_user_id, $2),
+			    gh_login = COALESCE(NULLIF(gh_login, ''), $3),
+			    cntrb_last_search_attempted_at = NOW(),
+			    data_collection_date = NOW()
+			WHERE cntrb_id = $1::uuid`,
+		Reason: "R11: search-resolve is a lower-confidence source and never modifies identity; it fills an empty gh_login and leaves an established one (operator 2026-11-21: deliberate, not to be changed)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Kind: sqlscan.KindAssign, File: "internal/db/contributor_search_resolve.go", Decl: "PostgresStore.RenameContributorGhLogin",
+		Fragment: `COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email)`,
+		Statement: `UPDATE aveloxis_data.contributors AS w
+				SET cntrb_email     = COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email),
+				    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+				    cntrb_company   = COALESCE(NULLIF(w.cntrb_company, ''),   l.cntrb_company),
+				    cntrb_location  = COALESCE(NULLIF(w.cntrb_location, ''),  l.cntrb_location),
+				    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name)
+				FROM aveloxis_data.contributors AS l
+				WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/contributor_search_resolve.go", Decl: "PostgresStore.RenameContributorGhLogin",
+		Fragment: `COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical)`,
+		Statement: `UPDATE aveloxis_data.contributors AS w
+				SET cntrb_email     = COALESCE(NULLIF(w.cntrb_email, ''),     l.cntrb_email),
+				    cntrb_canonical = COALESCE(NULLIF(w.cntrb_canonical, ''), l.cntrb_canonical),
+				    cntrb_company   = COALESCE(NULLIF(w.cntrb_company, ''),   l.cntrb_company),
+				    cntrb_location  = COALESCE(NULLIF(w.cntrb_location, ''),  l.cntrb_location),
+				    cntrb_full_name = COALESCE(NULLIF(w.cntrb_full_name, ''), l.cntrb_full_name)
+				FROM aveloxis_data.contributors AS l
+				WHERE w.cntrb_id = $1::uuid AND l.cntrb_id = $2::uuid`,
+		Reason: "a merge of two rows of one person: the winner's value is kept and only an empty one is filled from the loser's (winner first), in the transaction that re-points the loser's aliases to the winner (operator 2026-11-21: merge statements are fill-only; another row of the table is not an incoming value, so the statement is pinned here)"},
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/migrate.go", Decl: "migrateStage9DataQuality",
+		Fragment: `sub.alias_email`,
+		Statement: `UPDATE aveloxis_data.contributors c
+		    SET cntrb_canonical = sub.alias_email
+		   FROM (
+		       SELECT cntrb_id, MIN(alias_email) AS alias_email
+		         FROM aveloxis_data.contributors_aliases
+		        WHERE COALESCE(alias_email, '') != ''
+		        GROUP BY cntrb_id
+		   ) sub
+		  WHERE c.cntrb_id = sub.cntrb_id
+		    AND COALESCE(c.cntrb_canonical, '') = ''
+		    AND COALESCE(c.cntrb_deleted, 0) = 0`,
+		Reason: "the v0.25.6 ledgered one-shot backfill: fills an EMPTY canonical (the WHERE, pinned here) from the contributor's own alias rows"},
+	{Table: "aveloxis_data.contributors", Column: "gh_login", Kind: sqlscan.KindAssign, File: "internal/db/postgres.go", Decl: "backfillDenormalizedIdentity",
+		Fragment: `COALESCE(NULLIF(gh_login,''), $3)`,
+		Statement: `UPDATE aveloxis_data.contributors SET
+				gh_user_id = COALESCE(gh_user_id, $2),
+				gh_login = COALESCE(NULLIF(gh_login,''), $3),
+				gh_node_id = COALESCE(NULLIF(gh_node_id,''), $4),
+				gh_avatar_url = COALESCE(NULLIF(gh_avatar_url,''), $5),
+				gh_url = COALESCE(NULLIF(gh_url,''), $6),
+				gh_html_url = COALESCE(NULLIF(gh_html_url,''), $6),
+				gh_type = COALESCE(NULLIF(gh_type,''), $7),
+				gh_site_admin = COALESCE(NULLIF(gh_site_admin,''), $8),
+				gh_gravatar_id = COALESCE(NULLIF(gh_gravatar_id,''), $9),
+				gh_followers_url = COALESCE(NULLIF(gh_followers_url,''), $10),
+				gh_following_url = COALESCE(NULLIF(gh_following_url,''), $11),
+				gh_gists_url = COALESCE(NULLIF(gh_gists_url,''), $12),
+				gh_starred_url = COALESCE(NULLIF(gh_starred_url,''), $13),
+				gh_subscriptions_url = COALESCE(NULLIF(gh_subscriptions_url,''), $14),
+				gh_organizations_url = COALESCE(NULLIF(gh_organizations_url,''), $15),
+				gh_repos_url = COALESCE(NULLIF(gh_repos_url,''), $16),
+				gh_events_url = COALESCE(NULLIF(gh_events_url,''), $17),
+				gh_received_events_url = COALESCE(NULLIF(gh_received_events_url,''), $18)
+			WHERE cntrb_id = $1::uuid`,
+		Reason: "the mirror of an identity row onto the contributor's row fills an empty login only: in the batch upsert a rename reaches gh_login by renameRecoveryUpdateSQL, with its history row, and this statement must not undo it with the login of an older identity"},
 	// Operator decision, 2026-11-19 (option 1 of three): the pre-1970 repair
 	// (cleanupBadTimestamps, a ledgered migrate step) clears a stored
 	// created_at / updated_at, which each column's policy forbids. The

@@ -1146,37 +1146,31 @@ func TestTheConfiguredLimitsStopTheRealChild(t *testing.T) {
 		t.Logf("stopped after %s", took)
 	})
 	t.Run("memory", func(t *testing.T) {
-		// A manifest whose declarations are as short as the format allows:
-		// what the reader builds of each is many times its text, so the
-		// check before a read (a manifest is taken to cost three times its
-		// length) lets it by, and reading it passes the limit. (0.29.215: a
-		// manifest of ordinary lines this size is refused before it is
-		// read, as one failed file.)
-		// (3 MiB against 16 MiB: the smallest pair that shows it. The
-		// sizes are not the point, and the manifest is then read whole.)
-		var dense strings.Builder
-		declared := 0
-		for ; dense.Len() < 3<<20; declared++ {
-			fmt.Fprintf(&dense, "p%d==1\n", declared)
-		}
-		dir := writeClone(t, map[string]string{"requirements.txt": dense.String()})
-		limits := limitsFromConfig(t, `"manifest_read_memory_mb": 16`)
-		if limits.HeapBytes != 16<<20 {
+		// Text its reader rejects, and holds many times over before it
+		// does (lockfileThatOutgrowsItsCost): the check before a read lets
+		// it by, and reading it passes the limit. (Until 0.29.216 this was
+		// a requirements.txt of short lines; a file its reader accepts is
+		// now priced at what such lines do cost and half again, and one
+		// this size is refused before it is read, as one failed file.)
+		dir := writeClone(t, map[string]string{outgrowingLockfile: lockfileThatOutgrowsItsCost(outgrowingLockfileBytes)})
+		limits := limitsFromConfig(t, outgrownMemorySetting)
+		if limits.HeapBytes != 128<<20 {
 			t.Fatalf("the configured limit is %d", limits.HeapBytes)
 		}
-		run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: 5}, limits, nil, quiet)
+		run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassLockfiles}, Dir: dir, RemotePomLimit: 5}, limits, nil, quiet)
 		var child *errManifestChild
 		if run.anyFinished() || !errors.As(err, &child) || child.Attempt != model.InventoryAttemptReadMemoryLimit {
-			t.Fatalf("a manifest of %d declarations under a limit of 16 MiB: result %v, error %v; want it stopped at the memory limit", declared, run.anyFinished(), err)
+			t.Fatalf("a lockfile that outgrows its cost under a limit of 128 MiB: result %v, error %v; want it stopped at the memory limit", run.anyFinished(), err)
 		}
-		if !strings.Contains(err.Error(), "collection.manifest_read_memory_mb allows (16 MiB)") {
+		if !strings.Contains(err.Error(), "collection.manifest_read_memory_mb allows (128 MiB)") {
 			t.Errorf("the error does not give the setting and its effective value: %v", err)
 		}
-		// With room, the same clone is read.
+		// With room, the reader finishes: the file is one lockfile that
+		// failed to parse.
 		roomy := limitsFromConfig(t, `"manifest_read_memory_mb": 2048`)
-		run, err = runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: 5}, roomy, nil, quiet)
-		if err != nil || len(run.decl.Deps) != declared {
-			t.Fatalf("the same clone under 2 GiB: %v; %d of its %d declarations read", err, len(run.decl.Deps), declared)
+		run, err = runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassLockfiles}, Dir: dir, RemotePomLimit: 5}, roomy, nil, quiet)
+		if err != nil || run.locks == nil || run.locks.parsedCount() != 0 || len(run.locks.Failed) != 1 || run.locks.Failed[0].Reason != model.ManifestFailedParse {
+			t.Fatalf("the same clone under 2 GiB: %v; want the reader finished and the file one that failed to parse", err)
 		}
 	})
 	// There is no child without limits, and no configuration without them.

@@ -120,8 +120,6 @@ var round7StillPass = map[string]string{
 	"D38 refresh matview":                                                              "a materialized view is no registered table",
 	"D39 create table as with same name as registered in other schema then set schema": "a table of another schema; a write of it is unknown-target",
 	"D40 alter extension / create extension":                                           "NOT MODELLED: what an extension's script does is not in the text",
-	"R09 hash-operator lookalike: x # variable_conflict use_column as expression":      "a # in an expression is no directive (the scanner's reading); PostgreSQL then refuses the ambiguous fe",
-	"R14 sql fn param named fe: guard is column (ok accept)":                           "an SQL function's parameter yields to the column: the guard is the column's",
 	"R17 conflict update pnn stored qualified by schema.table":                         "the registered shape, stored value named schema.table.col",
 	"R24 returning (no effect)":                                                        "RETURNING reads; it writes nothing",
 	"R30 keepcarry with stored cast / other col":                                       "the stored value or a cast placeholder: both allowed results",
@@ -137,17 +135,19 @@ var round7StillPass = map[string]string{
 	"R47 conflict update where guard bare":                                             "PostgreSQL refuses the bare name there as ambiguous; where it runs, it is the target's",
 }
 
-// round7Refused are the correct statements of fp.txt that are refused, each
-// with why and the way out (round 7 accepted eight more: the batch forms
-// from unnest of placeholders, plain GREATEST, TRIM of an incoming value,
+// round7Refused are the correct statements of fp.txt that are refused
+// (round 7 accepted eight more: the batch forms from unnest of
+// placeholders, plain GREATEST, TRIM of an incoming value,
 // COALESCE(incoming, NOW()) and CURRENT_TIMESTAMP, the commuted guard, the
-// fill as CASE).
-var round7Refused = map[string]string{
-	"F04 cast on the whole": "a cast of the whole value: to the column's own type it changes nothing, but the run-time judge's catalog (the live database's relations) holds no column types, so the static check may not accept what the judge would refuse. Way out: cast the incoming operand, COALESCE(NULLIF(fe, ''), $7::text)",
-	"F09 guard length":      "the guard set is closed: length(col) = 0 is not true of a NULL, and though the OR with IS NULL makes this one right, it is not one of the four forms. Way out: (fe IS NULL OR fe = '')",
-	"F37 ar subselect whose other table has a column of the same name (bare)": "a bare name in a sub-select is taken for the stored value (which relation's column it is needs the columns of every table). Way out: qualify it, MAX(other.ar)",
-	"F54 ar subselect that locks/reads target for another column":             "the value reads the target table again in a sub-select: an item that reads the target is not clean, and nothing of it is taken (round 8). Way out: an Exception",
-	"F49 temp staging across statements in ONE text":                          "round 8: the value reads a session table by a name with no schema, and what a session table holds (the text may have filled it from the target) is not followed. Way out: the batch itself as the FROM item, FROM unnest($1::bigint[], $2::text[]) AS s(id, v); or pg_temp.stage with the table declared in writejudge.TempTables",
+// fill as CASE). Why each is refused and what to write instead is what the
+// refusal itself says (WaysOut, round 9: this list held that text, where
+// nobody refused would read it); the test holds each refusal to it.
+var round7Refused = map[string]bool{
+	"F04 cast on the whole": true,
+	"F09 guard length":      true,
+	"F37 ar subselect whose other table has a column of the same name (bare)": true,
+	"F54 ar subselect that locks/reads target for another column":             true,
+	"F49 temp staging across statements in ONE text":                          true,
 }
 
 func TestTheRound7ProbesAreHeldAgainst(t *testing.T) {
@@ -176,8 +176,13 @@ func TestTheRound7ProbesAreHeldAgainst(t *testing.T) {
 		n++
 		if v := round7Verdict(c); v != "pass" {
 			refused[c.head] = true
-			if round7Refused[c.head] == "" {
+			if !round7Refused[c.head] {
 				t.Errorf("fp.txt %q, a correct statement, is refused (%s):\n  %s", c.head, v, c.stmts[0].SQL)
+			}
+			for _, viol := range CheckIn(r7catalog(t, c.stmts), c.stmts, round6Registry, nil).Violations {
+				if out := wayOutOf(round6Registry, viol); viol.Kind == KindAssign && (out == "" || !strings.HasSuffix(viol.Detail, " — "+out)) {
+					t.Errorf("fp.txt %q is refused and the refusal does not end with the policy's ways out:\n  %s", c.head, viol.Detail)
+				}
 			}
 		}
 	}
@@ -228,4 +233,15 @@ func TestTheRound7VerdictsAreTheOnesKept(t *testing.T) {
 		}
 	}
 	t.Error("the probes' verdicts differ from testdata/round7/verdicts.tsv; if the change is meant, ROUND7_VERDICTS=write rewrites it")
+}
+
+// wayOutOf is the WaysOut entry of the policy the violation's column is
+// registered with.
+func wayOutOf(registry []Registered, v Violation) string {
+	for _, reg := range registry {
+		if reg.Table == v.Table && reg.Column == v.Column {
+			return WaysOut[reg.Policy]
+		}
+	}
+	return ""
 }

@@ -293,14 +293,14 @@ q1.txt	Q03 variable_conflict inside a comment after the real one	pass
 q1.txt	Q04 variable_conflict in a string	pass
 q1.txt	Q05 nested block declares the variable (inner DECLARE)	assign
 q1.txt	Q06 EXECUTE static inherits no vars: ar is column -> AR violation	assign
-q1.txt	Q07 EXECUTE with USING	pass
+q1.txt	Q07 EXECUTE with USING	assign
 q1.txt	Q08 EXECUTE computed	unparsed
 q1.txt	Q09 EXECUTE format	unparsed
 q1.txt	Q10 loop record holds stored (documented not followed)	assign
 q1.txt	Q11 AR with variable named ar, use_variable	assign
 q1.txt	Q12 sql function param named ar: yields to column -> stored	assign
 q1.txt	Q13 sql function param qualified f.ar	assign
-q1.txt	Q14 sql function $1	pass
+q1.txt	Q14 sql function $1	assign
 q1.txt	Q15 plpgsql function param qualified by function name where FROM item has same name	assign
 q1.txt	Q16 block label qualifies variable; label same as FROM alias?	assign
 q1.txt	Q17 block label qualifies variable (no FROM)	assign

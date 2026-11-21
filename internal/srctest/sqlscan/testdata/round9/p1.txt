@@ -1,0 +1,164 @@
+@@ F01 current_setting
+UPDATE aveloxis_data.repos SET ar = current_setting('x.y')
+@@ F02 currval
+UPDATE aveloxis_data.repos SET ar = currval('s')::text
+@@ F03 query_to_xml reading target
+UPDATE aveloxis_data.repos SET ar = query_to_xml('select ar from aveloxis_data.repos', true, false, '')::text
+@@ F04 unqualified user function
+UPDATE aveloxis_data.repos SET ar = clean_ar(repo_id)
+@@ F05 schema user function
+UPDATE aveloxis_data.repos SET ar = aveloxis_data.clean_ar(repo_id)
+@@ F06 public schema fn
+UPDATE aveloxis_data.repos SET ar = public.dblink('x')
+@@ F07 pg_catalog fn
+UPDATE aveloxis_data.repos SET ar = pg_catalog.lower($1)
+@@ F08 three-part fn name
+UPDATE aveloxis_data.repos SET ar = db.pg_catalog.lower($1)
+@@ F09 row_to_json(excluded)
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT r.repo_id, r.ar FROM aveloxis_data.repos r ON CONFLICT (repo_id) DO UPDATE SET ar = row_to_json(excluded)->>'ar'
+@@ F10 (excluded).ar with stored source
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT r.repo_id+1, r.ar FROM aveloxis_data.repos r ON CONFLICT (repo_id) DO UPDATE SET ar = (excluded).ar
+@@ F11 excluded.* in row
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT r.repo_id+1, r.ar FROM aveloxis_data.repos r ON CONFLICT (repo_id) DO UPDATE SET ar = to_jsonb(excluded.*)->>'ar'
+@@ F12 to_jsonb(target alias)
+UPDATE aveloxis_data.repos t SET ar = to_jsonb(t)->>'ar'
+@@ F13 to_jsonb(target name no alias)
+UPDATE aveloxis_data.repos SET ar = to_jsonb(repos)->>'ar'
+@@ F14 to_jsonb(repos.*)
+UPDATE aveloxis_data.repos SET ar = to_jsonb(repos.*)->>'ar'
+@@ F15 (repos).ar
+UPDATE aveloxis_data.repos SET ar = (repos).ar
+@@ F16 (aveloxis_data.repos).ar 
+UPDATE aveloxis_data.repos SET ar = (aveloxis_data.repos).ar
+@@ F17 aveloxis_data.repos.* 
+UPDATE aveloxis_data.repos SET ar = to_jsonb(aveloxis_data.repos.*)->>'ar'
+@@ F18 scalar subselect with stored condition
+UPDATE aveloxis_data.repos r SET ar = (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.ar = 'x'))
+@@ F19 CASE condition reads stored
+UPDATE aveloxis_data.repos SET ar = CASE WHEN ar = 'x' THEN $1 ELSE $2 END
+@@ F20 CASE operand reads stored
+UPDATE aveloxis_data.repos SET ar = CASE ar WHEN 'x' THEN $1 ELSE $2 END
+@@ F21 COALESCE stored non-final
+UPDATE aveloxis_data.repos SET ar = COALESCE($1, ar, $2)
+@@ F22 NULLIF($1, ar)
+UPDATE aveloxis_data.repos SET ar = NULLIF($1, ar)
+@@ F23 GREATEST
+UPDATE aveloxis_data.repos SET ar = GREATEST($1, ar)
+@@ F24 substr(ar,0,0)
+UPDATE aveloxis_data.repos SET ar = $1 || substr(ar, 0, 0)
+@@ F25 quoted ident "ar"
+UPDATE aveloxis_data.repos SET ar = "ar" || $1
+@@ F26 case AR
+UPDATE aveloxis_data.repos SET ar = AR || $1
+@@ F27 r.ar alias
+UPDATE aveloxis_data.repos r SET ar = r.ar || $1
+@@ F28 schema.table.col
+UPDATE aveloxis_data.repos SET ar = aveloxis_data.repos.ar || $1
+@@ F29 excluded as table alias
+INSERT INTO aveloxis_data.repos AS excluded (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = excluded.ar
+@@ F30 other col bare
+UPDATE aveloxis_data.repos SET ar = lower(fe)
+@@ F31 other col qualified
+UPDATE aveloxis_data.repos r SET ar = lower(r.fe)
+@@ F32 agg over target in scalar subselect
+UPDATE aveloxis_data.repos SET ar = (SELECT max(x.fe) FROM aveloxis_data.repos x)
+@@ F33 window fn
+UPDATE aveloxis_data.repos SET ar = (SELECT string_agg(x.v, ',') OVER () FROM aveloxis_data.other x LIMIT 1)
+@@ F34 srf in select list
+UPDATE aveloxis_data.repos SET ar = (SELECT generate_series(1,3)::text LIMIT 1)
+@@ F35 history table copy
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.repo_hist h WHERE h.repo_id = r.repo_id
+@@ F36 CTAS copy
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp h WHERE h.repo_id = r.repo_id
+@@ F37 CTAS renamed
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp3 h WHERE h.repo_id = r.repo_id
+@@ F38 SELECT INTO copy
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp4 h WHERE h.repo_id = r.repo_id
+@@ F39 LIKE table
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp5 h WHERE h.repo_id = r.repo_id
+@@ F40 CTAS TABLE
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp6 h WHERE h.repo_id = r.repo_id
+@@ F41 CTAS from view over target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cpv h WHERE h.repo_id = r.repo_id
+@@ F42 CTAS via WITH
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cpw h WHERE h.repo_id = r.repo_id
+@@ F43 view over copy
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_cp h WHERE h.repo_id = r.repo_id
+@@ F44 copy of copy
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cpcp h WHERE h.repo_id = r.repo_id
+@@ F45 CTAS no data
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp8 h WHERE h.repo_id = r.repo_id
+@@ F46 CTAS moved schema
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_ops.cp9 h WHERE h.repo_id = r.repo_id
+@@ F47 foreign table
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.ft h WHERE h.repo_id = r.repo_id
+@@ F48 view other
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_other h WHERE h.repo_id = r.repo_id
+@@ F49 view with target in WHERE
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_filt h WHERE h.repo_id = r.repo_id
+@@ F50 view with scalar subselect on target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_scalar h WHERE h.id = r.repo_id
+@@ F51 view with function in FROM
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_fn h WHERE h.id = r.repo_id
+@@ F52 view with function in select list
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_fn2 h WHERE h.id = r.repo_id
+@@ F53 view over view over target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v2 h WHERE h.repo_id = r.repo_id
+@@ F54 recursive view
+UPDATE aveloxis_data.repos r SET ar = h.n::text FROM aveloxis_data.v_rec h WHERE h.n = r.repo_id
+@@ F55 matview other
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.mv_other h WHERE h.id = r.repo_id
+@@ F56 matview target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.mv h WHERE h.repo_id = r.repo_id
+@@ F57 ONLY other
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM ONLY aveloxis_data.other h WHERE h.id = r.repo_id
+@@ F58 tablesample target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.repos h TABLESAMPLE SYSTEM (1) WHERE h.repo_id = r.repo_id
+@@ F59 quoted schema-qualified name as one ident
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM "aveloxis_data.repos" h WHERE h.repo_id = r.repo_id
+@@ F60 uppercase quoted target under other name
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data."Repos" h WHERE h.repo_id = r.repo_id
+@@ F61 db-qualified target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis.aveloxis_data.repos h WHERE h.repo_id = r.repo_id
+@@ F62 XMLTABLE / json_table in FROM
+UPDATE aveloxis_data.repos r SET ar = j.v FROM JSON_TABLE($1::jsonb, '$[*]' COLUMNS (v text PATH '$.v')) j
+@@ F63 scalar sub in SELECT of scalar sub w/ bare other col
+UPDATE aveloxis_data.repos r SET ar = (SELECT v FROM aveloxis_data.other o WHERE o.id = r.repo_id)
+@@ F64 value reads other col of target via sub-select item alias equal to target alias (shadow)
+UPDATE aveloxis_data.repos r SET ar = (SELECT r.ar FROM aveloxis_data.other r LIMIT 1)
+@@ F65 sublink ANY
+UPDATE aveloxis_data.repos r SET ar = ($1 = ANY (SELECT x.ar FROM aveloxis_data.repos x))::text
+@@ F66 EXISTS as value
+UPDATE aveloxis_data.repos r SET ar = (EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.ar = $1))::text
+@@ F67 ARRAY sublink
+UPDATE aveloxis_data.repos r SET ar = array_to_string(ARRAY(SELECT x.ar FROM aveloxis_data.repos x), ',')
+@@ F68 nextval
+UPDATE aveloxis_data.repos SET ar = nextval('s')::text
+@@ F69 random
+UPDATE aveloxis_data.repos SET ar = random()::text
+@@ F70 operator schema-qualified
+UPDATE aveloxis_data.repos SET ar = $1 OPERATOR(aveloxis_data.||) $2
+@@ F71 cast to user type / domain with function
+UPDATE aveloxis_data.repos SET ar = $1::aveloxis_data.mytype
+@@ F72 collate
+UPDATE aveloxis_data.repos SET ar = $1 COLLATE "C"
+@@ F73 ctid / tableoid system col of own row
+UPDATE aveloxis_data.repos SET ar = ctid::text
+@@ F74 own row xmin
+UPDATE aveloxis_data.repos r SET ar = (SELECT x.fe FROM aveloxis_data.other x WHERE x.id = r.repo_id AND x.ar = r.ar)
+@@ F75 VALUES sub in FROM w/ stored
+UPDATE aveloxis_data.repos r SET ar = v.a FROM (VALUES ($1::int, $2::text)) v(id, a) WHERE v.id = r.repo_id
+@@ F76 generate_series FROM
+UPDATE aveloxis_data.repos r SET ar = g::text FROM generate_series($1::int, $2::int) g WHERE g = r.repo_id
+@@ F77 jsonb_to_recordset
+UPDATE aveloxis_data.repos r SET ar = j.a FROM jsonb_to_recordset($1::jsonb) AS j(id int, a text) WHERE j.id = r.repo_id
+@@ F78 unnest ordinality
+UPDATE aveloxis_data.repos r SET ar = u.n::text FROM unnest($1::int[]) WITH ORDINALITY u(id, n) WHERE u.id = r.repo_id
+@@ F79 unnest of row type array
+UPDATE aveloxis_data.repos r SET ar = u.ar FROM unnest($1::aveloxis_data.repos[]) u WHERE u.repo_id = r.repo_id
+@@ F80 ROWS FROM
+UPDATE aveloxis_data.repos r SET ar = u.a FROM ROWS FROM (unnest($1::int[]), unnest($2::text[])) u(id, a) WHERE u.id = r.repo_id
+@@ F81 ROWS FROM w/ lateral fn reading sibling
+UPDATE aveloxis_data.repos r SET ar = u.a FROM aveloxis_data.other o, ROWS FROM (unnest($1::int[]), lower(o.ar)) u(id, a) WHERE u.id = r.repo_id
+@@ F82 incoming derived with window
+UPDATE aveloxis_data.repos r SET ar = v.a FROM (SELECT t.id, row_number() OVER ()::text AS a FROM unnest($1::int[]) t(id)) v WHERE v.id = r.repo_id

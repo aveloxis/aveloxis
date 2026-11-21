@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	pgparser "github.com/wasilibs/go-pgquery/parser"
 )
@@ -103,6 +104,8 @@ type Write struct {
 	// cat is the catalog the write is judged in (CheckIn sets it): what a
 	// FROM item reads is followed through its views.
 	cat *Catalog
+	// madeHere: the tables the write's own text makes (CheckIn).
+	madeHere map[string]bool
 	// source (conflict-update): the INSERT's own source (its VALUES or
 	// SELECT; nil for DEFAULT VALUES), which is what EXCLUDED holds.
 	// excluded caches whether that source holds nothing but incoming
@@ -158,6 +161,13 @@ type fromItem struct {
 	// lateral: a sub-select written LATERAL, which can name the items to
 	// its left; fn: a function in FROM (always lateral).
 	lateral, fn bool
+	// join: a JOIN's alias, whose parts are items of their own. An item
+	// that is none of direct, sub, fn and join is a FROM item in a form
+	// fromItems does not read (JSON_TABLE, XMLTABLE, TABLESAMPLE, a kind a
+	// later grammar adds): it is in scope under its alias and is NOT clean
+	// (review round 9: such an item fell through as "a join's alias", read
+	// nothing, and was taken as clean).
+	join bool
 }
 
 // bodyEnv is the body (DO block, function) a statement stands in: the names
@@ -193,6 +203,9 @@ type Def struct {
 	// INHERITS).
 	Sources []string
 	Parents []string
+	// Filled (Kind "table"): made from a query (CREATE TABLE ... AS,
+	// SELECT ... INTO).
+	Filled bool
 	// Refs (Kind "table", and "ref" for a foreign key added to an existing
 	// table): the tables this one's foreign keys reference.
 	Refs []string
@@ -370,7 +383,7 @@ func parseSQL(sql string) parsed {
 		return p
 	}
 	var p parsed
-	out, err := pgparser.ParseToJSON(sql)
+	out, err := parserCall(func() (string, error) { return pgparser.ParseToJSON(sql) })
 	if err != nil {
 		p.err = fmt.Errorf("PostgreSQL's parser does not read it: %w", err)
 	} else {
@@ -388,6 +401,35 @@ func parseSQL(sql string) parsed {
 	parseCache[sql] = p
 	return p
 }
+
+// parserCall runs one call of the parser and turns a panic of it into an
+// error. The parser is PostgreSQL's, compiled to WebAssembly, and a
+// statement nested deeply enough overflows its stack (round 9: 20,000
+// concatenated terms, or 3,000 nested sub-selects, panicked out of the
+// check). A statement the parser cannot read is a statement that is not
+// read, which every caller already holds against it.
+//
+// The overflow writes over the parser's own memory (its stack stands in
+// its heap), and the next call of it does not return (observed: the next
+// allocation loops). So after one failure the parser is not called again
+// in this process, and every later statement is not read either: the
+// check fails for all of them, saying which statement did it.
+func parserCall(call func() (string, error)) (out string, err error) {
+	if dead, _ := parserDead.Load().(string); dead != "" {
+		return "", errors.New(dead)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("PostgreSQL's parser failed on it (%v): too deeply nested to be read", r)
+			parserDead.Store("PostgreSQL's parser failed on an earlier statement of this process (one too deeply nested to be read) and cannot be used again: nothing after it is read")
+			out = ""
+		}
+	}()
+	return call()
+}
+
+// parserDead holds why the parser is not to be called again (parserCall).
+var parserDead atomic.Value
 
 // ParserVersion is the PostgreSQL version whose grammar the parser reads
 // (170007 for 17.7), or an error when the parser does not run.
@@ -621,8 +663,11 @@ func (r *reader) add(w Write, from ...any) {
 
 // fromItems are the relations a FROM list (or a MERGE's source) puts in
 // scope, as a qualifier names them. A sub-select's own relations are not
-// in scope outside it; a relation written in a form this does not know
-// adds nothing, so a qualifier that names it is not resolved.
+// in scope outside it. Every node of the list is an item: a sub-select with
+// no alias too (legal since PostgreSQL 16; its columns are named bare), and
+// a node of a kind this does not read is an item with no kind, which is not
+// clean. Before 0.29.216 an alias-less sub-select was no item at all, so
+// nothing in it was judged, and an unknown kind was taken for a join.
 func fromItems(v any) []fromItem {
 	var out []fromItem
 	var walk func(any)
@@ -652,9 +697,18 @@ func fromItems(v any) []fromItem {
 			case "RangeSubselect":
 				lateral := body["lateral"] == true
 				it := fromItem{sub: body["subquery"], rels: relsIn(body["subquery"]), incoming: incomingQuery(body["subquery"], lateral), lateral: lateral}
-				if it.alias, it.colnames = aliasOf(); it.alias != "" {
-					out = append(out, it)
+				it.alias, it.colnames = aliasOf()
+				out = append(out, it)
+				return
+			case "JoinExpr":
+				// A join's alias reads everything written under it; its
+				// two sides are items of their own. Its condition is not
+				// a FROM item.
+				if name, _ := aliasOf(); name != "" {
+					out = append(out, fromItem{alias: name, rels: relsIn(body), colnames: true, join: true})
 				}
+				walk(body["larg"])
+				walk(body["rarg"])
 				return
 			case "RangeFunction":
 				it := fromItem{rels: relsIn(body["functions"]), incoming: true, fn: true, lateral: true}
@@ -692,17 +746,13 @@ func fromItems(v any) []fromItem {
 				return
 			}
 			if kind != "" {
-				t = body
-			}
-			if a, ok := t["alias"].(jnode); ok && jstr(a["aliasname"]) != "" {
-				// A join's alias (or a form this does not know): it reads
-				// everything written under it.
-				out = append(out, fromItem{alias: jstr(a["aliasname"]), rels: relsIn(t), colnames: true})
+				// A kind not read above: an item with no kind, under its
+				// alias if it has one. Nothing under it is walked.
+				name, _ := aliasOf()
+				out = append(out, fromItem{alias: name, rels: relsIn(body), colnames: true})
+				return
 			}
 			for _, k := range sortedKeys(t) {
-				if k == "subquery" || k == "alias" {
-					continue
-				}
 				walk(t[k])
 			}
 		}
@@ -1118,12 +1168,12 @@ func (r *reader) visit(kind string, body jnode) {
 		if jstr(body["objtype"]) == "OBJECT_MATVIEW" {
 			kind = "matview"
 		}
-		r.def(Def{Kind: kind, Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t", Sources: relsRead(body["query"])})
+		r.def(Def{Kind: kind, Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t", Sources: relsRead(body["query"]), Filled: true})
 	case "SelectStmt":
 		// SELECT ... INTO t makes a table.
 		if into, ok := body["intoClause"].(jnode); ok {
 			rv, _ := into["rel"].(jnode)
-			r.def(Def{Kind: "table", Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t"})
+			r.def(Def{Kind: "table", Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t", Filled: true})
 		}
 	case "ViewStmt":
 		view, _ := body["view"].(jnode)
@@ -1476,7 +1526,7 @@ func variableConflict(body string) string {
 // server's PL/pgSQL parser: every SQL statement and expression in it is
 // handed back as text, and each is read in turn.
 func (r *reader) plpgsql(fnName, bodyText string) {
-	out, err := pgparser.ParsePlPgSqlToJSON(r.text)
+	out, err := parserCall(func() (string, error) { return pgparser.ParsePlPgSqlToJSON(r.text) })
 	if err != nil {
 		r.fail("in a body: PostgreSQL's PL/pgSQL parser does not read it: %w", err)
 		return
@@ -1914,7 +1964,10 @@ func columnRef(v any) ([]string, bool) {
 // required); a condition under NOT or in a subquery is not this condition.
 // What the top of a WHERE is, is the parser's reading, not this file's.
 func (w Write) GuardsEmpty(col string) bool {
-	if w.Kind != "update" && w.Kind != "conflict-update" && w.Kind != "merge-update" {
+	// A MERGE action has no WHERE of its own (its condition is WHEN ...
+	// AND, which is not read as a guard: documented), so a merge-update
+	// never guards (round 9: the arm that named it could not be reached).
+	if w.Kind != "update" && w.Kind != "conflict-update" {
 		return false
 	}
 	for _, c := range conjuncts(w.where) {

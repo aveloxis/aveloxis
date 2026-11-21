@@ -300,58 +300,119 @@ var manifestPassesAll = []string{manifestPassNames, manifestPassDeclarations, ma
 // any other process, where no file is too large.
 var cloneReadHeapLimit atomic.Int64
 
-// readCostTenths is what reading one file of a kind costs this process, in
-// tenths of the file's length: its bytes, the text made of them, and what
-// its reader builds while it parses, at the peak. The pre-check and the
-// manifest package's read bound both compare THIS with the room left, so
-// that a file the reader could not finish within the limit is refused up
-// front as one file that could not be read, and the rest of the repository
-// is read; without the factor a file just under the room left was read and
-// the child was stopped at its limit mid-parse, losing every pass not yet
-// finished (0.29.215, review round 8).
+// readCostMeasured is the most that reading one file of a kind was MEASURED
+// to cost this process, in hundredths of the file's length: its bytes, the
+// text made of them, and what its reader builds while it parses, at the
+// peak. readCostFactor makes the factor a file is priced at from it. The
+// pre-check and the manifest package's read bound both compare THAT with
+// the room left, so that a file the reader could not finish within the
+// limit is refused up front as one file that could not be read, and the
+// rest of the repository is read; a file priced under what it costs is
+// read, and the child is stopped at its limit mid-parse, losing every pass
+// not yet finished (0.29.215, review round 8).
 //
-// PROVISIONAL, every number. Each is the heap peak measured through the
-// real child for the largest file of that kind it read at a 1,024 MiB
-// limit (0.29.214's table: composer.lock 1.7 times its length,
-// package-lock.json 2.2 to 2.3, yarn.lock 2.6 to 2.7, Gemfile.lock 8.9,
-// stack.yaml.lock 11.2, pnpm-lock.yaml 12.5 to 13.0, pubspec.lock 13.6),
-// rounded up. A kind not listed costs a default: a lockfile of an
-// unmeasured format eight times its length (with no limit pressing, those
-// formats peaked at 3 to 13 times their length where the measured ones
-// peaked at about twice what they cost under the limit), and a manifest
-// three times (its bytes, its text, and rows that together are no longer
-// than the text).
-var readCostTenths = map[string]int64{
-	"composer.lock":       20,
-	"package-lock.json":   26,
-	"npm-shrinkwrap.json": 26,
-	"yarn.lock":           30,
-	"Gemfile.lock":        100,
-	"stack.yaml.lock":     125,
-	"pnpm-lock.yaml":      140,
-	"pubspec.lock":        150,
+// How each number was measured (0.29.216; operator, 2026-11-21: "the
+// read-cost factor per file format seems like it should be raised"). Every
+// shape of the kind that its reader reads to a result (the plain file, the
+// shapes real tools write, and the shapes built to cost the most a byte:
+// entries and keys as short as the format allows) was read through the real
+// child under a 256 MiB limit, at a size that pressed the limit: the largest
+// that finished, stepping down from one that was stopped. The number is the
+// largest, over the kind's shapes, of the heap peak over the file's length
+// and of the limit over the length of the smallest file that was stopped.
+// Until then the table held the cost of ordinary files alone (a
+// package-lock.json 2.6 times its length, a yarn.lock 3, a manifest 3 with
+// nothing measured behind it), and a file of short entries was let by and
+// stopped the child.
+//
+// What it is NOT: a bound for a file its reader rejects. Text that is not a
+// lockfile of its kind can cost more before the reader gives up than any
+// file the reader accepts (measured: a pnpm-lock.yaml of flow collections
+// nested nine thousand deep, 97 times its length, against 30 for the
+// costliest that parses). Such a file is let by when it is small enough,
+// and the watchdog stops the child at its limit: the reading ends "memory
+// limit" and the passes already handed over are kept.
+var readCostMeasured = map[string]int64{
+	// Lockfiles: every kind the roster reads (TestEveryLockfileKindHasAMeasuredCost).
+	"package-lock.json":  882,  // one package holding every dependency; the plain v3 file 670, v1 859
+	"yarn.lock":          914,  // v1 entries as short as they come; v1 as yarn writes it 307, berry 368
+	"pnpm-lock.yaml":     3041, // keys as short as they come; as pnpm writes it 1160 to 1255, v9 plain 2029
+	"bun.lock":           496,
+	"poetry.lock":        572,
+	"Pipfile.lock":       665,
+	"uv.lock":            552,
+	"pdm.lock":           636,
+	"Cargo.lock":         687,
+	"Gemfile.lock":       880,
+	"composer.lock":      896,  // the plain file; as composer writes it 134
+	"mix.lock":           1221, // one line of tuples; the plain file 512
+	"pubspec.lock":       3421, // keys as short as they come; the plain file 1800
+	"Package.resolved":   340,
+	"packages.lock.json": 1287, // many frameworks; the plain file 624
+	"gradle.lockfile":    527,
+	"stack.yaml.lock":    3390, // one item with every key; the plain file 2028
+	"renv.lock":          636,
+	// Manifests. A declaration is a row of some hundreds of bytes however
+	// short its line, and the pass holds every row until it ends.
+	"requirements.txt": 6620, // names of two or three letters, no version; pinned packages 1326
+	"Gemfile":          4062,
+	"package.json":     3540, // scoped names with ranges 1095
+	"go.mod":           2674, // real module paths 897
+	"Cargo.toml":       3249,
+	"pom.xml":          958,
+	"composer.json":    3390,
+	"pubspec.yaml":     3390,
+	"build.gradle":     2444,
+	"Pipfile":          3613,
+	"pyproject.toml":   3390,
+	"mix.exs":          1705,
 }
 
+// readCostMargin is the one margin over what was measured, as a fraction:
+// three halves. PROVISIONAL. The measurements are of the shapes thought of,
+// on one machine, under one limit; half again is for the shape that was
+// not, and for what the Go runtime holds beyond the heap it reports.
 const (
-	readCostManifestTenths = 30
-	readCostLockfileTenths = 80
+	readCostMarginNum = 3
+	readCostMarginDen = 2
 )
 
-// readCost is what reading the file at path, of the given length, is taken
-// to cost this process (readCostTenths).
-func readCost(path string, size int64) int64 {
-	base := filepath.Base(path)
-	tenths, ok := readCostTenths[base]
-	if !ok {
-		tenths = readCostManifestTenths
-		if _, isLockfile := lockfileKinds[base]; isLockfile {
-			tenths = readCostLockfileTenths
+// readCostUnmeasured is the measured cost taken for a file of a kind with no
+// entry above: the costliest measured of its class, a lockfile's for a
+// lockfile (none is unmeasured: the test holds the table to the roster) and
+// a manifest's for anything else.
+func readCostUnmeasured(base string) int64 {
+	worst := int64(0)
+	_, wantLockfile := lockfileKinds[base]
+	for kind, cost := range readCostMeasured {
+		if _, isLockfile := lockfileKinds[kind]; isLockfile == wantLockfile && cost > worst {
+			worst = cost
 		}
 	}
-	if size > (1<<62)/tenths {
+	return worst
+}
+
+// readCostFactor is how many times its length reading the file at path is
+// taken to cost: what was measured for its kind (readCostMeasured), with
+// the margin, rounded up to a whole number.
+func readCostFactor(path string) int64 {
+	base := filepath.Base(path)
+	measured, ok := readCostMeasured[base]
+	if !ok {
+		measured = readCostUnmeasured(base)
+	}
+	den := int64(100 * readCostMarginDen)
+	return (measured*readCostMarginNum + den - 1) / den
+}
+
+// readCost is what reading the file at path, of the given length, is taken
+// to cost this process.
+func readCost(path string, size int64) int64 {
+	factor := readCostFactor(path)
+	if size > (1<<62)/factor {
 		return 1 << 62
 	}
-	return size * tenths / 10
+	return size * factor
 }
 
 // cloneFileTooLarge reports whether a file of the clone is not to be read
@@ -367,7 +428,7 @@ func readCost(path string, size int64) int64 {
 // round 7). A file's size is known before it is read.
 //
 // What the child holds, said honestly. For a file that passes this check
-// the heap stays within the limit as far as readCostTenths is right about
+// the heap stays within the limit as far as readCostMeasured is right about
 // its kind; where it is not (a file built to cost its reader more than the
 // measured files did), the watchdog stops the child within one
 // manifestWatchEvery of passing the limit, and what it can allocate in
@@ -413,7 +474,7 @@ func cloneReadRoom(path string, size int64) int64 {
 		return room
 	}
 	// The length whose cost is the room: readCost's inverse.
-	return room * 10 / (readCost(path, 10))
+	return room / readCostFactor(path)
 }
 
 // manifestItemLimit is the most text one item of a result may hold: a

@@ -653,3 +653,52 @@ func TestRenderRepoShowsTheLockfileCautionAndOtherwiseNothing(t *testing.T) {
 		}
 	}
 }
+
+// Operator, 2026-11-21 ("Withdraw, keep the count"): a page whose lockfile
+// caution is up does not say "No open vulnerabilities recorded", in any
+// coverage state; without the caution every state says what it said.
+func TestRenderRepoWithdrawsTheCleanSentenceUnderTheLockfileCaution(t *testing.T) {
+	const cleanSentence = "No open vulnerabilities recorded in scanned dependencies."
+	at := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	sent, nothing, failed := model.ScanSent, model.ScanNothingToSend, model.ScanFailed
+	cleanSeen := 0
+	for name, outcome := range map[string]*string{"scanned": &sent, "nothing to scan": &nothing, "scan failed": &failed, "no scan half": nil} {
+		render := func(reason string) (string, bool) {
+			t.Helper()
+			in := vulnclass.CoverageInputs{HasRow: true, ScanStamp: &at}
+			in.Coverage.AnalysedAt = &at
+			if outcome != nil {
+				in.Coverage.ScanAttemptAt, in.Coverage.Scan.Outcome = &at, *outcome
+			}
+			in.Coverage.LockfilesUnreadReason = reason
+			v := vulnclass.Coverage(in)
+			d := RepoPageData{BaseURL: "https://aveloxis.io", Slug: "x-y", Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y", GeneratedAt: at}
+			d.SetVulnCoverage(&v)
+			var b strings.Builder
+			if err := RenderRepo(&b, d); err != nil {
+				t.Fatal(err)
+			}
+			return b.String(), v.CleanResult
+		}
+		without, wasClean := render("")
+		if strings.Contains(without, cleanSentence) != wasClean {
+			t.Errorf("%s, no caution: the clean sentence is on the page %v, clean_result %v", name, !wasClean, wasClean)
+		}
+		if wasClean {
+			cleanSeen++
+		}
+		with, clean := render(model.InventoryAttemptReadMemoryLimit)
+		if clean || strings.Contains(with, cleanSentence) {
+			t.Errorf("%s: the page claims no open vulnerabilities beside the lockfile caution", name)
+		}
+		if !strings.Contains(with, "<strong>Caution.</strong> Lockfiles could not be read") {
+			t.Errorf("%s: the caution is not on the page", name)
+		}
+		if wasClean && !strings.Contains(with, `<p class="note-line">Scanned.`) && !strings.Contains(with, `<p class="note-line">Nothing to scan.`) {
+			t.Errorf("%s: in place of the clean sentence the page does not say its coverage state", name)
+		}
+	}
+	if cleanSeen < 2 {
+		t.Fatalf("%d states were clean without the caution: nothing was withdrawn", cleanSeen)
+	}
+}

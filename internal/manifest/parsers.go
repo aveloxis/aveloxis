@@ -2435,7 +2435,7 @@ func ParsePomXMLVersions(content string) []model.LibyearDep {
 	// survived normalisation and reached the purl and the OSV scan).
 	content = stripXMLComments(content)
 	var deps []model.LibyearDep
-	props := pomProperties(content)
+	props := pomPropertiesOf(content)
 	// Process dependency blocks — works even when everything is on one line
 	// by scanning for <dependency>...</dependency> substrings.
 	rest := content
@@ -2465,9 +2465,9 @@ func ParsePomXMLVersions(content string) []model.LibyearDep {
 		// dogtagpki/pki "${project.groupId}"). A coordinate that stays
 		// unresolved is not sent to Maven Central; an unresolved version
 		// is left for NormalizeParsedVersion's unpinned pathway.
-		groupID := resolvePomProperties(extractXMLValue(block, "groupId"), props)
-		artifactID := resolvePomProperties(extractXMLValue(block, "artifactId"), props)
-		version := resolvePomProperties(extractXMLValue(block, "version"), props)
+		groupID := props.resolve(extractXMLValue(block, "groupId"), blockAt)
+		artifactID := props.resolve(extractXMLValue(block, "artifactId"), blockAt)
+		version := props.resolve(extractXMLValue(block, "version"), blockAt)
 		if strings.Contains(groupID, "${") || strings.Contains(artifactID, "${") {
 			continue
 		}
@@ -2499,13 +2499,55 @@ func ParsePomXMLVersions(content string) []model.LibyearDep {
 // is compared in code (RE2 has no backreferences).
 var pomPropertyRe = regexp.MustCompile(`<([A-Za-z0-9_.\-]+)>([^<]*)</([A-Za-z0-9_.\-]+)>`)
 
-// pomProperties collects a pom's own property values: every
+// pomProps are a pom's own property values, for the build Maven makes by
+// default (round 9): base holds the properties written outside every
+// profile, with those of the profiles that are active by default over them
+// (Maven puts an active profile's properties into the pom's model); own[i]
+// those of profile i, for the dependencies that profile declares itself. A
+// profile that is not active by default sets nothing for the rest of the
+// pom. (Until 0.29.215 every <properties> element of the document was read
+// as one list, the first to set a name winning: an active profile's value
+// lost to the pom's own, and a property only an inactive profile sets was
+// read as set.)
+type pomProps struct {
+	base     map[string]string
+	profiles pomSpans
+	own      []map[string]string
+	active   []bool
+}
+
+// resolve substitutes the references of v for a declaration written at
+// offset: inside a profile that is not active by default, that profile's
+// own properties come first. By the one bounded substitution a pom
+// has (pomSubstitute, 0.29.209): it had its own loop, one reference per
+// turn with nothing bounding what it built.
+func (p *pomProps) resolve(v string, offset int) string {
+	var own map[string]string
+	if i := p.profiles.at(offset); i >= 0 && !p.active[i] {
+		own = p.own[i]
+	}
+	return pomSubstitute(v, func(name string) (string, bool) {
+		if val, ok := own[name]; ok {
+			return val, true
+		}
+		val, ok := p.base[name]
+		return val, ok
+	})
+}
+
+// pomProperties are the properties of the pom's default build (pomProps.base).
+func pomProperties(content string) map[string]string { return pomPropertiesOf(content).base }
+
+// pomPropertiesOf collects a pom's own property values: every
 // <properties> element, plus project.groupId/artifactId/version (the
 // project's own coordinates, falling back to <parent>'s groupId and
 // version, as Maven inherits them) and their parent.* forms.
-func pomProperties(content string) map[string]string {
-	props := map[string]string{}
-	rest := content
+func pomPropertiesOf(content string) *pomProps {
+	out := &pomProps{base: map[string]string{}, profiles: pomElementSpans(content, "profile")}
+	out.own = make([]map[string]string, len(out.profiles))
+	out.active = make([]bool, len(out.profiles))
+	props := out.base
+	rest, at := content, 0
 	for {
 		start := strings.Index(rest, "<properties>")
 		if start < 0 {
@@ -2515,14 +2557,37 @@ func pomProperties(content string) map[string]string {
 		if end < 0 {
 			break
 		}
+		into := props
+		if i := out.profiles.at(at + start); i >= 0 {
+			if out.own[i] == nil {
+				out.own[i] = map[string]string{}
+			}
+			into = out.own[i]
+		}
 		for _, m := range pomPropertyRe.FindAllStringSubmatch(rest[start:start+end], -1) {
 			if m[1] == m[3] {
-				if _, seen := props[m[1]]; !seen {
-					props[m[1]] = strings.TrimSpace(m[2])
+				if _, seen := into[m[1]]; !seen {
+					into[m[1]] = strings.TrimSpace(m[2])
 				}
 			}
 		}
-		rest = rest[start+end:]
+		rest, at = rest[start+end:], at+start+end
+	}
+	for i, span := range out.profiles {
+		// The activation is the profile's own, written before whatever the
+		// profile holds that could have one of its own.
+		head := content[span[0]:span[1]]
+		for _, block := range []string{"<build>", "<dependencies>", "<dependencyManagement>", "<properties>", "<reporting>"} {
+			if cut := strings.Index(head, block); cut >= 0 {
+				head = head[:cut]
+			}
+		}
+		out.active[i] = strings.TrimSpace(extractXMLValue(head, "activeByDefault")) == "true"
+		if out.active[i] {
+			for k, v := range out.own[i] {
+				props[k] = v
+			}
+		}
 	}
 	parent := ""
 	top := content
@@ -2572,19 +2637,7 @@ func pomProperties(content string) map[string]string {
 			props["pom."+key] = v
 		}
 	}
-	return props
-}
-
-// resolvePomProperties substitutes ${name} references from props, by the
-// one bounded substitution a pom has (pomSubstitute, 0.29.209). It had its
-// own loop, one reference per turn with nothing bounding what it built: a
-// version that is one 64-byte property 20,000 times over was built whole,
-// copied 20,000 times on the way.
-func resolvePomProperties(v string, props map[string]string) string {
-	return pomSubstitute(v, func(name string) (string, bool) {
-		val, ok := props[name]
-		return val, ok
-	})
+	return out
 }
 
 func extractXMLValue(line, tag string) string {
@@ -3503,13 +3556,19 @@ func extractFirstVersion(s string) string {
 // pom.
 type pomSpans [][2]int
 
-func (s pomSpans) contains(offset int) bool {
+func (s pomSpans) contains(offset int) bool { return s.at(offset) >= 0 }
+
+// at is the index of the span that holds offset, -1 when none does.
+func (s pomSpans) at(offset int) int {
 	// The spans are in document order and do not overlap (pomElementSpans
 	// moves past each one), so the one that could hold offset is found by
 	// halving (0.29.209). Every dependency block used to be compared with
 	// every span: a pom of n plugins and n dependencies, n squared.
 	i := sort.Search(len(s), func(k int) bool { pomSpanSteps.Add(1); return s[k][1] > offset })
-	return i < len(s) && offset >= s[i][0]
+	if i < len(s) && offset >= s[i][0] {
+		return i
+	}
+	return -1
 }
 
 // pomSpanSteps counts the spans contains has looked at, for the test that

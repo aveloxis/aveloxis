@@ -103,6 +103,26 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 		t.Fatal(err)
 	}
 	record(model.LockfileReading{Completed: true, Lockfiles: true})
+	// A completed scan that found nothing: the repository reads clean until
+	// its lockfiles go unread (0.29.216), on all three answers.
+	if err := store.RecordScanCoverage(ctx, repoID, model.ScanCoverage{Outcome: model.ScanSent, FirstScan: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVulnScanLastRun(ctx, repoID); err != nil {
+		t.Fatal(err)
+	}
+	clean := func(when string, want bool) {
+		t.Helper()
+		for path, cov := range answers() {
+			if got := string(cov["clean_result"]); got != strconv.FormatBool(want) {
+				t.Errorf("%s: %s: clean_result = %s; want %v", when, path, got, want)
+			}
+			if string(cov["state"]) != `"scanned"` || string(cov["count_blank"]) != "false" {
+				t.Errorf("%s: %s: state %s, count_blank %s; the caution changes neither", when, path, cov["state"], cov["count_blank"])
+			}
+		}
+	}
+	clean("read", true)
 	for path, cov := range answers() {
 		if raw, has := cov["lockfiles_unread"]; !has || string(raw) != "null" {
 			t.Errorf("%s: lockfiles_unread = %s (present %v); want null", path, raw, has)
@@ -120,6 +140,18 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 			t.Errorf("%s: %+v; want the memory limit and the reading just made", path, u)
 		}
 	}
+	clean("behind", false)
+	// Some lockfiles too large, in a reading that replaced the snapshot
+	// (0.29.216): its own reason, and no clean claim either.
+	record(model.LockfileReading{NotCompleted: model.LockfileUnreadTooLarge, Lockfiles: true})
+	for path, cov := range answers() {
+		var u *vulnclass.LockfilesUnread
+		if err := json.Unmarshal(cov["lockfiles_unread"], &u); err != nil || u == nil || u.Reason != model.LockfileUnreadTooLarge {
+			t.Errorf("%s: too large: %s", path, cov["lockfiles_unread"])
+		}
+	}
+	clean("some too large", false)
+	record(model.LockfileReading{NotCompleted: model.InventoryAttemptReadMemoryLimit, Lockfiles: true})
 	// The date is sent as a UTC instant.
 	for path, cov := range answers() {
 		var raw struct {
@@ -140,6 +172,7 @@ func TestTheCoverageObjectCarriesTheLockfileCaution(t *testing.T) {
 			t.Errorf("%s: after the lockfiles were deleted: %s", path, cov["lockfiles_unread"])
 		}
 	}
+	clean("read again", true)
 	// Never read.
 	record(model.LockfileReading{NotCompleted: model.InventoryAttemptReadFailed, Lockfiles: true})
 	for path, cov := range answers() {

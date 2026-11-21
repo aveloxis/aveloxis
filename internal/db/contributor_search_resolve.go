@@ -231,6 +231,14 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 			return fmt.Errorf("backfill identity row: %w", err)
 		}
 
+		// The login this link gives the contributor is recorded as one it
+		// is known under (0.29.216). Nothing is replaced on this path: it
+		// fills an empty gh_login and leaves an identity row that exists
+		// (R11).
+		if err = recordLoginObservation(ctx, tx, winner.cntrbID, 1, login, LoginSourceObservation); err != nil {
+			return fmt.Errorf("record login history: %w", err)
+		}
+
 		return tx.Commit(ctx)
 	})
 }
@@ -360,6 +368,17 @@ func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, n
 		// gh_user_id retains its COALESCE because the caller has
 		// the same value the row already holds (we resolved /user/id
 		// using it).
+		// The logins the two writes below replace (the winner's gh_login,
+		// and the login on this GitHub user's identity row) go to the
+		// history first, when they are another (0.29.216: only the new
+		// login was recorded, so the old one was in history only if some
+		// other path had recorded it).
+		var replaced replacedLogins
+		replaced.add(winner.cntrbID, 1, ghUserID, newLogin)
+		if err = recordReplacedLogins(ctx, tx, &replaced); err != nil {
+			return fmt.Errorf("record replaced login: %w", err)
+		}
+
 		if _, err = tx.Exec(ctx, `
 			UPDATE aveloxis_data.contributors
 			SET gh_login = $3,

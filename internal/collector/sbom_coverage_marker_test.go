@@ -120,6 +120,17 @@ func TestCycloneDXCarriesTheCoverageMarker(t *testing.T) {
 		t.Errorf("lockfiles behind: %v", got)
 	}
 	assertCycloneDXSchemaConstraints(t, loadSchema(t, "bom-1.7.schema.json"), raw)
+	// Some lockfiles too large (0.29.216): the reason, and no date although
+	// the view holds one.
+	behind.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.LockfileUnreadTooLarge, LastReadAt: &read}
+	raw, err = generateCycloneDX(repo, deps, scan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = cdxCoverageProperties(t, raw)
+	if _, has := got["aveloxis:coverage:lockfiles_last_read_at"]; has || got["aveloxis:coverage:lockfiles_unread_reason"] != "lockfiles_too_large" {
+		t.Errorf("some lockfiles too large: %v", got)
+	}
 	behind.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.InventoryAttemptReadFailed}
 	raw, err = generateCycloneDX(repo, deps, scan, nil)
 	if err != nil {

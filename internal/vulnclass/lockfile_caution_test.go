@@ -63,7 +63,7 @@ func TestTheLockfileCautionIsSaidInTwoCasesAndNoOther(t *testing.T) {
 // ("them"), and none is shown as its stored value. A reason this release
 // does not know is shown as written.
 func TestEveryLockfileUnreadReasonHasItsWording(t *testing.T) {
-	if len(model.LockfileUnreadReasons()) != 6 {
+	if len(model.LockfileUnreadReasons()) != 7 {
 		t.Fatalf("model lists %d reasons", len(model.LockfileUnreadReasons()))
 	}
 	seen := map[string]bool{}

@@ -255,8 +255,14 @@ func Coverage(in CoverageInputs) CoverageView {
 	// not know, is neither, and an older stamp does not stand in for it
 	// (0.29.208).
 	lastAttemptCompleted := outcome == "" || outcome == model.ScanSent || outcome == model.ScanNothingToSend
+	//
+	// Nor is a repository whose lockfiles went unread shown to be clean
+	// (operator, 2026-11-21: "Withdraw, keep the count"): its transitive
+	// dependencies were not checked, or were checked at versions that may
+	// be out of date. The count beside it is still a true count of what
+	// was checked, so CountBlank above does not look at the caution.
 	v.CleanResult = (v.State == CoverageScanned || v.State == CoverageNothingToScan) && lastAttemptCompleted &&
-		!v.DependenciesUnknown && in.CurrentExposure == 0
+		!v.DependenciesUnknown && in.CurrentExposure == 0 && v.LockfilesUnread == nil
 
 	switch {
 	case !analysed && v.LastAnalysisAttempt != nil:
@@ -304,6 +310,7 @@ var lockfileUnreadReasonWordings = map[string]string{
 	model.InventoryAttemptReadFailed:     "the reader failed",
 	model.InventoryAttemptRootUnreadable: "the clone could not be read",
 	model.LockfileUnreadNotReached:       "the reader was stopped before it reached them",
+	model.LockfileUnreadTooLarge:         "reading them would take more memory than allowed",
 }
 
 // LockfileUnreadReasonWording is the wording of why the lockfiles went
@@ -334,6 +341,11 @@ func CoverageLockfileCaution(v *CoverageView) string {
 	}
 	reason := LockfileUnreadReasonWording(v.LockfilesUnread.Reason)
 	p := lockfileCautionParts
+	// Some lockfiles too large, the rest read at this analysis: no date is
+	// said, because no one date is true of the rows (0.29.216).
+	if v.LockfilesUnread.Reason == model.LockfileUnreadTooLarge {
+		return p["some_before_reason"] + reason + p["some_after_reason"]
+	}
 	if at := v.LockfilesUnread.LastReadAt; at != nil {
 		return p["behind_before_date"] + at.UTC().Format(coverageDate) + p["behind_before_reason"] + reason + p["behind_after_reason"]
 	}
@@ -351,6 +363,8 @@ var lockfileCautionParts = map[string]string{
 	"behind_after_reason":  "). Versions and transitive dependencies may be out of date.",
 	"never_before_reason":  "Lockfiles could not be read (",
 	"never_after_reason":   "). Transitive dependencies are not checked.",
+	"some_before_reason":   "Some lockfiles could not be read (",
+	"some_after_reason":    "). Their versions and transitive dependencies may be out of date.",
 }
 
 // utcOrNil is the time in UTC: the date a surface prints, and the instant

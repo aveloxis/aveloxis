@@ -8269,7 +8269,7 @@ components:
           description: Nothing has ever said what the repository depends on.
         clean_result:
           type: boolean
-          description: True only when the state is `scanned` or `nothing_to_scan`, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.
+          description: True only when the state is `scanned` or `nothing_to_scan`, the dependencies are known, there is no current exposure finding and (since 0.29.216) `lockfiles_unread` is null. It speaks of exposure at a known version only. While the lockfiles are unread it is false and the counts are unchanged, so a count of 0 is shown as 0 with the caution beside it, and no "no vulnerabilities" sentence.
         count_blank:
           type: boolean
           description: A count of findings is shown blank, because a 0 would claim a check that did not happen.
@@ -8295,12 +8295,18 @@ components:
             (null, never absent). Since 0.29.215 it is the date of the
             lockfile rows that are stored, whichever reading stored them,
             and null when none is. Absent on an older server: show nothing.
+            With the reason `lockfiles_too_large` (0.29.216) the analysis
+            did replace the stored rows: every lockfile but the ones too
+            large was read then, and those keep their previous rows. No one
+            date is true of the rows, so show none, whatever `last_read_at`
+            holds. While the object is set, `clean_result` is false
+            (0.29.216).
           required: [reason, last_read_at]
           properties:
             reason:
               type: string
-              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.
-              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable, lockfiles_not_reached]
+              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. `lockfiles_too_large` (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.
+              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable, lockfiles_not_reached, lockfiles_too_large]
             last_read_at:
               type: [string, "null"]
               format: date-time
@@ -9099,7 +9105,24 @@ components:
           description: How the version was worked out when it was not simply declared (`locked`, `locked_several`, `managed`). Absent otherwise.
         version_reason:
           type: string
-          description: Why there is no version, when a parent pom or BOM that might have supplied it could not be obtained (`inherited_not_found`, `inherited_lookup_failed`, `inherited_repository_refused`). Absent otherwise.
+          enum: [inherited_not_found, inherited_lookup_failed, inherited_repository_refused, profile_managed, platforms_disagree, value_not_read]
+          description: |
+            Why there is no version, when the build file names none that can
+            be relied on. Absent otherwise. A value a client does not know
+            should be shown as written.
+            `inherited_not_found`, `inherited_lookup_failed`,
+            `inherited_repository_refused`: a parent pom or BOM that might
+            have supplied it could not be obtained.
+            `profile_managed` (0.29.215): a Maven profile of the build
+            manages the dependency, and which profiles a build activates is
+            not known, so the version the pom would give with no profile
+            active is withheld.
+            `platforms_disagree` (0.29.215): Gradle; more than one platform
+            (or a platform and Spring's dependency-management plugin) gives
+            the dependency a version, and they do not agree in a way that
+            can be settled.
+            `value_not_read` (0.29.215): Gradle; the version is written as
+            an expression too large to be read whole.
         license:
           type: string
           description: The license as the registry reported it (not normalized). Absent when unknown.

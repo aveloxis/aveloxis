@@ -76,7 +76,7 @@ func TestAReasonDoesNotDependOnWhatWasReadBefore(t *testing.T) {
 		"q/pom.xml": "<project><parent><groupId>t</groupId><artifactId>p</artifactId><version>1</version><relativePath>../p</relativePath></parent><artifactId>q</artifactId>" +
 			"<dependencies>" + r4dep("g", "nowhere", "") + "</dependencies></project>",
 	}
-	root := writeTree(t, files)
+	root := writeTree(t, oneBuild(files))
 	read := func(order ...string) map[string]string {
 		w := NewWalk(root, nil)
 		w.SetPomSource(failingPomSource{})

@@ -88,12 +88,12 @@ p3.txt	R05 DO use_variable; nested CREATE FUNCTION sql inside EXECUTE	assign
 p3.txt	R06 plpgsql use_variable; fill with stored shadowed by var: COALESCE(fe,$1)	assign
 p3.txt	R07 variable_conflict in a comment, real default error	assign
 p3.txt	R08 variable_conflict use_column in string literal later in the body	assign
-p3.txt	R09 hash-operator lookalike: x # variable_conflict use_column as expression	pass
+p3.txt	R09 hash-operator lookalike: x # variable_conflict use_column as expression	assign
 p3.txt	R10 two directives: use_column then use_variable (last wins in PG?)	assign
 p3.txt	R11 label-qualified	assign
 p3.txt	R12 loop record	assign
 p3.txt	R13 loop record over target (stored through a record)	assign
-p3.txt	R14 sql fn param named fe: guard is column (ok accept)	pass
+p3.txt	R14 sql fn param named fe: guard is column (ok accept)	assign
 p3.txt	R15 sql fn named like table, qualified param	assign
 p3.txt	R16 insert as excluded	assign
 p3.txt	R17 conflict update pnn stored qualified by schema.table	pass

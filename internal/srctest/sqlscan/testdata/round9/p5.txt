@@ -1,0 +1,26 @@
+@@ K01 view over foreign table (M16 flip)
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_ft h WHERE h.repo_id = r.repo_id
+@@ K02 view over unknown relation
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_unk h WHERE h.repo_id = r.repo_id
+@@ K03 view over other + view over target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_mix h WHERE h.id = r.repo_id
+@@ K04 view whose body uses alias-less derived over target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.v_noalias h WHERE h.repo_id = r.repo_id
+@@ K05 CTAS from alias-less derived over target
+UPDATE aveloxis_data.repos r SET ar = h.ar FROM aveloxis_data.cp_noalias h WHERE h.repo_id = r.repo_id
+@@ K06 deep 1000 nested (M46 flip) -- see deep probe
+UPDATE aveloxis_data.repos SET ar = $1
+@@ K07 write THROUGH alias-less: UPDATE target is fine; DELETE USING alias-less
+DELETE FROM aveloxis_data.repos r USING (SELECT x.repo_id FROM aveloxis_data.repos x) WHERE repo_id = r.repo_id
+@@ K08 alias-less derived containing a data-modifying CTE? (invalid) / INSERT source alias-less with RETURNING feed
+WITH moved AS (DELETE FROM aveloxis_data.repos WHERE repo_id = $1 RETURNING *) INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT rid, a FROM (SELECT $2::int AS rid, m.ar AS a FROM moved m) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ K09 GreatestNonNull with incoming from alias-less (strict operand: should refuse)
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, prev) FROM (SELECT x.repo_id AS rid, x.g AS prev FROM aveloxis_data.repos x) WHERE rid = r.repo_id + 1
+@@ K10 PN from alias-less
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(prev, ''), r.pn) FROM (SELECT x.repo_id AS rid, x.pn AS prev FROM aveloxis_data.repos x) WHERE rid = r.repo_id + 1
+@@ K11 fill guarded bare from alias-less
+UPDATE aveloxis_data.repos r SET fe = prev FROM (SELECT x.repo_id AS rid, x.fe AS prev FROM aveloxis_data.repos x) WHERE rid = r.repo_id + 1 AND r.fe IS NULL
+@@ K12 generated sibling (catalog knows no columns)
+UPDATE aveloxis_data.repos SET ar = ar_generated_copy
+@@ K13 alias-less incoming batch lateral-with bare (S8-12 class)
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, c) FROM aveloxis_data.other o, LATERAL (SELECT secret AS c FROM unnest($1::int[]) t(id)) WHERE o.id = r.repo_id

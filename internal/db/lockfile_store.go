@@ -23,6 +23,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -167,6 +168,73 @@ type LockfileRows struct {
 // two megabytes, and one round trip.
 const lockfileBatchRows = 5000
 
+// rowBatch queues row statements and sends them limit at a time: what it
+// holds is at most one batch of limit statements, whatever is written
+// through it, and each statement is sent once.
+type rowBatch struct {
+	limit  int
+	queued pgx.Batch
+	send   func(*pgx.Batch) error
+}
+
+// queue adds one statement, and sends the batch when it has reached limit.
+func (b *rowBatch) queue(sql string, args ...any) error {
+	b.queued.Queue(sql, args...)
+	if b.queued.Len() < b.limit {
+		return nil
+	}
+	return b.flush()
+}
+
+// flush sends whatever is queued. The batch is let go whether or not the
+// send succeeds: a failed send ends the transaction it was part of.
+func (b *rowBatch) flush() error {
+	if b.queued.Len() == 0 {
+		return nil
+	}
+	sent := b.queued
+	b.queued = pgx.Batch{}
+	return b.send(&sent)
+}
+
+// LockfileSnapshotRows is the most rows (lockfiles, packages and edges
+// together, the Go closure and the rows carried for failed lockfiles
+// included) one repository's lockfile snapshot may have; a snapshot of more
+// is refused whole with ErrLockfileSnapshotTooLarge and the previous one
+// stands (0.29.216, review round 9).
+//
+// It is here because the rows written are read back WHOLE by what uses them
+// (the SBOM, the vulnerability scan's targets, the next analysis's carry of
+// a failed lockfile), so nothing bounded what those hold; this one number
+// bounds all of them, for every snapshot written since.
+//
+// PROVISIONAL, sized to the fleet (operator, 2026-11-21: "update the cap to
+// fit the largest repositories in the fleet"): the largest snapshot stored
+// on either production database that day is 920,550 rows (113 lockfiles,
+// 267,607 packages and 652,830 edges, one repository; the next are 894,772
+// and 508,759), and the limit is four times that, rounded up to the
+// million. Four, so that a repository of the fleet can grow severalfold
+// before it is refused, and so that the limit stays above the Go module
+// graph's own bound (collector.goModGraphLines, 2,000,000) plus the largest
+// snapshot: a graph the expansion completes is never refused here for its
+// size alone. The cost of the room: an SPDX document allocates about
+// 1.6 GiB per million rows while it is built (measured at 300,000 packages
+// and 700,000 edges), so about 6.4 GiB in one worker at the limit;
+// bounding the memory those readers take, and not only the rows, is the
+// vulnerability program's chunk 3.
+const LockfileSnapshotRows = 4_000_000
+
+// ErrLockfileSnapshotTooLarge: the snapshot handed to a replace has more
+// than LockfileSnapshotRows rows. Nothing of it was kept.
+var ErrLockfileSnapshotTooLarge = errors.New("the lockfile snapshot has more rows than are kept for one repository")
+
+// lockfileSnapshotTakes adds a piece's rows to the count taken so far and
+// reports whether the snapshot is still inside LockfileSnapshotRows.
+func lockfileSnapshotTakes(taken int, r LockfileRows) (int, bool) {
+	taken += len(r.Inventory) + len(r.Packages) + len(r.Edges)
+	return taken, taken <= LockfileSnapshotRows
+}
+
 // ReplaceRepoLockfileSnapshotFrom is ReplaceRepoLockfileSnapshot for a
 // caller that does not hold the snapshot (0.29.215): rows is called inside
 // the one transaction and hands the snapshot over piece by piece through
@@ -176,6 +244,10 @@ const lockfileBatchRows = 5000
 // lockfile, for the analysis). Before it, every row of every lockfile of a
 // repository was built in the worker first: 1.2 times the lockfiles' bytes,
 // 1.4 GiB for ninety-five lockfiles of 12 MB (review round 8).
+//
+// A snapshot of more than LockfileSnapshotRows rows is refused whole, when
+// the piece that passes the count is handed over, before a row of that piece
+// is sent.
 //
 // Everything else is ReplaceRepoLockfileSnapshot's: the three DELETEs, the
 // same INSERTs with the same conflict arms, the coverage record's failed
@@ -225,20 +297,15 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshotFrom(ctx context.Context, rep
 			return err
 		}
 
-		batch := &pgx.Batch{}
-		// send sends what is queued when it has reached lockfileBatchRows,
-		// or whatever is queued when all is true.
-		send := func(all bool) error {
-			if batch.Len() == 0 || (!all && batch.Len() < lockfileBatchRows) {
-				return nil
-			}
-			err := tx.SendBatch(ctx, batch).Close()
-			batch = &pgx.Batch{}
-			return err
-		}
+		batch := &rowBatch{limit: lockfileBatchRows, send: func(b *pgx.Batch) error { return tx.SendBatch(ctx, b).Close() }}
+		taken := 0
 		write := func(r LockfileRows) error {
+			var inside bool
+			if taken, inside = lockfileSnapshotTakes(taken, r); !inside {
+				return fmt.Errorf("%w: more than %d", ErrLockfileSnapshotTooLarge, LockfileSnapshotRows)
+			}
 			for _, inv := range r.Inventory {
-				batch.Queue(`
+				if err := batch.queue(`
 				INSERT INTO aveloxis_data.repo_lockfiles
 					(repo_id, ecosystem, lockfile_path, lockfile_kind,
 					 entry_count, direct_count, data_source, data_collection_date)
@@ -250,13 +317,12 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshotFrom(ctx context.Context, rep
 					direct_count = EXCLUDED.direct_count,
 					data_collection_date = NOW()`,
 					repoID, inv.Ecosystem, inv.LockfilePath, inv.LockfileKind,
-					inv.EntryCount, inv.DirectCount)
-				if err := send(false); err != nil {
+					inv.EntryCount, inv.DirectCount); err != nil {
 					return err
 				}
 			}
 			for _, p := range r.Packages {
-				batch.Queue(`
+				if err := batch.queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_packages
 					(repo_id, ecosystem, package_name, resolved_version,
 					 lockfile_path, direct, dependency_scope, purl_namespace, data_source, data_collection_date,
@@ -264,21 +330,19 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshotFrom(ctx context.Context, rep
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'analysis', NOW(), NULLIF($9, ''))
 				ON CONFLICT (repo_id, lockfile_path, package_name, resolved_version) DO NOTHING`,
 					repoID, p.Ecosystem, p.PackageName, p.ResolvedVersion, p.LockfilePath,
-					p.Direct, p.Scope, p.Namespace, packageKeyOrEmpty(p.Ecosystem, p.PackageName))
-				if err := send(false); err != nil {
+					p.Direct, p.Scope, p.Namespace, packageKeyOrEmpty(p.Ecosystem, p.PackageName)); err != nil {
 					return err
 				}
 			}
 			for _, e := range r.Edges {
-				batch.Queue(`
+				if err := batch.queue(`
 				INSERT INTO aveloxis_data.repo_lockfile_edges
 					(repo_id, ecosystem, lockfile_path, parent_name,
 					 parent_version, child_name, child_constraint, data_source, data_collection_date)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, 'analysis', NOW())
 				ON CONFLICT (repo_id, lockfile_path, parent_name, parent_version, child_name) DO NOTHING`,
 					repoID, e.Ecosystem, e.LockfilePath, e.ParentName,
-					e.ParentVersion, e.ChildName, e.ChildConstraint)
-				if err := send(false); err != nil {
+					e.ParentVersion, e.ChildName, e.ChildConstraint); err != nil {
 					return err
 				}
 			}
@@ -287,7 +351,7 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshotFrom(ctx context.Context, rep
 		if err := rows(write); err != nil {
 			return err
 		}
-		if err := send(true); err != nil {
+		if err := batch.flush(); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `

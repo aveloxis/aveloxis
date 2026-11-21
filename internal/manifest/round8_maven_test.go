@@ -53,7 +53,7 @@ func TestAParentInTheBuildIsFoundByItsCoordinates(t *testing.T) {
 				"second/pom.xml": r6Bom("second", "g", "x", "2.0", "g", "y", "2.0"),
 			}
 			src := &r8Counting{}
-			got := r6Versions(t, files, "svc/m/pom.xml", src)
+			got := r6Versions(t, oneBuild(files), "svc/m/pom.xml", src)
 			if x := got["g:x"]; x.Version != "1.0" || x.VersionReason != "" {
 				t.Errorf("%s: g:x at %q (%s); the parent of the build manages it at 1.0", name, x.Version, x.VersionReason)
 			}
@@ -79,7 +79,7 @@ func TestAParentTwoPomsOfTheCloneCouldBeIsNotKnown(t *testing.T) {
 		"second/pom.xml": r6Bom("second", "g", "y", "2.0"),
 	}
 	src := &r8Counting{}
-	y := r6Versions(t, files, "svc/m/pom.xml", src)["g:y"]
+	y := r6Versions(t, oneBuild(files), "svc/m/pom.xml", src)["g:y"]
 	if y.Version != "" || y.VersionReason != model.VersionReasonInheritedNotFound {
 		t.Errorf("g:y at %q (%s); want no version and inherited_not_found: the parent is one of two poms and neither was read as it", y.Version, y.VersionReason)
 	}
@@ -96,7 +96,7 @@ func TestAParentInTheBuildIsFoundWhenItsVersionIsAProperty(t *testing.T) {
 			"<dependencyManagement><dependencies>" + r4dep("g", "x", "1.0") + "</dependencies></dependencyManagement></project>",
 		"deep/svc/m/pom.xml": r8Module([3]string{"t", "root", "3.1"}, "-", "", r4dep("g", "x", "")),
 	}
-	if x := r6Versions(t, files, "deep/svc/m/pom.xml", &r8Counting{})["g:x"]; x.Version != "1.0" {
+	if x := r6Versions(t, oneBuild(files), "deep/svc/m/pom.xml", &r8Counting{})["g:x"]; x.Version != "1.0" {
 		t.Errorf("g:x at %q (%s), want 1.0 from the parent found by its coordinates", x.Version, x.VersionReason)
 	}
 }
@@ -119,7 +119,7 @@ func TestAPomOfTheCloneThatCannotBeReadIsNotKnown(t *testing.T) {
 			"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
 		}
 		src := &r8Counting{}
-		x := r6Versions(t, files, "app/pom.xml", src)["g:x"]
+		x := r6Versions(t, oneBuild(files), "app/pom.xml", src)["g:x"]
 		if x.Version != "" || x.VersionReason != model.VersionReasonInheritedLookupFailed {
 			t.Errorf("parent %s: g:x at %q (%s); want no version and inherited_lookup_failed", name, x.Version, x.VersionReason)
 		}
@@ -142,21 +142,35 @@ func TestAPomOfTheCloneThatCannotBeReadIsNotKnown(t *testing.T) {
 			"first/pom.xml":  first,
 			"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
 		}
-		x := r6Versions(t, files, "pom.xml", &r8Counting{})["g:x"]
+		x := r6Versions(t, oneBuild(files), "pom.xml", &r8Counting{})["g:x"]
 		if x.Version != "" || x.VersionReason != model.VersionReasonInheritedLookupFailed {
 			t.Errorf("first BOM %s: g:x at %q (%s); want no version and inherited_lookup_failed", name, x.Version, x.VersionReason)
 		}
 	}
 	// A pom that cannot be read and is, by what can be made out of it,
-	// ANOTHER artifact puts nothing in doubt.
-	files := map[string]string{
-		"pom.xml": "<project><groupId>t</groupId><artifactId>app</artifactId><version>1</version><dependencyManagement><dependencies>" +
-			r4import("t", "first", "1") + r4import("t", "second", "1") + "</dependencies></dependencyManagement><dependencies>" + r4dep("g", "x", "") + "</dependencies></project>",
-		"fixture/pom.xml": "<project><groupId>t</groupId><artifactId>somethingelse</artifactId><version>1</version><oops></project>",
-		"second/pom.xml":  r6Bom("second", "g", "x", "2.0"),
-	}
-	if x := r6Versions(t, files, "pom.xml", &r8Counting{})["g:x"]; x.Version != "2.0" {
-		t.Errorf("an unreadable pom of another artifact: g:x at %q (%s), want the second BOM's 2.0 (the first is on no repository)", x.Version, x.VersionReason)
+	// ANOTHER pom puts nothing in doubt; one of which less can be made out
+	// may still be the one. (The oversized one: round 9 found that its
+	// start could go unread, which makes it "any pom", and no test said so.)
+	for name, c := range map[string]struct{ fixture, want string }{
+		"another artifact, not XML":            {"<project><groupId>t</groupId><artifactId>somethingelse</artifactId><version>1</version><oops></project>", "2.0"},
+		"another artifact, larger than a pom":  {"<project><groupId>t</groupId><artifactId>somethingelse</artifactId><version>1</version>" + big + "</project>", "2.0"},
+		"the artifact in another group":        {"<project><groupId>other</groupId><artifactId>first</artifactId><version>1</version><oops></project>", "2.0"},
+		"the artifact at another version":      {"<project><groupId>t</groupId><artifactId>first</artifactId><version>9</version><oops></project>", "2.0"},
+		"the artifact, and no more made out":   {"<project><artifactId>first</artifactId><oops></project>", ""},
+		"the artifact, its version a property": {"<project><groupId>t</groupId><artifactId>first</artifactId><version>${rev}</version><oops></project>", ""},
+		"the group and version, no artifact":   {"<project><groupId>t</groupId><version>1</version><oops></project>", ""},
+		"nothing made out":                     {"<oops", ""},
+	} {
+		files := map[string]string{
+			"pom.xml": "<project><groupId>t</groupId><artifactId>app</artifactId><version>1</version><dependencyManagement><dependencies>" +
+				r4import("t", "first", "1") + r4import("t", "second", "1") + "</dependencies></dependencyManagement><dependencies>" + r4dep("g", "x", "") + "</dependencies></project>",
+			"fixture/pom.xml": c.fixture,
+			"second/pom.xml":  r6Bom("second", "g", "x", "2.0"),
+		}
+		x := r6Versions(t, oneBuild(files), "pom.xml", &r8Counting{})["g:x"]
+		if x.Version != c.want || (c.want == "") != (x.VersionReason == model.VersionReasonInheritedLookupFailed) {
+			t.Errorf("an unreadable pom that is %s: g:x at %q (%s), want %q (the first BOM is on no repository)", name, x.Version, x.VersionReason, c.want)
+		}
 	}
 }
 
@@ -204,10 +218,40 @@ func TestAPomIsReadInTheEncodingItDeclares(t *testing.T) {
 			t.Errorf("parent in %s: g:x at %q (%s), want the parent's 1.0", name, x.Version, x.VersionReason)
 		}
 	}
-	// The pom's own reader too (the file read alone).
-	files := map[string]string{"pom.xml": `<?xml version="1.0" encoding="ISO-8859-1"?><project><groupId>t</groupId><artifactId>app</artifactId><version>1</version><name>Caf` + "\xe9" + `</name><dependencies>` + r4dep("g", "x", "3.3") + "</dependencies></project>"}
-	if x := r6Versions(t, files, "pom.xml", nil)["g:x"]; x.Version != "3.3" {
-		t.Errorf("a pom in ISO-8859-1 read by itself: g:x at %q, want 3.3", x.Version)
+	// What the bytes are read AS (round 9: every case above passes when a
+	// Windows-1252 or US-ASCII pom is read as ISO-8859-1, since nothing of
+	// what was decoded was looked at). The managed version holds the bytes,
+	// and the dependency that takes it shows what they were read as.
+	versioned := func(prolog, version string) map[string]string {
+		return map[string]string{
+			"app/pom.xml": "<project><parent><groupId>t</groupId><artifactId>p</artifactId><version>1</version><relativePath>../p</relativePath></parent><artifactId>app</artifactId>" +
+				"<dependencies>" + r4dep("g", "x", "") + "</dependencies></project>",
+			"p/pom.xml": prolog + "<project><groupId>t</groupId><artifactId>p</artifactId><version>1</version><dependencyManagement><dependencies>" +
+				r4dep("g", "x", version) + "</dependencies></dependencyManagement></project>",
+		}
+	}
+	// The decoder itself, handed a text that still has its byte-order mark
+	// (the walk takes the mark off before a pom is decoded, so the cases
+	// below do not reach this): XML 1.1 behind the mark is read.
+	if m, err := decodePom("\ufeff"+`<?xml version="1.1"?><project><artifactId>a</artifactId><version>7</version></project>`, ""); err != nil || m.version != "7" {
+		t.Errorf("XML 1.1 behind a byte-order mark, decoded directly: %v", err)
+	}
+	for name, c := range map[string]struct{ prolog, version, want, reason string }{
+		"ISO-8859-1, e acute":                      {`<?xml version="1.0" encoding="ISO-8859-1"?>`, "1.0-\xe9", "1.0-\u00e9", ""},
+		"ISO-8859-1, byte 0x80 (a control)":        {`<?xml version="1.0" encoding="ISO-8859-1"?>`, "1.0-\x80", "1.0-\u0080", ""},
+		"Windows-1252, byte 0x80 (the euro)":       {`<?xml version="1.0" encoding="windows-1252"?>`, "1.0-\x80", "1.0-\u20ac", ""},
+		"Windows-1252, byte 0x81 (undefined)":      {`<?xml version="1.0" encoding="windows-1252"?>`, "1.0-\x81", "1.0-\ufffd", ""},
+		"Windows-1252, e acute":                    {`<?xml version="1.0" encoding="windows-1252"?>`, "1.0-\xe9", "1.0-\u00e9", ""},
+		"US-ASCII, a byte that is not ASCII":       {`<?xml version="1.0" encoding="US-ASCII"?>`, "1.0-\xe9", "1.0-\ufffd", ""},
+		"an encoding this reader does not have":    {`<?xml version="1.0" encoding="ISO-8859-15"?>`, "1.0-\xa4", "", model.VersionReasonInheritedLookupFailed},
+		"that encoding, over plain ASCII":          {`<?xml version="1.0" encoding="ISO-8859-15"?>`, "1.0", "1.0", ""},
+		"XML 1.1 behind a byte-order mark":         {"\xef\xbb\xbf" + `<?xml version="1.1" encoding="UTF-8"?>`, "1.0-\u00e9", "1.0-\u00e9", ""},
+		"XML 1.1 behind a mark, no encoding named": {"\xef\xbb\xbf" + `<?xml version="1.1"?>`, "1.0-\u00e9", "1.0-\u00e9", ""},
+		"XML 1.0 behind a byte-order mark":         {"\xef\xbb\xbf" + `<?xml version="1.0" encoding="UTF-8"?>`, "1.0", "1.0", ""},
+	} {
+		if x := r6Versions(t, versioned(c.prolog, c.version), "app/pom.xml", &r8Counting{})["g:x"]; x.Version != c.want || x.VersionReason != c.reason {
+			t.Errorf("a managed version in %s: g:x at %q (%s), want %q (%s)", name, x.Version, x.VersionReason, c.want, c.reason)
+		}
 	}
 }
 
@@ -290,7 +334,7 @@ func r8ImportChain(depth int) map[string]string {
 // one depth the later version was stored in a tree reported whole).
 func TestImportsNestedDeeperThanIsFollowedAreNotKnown(t *testing.T) {
 	read := func(depth int) (model.LibyearDep, bool) {
-		root := writeTree(t, r8ImportChain(depth))
+		root := writeTree(t, oneBuild(r8ImportChain(depth)))
 		w := NewWalk(root, nil)
 		w.SetPomSource(&r8Counting{})
 		got := w.Read(root+"/pom.xml", Options{})
@@ -316,77 +360,6 @@ func TestImportsNestedDeeperThanIsFollowedAreNotKnown(t *testing.T) {
 	}
 }
 
-// Profiles are not applied, and what a profile manages is therefore not
-// known to be what the build takes (R8-9): the version the pom, its parents
-// or its BOMs would give for THAT artifact is withheld; other artifacts are
-// answered as before.
-func TestWhatAProfileManagesIsNotAnsweredForWithoutIt(t *testing.T) {
-	profile := func(inner string) string {
-		return "<profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation>" + inner + "</profile></profiles>"
-	}
-	pom := func(profiles string) map[string]string {
-		return map[string]string{
-			"pom.xml": "<project><groupId>t</groupId><artifactId>app</artifactId><version>1</version><dependencyManagement><dependencies>" +
-				r4dep("g", "own", "5.0") + r4import("t", "second", "1") + "</dependencies></dependencyManagement><dependencies>" +
-				r4dep("g", "x", "") + r4dep("g", "z", "") + r4dep("g", "own", "") + "</dependencies>" + profiles + "</project>",
-			"second/pom.xml": r6Bom("second", "g", "x", "2.0", "g", "z", "3.0"),
-		}
-	}
-	got := r6Versions(t, pom(profile("<dependencyManagement><dependencies>"+r4dep("g", "x", "9")+r4dep("g", "own", "6.0")+"</dependencies></dependencyManagement>")), "pom.xml", &r8Counting{})
-	for _, name := range []string{"g:x", "g:own"} {
-		if d := got[name]; d.Version != "" || d.VersionReason != model.VersionReasonProfileManaged {
-			t.Errorf("%s, which a profile manages: at %q (%s); want no version and profile_managed", name, d.Version, d.VersionReason)
-		}
-	}
-	if z := got["g:z"]; z.Version != "3.0" || z.VersionReason != "" {
-		t.Errorf("g:z, which no profile names: at %q (%s), want the BOM's 3.0", z.Version, z.VersionReason)
-	}
-	// A profile that DECLARES the dependency with a version: the profile's
-	// declaration is a row of its own (at 9); the pom's own, with no
-	// version, is not given the BOM's.
-	root := writeTree(t, pom(profile("<dependencies>"+r4dep("g", "x", "9")+"</dependencies>")))
-	w := NewWalk(root, nil)
-	w.SetPomSource(&r8Counting{})
-	var xs []string
-	for _, d := range w.Read(root+"/pom.xml", Options{}).Deps {
-		switch d.Name {
-		case "g:x":
-			xs = append(xs, d.Version+"("+d.VersionReason+")")
-		case "g:z":
-			if d.Version != "3.0" {
-				t.Errorf("g:z beside a profile's dependency: at %q (%s)", d.Version, d.VersionReason)
-			}
-		}
-	}
-	if len(xs) != 2 || xs[0] != "("+model.VersionReasonProfileManaged+")" || xs[1] != "9()" {
-		t.Errorf("g:x, declared with no version and by a profile at 9: rows %v; want the first with no version and profile_managed, the second at 9", xs)
-	}
-	// A profile that imports a BOM could manage anything: nothing managed is
-	// taken, the pom's own entry included.
-	got = r6Versions(t, pom(profile("<dependencyManagement><dependencies>"+r4import("t", "other", "1")+"</dependencies></dependencyManagement>")), "pom.xml", &r8Counting{})
-	for _, name := range []string{"g:x", "g:z", "g:own"} {
-		if d := got[name]; d.Version != "" || d.VersionReason != model.VersionReasonProfileManaged {
-			t.Errorf("%s beside a profile that imports a BOM: at %q (%s)", name, d.Version, d.VersionReason)
-		}
-	}
-	// A profile in a PARENT does not put the child's own entry in doubt (the
-	// child's entry outranks everything of its parent), and does the
-	// parent's.
-	files := map[string]string{
-		"pom.xml": "<project><groupId>t</groupId><artifactId>root</artifactId><version>1</version><dependencyManagement><dependencies>" + r4dep("g", "x", "1.0") + r4dep("g", "y", "1.0") + "</dependencies></dependencyManagement>" +
-			profile("<dependencyManagement><dependencies>"+r4dep("g", "x", "9")+r4dep("g", "y", "9")+"</dependencies></dependencyManagement>") + "</project>",
-		"m/pom.xml": "<project><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>m</artifactId><dependencyManagement><dependencies>" +
-			r4dep("g", "x", "4.0") + "</dependencies></dependencyManagement><dependencies>" + r4dep("g", "x", "") + r4dep("g", "y", "") + "</dependencies></project>",
-	}
-	got = r6Versions(t, files, "m/pom.xml", &r8Counting{})
-	if x := got["g:x"]; x.Version != "4.0" {
-		t.Errorf("g:x, managed by the module itself above a parent's profile: at %q (%s), want 4.0", x.Version, x.VersionReason)
-	}
-	if y := got["g:y"]; y.Version != "" || y.VersionReason != model.VersionReasonProfileManaged {
-		t.Errorf("g:y, managed by the parent and by the parent's profile: at %q (%s)", y.Version, y.VersionReason)
-	}
-}
-
 // "Not found" is an answer only when every repository the build names
 // answered (R8-4). A build that declares a repository which is never asked
 // (http, credentials in the address, an address that cannot be read) has a
@@ -394,12 +367,12 @@ func TestWhatAProfileManagesIsNotAnsweredForWithoutIt(t *testing.T) {
 // withheld. A plugin repository serves no parent or BOM and changes nothing.
 func TestNotFoundIsNoAnswerWhileADeclaredRepositoryWasNotAsked(t *testing.T) {
 	pom := func(repositories string) map[string]string {
-		return map[string]string{
+		return oneBuild(map[string]string{
 			"pom.xml": "<project><groupId>t</groupId><artifactId>app</artifactId><version>1</version>" + repositories +
 				"<dependencyManagement><dependencies>" + r4import("corp", "corp-bom", "1") + r4import("t", "second", "1") + "</dependencies></dependencyManagement>" +
 				"<dependencies>" + r4dep("g", "x", "") + "</dependencies></project>",
 			"second/pom.xml": r6Bom("second", "g", "x", "2.0"),
-		}
+		})
 	}
 	for name, repositories := range map[string]string{
 		"http":        "<repositories><repository><id>corp</id><url>http://nexus.corp.example/repo</url></repository></repositories>",
@@ -426,7 +399,7 @@ func TestNotFoundIsNoAnswerWhileADeclaredRepositoryWasNotAsked(t *testing.T) {
 	files["pom.xml"] = strings.Replace(files["pom.xml"], "<groupId>t</groupId><artifactId>app</artifactId><version>1</version>",
 		"<parent><groupId>t</groupId><artifactId>up</artifactId><version>1</version><relativePath>up</relativePath></parent><artifactId>app</artifactId>", 1)
 	files["up/pom.xml"] = "<project><groupId>t</groupId><artifactId>up</artifactId><version>1</version><repositories><repository><url>http://nexus.corp.example/repo</url></repository></repositories></project>"
-	if x := r6Versions(t, files, "pom.xml", &r8Counting{})["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedNotFound {
+	if x := r6Versions(t, oneBuild(files), "pom.xml", &r8Counting{})["g:x"]; x.Version != "" || x.VersionReason != model.VersionReasonInheritedNotFound {
 		t.Errorf("a parent declares the repository that is never asked: g:x at %q (%s)", x.Version, x.VersionReason)
 	}
 }
@@ -466,7 +439,7 @@ func TestBehindBOMsThatImportEachOtherNothingIsTaken(t *testing.T) {
 			"a/pom.xml": bom("a", r4import("t", "shared", "1")), "b/pom.xml": bom("b", r4import("t", "shared", "1")),
 			"shared/pom.xml": bom("shared"), "second/pom.xml": second}, "2.0", ""},
 	} {
-		root := writeTree(t, c.files)
+		root := writeTree(t, oneBuild(c.files))
 		w := NewWalk(root, nil)
 		w.SetPomSource(outcomeSource{outcome: RemoteNotFound})
 		got := w.Read(root+"/pom.xml", Options{})

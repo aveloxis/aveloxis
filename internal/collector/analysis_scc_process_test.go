@@ -538,3 +538,39 @@ func TestAnalyzeRepoLogsPhaseErrors(t *testing.T) {
 		t.Error("logAnalysisPhaseErrors must run after the last phase appends its error and before completion is reported — anywhere else it misses errors")
 	}
 }
+
+// A report of more files than a worker keeps rows for (0.29.216, review
+// round 9: scanSCC held every row, 215 bytes a file, with no bound: 1 GiB
+// at five million files) ends the scan as a FAILED scan: scc is stopped,
+// nothing reaches the store, and the previous snapshot stands. The limit is
+// the one a worker's own walk of a clone has (cloneWalkEntries).
+func TestScanSCCStopsAtMoreFilesThanAreKept(t *testing.T) {
+	if sccLaborRowsLimit != cloneWalkEntries {
+		t.Fatalf("sccLaborRowsLimit is %d in production, want cloneWalkEntries (%d): the variable is a test's seam, not a setting", sccLaborRowsLimit, cloneWalkEntries)
+	}
+	sccLaborRowsLimit = 3
+	t.Cleanup(func() { sccLaborRowsLimit = cloneWalkEntries })
+	file := func(i int) string { return fmt.Sprintf(`{"Location":"/w/f%d.go","Lines":1,"Code":1}`, i) }
+
+	// Exactly the limit is kept: the run goes on to the store.
+	fakeSCC(t, `printf '[{"Name":"Go","Files":[`+file(1)+`,`+file(2)+`,`+file(3)+`]}]'`)
+	if err := runScanSCC(t, context.Background(), 20*time.Second); !errors.Is(err, errStoreReached) {
+		t.Fatalf("a report of exactly the limit: %v, want the store reached", err)
+	}
+
+	// One more is not, and scc (which would go on for 30 s) is stopped.
+	fakeSCC(t, `printf '[{"Name":"Go","Files":[`+file(1)+`,`+file(2)+`,`+file(3)+`,`+file(4)+`,`+file(5)+`'
+sleep 30
+printf ']}]'`)
+	began := time.Now()
+	err := runScanSCC(t, context.Background(), 20*time.Second)
+	if !errors.Is(err, errSCCTooManyFiles) {
+		t.Fatalf("a report past the limit: %v, want errSCCTooManyFiles", err)
+	}
+	if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "signal: killed") {
+		t.Errorf("the scan's own stop is reported as a cancellation or as scc's death: %v", err)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("the scan took %s: scc was not stopped at the limit", took)
+	}
+}

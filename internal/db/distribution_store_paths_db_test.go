@@ -121,8 +121,14 @@ func TestADistributionScanIsStoredRotatedAndReadBack(t *testing.T) {
 	// scan rotates this repository's rows and no other's (round 8: the test
 	// looked at its own repository's history only, and a rotation of every
 	// repository's rows passed).
-	neighbour, _, _ := pathsRepo(t, store, "dist-nb", "aveloxis_data.repo_distribution_history", "aveloxis_data.repo_distribution")
+	neighbour, _, _ := pathsRepo(t, store, "dist-nb", "aveloxis_data.repo_distribution_history", "aveloxis_data.repo_distribution_manifest_history",
+		"aveloxis_data.repo_distribution", "aveloxis_data.repo_distribution_manifest")
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_distribution (repo_id, ecosystem, package_name, source) VALUES ($1, 'pypi', 'zz-paths-neighbour', 'deps.dev')`, neighbour)
+	// The neighbour's manifest and its scan state are its own too (round 9:
+	// the manifest rotation, the manifest delete, the manifest read and the
+	// scan stamp each passed with their repository predicate gone).
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_distribution_manifest (repo_id, manifest_path, manifest_type, package_name_declared) VALUES ($1, 'nb/setup.py', 'pypi', 'zz-paths-neighbour')`, neighbour)
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET distribution_scan_complete = TRUE, distribution_last_run = NULL, distribution_failed_attempts = 3 WHERE repo_id = $1`, neighbour)
 
 	// A second scan replaces the rows and rotates the first ones into
 	// history; a row for the same key is updated in place within a scan.
@@ -163,5 +169,11 @@ func TestADistributionScanIsStoredRotatedAndReadBack(t *testing.T) {
 	}
 	if got := pathsText(t, store, `SELECT distribution_scan_complete::text FROM aveloxis_data.repos WHERE repo_id = $1`, repoID); got != "false" {
 		t.Errorf("distribution_scan_complete after a scan that says it is not complete: %q", got)
+	}
+	if got := pathsText(t, store, `SELECT (SELECT COUNT(*) FROM aveloxis_data.repo_distribution_manifest WHERE repo_id = $1) || ' manifest, ' ||
+		(SELECT COUNT(*) FROM aveloxis_data.repo_distribution_manifest_history WHERE repo_id = $1) || ' in history, complete ' ||
+		distribution_scan_complete || ', run ' || (distribution_last_run IS NOT NULL) || ', failed ' || distribution_failed_attempts
+		FROM aveloxis_data.repos WHERE repo_id = $1`, neighbour); got != "1 manifest, 0 in history, complete true, run false, failed 3" {
+		t.Errorf("the NEIGHBOUR after this repository's scan: %s; want its one manifest, none in history, its scan state as seeded", got)
 	}
 }

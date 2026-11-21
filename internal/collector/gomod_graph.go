@@ -57,23 +57,56 @@ const goModGraphTimeout = 5 * time.Minute
 // has the same N, prints N*N edges with no network; 228 KB of go.mod
 // became nine million edges and 2.75 GB in the worker).
 //
-// PROVISIONAL, both. goModGraphLines is the lines taken for one
-// repository, over all its modules and both commands; past it the
-// expansion is abandoned as INCOMPLETE, so the stored closure is kept.
-// Derivation: this module's own graph is 121 lines; a kubernetes-class
-// monorepo is some thirty modules of about three thousand lines each,
-// about 90,000; half a million is five times that, and at the measured
-// 142 bytes held per edge it is about 70 MiB at the bound.
-// goModOutputBytes is the output taken from one invocation: a line names
-// two modules with versions, about 100 bytes, so 64 MiB is more than the
-// line bound allows and exists for output that is not lines at all.
+// PROVISIONAL, all four. What is bounded is what the worker HOLDS for one
+// repository, over all its modules and both commands (0.29.216, review
+// round 9: the byte bound was per invocation and a line could be a
+// mebibyte, so 58 copies of one 699 KB go.mod with 4,000-byte module
+// paths were held at 3.7 GiB with every bound respected).
+//
+// goModHeldBytes is the text of the lines taken for one repository. A kept
+// edge holds its line once in the row and once more in the key that
+// removes duplicates within its module, and about 110 bytes of structure,
+// so at the bound a worker holds about twice this plus 110 bytes a line:
+// some 480 MiB at both bounds together, 150 MiB for the largest honest
+// shape measured (280 modules, 650,440 lines).
+// goModGraphLines is the count of those lines. It was 500,000, derived
+// from one kubernetes-class repository, and abandoned an honest monorepo
+// of 280 modules every cycle; with the bytes bounded it need only bound
+// the per-line structure, and is three times that monorepo.
+// goModLineBytes is the longest line taken: a graph line is two
+// `module@version` pairs, and a module path with its version must be a
+// path in the module cache, which PATH_MAX (4,096) bounds; twice that.
+// goModOutputBytes is the output taken from ONE invocation and exists for
+// output that is not lines at all.
 const (
-	goModGraphLines  = 500_000
+	goModGraphLines  = 2_000_000
+	goModHeldBytes   = 128 << 20
+	goModLineBytes   = 8 << 10
 	goModOutputBytes = 64 << 20
 )
 
-// errGoModGraphLines: the repository's expansion passed goModGraphLines.
-var errGoModGraphLines = errors.New("the Go module expansion printed more lines than are taken for one repository")
+// errGoModGraphLines: the repository's expansion passed one of the bounds
+// on what is held for it (its lines, their bytes, or one line's length).
+var errGoModGraphLines = errors.New("the Go module expansion is larger than is taken for one repository")
+
+// goModTaken counts what one repository's expansion has taken so far,
+// over all its modules and both commands.
+type goModTaken struct {
+	lines int
+	bytes int64
+	over  bool // a bound was passed
+}
+
+// take counts one line and reports whether the expansion is still inside
+// its bounds.
+func (g *goModTaken) take(line string) bool {
+	g.lines++
+	g.bytes += int64(len(line))
+	if len(line) > goModLineBytes || g.lines > goModGraphLines || g.bytes > goModHeldBytes {
+		g.over = true
+	}
+	return !g.over
+}
 
 // scanGoModGraph returns Go transitive package rows + requirement
 // edges for every go.mod module under workDir, plus a COMPLETE flag.
@@ -140,7 +173,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 	defer cancel()
 	complete = true
 	budgetWarned := false
-	lines := 0
+	taken := &goModTaken{}
 	for i, dir := range modDirs {
 		if errors.Is(rctx.Err(), context.Canceled) {
 			return packages, edges, false // shutdown: incomplete, the prior closure is preserved
@@ -154,15 +187,17 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 			break
 		}
 		var modOK bool
-		packages, edges, modOK = ac.goModGraphOne(rctx, repoID, goBin, workDir, dir, declared, packages, edges, &lines)
+		packages, edges, modOK = ac.goModGraphOne(rctx, repoID, goBin, workDir, dir, declared, packages, edges, taken)
 		if !modOK {
 			complete = false
 		}
-		if lines > goModGraphLines {
+		if taken.over {
 			// Said once, with what was dropped: the expansion is
 			// incomplete, and what was gathered is not used.
 			ac.logger.Warn("go mod graph: the expansion is larger than is taken for one repository — abandoned as INCOMPLETE (prior closure preserved)",
-				"repo_id", repoID, "lines_limit", goModGraphLines, "modules_processed", i+1, "modules_skipped", len(modDirs)-i-1)
+				"repo_id", repoID, "lines_taken", taken.lines, "bytes_taken", taken.bytes,
+				"lines_limit", goModGraphLines, "bytes_limit", goModHeldBytes, "line_bytes_limit", goModLineBytes,
+				"modules_processed", i+1, "modules_skipped", len(modDirs)-i-1)
 			return nil, nil, false
 		}
 	}
@@ -176,7 +211,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 }
 
 func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, goBin, workDir, dir string, declared map[string]bool,
-	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge, lines *int) ([]*model.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
+	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge, taken *goModTaken) ([]*model.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
@@ -194,14 +229,14 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// run hands each line the toolchain prints to each, and reports
 	// whether the invocation ran to its end. The output is never held
 	// whole: boundedLines stops the toolchain past goModOutputBytes, and
-	// the count shared by the repository's modules stops it past
-	// goModGraphLines.
+	// the counts shared by the repository's modules (goModTaken) stop it
+	// past what is held for one repository.
 	run := func(each func(line string), args ...string) bool {
 		cmd := exec.CommandContext(ctx, goBin, args...)
 		cmd.Dir = dir
 		cmd.Env = env
 		stderr, rerr := boundedLines(cmd, goModOutputBytes, func(line string) error {
-			if *lines++; *lines > goModGraphLines {
+			if !taken.take(line) {
 				return errGoModGraphLines
 			}
 			each(line)
@@ -210,7 +245,14 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 		if rerr != nil && errors.Is(ctx.Err(), context.Canceled) {
 			return false // shutdown killed the toolchain: not a module failure (pass 35); a budget DEADLINE still warns below
 		}
-		if errors.Is(rerr, errGoModGraphLines) {
+		if errors.Is(rerr, errOutputPastBound) {
+			// One invocation alone wrote more than is taken (or a line no
+			// scanner buffer holds): the same answer as the repository's
+			// bounds, so that nothing gathered so far is kept and no
+			// further module is run.
+			taken.over = true
+		}
+		if taken.over {
 			return false // the caller says so, once, for the repository
 		}
 		if rerr != nil {

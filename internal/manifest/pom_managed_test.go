@@ -82,7 +82,7 @@ const reactorApp = `<project><parent><groupId>org.r</groupId><artifactId>root</a
 const platformBOM = `<project><groupId>org.bom</groupId><artifactId>platform</artifactId><version>9.0</version><packaging>pom</packaging></project>`
 
 func TestManagedEntriesOfAWholeTreeAreNotInventoried(t *testing.T) {
-	_, res := readTree(t, nil, map[string]string{"pom.xml": reactorRoot, "app/pom.xml": reactorApp, "bom/pom.xml": platformBOM})
+	_, res := readTree(t, nil, oneBuild(map[string]string{"pom.xml": reactorRoot, "app/pom.xml": reactorApp, "bom/pom.xml": platformBOM}))
 	kept, unused := names(res.Kept), names(res.Unused)
 
 	// The dependencies stay, at the versions they really get.
@@ -120,13 +120,18 @@ func TestManagedEntriesOfAWholeTreeAreNotInventoried(t *testing.T) {
 // no note; the other reactor, and the broken fixture standing alone, do not
 // affect each other.
 func TestOnlyATreeReadWholeLosesItsManagedEntries(t *testing.T) {
+	// Each reactor has the BOM it imports as a module: a pom is found by its
+	// coordinates in the build of the pom that names them, and the two BOMs,
+	// one coordinate in two builds, are not two candidates (round 9).
+	withBOM := func(root string) string {
+		return strings.Replace(root, "<module>app</module>", "<module>app</module><module>bom</module>", 1)
+	}
 	second := strings.NewReplacer("org.r", "org.s", "<module>app</module>", "<module>app</module><module>gone</module>").Replace(reactorRoot)
 	secondApp := strings.ReplaceAll(reactorApp, "org.r", "org.s")
 	_, res := readTree(t, nil, map[string]string{
-		"one/pom.xml": reactorRoot, "one/app/pom.xml": reactorApp,
-		"two/pom.xml": second, "two/app/pom.xml": secondApp, // its second module does not exist
+		"one/pom.xml": withBOM(reactorRoot), "one/app/pom.xml": reactorApp, "one/bom/pom.xml": platformBOM,
+		"two/pom.xml": withBOM(second), "two/app/pom.xml": secondApp, "two/bom/pom.xml": platformBOM, // its second module does not exist
 		"fixtures/broken/pom.xml": "<project><groupId>",
-		"bom/pom.xml":             platformBOM,
 	})
 	kept, unused := names(res.Kept), names(res.Unused)
 	if !has(unused, "one/pom.xml com.acme:unused@3.0") || has(kept, "one/pom.xml com.acme:unused@3.0") {

@@ -169,12 +169,22 @@ when the inventory is older than the last attempt.
 Under the tiles a **caution** appears when the repository's lockfiles went unread at the
 last analysis (0.29.214), and only then. Exact versions and transitive dependencies come
 from lockfiles, so what the page shows below is then older than its date suggests, or
-lacks them. There are two sentences. When lockfile rows are stored: "Lockfiles last read
+lacks them. There are three sentences. When lockfile rows are stored: "Lockfiles last read
 2026-11-02; the latest read did not finish (reading them took more memory than allowed).
 Versions and transitive dependencies may be out of date." When none is stored:
 "Lockfiles could not be read (reading them took more memory than allowed). Transitive
-dependencies are not checked." A repository whose lockfiles were read, or that has none,
-shows nothing. What to do about it is in [troubleshooting](troubleshooting.md).
+dependencies are not checked." When some lockfiles were too large to read and the
+others were read at that analysis (0.29.216): "Some lockfiles could not be read (reading
+them would take more memory than allowed). Their versions and transitive dependencies may
+be out of date.", with no date. A repository whose lockfiles were read, or that has none,
+shows nothing.
+
+While the caution is up, no page says the repository has no vulnerabilities (0.29.216).
+The count is unchanged, because it is a true count of what was checked: a repository
+scanned with nothing found still shows 0 and "scanned" with its date, and where a page
+would have said "No known vulnerabilities recorded for this repository." it says
+"Scanned." with the caution beside it. The claim returns with the first reading of the
+lockfiles that completes. What to do about it is in [troubleshooting](troubleshooting.md).
 
 The count is a dash where a 0 would claim a check that did not happen: a repository
 never scanned with nothing found, one whose dependencies could not be sent for

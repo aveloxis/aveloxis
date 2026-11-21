@@ -93,7 +93,12 @@ func TestAnAlwaysRefreshValueIsMadeOfIncomingLeaves(t *testing.T) {
 		r8up + `s.v FROM (SELECT o.repo_id, o.ar AS v FROM aveloxis_data.other o JOIN aveloxis_data.repos x ON x.repo_id = o.repo_id) s WHERE s.repo_id = r.repo_id`: KindAssign,
 		// A table the text filled from the target holds its stored values.
 		`CREATE TABLE aveloxis_data.scratch AS SELECT repo_id, ar FROM aveloxis_data.repos; ` + r8up + `s.ar FROM aveloxis_data.scratch s WHERE s.repo_id = r.repo_id`: KindAssign,
-		`CREATE TABLE aveloxis_data.scratch AS SELECT repo_id, ar FROM aveloxis_data.other; ` + r8up + `s.ar FROM aveloxis_data.scratch s WHERE s.repo_id = r.repo_id`: "pass",
+		// Round 9: a table made from a query is not clean, whatever the
+		// query read (round 8 followed its sources and passed this one);
+		// and no table the write's own text makes is, however it is made.
+		`CREATE TABLE aveloxis_data.scratch AS SELECT repo_id, ar FROM aveloxis_data.other; ` + r8up + `s.ar FROM aveloxis_data.scratch s WHERE s.repo_id = r.repo_id`:                                                        KindAssign,
+		`CREATE TABLE aveloxis_data.scratch (repo_id int, ar text); INSERT INTO aveloxis_data.scratch SELECT repo_id, ar FROM aveloxis_data.repos; ` + r8up + `s.ar FROM aveloxis_data.scratch s WHERE s.repo_id = r.repo_id`: KindAssign,
+		`CREATE TEMP TABLE scratch (repo_id int, ar text); INSERT INTO scratch SELECT repo_id, ar FROM aveloxis_data.repos; ` + r8up + `s.ar FROM pg_temp.scratch s WHERE s.repo_id = r.repo_id`:                              KindAssign,
 		// A WITH query that names itself is judged once.
 		`WITH RECURSIVE t(n, v) AS (SELECT o.repo_id, o.ar FROM aveloxis_data.other o UNION ALL SELECT t.n + 1, t.v FROM t WHERE t.n < 3) ` + r8up + `t.v FROM t WHERE t.n = r.repo_id`:   "pass",
 		`WITH RECURSIVE t(n, v) AS (SELECT o.repo_id, o.ar FROM aveloxis_data.repos o UNION ALL SELECT t.n + 1, t.v FROM t WHERE t.n < 3) ` + r8up + `t.v FROM t WHERE t.n = r.repo_id`:   KindAssign,

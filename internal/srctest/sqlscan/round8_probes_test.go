@@ -32,7 +32,13 @@ var round8Files = []string{"a1.txt", "a2.txt", "a3.txt", "a4.txt", "b1.txt", "d1
 
 func round8Cases(t *testing.T, name string) []round8Case {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", "round8", name))
+	return probeCases(t, "round8", name)
+}
+
+// probeCases reads one file of a round's probes.
+func probeCases(t *testing.T, round, name string) []round8Case {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", round, name))
 	if err != nil {
 		t.Fatal(err)
 	}

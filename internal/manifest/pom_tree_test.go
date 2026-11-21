@@ -90,7 +90,7 @@ const bomPom = `<project>
 </project>`
 
 func TestAVersionlessPomDependencyTakesItsVersionFromTheTree(t *testing.T) {
-	root := writeTree(t, map[string]string{"pom.xml": parentPom, "app/pom.xml": childPom, "bom/pom.xml": bomPom})
+	root := writeTree(t, oneBuild(map[string]string{"pom.xml": parentPom, "app/pom.xml": childPom, "bom/pom.xml": bomPom}))
 	deps := pomDeps(t, root, "app/pom.xml")
 	for _, c := range []struct{ name, version, source, why string }{
 		{"com.fasterxml.jackson.core:jackson-databind", "2.15.2", SourceManaged, "the parent's management, through the parent's property"},
@@ -146,7 +146,7 @@ func TestThePomParentIsVerifiedByItsCoordinates(t *testing.T) {
 		"a relativePath above the clone":                        {map[string]string{"app/pom.xml": child("<relativePath>../../../../etc/pom.xml</relativePath>")}, ""},
 		"the parent's version differs from the ref's":           {map[string]string{"pom.xml": `<project><groupId>org.example</groupId><artifactId>parent</artifactId><version>9.0.0</version></project>`, "app/pom.xml": child("")}, ""},
 	} {
-		root := writeTree(t, c.files)
+		root := writeTree(t, oneBuild(c.files))
 		if got := pomDeps(t, root, "app/pom.xml")[jackson].Version; got != c.version {
 			t.Errorf("%s: version %q, want %q", name, got, c.version)
 		}
@@ -161,11 +161,11 @@ func TestAnAmbiguousBOMIsNotChosen(t *testing.T) {
 	<dependencies><dependency><groupId>io.netty</groupId><artifactId>netty-all</artifactId></dependency></dependencies></project>`
 	other := `<project><groupId>org.example.bom</groupId><artifactId>platform-bom</artifactId><version>7.0.0</version>
 	<dependencyManagement><dependencies><dependency><groupId>io.netty</groupId><artifactId>netty-all</artifactId><version>3.0.0</version></dependency></dependencies></dependencyManagement></project>`
-	one := writeTree(t, map[string]string{"pom.xml": app, "bom/pom.xml": bomPom})
+	one := writeTree(t, oneBuild(map[string]string{"pom.xml": app, "bom/pom.xml": bomPom}))
 	if got := pomDeps(t, one, "pom.xml")["io.netty:netty-all"]; got.Version != "4.1.100.Final" {
 		t.Errorf("one BOM in the tree: %+v", got)
 	}
-	two := writeTree(t, map[string]string{"pom.xml": app, "bom/pom.xml": bomPom, "templates/bom/pom.xml": other})
+	two := writeTree(t, oneBuild(map[string]string{"pom.xml": app, "bom/pom.xml": bomPom, "templates/bom/pom.xml": other}))
 	if got := pomDeps(t, two, "pom.xml")["io.netty:netty-all"]; got.Version != "" || got.VersionSource != "" {
 		t.Errorf("two poms with the BOM's coordinates: %+v; want no version chosen", got)
 	}

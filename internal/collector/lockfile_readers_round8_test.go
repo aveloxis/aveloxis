@@ -4,10 +4,14 @@
 package collector
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
@@ -66,17 +70,30 @@ func TestPackageLockV1NamesAfterANullAreNewEntries(t *testing.T) {
 // arrives.
 func TestEveryReasonTheReadersGiveCrossesTheChildBoundary(t *testing.T) {
 	dir := writeClone(t, map[string]string{
+		// A profile that is active by default declares g:x with a version:
+		// that declaration is the build's, so the managed one is not given
+		// (0.29.216: a profile's dependencyManagement alone no longer
+		// withholds; the default build applies it).
 		"profiled/pom.xml": "<project><groupId>t</groupId><artifactId>app</artifactId><version>1</version>" +
-			"<profiles><profile><id>p</id><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId><version>9</version></dependency></dependencies></dependencyManagement></profile></profiles>" +
+			"<dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId><version>1</version></dependency></dependencies></dependencyManagement>" +
+			"<profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId><version>9</version></dependency></dependencies></profile></profiles>" +
 			"<dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId></dependency></dependencies></project>",
 		"tied/build.gradle": "dependencies {\n implementation platform('t:a:1')\n implementation platform('t:b:1')\n implementation 'g:y'\n}\n",
-		"tied/a/pom.xml":    "<project><groupId>t</groupId><artifactId>a</artifactId><version>1</version><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>y</artifactId><version>1.0</version></dependency></dependencies></dependencyManagement></project>",
-		"tied/b/pom.xml":    "<project><groupId>t</groupId><artifactId>b</artifactId><version>1</version><dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>y</artifactId><version>1-0</version></dependency></dependencies></dependencyManagement></project>",
 		"long/build.gradle": "ext.v = ''" + strings.Repeat(" + ''", 6000) + " + '1'\ndependencies {\n implementation \"g:z:$v\"\n}\n",
 	})
+	// The two platforms are published ones (0.29.216: a pom of the clone is
+	// never a Gradle platform).
+	bom := func(artifact, version string) *manifest.RemotePom {
+		return &manifest.RemotePom{Group: "t", Artifact: artifact, Version: "1", Managed: []manifest.RemoteManaged{{Group: "g", Artifact: "y", Version: version}}}
+	}
+	src := &mapPomSource{poms: map[string]*manifest.RemotePom{"t:a:1": bom("a", "1.0"), "t:b:1": bom("b", "1-0")}, other: manifest.RemoteNotFound}
+	run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: 10}, testLimits(), src, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := map[string]string{}
-	for _, d := range mustDeclared(t, dir).Deps {
-		if d.VersionReason != "" {
+	for _, d := range run.decl.Deps {
+		if d.VersionReason != "" && !d.ManagedEntry {
 			got[d.Name] = d.VersionReason
 		}
 	}

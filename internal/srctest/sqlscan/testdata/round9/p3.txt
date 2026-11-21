@@ -1,0 +1,516 @@
+@@ P-fe0-ph
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, $1)
+@@ P-fe0-othercol
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, pn2)
+@@ P-fe0-othercolq
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, r.pn2)
+@@ P-fe0-const
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, 'x')
+@@ P-fe0-fnstored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, lower(r.fe))
+@@ P-fe0-caststored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, r.fe::text)
+@@ P-fe0-subtarget
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (SELECT x.fe FROM aveloxis_data.repos x LIMIT 1))
+@@ P-fe0-subother
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (SELECT o.fe FROM aveloxis_data.other o LIMIT 1))
+@@ P-fe0-subcond
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.fe = $2)))
+@@ P-fe0-fn
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, current_setting($1))
+@@ P-fe0-excl
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, excluded.fe)
+@@ P-fe0-wholerow
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (r).fe)
+@@ P-fe0-jsontable
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.fe')) j))
+@@ P-fe1-ph
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), $1)
+@@ P-fe1-othercol
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), pn2)
+@@ P-fe1-othercolq
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), r.pn2)
+@@ P-fe1-const
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), 'x')
+@@ P-fe1-fnstored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), lower(r.fe))
+@@ P-fe1-caststored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), r.fe::text)
+@@ P-fe1-subtarget
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), (SELECT x.fe FROM aveloxis_data.repos x LIMIT 1))
+@@ P-fe1-subother
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), (SELECT o.fe FROM aveloxis_data.other o LIMIT 1))
+@@ P-fe1-subcond
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.fe = $2)))
+@@ P-fe1-fn
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), current_setting($1))
+@@ P-fe1-excl
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), excluded.fe)
+@@ P-fe1-wholerow
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), (r).fe)
+@@ P-fe1-jsontable
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.fe')) j))
+@@ P-fe2-ph
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN $1 ELSE r.fe END
+@@ P-fe2-othercol
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN pn2 ELSE r.fe END
+@@ P-fe2-othercolq
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN r.pn2 ELSE r.fe END
+@@ P-fe2-const
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN 'x' ELSE r.fe END
+@@ P-fe2-fnstored
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN lower(r.fe) ELSE r.fe END
+@@ P-fe2-caststored
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN r.fe::text ELSE r.fe END
+@@ P-fe2-subtarget
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN (SELECT x.fe FROM aveloxis_data.repos x LIMIT 1) ELSE r.fe END
+@@ P-fe2-subother
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN (SELECT o.fe FROM aveloxis_data.other o LIMIT 1) ELSE r.fe END
+@@ P-fe2-subcond
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.fe = $2)) ELSE r.fe END
+@@ P-fe2-fn
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN current_setting($1) ELSE r.fe END
+@@ P-fe2-excl
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN excluded.fe ELSE r.fe END
+@@ P-fe2-wholerow
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN (r).fe ELSE r.fe END
+@@ P-fe2-jsontable
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.fe')) j) ELSE r.fe END
+@@ P-pn0-ph
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), r.pn)
+@@ P-pn0-othercol
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(pn2, ''), r.pn)
+@@ P-pn0-othercolq
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(r.pn2, ''), r.pn)
+@@ P-pn0-const
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF('x', ''), r.pn)
+@@ P-pn0-fnstored
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(lower(r.pn), ''), r.pn)
+@@ P-pn0-caststored
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(r.pn::text, ''), r.pn)
+@@ P-pn0-subtarget
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF((SELECT x.pn FROM aveloxis_data.repos x LIMIT 1), ''), r.pn)
+@@ P-pn0-subother
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF((SELECT o.pn FROM aveloxis_data.other o LIMIT 1), ''), r.pn)
+@@ P-pn0-subcond
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF((SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.pn = $2)), ''), r.pn)
+@@ P-pn0-fn
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(current_setting($1), ''), r.pn)
+@@ P-pn0-excl
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(excluded.pn, ''), r.pn)
+@@ P-pn0-wholerow
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF((r).pn, ''), r.pn)
+@@ P-pn0-jsontable
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF((SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.pn')) j), ''), r.pn)
+@@ P-pnn0-ph
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r.pnn)
+@@ P-pnn0-othercol
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(pn2, r.pnn)
+@@ P-pnn0-othercolq
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(r.pn2, r.pnn)
+@@ P-pnn0-const
+UPDATE aveloxis_data.repos r SET pnn = COALESCE('x', r.pnn)
+@@ P-pnn0-fnstored
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(lower(r.pnn), r.pnn)
+@@ P-pnn0-caststored
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(r.pnn::text, r.pnn)
+@@ P-pnn0-subtarget
+UPDATE aveloxis_data.repos r SET pnn = COALESCE((SELECT x.pnn FROM aveloxis_data.repos x LIMIT 1), r.pnn)
+@@ P-pnn0-subother
+UPDATE aveloxis_data.repos r SET pnn = COALESCE((SELECT o.pnn FROM aveloxis_data.other o LIMIT 1), r.pnn)
+@@ P-pnn0-subcond
+UPDATE aveloxis_data.repos r SET pnn = COALESCE((SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.pnn = $2)), r.pnn)
+@@ P-pnn0-fn
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(current_setting($1), r.pnn)
+@@ P-pnn0-excl
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(excluded.pnn, r.pnn)
+@@ P-pnn0-wholerow
+UPDATE aveloxis_data.repos r SET pnn = COALESCE((r).pnn, r.pnn)
+@@ P-pnn0-jsontable
+UPDATE aveloxis_data.repos r SET pnn = COALESCE((SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.pnn')) j), r.pnn)
+@@ P-g0-ph
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, $1)
+@@ P-g0-othercol
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, pn2)
+@@ P-g0-othercolq
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, r.pn2)
+@@ P-g0-const
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, 'x')
+@@ P-g0-fnstored
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, lower(r.g))
+@@ P-g0-caststored
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, r.g::text)
+@@ P-g0-subtarget
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, (SELECT x.g FROM aveloxis_data.repos x LIMIT 1))
+@@ P-g0-subother
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, (SELECT o.g FROM aveloxis_data.other o LIMIT 1))
+@@ P-g0-subcond
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.g = $2)))
+@@ P-g0-fn
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, current_setting($1))
+@@ P-g0-excl
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, excluded.g)
+@@ P-g0-wholerow
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, (r).g)
+@@ P-g0-jsontable
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.g')) j))
+@@ P-g1-ph
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, r.g), COALESCE(r.g, $1))
+@@ P-g1-othercol
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(pn2, r.g), COALESCE(r.g, pn2))
+@@ P-g1-othercolq
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(r.pn2, r.g), COALESCE(r.g, r.pn2))
+@@ P-g1-const
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE('x', r.g), COALESCE(r.g, 'x'))
+@@ P-g1-fnstored
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(lower(r.g), r.g), COALESCE(r.g, lower(r.g)))
+@@ P-g1-caststored
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(r.g::text, r.g), COALESCE(r.g, r.g::text))
+@@ P-g1-subtarget
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE((SELECT x.g FROM aveloxis_data.repos x LIMIT 1), r.g), COALESCE(r.g, (SELECT x.g FROM aveloxis_data.repos x LIMIT 1)))
+@@ P-g1-subother
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE((SELECT o.g FROM aveloxis_data.other o LIMIT 1), r.g), COALESCE(r.g, (SELECT o.g FROM aveloxis_data.other o LIMIT 1)))
+@@ P-g1-subcond
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE((SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.g = $2)), r.g), COALESCE(r.g, (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.g = $2))))
+@@ P-g1-fn
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(current_setting($1), r.g), COALESCE(r.g, current_setting($1)))
+@@ P-g1-excl
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE(excluded.g, r.g), COALESCE(r.g, excluded.g))
+@@ P-g1-wholerow
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE((r).g, r.g), COALESCE(r.g, (r).g))
+@@ P-g1-jsontable
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE((SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.g')) j), r.g), COALESCE(r.g, (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.g')) j)))
+@@ P-e0-ph
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, $1)
+@@ P-e0-othercol
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, pn2)
+@@ P-e0-othercolq
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, r.pn2)
+@@ P-e0-const
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, 'x')
+@@ P-e0-fnstored
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, lower(r.e))
+@@ P-e0-caststored
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, r.e::text)
+@@ P-e0-subtarget
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, (SELECT x.e FROM aveloxis_data.repos x LIMIT 1))
+@@ P-e0-subother
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, (SELECT o.e FROM aveloxis_data.other o LIMIT 1))
+@@ P-e0-subcond
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.e = $2)))
+@@ P-e0-fn
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, current_setting($1))
+@@ P-e0-excl
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, excluded.e)
+@@ P-e0-wholerow
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, (r).e)
+@@ P-e0-jsontable
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.e')) j))
+@@ P-k0-ph
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE r.k END
+@@ P-k0-othercol
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN pn2 ELSE r.k END
+@@ P-k0-othercolq
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN r.pn2 ELSE r.k END
+@@ P-k0-const
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN 'x' ELSE r.k END
+@@ P-k0-fnstored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN lower(r.k) ELSE r.k END
+@@ P-k0-caststored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN r.k::text ELSE r.k END
+@@ P-k0-subtarget
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN (SELECT x.k FROM aveloxis_data.repos x LIMIT 1) ELSE r.k END
+@@ P-k0-subother
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN (SELECT o.k FROM aveloxis_data.other o LIMIT 1) ELSE r.k END
+@@ P-k0-subcond
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN (SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.k = $2)) ELSE r.k END
+@@ P-k0-fn
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN current_setting($1) ELSE r.k END
+@@ P-k0-excl
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN excluded.k ELSE r.k END
+@@ P-k0-wholerow
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN (r).k ELSE r.k END
+@@ P-k0-jsontable
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.k')) j) ELSE r.k END
+@@ P-k1-ph
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE r.k END
+@@ P-k1-othercol
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(pn2, NOW()) ELSE r.k END
+@@ P-k1-othercolq
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(r.pn2, NOW()) ELSE r.k END
+@@ P-k1-const
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE('x', NOW()) ELSE r.k END
+@@ P-k1-fnstored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(lower(r.k), NOW()) ELSE r.k END
+@@ P-k1-caststored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(r.k::text, NOW()) ELSE r.k END
+@@ P-k1-subtarget
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE((SELECT x.k FROM aveloxis_data.repos x LIMIT 1), NOW()) ELSE r.k END
+@@ P-k1-subother
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE((SELECT o.k FROM aveloxis_data.other o LIMIT 1), NOW()) ELSE r.k END
+@@ P-k1-subcond
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE((SELECT $1 WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.k = $2)), NOW()) ELSE r.k END
+@@ P-k1-fn
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(current_setting($1), NOW()) ELSE r.k END
+@@ P-k1-excl
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE(excluded.k, NOW()) ELSE r.k END
+@@ P-k1-wholerow
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE((r).k, NOW()) ELSE r.k END
+@@ P-k1-jsontable
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE((SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.k')) j), NOW()) ELSE r.k END
+@@ S-fe0-othercolq
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.pn2, $1)
+@@ S-fe0-const
+UPDATE aveloxis_data.repos r SET fe = COALESCE('x', $1)
+@@ S-fe0-fnstored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(lower(r.fe), $1)
+@@ S-fe0-caststored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe::text, $1)
+@@ S-fe0-subtarget
+UPDATE aveloxis_data.repos r SET fe = COALESCE((SELECT x.fe FROM aveloxis_data.repos x LIMIT 1), $1)
+@@ S-fe1-othercolq
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.pn2, ''), $1)
+@@ S-fe1-const
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF('x', ''), $1)
+@@ S-fe1-fnstored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(lower(r.fe), ''), $1)
+@@ S-fe1-caststored
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe::text, ''), $1)
+@@ S-fe1-subtarget
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF((SELECT x.fe FROM aveloxis_data.repos x LIMIT 1), ''), $1)
+@@ S-fe2-othercolq
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.pn2 IS NULL THEN $1 ELSE r.pn2 END
+@@ S-fe2-const
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN 'x' IS NULL THEN $1 ELSE 'x' END
+@@ S-fe2-fnstored
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN lower(r.fe) IS NULL THEN $1 ELSE lower(r.fe) END
+@@ S-fe2-caststored
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe::text IS NULL THEN $1 ELSE r.fe::text END
+@@ S-fe2-subtarget
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN (SELECT x.fe FROM aveloxis_data.repos x LIMIT 1) IS NULL THEN $1 ELSE (SELECT x.fe FROM aveloxis_data.repos x LIMIT 1) END
+@@ S-pn0-othercolq
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), r.pn2)
+@@ S-pn0-const
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), 'x')
+@@ S-pn0-fnstored
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), lower(r.pn))
+@@ S-pn0-caststored
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), r.pn::text)
+@@ S-pn0-subtarget
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), (SELECT x.pn FROM aveloxis_data.repos x LIMIT 1))
+@@ S-pnn0-othercolq
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r.pn2)
+@@ S-pnn0-const
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, 'x')
+@@ S-pnn0-fnstored
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, lower(r.pnn))
+@@ S-pnn0-caststored
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r.pnn::text)
+@@ S-pnn0-subtarget
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, (SELECT x.pnn FROM aveloxis_data.repos x LIMIT 1))
+@@ S-g0-othercolq
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.pn2, $1)
+@@ S-g0-const
+UPDATE aveloxis_data.repos r SET g = GREATEST('x', $1)
+@@ S-g0-fnstored
+UPDATE aveloxis_data.repos r SET g = GREATEST(lower(r.g), $1)
+@@ S-g0-caststored
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g::text, $1)
+@@ S-g0-subtarget
+UPDATE aveloxis_data.repos r SET g = GREATEST((SELECT x.g FROM aveloxis_data.repos x LIMIT 1), $1)
+@@ S-g1-othercolq
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, r.pn2), COALESCE(r.pn2, $1))
+@@ S-g1-const
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, 'x'), COALESCE('x', $1))
+@@ S-g1-fnstored
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, lower(r.g)), COALESCE(lower(r.g), $1))
+@@ S-g1-caststored
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, r.g::text), COALESCE(r.g::text, $1))
+@@ S-g1-subtarget
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, (SELECT x.g FROM aveloxis_data.repos x LIMIT 1)), COALESCE((SELECT x.g FROM aveloxis_data.repos x LIMIT 1), $1))
+@@ S-e0-othercolq
+UPDATE aveloxis_data.repos r SET e = LEAST(r.pn2, $1)
+@@ S-e0-const
+UPDATE aveloxis_data.repos r SET e = LEAST('x', $1)
+@@ S-e0-fnstored
+UPDATE aveloxis_data.repos r SET e = LEAST(lower(r.e), $1)
+@@ S-e0-caststored
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e::text, $1)
+@@ S-e0-subtarget
+UPDATE aveloxis_data.repos r SET e = LEAST((SELECT x.e FROM aveloxis_data.repos x LIMIT 1), $1)
+@@ S-k0-othercolq
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE r.pn2 END
+@@ S-k0-const
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE 'x' END
+@@ S-k0-fnstored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE lower(r.k) END
+@@ S-k0-caststored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE r.k::text END
+@@ S-k0-subtarget
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 ELSE (SELECT x.k FROM aveloxis_data.repos x LIMIT 1) END
+@@ S-k1-othercolq
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE r.pn2 END
+@@ S-k1-const
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE 'x' END
+@@ S-k1-fnstored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE lower(r.k) END
+@@ S-k1-caststored
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE r.k::text END
+@@ S-k1-subtarget
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN COALESCE($1, NOW()) ELSE (SELECT x.k FROM aveloxis_data.repos x LIMIT 1) END
+@@ O-fe-swap
+UPDATE aveloxis_data.repos r SET fe = COALESCE($1, r.fe)
+@@ O-fe-3
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, $1, $2)
+@@ O-pnn-swap
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(r.pnn, $1)
+@@ O-pnn-3
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, $2, r.pnn)
+@@ O-pn-swap
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(r.pn, ''), $1)
+@@ O-g-3
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, $1, $2)
+@@ O-g-least
+UPDATE aveloxis_data.repos r SET g = LEAST(r.g, $1)
+@@ O-e-3
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, $1, $2)
+@@ O-e-greatest
+UPDATE aveloxis_data.repos r SET e = GREATEST(r.e, $1)
+@@ O-e-coalesce
+UPDATE aveloxis_data.repos r SET e = LEAST(r.e, COALESCE($1, NOW()))
+@@ O-k-noelse
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN $1 END
+@@ O-k-clock
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN clock_timestamp() ELSE r.k END
+@@ O-k-nowarg
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN now() AT TIME ZONE 'utc' ELSE r.k END
+@@ O-k-bare-now
+UPDATE aveloxis_data.repos r SET k = NOW()
+@@ O-k-bare-ph
+UPDATE aveloxis_data.repos r SET k = $1
+@@ O-k-cond-sub
+UPDATE aveloxis_data.repos r SET k = CASE WHEN (SELECT x.k FROM aveloxis_data.repos x LIMIT 1) IS NULL THEN $1 ELSE r.k END
+@@ O-k-pgcat-now
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN pg_catalog.now() ELSE r.k END
+@@ O-k-curts-prec
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN CURRENT_TIMESTAMP(0) ELSE r.k END
+@@ O-k-localts
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN LOCALTIMESTAMP ELSE r.k END
+@@ O-k-curdate
+UPDATE aveloxis_data.repos r SET k = CASE WHEN r.fe IS NULL THEN CURRENT_DATE ELSE r.k END
+@@ IO-update
+UPDATE aveloxis_data.repos r SET io = $1
+@@ IO-self
+UPDATE aveloxis_data.repos r SET io = r.io
+@@ IO-conflict
+INSERT INTO aveloxis_data.repos (repo_id, io) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET io = EXCLUDED.io
+@@ IO-conflict-other
+INSERT INTO aveloxis_data.repos (repo_id, io) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(repos.fe, EXCLUDED.io)
+@@ IO-insert
+INSERT INTO aveloxis_data.repos (repo_id, io) VALUES ($1,$2)
+@@ IO-merge
+MERGE INTO aveloxis_data.repos t USING unnest($1::int[]) s(id) ON s.id = t.repo_id WHEN MATCHED THEN UPDATE SET io = $2
+@@ IO-delete
+DELETE FROM aveloxis_data.repos WHERE repo_id = $1
+@@ IO-copy
+COPY aveloxis_data.repos (repo_id, io) FROM STDIN
+@@ G00 WHERE fe IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL
+@@ G01 WHERE r.fe IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE r.fe IS NULL
+@@ G02 WHERE repo_id = $2 AND fe IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE repo_id = $2 AND fe IS NULL
+@@ G03 WHERE fe IS NULL OR repo_id = $2
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL OR repo_id = $2
+@@ G04 WHERE (fe IS NULL OR fe = '')
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL OR fe = '')
+@@ G05 WHERE (fe IS NULL OR fe = '' OR repo_id = 3)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL OR fe = '' OR repo_id = 3)
+@@ G06 WHERE NOT (fe IS NOT NULL)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE NOT (fe IS NOT NULL)
+@@ G07 WHERE fe IS NOT NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NOT NULL
+@@ G08 WHERE EXISTS (SELECT 1 WHERE fe IS NULL)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE EXISTS (SELECT 1 WHERE fe IS NULL)
+@@ G09 WHERE CASE WHEN fe IS NULL THEN true ELSE true END
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE CASE WHEN fe IS NULL THEN true ELSE true END
+@@ G10 WHERE (fe IS NULL) IS TRUE
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL) IS TRUE
+@@ G11 WHERE fe IS NULL AND true
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL AND true
+@@ G12 WHERE fe IS NULL IS NOT FALSE
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL IS NOT FALSE
+@@ G13 WHERE COALESCE(fe, '') = ''
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE COALESCE(fe, '') = ''
+@@ G14 WHERE COALESCE(fe, 'x') = ''
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE COALESCE(fe, 'x') = ''
+@@ G15 WHERE COALESCE(fe, '') = 'x'
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE COALESCE(fe, '') = 'x'
+@@ G16 WHERE NULLIF(fe, '') IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE NULLIF(fe, '') IS NULL
+@@ G17 WHERE NULLIF(fe, 'x') IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE NULLIF(fe, 'x') IS NULL
+@@ G18 WHERE fe = ''
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe = ''
+@@ G19 WHERE '' = COALESCE(fe, '')
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE '' = COALESCE(fe, '')
+@@ G20 WHERE fe IS NOT DISTINCT FROM NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NOT DISTINCT FROM NULL
+@@ G21 WHERE fe ISNULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe ISNULL
+@@ G22 WHERE (r.fe, 1) IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (r.fe, 1) IS NULL
+@@ G23 WHERE ROW(fe) IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE ROW(fe) IS NULL
+@@ G24 WHERE repos.fe IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE repos.fe IS NULL
+@@ G25 WHERE aveloxis_data.repos.fe IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE aveloxis_data.repos.fe IS NULL
+@@ G26 WHERE fe IS NULL AND (repo_id = 1 OR fe IS NOT NULL)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL AND (repo_id = 1 OR fe IS NOT NULL)
+@@ G27 WHERE (fe IS NULL OR fe = ' ')
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL OR fe = ' ')
+@@ G28 WHERE (fe IS NULL OR r.pn = '')
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL OR r.pn = '')
+@@ G29 WHERE COALESCE(fe, '') = '' OR TRUE
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE COALESCE(fe, '') = '' OR TRUE
+@@ G30 WHERE (fe IS NULL) = false
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE (fe IS NULL) = false
+@@ G31 WHERE fe IS NULL = (repo_id > 0)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe IS NULL = (repo_id > 0)
+@@ G32 WHERE fe::text IS NULL
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE fe::text IS NULL
+@@ G33 WHERE COALESCE(fe::text, '') = ''
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE COALESCE(fe::text, '') = ''
+@@ GF1 guard in FROM join ON
+UPDATE aveloxis_data.repos r SET fe = v.a FROM unnest($1::int[], $2::text[]) v(id, a) JOIN aveloxis_data.other o ON o.id = v.id AND r.fe IS NULL WHERE v.id = r.repo_id
+@@ GF2 guard other alias same col
+UPDATE aveloxis_data.repos r SET fe = v.fe FROM unnest($1::int[], $2::text[]) v(id, fe) WHERE v.id = r.repo_id AND v.fe IS NULL
+@@ GF3 guard bare with FROM item having fe (PG ambiguous)
+UPDATE aveloxis_data.repos r SET fe = v.fe FROM unnest($1::int[], $2::text[]) v(id, fe) WHERE v.id = r.repo_id AND fe IS NULL
+@@ GF4 guard CTE
+WITH e AS (SELECT repo_id FROM aveloxis_data.repos WHERE fe IS NULL) UPDATE aveloxis_data.repos r SET fe = $1 FROM e WHERE e.repo_id = r.repo_id
+@@ GC1 conflict where
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE repos.fe IS NULL
+@@ GC2 conflict where on excluded
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE EXCLUDED.fe IS NULL
+@@ GC3 conflict arbiter where (index predicate) not the update where
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) WHERE fe IS NULL DO UPDATE SET fe = EXCLUDED.fe
+@@ GC4 conflict bare fe (ambiguous in PG? no: bare = target)
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE fe IS NULL
+@@ GC5 conflict excluded source stored
+INSERT INTO aveloxis_data.repos (repo_id, fe) SELECT $1, x.fe FROM aveloxis_data.repos x WHERE x.repo_id = $2 ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(repos.fe, EXCLUDED.fe)
+@@ GM1 merge guard in WHEN
+MERGE INTO aveloxis_data.repos t USING unnest($1::int[], $2::text[]) s(id, a) ON s.id = t.repo_id WHEN MATCHED AND t.fe IS NULL THEN UPDATE SET fe = s.a
+@@ GM2 merge guard in ON
+MERGE INTO aveloxis_data.repos t USING unnest($1::int[], $2::text[]) s(id, a) ON s.id = t.repo_id AND t.fe IS NULL WHEN MATCHED THEN UPDATE SET fe = s.a
+@@ CASEfill-1 wrong guard
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.pn IS NULL THEN $1 ELSE r.fe END
+@@ CASEfill-2 extra when
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN $1 WHEN true THEN $2 ELSE r.fe END
+@@ CASEfill-3 inverted
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NOT NULL THEN $1 ELSE r.fe END
+@@ CASEfill-4 inverted results
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN r.fe IS NULL THEN r.fe ELSE $1 END
+@@ CASEfill-5 length guard
+UPDATE aveloxis_data.repos r SET fe = CASE WHEN length(r.fe) = 0 THEN $1 ELSE r.fe END

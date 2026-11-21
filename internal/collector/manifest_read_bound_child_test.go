@@ -89,19 +89,64 @@ func TestCloneReadRoomIsWhatTheLimitLeaves(t *testing.T) {
 		t.Errorf("with 64 MiB above the heap: %d", got)
 	}
 	// The room is in bytes of THE FILE: a kind that costs more to read has
-	// less of it (0.29.215). A pnpm-lock.yaml costs fourteen times its
-	// length and a manifest three, so the same heap leaves the manifest
-	// between four and five times the length.
-	manifestRoom, pnpmRoom := cloneReadRoom("requirements.txt", 1<<10), cloneReadRoom("pnpm-lock.yaml", 1<<10)
-	if pnpmRoom <= 0 || manifestRoom < 4*pnpmRoom || manifestRoom > 5*pnpmRoom {
-		t.Errorf("room for a manifest %d, for a pnpm-lock.yaml %d; want between four and five times", manifestRoom, pnpmRoom)
+	// less of it (0.29.215). A pnpm-lock.yaml costs 46 times its length and
+	// a yarn.lock 14, so the same heap leaves the yarn.lock a little over
+	// three times the length.
+	yarnRoom, pnpmRoom := cloneReadRoom("yarn.lock", 1<<10), cloneReadRoom("pnpm-lock.yaml", 1<<10)
+	if pnpmRoom <= 0 || yarnRoom < 32*pnpmRoom/10 || yarnRoom > 34*pnpmRoom/10 {
+		t.Errorf("room for a yarn.lock %d, for a pnpm-lock.yaml %d; want 46/14 times", yarnRoom, pnpmRoom)
 	}
-	if readCost("a/b/pnpm-lock.yaml", 100) != 1400 || readCost("yarn.lock", 100) != 300 || readCost("requirements.txt", 100) != 300 ||
-		readCost("uv.lock", 100) != 800 || readCost("x", 1<<62) != 1<<62 {
-		t.Errorf("readCost: pnpm %d, yarn %d, a manifest %d, an unmeasured lockfile %d", readCost("pnpm-lock.yaml", 100), readCost("yarn.lock", 100), readCost("requirements.txt", 100), readCost("uv.lock", 100))
+	// The factor: what was measured, half again, rounded UP to a whole
+	// number; a kind with no measurement is priced as the costliest of its
+	// class.
+	for path, want := range map[string]int64{
+		"a/b/pnpm-lock.yaml": 46, // 30.41 measured
+		"yarn.lock":          14, // 9.14
+		"Package.resolved":   6,  // 3.40: 5.1 rounds up
+		"requirements.txt":   100,
+		"pom.xml":            15,
+		"setup.py":           100, // no measurement: the costliest manifest's
+		"x":                  100,
+	} {
+		if got := readCostFactor(path); got != want {
+			t.Errorf("readCostFactor(%s) = %d, want %d", path, got, want)
+		}
+		if got := readCost(path, 100); got != 100*want {
+			t.Errorf("readCost(%s, 100) = %d, want %d", path, got, 100*want)
+		}
+	}
+	if readCost("x", 1<<62) != 1<<62 {
+		t.Error("the cost of a length past what can be multiplied is not held at the top")
+	}
+	if readCostMarginNum != 3 || readCostMarginDen != 2 {
+		t.Errorf("the margin is %d/%d; the factors above are for three halves", readCostMarginNum, readCostMarginDen)
 	}
 	cloneReadHeapLimit.Store(1) // far under the heap: no room
 	if got := cloneReadRoom("requirements.txt", 1); got > 0 {
 		t.Errorf("with the limit under the heap: %d; want none", got)
+	}
+}
+
+// Every lockfile kind the roster reads has a measured cost of its own: a new
+// kind is measured when it is added, not priced as the costliest of the
+// others by default (and a measurement names a kind that exists).
+func TestEveryLockfileKindHasAMeasuredCost(t *testing.T) {
+	examined := 0
+	for kind, spec := range lockfileKinds {
+		if spec.binaryOnly {
+			continue // never read: only its presence is recorded
+		}
+		examined++
+		if readCostMeasured[kind] <= 100 {
+			t.Errorf("%s has no measured read cost (readCostMeasured): measure its shapes through the child and add it", kind)
+		}
+	}
+	if examined < 18 {
+		t.Fatalf("%d lockfile kinds examined: the roster has more", examined)
+	}
+	for kind, cost := range readCostMeasured {
+		if cost <= 100 {
+			t.Errorf("%s is measured at %d hundredths: reading a file costs at least its length", kind, cost)
+		}
 	}
 }

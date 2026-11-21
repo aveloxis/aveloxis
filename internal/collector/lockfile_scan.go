@@ -300,9 +300,11 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		declared[pkgid.MatchKey(d.PackageManager, d.Name)] = true
 	}
 
-	// What is built here and handed to the store whole is bounded: the Go
-	// closure by goModGraphLines, and the rows carried for the lockfiles
-	// that failed by what the previous snapshot stored for them. The rows
+	// What is built here and handed to the store whole: the Go closure,
+	// bounded by what one repository's expansion may take (goModTaken), and
+	// the rows carried for the lockfiles that failed, which are what the
+	// previous snapshot stored for them and so at most
+	// db.LockfileSnapshotRows for a snapshot written since 0.29.216. The rows
 	// of the lockfiles themselves are NOT built here: they are handed to
 	// the store one lockfile at a time, inside its one transaction
 	// (0.29.215; until then every row of every lockfile was built first,
@@ -387,39 +389,33 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		}
 	}
 
-	// What the snapshot holds, counted as it is handed over (the store may
-	// ask for it again when it retries its transaction: counted afresh).
-	var lockfiles, direct, transitive, edgeCount int
-	// v0.29.175: entries whose "version" was not a version, over every
-	// lockfile of the repository; one line, not one per entry.
-	var aliased, notRegistry, notAVersion int
+	// What the snapshot holds, counted as it is handed over. The store may
+	// ask for the rows again when it retries its transaction, so the counts
+	// are one handing-over's own (lockfileFeedCounts) and the last one's
+	// stand.
+	var fed lockfileFeedCounts
 	feed := func(write func(db.LockfileRows) error) error {
-		lockfiles, direct, transitive, edgeCount = 0, 0, 0, 0
-		aliased, notRegistry, notAVersion = 0, 0, 0
+		var now lockfileFeedCounts
 		hand := func(rows db.LockfileRows) error {
-			lockfiles += len(rows.Inventory)
-			edgeCount += len(rows.Edges)
-			for _, p := range rows.Packages {
-				if p.Direct {
-					direct++
-				} else {
-					transitive++
-				}
-			}
+			now.take(rows)
 			return write(rows)
 		}
 		// One lockfile at a time (0.29.214): the child's are read back from
 		// disk, and what is held of each is the rows it becomes, until the
 		// store has them.
 		if err := locks.each(func(pl parsedLockfile) error {
-			aliased += pl.Result.Aliased
-			notRegistry += pl.Result.NotRegistry
-			notAVersion += pl.Result.NotAVersion
+			now.aliased += pl.Result.Aliased
+			now.notRegistry += pl.Result.NotRegistry
+			now.notAVersion += pl.Result.NotAVersion
 			return hand(rowsOfLockfile(pl, declared, ac.TransitiveLockfiles))
 		}); err != nil {
 			return fmt.Errorf("the lockfiles read could not be handed to the store (snapshot NOT replaced): %w", err)
 		}
-		return hand(extra)
+		if err := hand(extra); err != nil {
+			return err
+		}
+		fed = now
+		return nil
 	}
 	var tooLarge []string
 	for _, f := range failed {
@@ -438,13 +434,13 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	// and always said.
 	reading := func() model.LockfileReading {
 		if len(tooLarge) > 0 {
-			return model.LockfileReading{NotCompleted: model.InventoryAttemptReadMemoryLimit, Lockfiles: true}
+			return model.LockfileReading{NotCompleted: model.LockfileUnreadTooLarge, Lockfiles: true}
 		}
 		// The repository has lockfiles when the clone holds one the
 		// roster names: one that parsed, or one that is there and failed,
 		// whatever way (a lockfile at a path that cannot be stored is one
 		// of the failed).
-		return model.LockfileReading{Completed: true, Lockfiles: lockfiles > 0 || len(failed) > 0}
+		return model.LockfileReading{Completed: true, Lockfiles: fed.lockfiles > 0 || len(failed) > 0}
 	}
 	// The record is written in the replace's own transaction when it is the
 	// store that keeps it; a recorder given to the collector instead (a
@@ -454,34 +450,36 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 		inTx = nil
 	}
 	if err := ac.store.ReplaceRepoLockfileSnapshotFrom(ctx, repoID, feed, failed, inTx); err != nil {
+		ac.lockfileSnapshotNotReplaced(ctx, repoID, err)
 		return err
 	}
 	if inTx == nil {
 		ac.lockfileReadingEnded(ctx, repoID, reading())
 	}
-	if aliased+notRegistry+notAVersion > 0 {
+	if fed.aliased+fed.notRegistry+fed.notAVersion > 0 {
 		ac.logger.Info("lockfile entries whose version field is not a version",
-			"repo_id", repoID, "npm_aliases_recorded_under_the_real_package", aliased,
-			"git_or_url_sources_left_out", notRegistry, "requirement_strings_left_out", notAVersion)
+			"repo_id", repoID, "npm_aliases_recorded_under_the_real_package", fed.aliased,
+			"git_or_url_sources_left_out", fed.notRegistry, "requirement_strings_left_out", fed.notAVersion)
 	}
 	if len(tooLarge) > 0 {
 		ac.logger.Error("lockfiles too large for the memory left to read them in were not read — their previous rows are kept, and are now older than this analysis",
-			append([]any{"repo_id", repoID, "lockfiles", len(tooLarge), "first", tooLarge[0], "result", model.InventoryAttemptReadMemoryLimit,
+			append([]any{"repo_id", repoID, "lockfiles", len(tooLarge), "first", tooLarge[0], "result", model.LockfileUnreadTooLarge,
 				"to_do", lockfilesUnreadAdvice(model.InventoryAttemptReadMemoryLimit)}, manifestLimits().effective().logLimits()...)...)
 	}
-	if lockfiles > 0 {
+	direct, transitive := fed.direct, fed.transitive
+	if fed.lockfiles > 0 {
 		// Round-21 (v0.27.138): with transitive scanning on by default,
 		// the packages are direct + transitive + the Go build list —
 		// log the SPLIT, not a mislabeled total (the house
 		// log-the-effective-value rule).
 		ac.logger.Info("lockfile scan complete",
 			"repo_id", repoID,
-			"lockfiles", lockfiles,
+			"lockfiles", fed.lockfiles,
 			"direct_resolutions", direct,
 			"transitive_resolutions", transitive,
-			"edges", edgeCount)
+			"edges", fed.edges)
 	}
-	result.Lockfiles = lockfiles
+	result.Lockfiles = fed.lockfiles
 	result.LockfilePackages = direct + transitive
 	return nil
 }
@@ -723,11 +721,48 @@ func storedRowLocksADependency(p model.RepoLockfilePackage) bool {
 func lockfilesUnreadAdvice(attempt string) string {
 	switch attempt {
 	case model.InventoryAttemptReadMemoryLimit:
-		return "raise collection.manifest_read_memory_mb: a lockfile is read whole, and a YAML one (pnpm-lock.yaml, pubspec.lock, stack.yaml.lock) takes eleven to fourteen times its size"
+		return "raise collection.manifest_read_memory_mb: a lockfile is read whole and is priced at up to 14 times its size, a YAML one (pnpm-lock.yaml, pubspec.lock, stack.yaml.lock) at 46 to 52 times"
 	case model.InventoryAttemptReadCPULimit, model.InventoryAttemptReadTimedOut:
 		return "raise collection.manifest_read_cpu_seconds, or look at this repository's build files and lockfiles: one of them takes this long to read"
 	}
 	return "the reader failed and did not say a limit: see the error, and the reader's own output in it"
+}
+
+// lockfileFeedCounts is what ONE handing-over of a snapshot's rows held: the
+// lockfiles, the rows of each kind, and (v0.29.175) the entries whose
+// "version" was not a version, over every lockfile of the repository.
+type lockfileFeedCounts struct {
+	lockfiles, direct, transitive, edges int
+	aliased, notRegistry, notAVersion    int
+}
+
+func (c *lockfileFeedCounts) take(rows db.LockfileRows) {
+	c.lockfiles += len(rows.Inventory)
+	c.edges += len(rows.Edges)
+	for _, p := range rows.Packages {
+		if p.Direct {
+			c.direct++
+		} else {
+			c.transitive++
+		}
+	}
+}
+
+// lockfileSnapshotNotReplaced is told of a snapshot replace that failed.
+// One failure is a statement about the lockfiles and not about the database:
+// the store keeps at most db.LockfileSnapshotRows rows for a repository and
+// refused this snapshot whole (0.29.216). The previous rows stand and are
+// older than this analysis, which is what the lockfile caution says, so the
+// reading is recorded as one whose lockfiles were too large to take
+// (model.LockfileUnreadTooLarge, the reason a lockfile refused for its size
+// has; no setting raises this limit, and the error the analysis logs names
+// it). The error itself is logged once, by the
+// analysis, like every other error of this phase.
+func (ac *AnalysisCollector) lockfileSnapshotNotReplaced(ctx context.Context, repoID int64, err error) {
+	if !errors.Is(err, db.ErrLockfileSnapshotTooLarge) {
+		return
+	}
+	ac.lockfileReadingEnded(ctx, repoID, LockfileReading{NotCompleted: model.LockfileUnreadTooLarge, Lockfiles: true})
 }
 
 // LockfileRowDeleter removes the stored rows of lockfiles at the given

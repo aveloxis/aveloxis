@@ -154,6 +154,7 @@ type gradleMemo struct {
 	reads   map[string]gradleRead
 	own     map[string]string
 	gone    map[string]bool
+	sure    map[string]int
 	applies []string
 }
 
@@ -242,6 +243,7 @@ next:
 	t.applying = ""
 	e := &gradleMemo{reads: b.reads, applies: b.applies}
 	e.own, e.gone = b.result()
+	e.sure = b.sure()
 	// What the entry holds, as text: the names and values. An entry's text
 	// is no more than its script's, so the first reading of a script is
 	// always kept.
@@ -253,6 +255,9 @@ next:
 		size += len(k) + len(v)
 	}
 	for k := range e.gone {
+		size += len(k)
+	}
+	for k := range e.sure {
 		size += len(k)
 	}
 	for _, a := range e.applies {
@@ -362,7 +367,7 @@ func (t *gradleTree) declared(path string) ([]model.LibyearDep, error) {
 		return b.libyearDeps(), nil
 	}
 	own := b.platformDecls()
-	if len(own)+known.platforms.len() > 0 || len(b.managed) > 0 {
+	if len(own)+known.platforms.len() > 0 {
 		// The repositories a BOM of this file may be asked of: the file's
 		// own, then the ones shared from above.
 		var repos []string
@@ -631,7 +636,11 @@ next:
 		}
 		bb.note(e.reads)
 	}
-	vars = vars.push(e.own, e.gone)
+	under := vars
+	if vars = vars.push(e.own, e.gone); vars != under {
+		// A layer of this script's alone, made here: the mark is its.
+		vars.sure = e.sure
+	}
 	partial := bb.partial || len(t.unreadParts) != mark
 	t.bundled(into, bb, partial)
 	if !partial {
@@ -681,7 +690,7 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 		links = append(links, n)
 	}
 	for i := len(links) - 1; i >= 0; i-- {
-		bd.seg = &gradleVars{own: links[i].own, gone: links[i].gone, seg: links[i].seg, parent: bd.seg}
+		bd.seg = &gradleVars{own: links[i].own, gone: links[i].gone, sure: links[i].sure, seg: links[i].seg, parent: bd.seg}
 		// What a link holds is held by the run: its assignments are
 		// counted with it (a run inside it is counted where it was kept).
 		// Without this a run kept the assignments of a reading the memo
@@ -690,6 +699,9 @@ func (t *gradleTree) keepBundle(p string, bb *gradleBundleBuild, start, vars *gr
 			size += len(k) + len(v)
 		}
 		for k := range links[i].gone {
+			size += len(k)
+		}
+		for k := range links[i].sure {
 			size += len(k)
 		}
 	}
@@ -1166,11 +1178,11 @@ func gradleTOMLArray(raw string) []string {
 //     different texts and equal in that ordering are not ordered
 //     (platforms_disagree).
 //
-// A dependency the build wrote WITH a version states that version, and a
-// platform read here that recommends a HIGHER one raises it (the highest
-// wins), as an enforced platform's version replaces it. A platform that
-// could not be obtained does not take the written version away: it stays
-// what the build declares, as every declared version in the inventory is.
+// A dependency the build wrote WITH a version states that version: it is
+// what the build declares, as every declared version in the inventory is,
+// and no platform changes it here. (Gradle raises it to a higher version a
+// platform recommends and replaces it by an enforced platform's: a known
+// difference, see the loop below.)
 //
 // (S) Spring's dependency-management plugin: dependencyManagement { imports
 // { mavenBom ... } }, and spring-boot-dependencies when the Spring Boot
@@ -1192,7 +1204,7 @@ func gradleTOMLArray(raw string) []string {
 // It has NOT been checked against a running Gradle, and a build that settles
 // versions in its own resolutionStrategy is beyond it.
 func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl, declared []string, unasked bool) {
-	if t.pom == nil || len(own)+len(inherited) == 0 && len(b.managed) == 0 {
+	if t.pom == nil || len(own)+len(inherited) == 0 {
 		return
 	}
 	// applied is one BOM: its effective model, or, for one whose content is
@@ -1201,35 +1213,76 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 		ctx      *pomContext
 		missing  string
 		enforced bool
+		decl     gradleDecl
+		own      bool
+		// gap is why this BOM, or a pom inside it, could not be obtained
+		// ("" when it was read whole): the reason a dependency it reaches
+		// has when nothing gives it a version.
+		gap string
+	}
+	// reaches says whether what the file's build declares as p is for the
+	// project the dependency d is a dependency of. What comes from a build
+	// file above is for this project (it would not be here otherwise). Of
+	// the file's own: what a subprojects block declares is not for the
+	// file's own project, what is declared outside a shared block is not
+	// for the projects below, and what Spring's plugin is given for one
+	// configuration is for that one. (Round 9: a mavenBom inside
+	// subprojects {} answered for the root project's dependencies, and a
+	// version managed for testImplementation for an implementation one.)
+	reaches := func(p gradleDecl, own bool, d *gradleDecl) bool {
+		if p.forConfig != "" && p.forConfig != d.config {
+			return false
+		}
+		return !own || (!p.subOnly || d.subOnly) && (!d.subOnly || p.forSubprojects)
 	}
 	spring := func(d gradleDecl) bool { return d.config == "mavenBom" || d.config == "plugin" }
+	// The versions Spring's plugin is given outright, by artifact, in the
+	// order given: those from above, then the file's own.
+	type given struct {
+		decl gradleDecl
+		own  bool
+	}
+	managed := map[string][]given{}
 	// (S) in the order the plugin applies them: what the build files above
 	// give the project, then the Boot plugin's own, then the file's imports
 	// as written. (P) in any order.
-	var ordered []gradleDecl
+	var ordered []given
 	for _, p := range inherited {
-		if spring(p) {
-			ordered = append(ordered, p)
+		switch {
+		case p.config == "managed":
+			managed[p.group+":"+p.artifact] = append(managed[p.group+":"+p.artifact], given{p, false})
+		case spring(p):
+			ordered = append(ordered, given{p, false})
+		}
+	}
+	for _, p := range own {
+		if p.config == "managed" {
+			managed[p.group+":"+p.artifact] = append(managed[p.group+":"+p.artifact], given{p, true})
 		}
 	}
 	for _, config := range []string{"plugin", "mavenBom"} {
 		for _, p := range own {
 			if p.config == config {
-				ordered = append(ordered, p)
+				ordered = append(ordered, given{p, true})
 			}
 		}
 	}
 	nSpring := len(ordered)
-	for _, p := range append(append([]gradleDecl{}, own...), inherited...) {
-		if !spring(p) {
-			ordered = append(ordered, p)
+	for _, p := range own {
+		if !spring(p) && p.config != "managed" {
+			ordered = append(ordered, given{p, true})
+		}
+	}
+	for _, p := range inherited {
+		if !spring(p) && p.config != "managed" {
+			ordered = append(ordered, given{p, false})
 		}
 	}
 	var springBOMs, platforms []applied
 	rd := &pomReading{}
-	gap := ""
 	whole := map[string]bool{} // "g:a:v" of each BOM obtained whole
-	for i, p := range ordered {
+	for i, g := range ordered {
+		p := g.decl
 		if p.version == "" {
 			continue
 		}
@@ -1242,22 +1295,36 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 		// for (pomTree.obtain).
 		bom, reason, unknown := t.pom.obtain(p.group, p.artifact, p.version, pomAsker{declared: func() []string { return declared }, unasked: func() bool { return unasked }})
 		if bom == nil {
-			gap = worseReason(gap, reason)
-			if unknown != "" {
-				*into = append(*into, applied{missing: unknown, enforced: p.enforced})
-			}
+			// One that is known to say nothing (unknown is "") stays in the
+			// list for its reason alone.
+			*into = append(*into, applied{missing: unknown, enforced: p.enforced, decl: p, own: g.own, gap: reason})
 			continue
 		}
 		c := t.pom.context(bom)
+		if i < nSpring {
+			// Spring's plugin reads a BOM with the project's properties,
+			// and the import's own bomProperty ones, over the BOM's
+			// (round 9: ext['log4j2.version'] = '2.17.1', the way a Spring
+			// Boot build changes a managed version, was not read, and the
+			// BOM's 2.14.1 stored). A model of its own: the shared one is
+			// the BOM as its own properties make it, which is what a
+			// platform(...) of it is.
+			c = t.pom.newContext(bom)
+			props := p.bomProps
+			c.over = func(name string) (string, bool) {
+				if v, ok := props[name]; ok {
+					return v, true
+				}
+				return b.projectProperty(name)
+			}
+		}
 		// Walk the BOM's own imports now, so that whether it was read whole
 		// is known before anything is decided from it (a lookup of a
 		// coordinate nothing manages visits every import).
 		_, _, _, bomGap, _ := c.managed(rd, "\x00", "\x00")
-		*into = append(*into, applied{ctx: c, enforced: p.enforced})
+		*into = append(*into, applied{ctx: c, enforced: p.enforced, decl: p, own: g.own, gap: bomGap})
 		if bomGap == "" {
 			whole[p.group+":"+p.artifact+":"+p.version] = true
-		} else {
-			gap = worseReason(gap, bomGap)
 		}
 	}
 	// answer is what one mechanism says of a dependency.
@@ -1279,8 +1346,15 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 			d.managed = whole[d.group+":"+d.artifact+":"+d.version]
 			continue
 		}
-		if d.version == "" && d.versionWritten {
-			continue // written with a version that was not read: no BOM answers for it
+		if d.version != "" || d.versionWritten {
+			// Written with a version (read or not): it stands, and no BOM
+			// answers for it, as until 0.29.214. Gradle would raise it to a
+			// higher version a platform of the same configuration
+			// recommends, and replace it by an enforced platform's; which
+			// platform reaches which configuration, and a strict ("1.0!!")
+			// declaration, are not read, so neither is done (round 9:
+			// 0.29.215 did both across configurations).
+			continue
 		}
 		// What the platforms say of this dependency, the enforced ones
 		// apart: the versions given (with the hosts each came through),
@@ -1293,6 +1367,16 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 			notOne   bool
 		}
 		var enforced, all said
+		// gap: why a BOM that reaches this dependency, or a pom inside one,
+		// could not be obtained (round 9: it was one reason for the whole
+		// file, and a platform a subprojects block names for the projects
+		// below gave its reason to the file's own dependencies).
+		gap := ""
+		for _, bom := range springBOMs {
+			if reaches(bom.decl, bom.own, d) {
+				gap = worseReason(gap, bom.gap)
+			}
+		}
 		for _, bom := range platforms {
 			record := func(s *said, v string, found, stop bool, via []string, passed string) {
 				s.unknown = worseReason(s.unknown, passed)
@@ -1309,6 +1393,10 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 					s.hosts[v] = mergeHosts(s.hosts[v], via)
 				}
 			}
+			if !reaches(bom.decl, bom.own, d) {
+				continue
+			}
+			gap = worseReason(gap, bom.gap)
 			if bom.ctx == nil {
 				if all.unknown = worseReason(all.unknown, bom.missing); bom.enforced {
 					enforced.unknown = worseReason(enforced.unknown, bom.missing)
@@ -1322,23 +1410,6 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 			if bom.enforced {
 				record(&enforced, v, found, stop, via, passed)
 			}
-		}
-		if d.version != "" {
-			// Written with a version. An enforced platform's replaces it; a
-			// higher recommendation raises it; what is not known leaves it.
-			if enforced.unknown == "" && !enforced.notOne && len(enforced.versions) == 1 {
-				if v := enforced.versions[0]; v != d.version {
-					d.version, d.source, d.hosts = v, SourceManaged, enforced.hosts[v]
-				}
-				continue
-			}
-			if len(enforced.versions) > 0 || enforced.notOne || enforced.unknown != "" {
-				continue
-			}
-			if v, ok := gradleHighest(all.versions); ok && gradleCompareVersions(v, d.version) > 0 {
-				d.version, d.source, d.hosts = v, SourceManaged, all.hosts[v]
-			}
-			continue
 		}
 		decide := func(s said) answer {
 			switch {
@@ -1367,16 +1438,28 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 		default:
 			byPlatforms = decide(all)
 		}
-		// (S): a version given outright, else the last BOM that manages it.
+		// (S): a version given outright, else the last BOM that manages it;
+		// what is given for the dependency's own configuration before what
+		// is given for all of them.
 		var byPlugin answer
-		if v, given := b.managed[d.group+":"+d.artifact]; given {
-			byPlugin = answer{kind: saysVersion, version: v}
-			if v == "" {
-				byPlugin = answer{kind: saysNotKnown, reason: model.VersionReasonValueNotRead}
+		for _, forConfig := range []bool{true, false} {
+			if byPlugin.kind != saysNothing {
+				break
 			}
-		} else {
+			for _, g := range managed[d.group+":"+d.artifact] {
+				// The plugin takes the last one given; so does this.
+				if (g.decl.forConfig != "") == forConfig && reaches(g.decl, g.own, d) {
+					byPlugin = answer{kind: saysVersion, version: g.decl.version}
+					if g.decl.version == "" {
+						byPlugin = answer{kind: saysNotKnown, reason: model.VersionReasonValueNotRead}
+					}
+				}
+			}
 			for k := len(springBOMs) - 1; k >= 0 && byPlugin.kind == saysNothing; k-- {
 				bom := springBOMs[k]
+				if (bom.decl.forConfig != "") != forConfig || !reaches(bom.decl, bom.own, d) || bom.ctx == nil && bom.missing == "" {
+					continue
+				}
 				if bom.ctx == nil {
 					// Not known, and after every BOM that could answer: it
 					// could override them.

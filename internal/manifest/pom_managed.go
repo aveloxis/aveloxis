@@ -4,7 +4,6 @@
 package manifest
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -133,7 +132,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 		for _, cm := range bc.chain {
 			for _, j := range cm.index().imports {
 				bg, ba, bv := importCoordinates(bc, cm.managed[j])
-				next, _, _ := t.obtain(bg, ba, bv, bc.asker())
+				next, _, _ := t.obtain(bg, ba, bv, bc.asker(cm))
 				if next == nil {
 					f.whole = false
 					continue
@@ -175,11 +174,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 			gapOf[p] = "a parent pom could not be obtained"
 		}
 		for _, mod := range m.modules {
-			target := filepath.Join(filepath.Dir(p), filepath.FromSlash(mod))
-			if info, err := os.Lstat(target); (err == nil && info.IsDir()) || !strings.HasSuffix(strings.ToLower(mod), ".xml") {
-				target = filepath.Join(target, "pom.xml")
-			}
-			target = filepath.Clean(target)
+			target := modulePom(p, mod)
 			union(p, target)
 			if t.model(target) == nil {
 				gapOf[p] = "a module could not be read"
@@ -195,7 +190,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 			// makes the tree not whole.
 			for _, j := range cm.index().imports {
 				bg, ba, bv := importCoordinates(c, cm.managed[j])
-				if _, ambiguous := t.byCoordinates(bg, ba, bv); ambiguous {
+				if _, ambiguous := t.byCoordinates(bg, ba, bv, cm.path); ambiguous {
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
 					continue
 				}
@@ -206,7 +201,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 				// asked for each (a module that sets the property otherwise
 				// does import another BOM); how many coordinates an analysis
 				// may ask for is the source's to bound.
-				bom, _, _ := t.obtain(bg, ba, bv, c.asker())
+				bom, _, _ := t.obtain(bg, ba, bv, c.asker(cm))
 				if bom == nil {
 					gapOf[p] = "an imported BOM could not be obtained"
 					continue

@@ -152,6 +152,25 @@ func TestAReExecutedBinaryHandsWhatItSentToItsAncestor(t *testing.T) {
 	if code := run(child("then-exit"), base, nil, nil); code != 1 {
 		t.Errorf("a run whose re-executed binary sent a forbidden write and called os.Exit: exit %d, want 1", code)
 	}
+	// A child whose environment lacks the directory's variable, and which
+	// sends a production statement: it fails, and says why (round 9: it
+	// passed, and its statement was judged by nobody).
+	if code := run(func() int {
+		cmd := exec.Command(os.Args[0], "-test.run", "^TestAReExecutedBinaryHandsWhatItSentToItsAncestor$", "-test.count=1")
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, writejudge.ChildDirEnv+"=") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, childSendsEnv+"=SELECT 1")
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), writejudge.ChildDirEnv+" is not in its environment") || !strings.Contains(string(out), "internal/db/zz.go:9") {
+			t.Errorf("a re-executed binary with no directory to hand its statement to: %v\n%s\nwant it to fail, naming the variable and where the statement was sent from", err, out)
+		}
+		return 0
+	}, base, nil, nil); code != 0 {
+		t.Errorf("the run around that child: exit %d", code)
+	}
 	// And the variable is as it was: a child started after the run does not
 	// write into a directory that is gone.
 	if dir := os.Getenv(writejudge.ChildDirEnv); dir != "" {
@@ -280,5 +299,59 @@ func TestANameProductionEverMadeAViewIsAView(t *testing.T) {
 	viewLast := run(sends(under, table, "DROP TABLE zz_pm.w", view, fill), base, nil, nil)
 	if tableLast != 1 || viewLast != 1 {
 		t.Errorf("a fill of a name production made as a view and as a table: exit %d with the table last, %d with the view last; want 1 for both", tableLast, viewLast)
+	}
+}
+
+// A re-executed binary with nowhere to hand its statements fails only when
+// it sent some: a subprocess under test that opens no pool, started with an
+// environment of the test's own making, exits as it chose.
+func TestAChildWithNoDirectoryFailsOnlyWhenItSentAStatement(t *testing.T) {
+	silent, sent := writejudge.New(), writejudge.New()
+	sent.Add(&writejudge.Sent{SQL: "SELECT 1", Frames: []writejudge.Frame{{File: "internal/db/zz.go", Line: 9, Decl: "zz"}}})
+	for _, c := range []struct {
+		what  string
+		judge *writejudge.Judge
+		dir   string
+		code  int
+		want  int
+	}{
+		{"sent nothing, passed", silent, "", 0, 0},
+		{"sent nothing, exit 3", silent, "", 3, 3},
+		{"sent a statement and has a directory", sent, "/somewhere", 0, 0},
+		{"sent a statement, no directory, passed", sent, "", 0, 1},
+		{"sent a statement, no directory, exit 3", sent, "", 3, 3},
+	} {
+		if got := unjudgedChild(c.judge, c.dir, c.code); got != c.want {
+			t.Errorf("%s: exit %d, want %d", c.what, got, c.want)
+		}
+	}
+}
+
+// A run names a directory for its re-executed binaries while its tests run,
+// removes it afterwards, and leaves the variable as it found it: set to what
+// an outer run set (testdb's own tests run inside one), or unset.
+func TestRunRemovesItsChildrensDirectoryAndPutsTheVariableBack(t *testing.T) {
+	base := baseDSN(t)
+	t.Setenv(EnvVar, base)
+	for _, outer := range []string{"/an/outer/runs/directory", ""} {
+		t.Setenv(writejudge.ChildDirEnv, outer)
+		if outer == "" {
+			if err := os.Unsetenv(writejudge.ChildDirEnv); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var during string
+		if code := run(func() int { during = os.Getenv(writejudge.ChildDirEnv); return 0 }, base, nil, nil); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if during == "" || during == outer {
+			t.Errorf("during the run %s was %q; want a directory of the run's own", writejudge.ChildDirEnv, during)
+		}
+		if _, err := os.Stat(during); !os.IsNotExist(err) {
+			t.Errorf("after the run its directory %s is still there (%v)", during, err)
+		}
+		if after, set := os.LookupEnv(writejudge.ChildDirEnv); after != outer || set != (outer != "") {
+			t.Errorf("after the run %s is %q (set %v); want it as before, %q", writejudge.ChildDirEnv, after, set, outer)
+		}
 	}
 }

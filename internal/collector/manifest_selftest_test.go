@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,14 +29,16 @@ func TestTheManifestReaderSelfTestSaysWhetherItAnswered(t *testing.T) {
 	if err := ManifestReaderSelfTest(context.Background(), log.logger()); err != nil {
 		t.Fatalf("the self-test of this program: %v", err)
 	}
-	self, _ := os.Executable()
+	// The program that ran: the running program's link on Linux, this
+	// program's path elsewhere.
+	self, _ := manifestChildProgram(runtime.GOOS, os.Executable)
 	ok := ""
 	for _, line := range log.lines {
 		if strings.Contains(line, `msg="manifest reader ok"`) {
 			ok = line
 		}
 	}
-	for _, want := range []string{"level=INFO", "program=" + self, "version=" + db.ToolVersion, "build=" + programBuild(self), "manifest_read_cpu_seconds=", "manifest_read_memory_mb="} {
+	for _, want := range []string{"level=INFO", "program=" + self, "version=" + db.ToolVersion, "build=" + manifestParentBuild(), "manifest_read_cpu_seconds=", "manifest_read_memory_mb="} {
 		if !strings.Contains(ok, want) {
 			t.Errorf("the line lacks %q: %q (of %q)", want, ok, log.lines)
 		}
@@ -92,8 +96,11 @@ func TestTheManifestReaderSelfTestSaysWhetherItAnswered(t *testing.T) {
 func TestAReaderOfAnotherBuildIsRefused(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dir := writeClone(t, map[string]string{"requirements.txt": "requests==2.31.0\n"})
-	saved := manifestParentBuild
-	t.Cleanup(func() { manifestParentBuild = saved; manifestStaleSaid.Store(false) })
+	saved, savedCommand := manifestParentBuild, manifestChildCommand
+	t.Cleanup(func() {
+		manifestParentBuild, manifestChildCommand = saved, savedCommand
+		manifestStaleSaid.Store(false)
+	})
 	self, _ := os.Executable()
 	own := programBuild(self)
 	if own == "" {
@@ -102,6 +109,18 @@ func TestAReaderOfAnotherBuildIsRefused(t *testing.T) {
 	if got := saved(); got != own {
 		t.Fatalf("this process asks as build %q; its file is %q", got, own)
 	}
+	// A build is asked of a child started from a PATH, which may be another
+	// file by now; a child started from the running program's own link is
+	// this program whatever has been done to its file's times (0.29.216: a
+	// `touch` of the binary made every reading fail as another build).
+	if got := manifestBuildAsked(self); got != own {
+		t.Errorf("of a child started from this program's path: build %q asked, want %q", got, own)
+	}
+	if got := manifestBuildAsked(procSelfExe); got != "" {
+		t.Errorf("of a child started from the running program's link: build %q asked, want none", got)
+	}
+	// From here the child is started from the path, on every platform.
+	manifestChildCommand = func() (string, []string, error) { return self, []string{ManifestChildArg}, nil }
 
 	manifestParentBuild = func() string { return "1.1" }
 	_, err := runManifestChild(context.Background(), manifestRequest{Passes: manifestPassesAll, Dir: dir, RemotePomLimit: 5}, ManifestLimits{}, nil, quiet)
@@ -126,7 +145,14 @@ func TestAProgramsBuildChangesWhenItsFileIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := programBuild(path)
-	later := time.Now().Add(3 * time.Second)
+	// Three milliseconds later: the time is compared as finely as the
+	// filesystem keeps it, since an install can follow a start within a
+	// second.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := info.ModTime().Add(3 * time.Millisecond)
 	if err := os.WriteFile(path, []byte("two"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -190,10 +216,101 @@ func TestTheReaderFallsBackToThisProgramsPath(t *testing.T) {
 		t.Errorf("the fallback was said %d times over two readings; want once", said)
 	}
 
+	// And the fallback itself, not a stand-in for it: asked to start the
+	// running program's link, which only Linux has, the reader runs on
+	// every platform, from the link there and from this program's path
+	// elsewhere, and the self-test names the program that RAN.
+	manifestChildCommand = func() (string, []string, error) { return procSelfExe, []string{ManifestChildArg}, nil }
+	manifestChildFallback = savedFallback
+	manifestFallbackSaid.Store(false)
+	ran := self
+	if runtime.GOOS == "linux" {
+		ran = procSelfExe
+	}
+	run, err := runManifestChild(context.Background(), manifestRequest{Passes: manifestPassesAll, Dir: dir, RemotePomLimit: 5}, ManifestLimits{}, nil, log.logger())
+	if err != nil || len(run.decl.Deps) != 1 || run.program != ran {
+		t.Fatalf("asked to start the link: %v; ran %q, want %q", err, run.program, ran)
+	}
+	run.close()
+	log = recorded{}
+	if err := ManifestReaderSelfTest(context.Background(), log.logger()); err != nil {
+		t.Fatalf("the self-test through the link: %v", err)
+	}
+	if last := log.lines[len(log.lines)-1]; !strings.Contains(last, `msg="manifest reader ok"`) || !strings.Contains(last, "program="+ran+" ") {
+		t.Errorf("the self-test does not name the program that ran (%s): %s", ran, last)
+	}
+
 	alsoGone := filepath.Join(t.TempDir(), "no-such-program")
 	manifestChildFallback = func(string) (string, error) { return alsoGone, nil }
-	_, err := runManifestChild(context.Background(), manifestRequest{Passes: manifestPassesAll, Dir: dir, RemotePomLimit: 5}, ManifestLimits{}, nil, log.logger())
+	manifestChildCommand = func() (string, []string, error) { return gone, []string{ManifestChildArg}, nil }
+	_, err = runManifestChild(context.Background(), manifestRequest{Passes: manifestPassesAll, Dir: dir, RemotePomLimit: 5}, ManifestLimits{}, nil, log.logger())
 	if err == nil || !strings.Contains(err.Error(), gone) || !strings.Contains(err.Error(), alsoGone) {
 		t.Errorf("neither could be started: %v; want both named", err)
+	}
+}
+
+// The self-test does not hold serve's start for the reader's whole clock: a
+// reader that does not answer is a failure said after
+// manifestSelfTestTimeout, and a stop of serve meanwhile is not one.
+func TestTheManifestReaderSelfTestDoesNotWaitLong(t *testing.T) {
+	if manifestSelfTestTimeout != 30*time.Second {
+		t.Fatalf("manifestSelfTestTimeout is %s in production; the variable is a test's seam", manifestSelfTestTimeout)
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, savedTimeout := manifestChildCommand, manifestSelfTestTimeout
+	t.Cleanup(func() { manifestChildCommand, manifestSelfTestTimeout = saved, savedTimeout })
+	manifestChildCommand = func() (string, []string, error) { return sleep, []string{"60"}, nil }
+	manifestSelfTestTimeout = 300 * time.Millisecond
+	var log recorded
+	began := time.Now()
+	err = ManifestReaderSelfTest(context.Background(), log.logger())
+	if err == nil || time.Since(began) > 20*time.Second {
+		t.Fatalf("a reader that does not answer: %v after %s; want a failure soon after the timeout", err, time.Since(began))
+	}
+	failed := ""
+	for _, line := range log.lines {
+		if strings.Contains(line, "manifest reader self-test FAILED") {
+			failed = line
+		}
+	}
+	for _, want := range []string{"level=ERROR", "did not answer about an empty directory within 300ms", "program=" + sleep} {
+		if !strings.Contains(failed, want) {
+			t.Errorf("the line lacks %q: %q", want, failed)
+		}
+	}
+}
+
+// What the self-test makes of a run: a pass that could not read the
+// directory it was given fails it, though the reader itself ran to its end.
+func TestTheSelfTestFailsOnAPassThatDidNotReadItsDirectory(t *testing.T) {
+	whole := func() *manifestRun {
+		run := &manifestRun{finished: map[string]bool{}, rootErr: map[string]error{}, passFail: map[string]error{}}
+		for _, pass := range manifestPassesAll {
+			run.finished[pass] = true
+		}
+		return run
+	}
+	if err := manifestSelfTestVerdict(whole(), nil); err != nil {
+		t.Errorf("a run whose passes all finished: %v", err)
+	}
+	boom := errors.New("the reader was stopped")
+	if err := manifestSelfTestVerdict(whole(), boom); !errors.Is(err, boom) {
+		t.Errorf("a run that failed: %v; want its own error", err)
+	}
+	for _, pass := range manifestPassesAll {
+		unread := whole()
+		unread.rootErr[pass] = errors.New("permission denied")
+		var root *errManifestRoot
+		if err := manifestSelfTestVerdict(unread, nil); !errors.As(err, &root) || !strings.Contains(err.Error(), "the "+pass+" pass") {
+			t.Errorf("a %s pass that could not read its directory: %v; want that pass named", pass, err)
+		}
+		unfinished := whole()
+		delete(unfinished.finished, pass)
+		if err := manifestSelfTestVerdict(unfinished, nil); err == nil {
+			t.Errorf("a %s pass that never finished passed the self-test", pass)
+		}
 	}
 }

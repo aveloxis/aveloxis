@@ -332,17 +332,19 @@ type Catalog struct {
 	defined map[string]bool
 	// temp: session tables a write may name as pg_temp.<name> (Temp).
 	temp map[string]bool
-	// copies: what a table made by CREATE TABLE ... AS (or SELECT INTO) was
-	// filled from. It is not behind the table (a write of the copy writes
-	// no row of the source), but a value READ from the copy is a value of
-	// the source as it stood (round 8).
-	copies map[string][]string
+	// filled: a table made by CREATE TABLE ... AS or SELECT ... INTO, under
+	// whatever name it has since been given. What it holds is what its
+	// query read, so a value READ from it is not known to be incoming
+	// (round 8 followed the query's sources to say which; round 9: one
+	// rule, a table made from a query is not a clean item, and nothing is
+	// followed. The store makes no such table).
+	filled map[string]bool
 }
 
 // NewCatalog is an empty catalog.
 func NewCatalog() *Catalog {
 	return &Catalog{kind: map[string]string{}, sources: map[string][]string{}, parents: map[string][]string{},
-		refs: map[string][]string{}, defined: map[string]bool{}, temp: map[string]bool{}, copies: map[string][]string{}}
+		refs: map[string][]string{}, defined: map[string]bool{}, temp: map[string]bool{}, filled: map[string]bool{}}
 }
 
 // Temp declares temporary tables that some text creates and ANOTHER text
@@ -447,6 +449,9 @@ func (c *Catalog) add(defs []Def) {
 				c.kind[d.Name] = k
 				c.sources[d.Name] = c.sources[old]
 				c.parents[d.Name] = append([]string{old}, c.parents[old]...)
+				// A table made from a query is one still when renamed or
+				// moved to another schema (round 9).
+				c.filled[d.Name] = c.filled[old]
 			}
 		case "view":
 			// CREATE OR REPLACE and a rule ON SELECT make a view of the
@@ -466,7 +471,7 @@ func (c *Catalog) add(defs []Def) {
 			if d.Kind == "table" {
 				c.defined[d.Name] = true
 				c.refs[d.Name] = append(c.refs[d.Name], d.Refs...)
-				c.copies[d.Name] = append(c.copies[d.Name], d.Sources...)
+				c.filled[d.Name] = c.filled[d.Name] || d.Filled
 			}
 		}
 	}
@@ -626,6 +631,15 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 			}
 			return false
 		}
+		madeHere := map[string]bool{}
+		for _, d := range defs {
+			if d.Kind == "table" || d.Kind == "rename" {
+				madeHere[d.Name] = true
+				if d.Temp {
+					madeHere["pg_temp."+d.Name] = true
+				}
+			}
+		}
 		var stmtText, stmtSource string
 		inBody := false
 		violate := func(v Violation) {
@@ -651,7 +665,7 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 		}
 		for i := range ws {
 			w := &ws[i]
-			w.cat = cat
+			w.cat, w.madeHere = cat, madeHere
 			inBody = w.scope != nil && w.scope.env != nil
 			// The statement an Exception pins: the whole one the write
 			// stands in (a WITH and all under it), not the innermost.
@@ -865,7 +879,7 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 					case holdsUnknown(it.val):
 						ok, detail = false, "the value has a part that is not fixed text ("+Unknown+"), so the policy cannot be checked on it"
 					case reg.Policy == InsertOnly:
-						ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET"
+						ok, detail = false, "column is InsertOnly but this statement assigns it in an UPDATE SET — "+WaysOut[InsertOnly]
 					default:
 						ok, detail = valueConforms(w, it.val, reg.Column, reg.Policy)
 					}
@@ -1050,6 +1064,15 @@ func valueConforms(w *Write, val any, col string, want Policy) (bool, string) {
 	if matchPolicy(w, val, col, want) {
 		return true, ""
 	}
+	out := " — " + WaysOut[want]
+	if want == FillEmptyOnly && w.GuardsEmpty(col) {
+		// The write is guarded, so it is the bare fill, and what it fills
+		// with is not the one operand that form takes (round 9: this read
+		// "expression matches AlwaysRefresh", which named another policy
+		// and no way out).
+		return false, "the write is guarded on the column being empty, and the value it fills with is not one incoming operand (a placeholder, EXCLUDED's column, a column of an incoming batch): " +
+			"a fill computed in SQL or taken from another table goes in the COALESCE form" + out
+	}
 	var also []string
 	for _, p := range []Policy{FillEmptyOnly, PreferNonemptyIncoming, PreferNonNullIncoming, GreatestNonNull, AlwaysRefresh} {
 		if p != want && matchPolicy(w, val, col, p) {
@@ -1057,14 +1080,47 @@ func valueConforms(w *Write, val any, col string, want Policy) (bool, string) {
 		}
 	}
 	if len(also) > 0 {
-		return false, fmt.Sprintf("expression matches %s — registered policy is %s", strings.Join(also, "+"), want)
+		return false, fmt.Sprintf("expression matches %s — registered policy is %s", strings.Join(also, "+"), want) + out
 	}
 	if want == AlwaysRefresh {
 		// The one policy with no shape: say which leaf is not incoming.
-		return false, "the value is not made of incoming values alone: " + w.notIncoming(val, col) + " — conform, or take a reviewed Exception"
+		return false, "the value is not made of incoming values alone: " + w.notIncoming(val, col) + out
 	}
-	return false, fmt.Sprintf("unrecognized write shape for %s — conform, extend the tested shape set, or take a reviewed Exception", want)
+	return false, fmt.Sprintf("unrecognized write shape for %s", want) + out
 }
+
+// WaysOut is, for each policy, what a refusal of a value says after what it
+// found: the shapes the policy is read in, and what to write instead of
+// the forms a maintainer most often reaches for. It is the one place the
+// ways out are written (rounds 7 to 9 kept them in the tests' lists of
+// refused statements, where nobody refused would read them): the tests
+// hold each refused statement against the text here.
+var WaysOut = map[Policy]string{
+	FillEmptyOnly: "FillEmptyOnly is read as COALESCE(col, v), COALESCE(NULLIF(col, ''), v), CASE WHEN <col is empty> THEN v ELSE col END, " +
+		"or SET col = <one incoming operand> under a top-level WHERE (or DO UPDATE ... WHERE) condition that col is empty (col IS NULL; COALESCE(col, '') = ''; NULLIF(col, '') IS NULL; col IS NULL OR col = ''). " +
+		"v is made of incoming values, and a cast goes on v, not on the whole COALESCE: a fill computed in SQL or read from another table goes in the COALESCE form with its columns qualified by their FROM item; a MERGE action's own condition is not read as the guard (use UPDATE ... WHERE); " +
+		"empty is NULL (and '' for text), nothing else: a 0 or another stand-in for unknown is not written in the first place. " +
+		"Another row of the same table is not incoming: a merge of two rows takes a reviewed Exception. " + inBodyWayOut,
+	PreferNonemptyIncoming: "PreferNonemptyIncoming is read as COALESCE(NULLIF(v, ''), col), v one incoming operand (a placeholder, EXCLUDED's column, a column of an incoming batch), which may be cast or trimmed and not otherwise changed: " +
+		"compute it before it is handed in; a CASE, or a guard on the placeholder in WHERE, is not this shape. A value from another table or another row takes a reviewed Exception",
+	PreferNonNullIncoming: "PreferNonNullIncoming is read as COALESCE(v, col), v one incoming operand (a placeholder, EXCLUDED's column, a column of an incoming batch; a cast of it): " +
+		"compute it before it is handed in. A value from another table or another row takes a reviewed Exception",
+	GreatestNonNull: "GreatestNonNull is read as GREATEST(col, v) in either order (GREATEST ignores a NULL), or GREATEST(COALESCE(v, col), COALESCE(col, v)), v one incoming operand: " +
+		"a CASE WHEN v > col, or SET col = v under a WHERE v > col, is GREATEST(col, v); COALESCE(v, NOW()) is not an operand (hand the time in). A value from another row takes a reviewed Exception",
+	EarliestOfStoredAndIncoming: "EarliestOfStoredAndIncoming is read as LEAST(col, v) in either order, v one incoming operand (a cast of it): " +
+		"hand the time in rather than computing it in SQL. A value carried from another row takes a reviewed Exception",
+	KeepCarryOrNow: "KeepCarryOrNow is read as one CASE (not nested) whose every result is col, an incoming operand, NOW() or COALESCE(<incoming>, NOW()): " +
+		"COALESCE(col, NOW()) is CASE WHEN col IS NULL THEN NOW() ELSE col END; a nested CASE is flattened into one; NULL (a reset) is none of the three and takes a reviewed Exception",
+	InsertOnly: "InsertOnly allows no UPDATE of the column at all: leave it out of the SET list, or take a reviewed Exception",
+	AlwaysRefresh: "AlwaysRefresh takes a value made of incoming values alone: placeholders, constants, DEFAULT, functions and operators of no schema over them, EXCLUDED's columns when the INSERT's source is incoming, " +
+		"another column of the row, and columns QUALIFIED by a clean FROM item (a bare name, in a sub-select too, is taken for the stored value: qualify it) (unnest of placeholders or VALUES for a batch; a schema-qualified base table that is not the one written; a WITH query or sub-select over such). " +
+		"Ways out: a batch as FROM unnest($1::t[], $2::u[]) AS v(a, b); a staging table an EARLIER text of the session made, by its schema (pg_temp.<name>, declared to the judge; a table the write's own text makes is not clean, since the text may have filled it from anything); the table being written read to FILTER goes in WHERE EXISTS (...), not in a JOIN or a WITH query the value's item reads; " +
+		"a function of a schema, JSON_TABLE, XMLTABLE or a set-returning function is computed before the value is handed in. " + inBodyWayOut + ". Otherwise conform, or take a reviewed Exception",
+}
+
+// inBodyWayOut is said for the two policies whose values are walked leaf by
+// leaf.
+const inBodyWayOut = "In a function or DO body a variable, a parameter and a placeholder ($1 there is the function's parameter or an EXECUTE ... USING argument) are not incoming: send the statement from Go with placeholders, or take a reviewed Exception"
 
 // twoArgs: v is a node of the given kind with exactly two arguments.
 func twoArgs(v any, kind string) (jnode, [2]any, bool) {
@@ -1423,6 +1479,11 @@ func (w *Write) operand(v any, col string) string {
 		return "other"
 	}
 	if k, _ := wrapped(v); k == "ParamRef" {
+		// One answer to "is this placeholder handed in" (in a body it is
+		// not: notIncoming).
+		if w.notIncoming(v, col) != "" {
+			return "other"
+		}
 		return "incoming"
 	}
 	if arg, ok := trimOf(v); ok {
@@ -1566,6 +1627,13 @@ type incomingWalk struct {
 	// WITH names itself; while it is being judged it is taken as clean).
 	visiting map[string]bool
 	depth    int
+	// cleanWith: the WITH queries of the statement already judged clean.
+	// (A walk ends at its first failure, so only a clean verdict is ever
+	// asked for again; and one reached while a query that names it was
+	// still being judged stands, because that query's failure ends the
+	// walk too.) Without it a chain of WITH queries each reading the one
+	// before twice was walked 2^n times (round 9: n=22 took 5.7 s).
+	cleanWith map[string]bool
 }
 
 type incomingEnv struct {
@@ -1586,6 +1654,11 @@ func (w *Write) notIncoming(v any, col string) string {
 	iw.value(v, incomingEnv{mode: inWrite})
 	return iw.why
 }
+
+// namesExcluded: in this write the name "excluded" is the row proposed for
+// insertion (an ON CONFLICT DO UPDATE whose target is not itself aliased
+// excluded, which PostgreSQL refuses).
+func (w *Write) namesExcluded() bool { return w.Kind == "conflict-update" && w.Alias != "excluded" }
 
 // excludedIncoming: the INSERT this ON CONFLICT DO UPDATE belongs to takes
 // its rows from nothing but incoming values, so EXCLUDED holds only those.
@@ -1626,7 +1699,17 @@ func (iw *incomingWalk) value(v any, env incomingEnv) {
 	case jnode:
 		kind, body := wrapped(t)
 		switch kind {
-		case "ParamRef", "A_Const", "SetToDefault", "SQLValueFunction", "TypeName":
+		case "ParamRef":
+			// In a body a placeholder is not handed in by the caller: it
+			// is a parameter of the SQL function, or what EXECUTE ...
+			// USING gives it, which may be the stored value (round 9: the
+			// documentation said a parameter of a body is refused, and
+			// this form of one was not).
+			if w := iw.w; w.scope != nil && w.scope.env != nil {
+				iw.fail("the placeholder %s stands in a body: it is a parameter of the function or an argument of EXECUTE ... USING, and what it holds is not known", render(t))
+			}
+			return
+		case "A_Const", "SetToDefault", "SQLValueFunction", "TypeName":
 			return
 		case "TypeCast":
 			iw.value(body["arg"], env)
@@ -1651,6 +1734,16 @@ func (iw *incomingWalk) value(v any, env incomingEnv) {
 		case "UpdateStmt", "InsertStmt", "DeleteStmt", "MergeStmt":
 			iw.fail("a data-modifying statement where a value stands")
 			return
+		case "":
+			// A plain map of fields, not a node.
+		default:
+			// Deny by default (round 9): a kind of node that is not on
+			// the list of those whose parts are walked is not read, so
+			// what it yields is not known to be incoming.
+			if !valueKinds[kind] {
+				iw.fail("a form of expression this check does not read (%s): what it yields is not known", kind)
+				return
+			}
 		}
 		if kind != "" {
 			t = body
@@ -1659,6 +1752,23 @@ func (iw *incomingWalk) value(v any, env incomingEnv) {
 			iw.value(t[k], env)
 		}
 	}
+}
+
+// valueKinds are the kinds of node of a value whose parts are walked: each
+// yields nothing but what its parts yield. (The leaves, and the kinds that
+// are refused or read in their own way, are cases of value above.) A kind
+// that is not here is refused, and so is a kind of FROM item fromItems does
+// not name: neither list needs revising for a new grammar as stmtKinds does
+// (parserGrammar), since what a later parser adds is refused until it is
+// listed.
+var valueKinds = map[string]bool{
+	"A_Expr": true, "BoolExpr": true, "NullTest": true, "BooleanTest": true,
+	"CoalesceExpr": true, "MinMaxExpr": true, "CaseExpr": true, "CaseWhen": true,
+	"FuncCall": true, "NamedArgExpr": true, "A_ArrayExpr": true, "RowExpr": true,
+	"A_Indirection": true, "A_Indices": true, "CollateClause": true,
+	"ResTarget": true, "SubLink": true, "List": true,
+	"String": true, "Integer": true, "Float": true, "Boolean": true, "BitString": true,
+	"WindowDef": true, "SortBy": true,
 }
 
 // query judges a SELECT (or VALUES, or a set operation of them): every item
@@ -1734,8 +1844,16 @@ func (iw *incomingWalk) item(it fromItem, env incomingEnv) {
 		// judged; one inside a sub-select of the value (inWrite) can name
 		// the row being written, so a bare name it selects is refused.
 		iw.query(it.sub, env)
+	case it.join:
+		// A join's alias: its two sides are items of their own.
+	default:
+		// Deny by default (round 9): JSON_TABLE, XMLTABLE, TABLESAMPLE,
+		// or a kind of FROM item a later grammar adds.
+		if name == "" {
+			name = "with no alias"
+		}
+		iw.fail("the FROM item %s is written in a form this check does not read (JSON_TABLE, XMLTABLE, TABLESAMPLE, or one it does not know): what it reads is not known", name)
 	}
-	// What is left is a join's alias: its parts are items of their own.
 }
 
 // relation judges a relation written in place.
@@ -1751,7 +1869,7 @@ func (iw *incomingWalk) relation(schema, name string) {
 			iw.fail("the relation %s names no schema and is no WITH query of the statement: which relation it is, the text does not say", name)
 			return
 		}
-		if iw.visiting["with "+name] {
+		if iw.visiting["with "+name] || iw.cleanWith[name] {
 			return
 		}
 		iw.visiting["with "+name] = true
@@ -1759,10 +1877,23 @@ func (iw *incomingWalk) relation(schema, name string) {
 		delete(iw.visiting, "with "+name)
 		if iw.why != "" {
 			iw.why = "the WITH query " + name + " is not incoming: " + iw.why
+			return
 		}
+		if iw.cleanWith == nil {
+			iw.cleanWith = map[string]bool{}
+		}
+		iw.cleanWith[name] = true
 		return
 	}
 	q := schema + "." + name
+	if w.madeHere[q] {
+		// One rule for every table the write's own text makes, temporary
+		// or not, however it is made: the text may have filled it from
+		// anything. (The carve-out for a session table the text makes
+		// itself is for WRITES of it.)
+		iw.fail("%s is made by this same text: what the text put in it is not known to be incoming", q)
+		return
+	}
 	if schema == "pg_temp" {
 		if w.cat == nil || !w.cat.temp[name] {
 			iw.fail("%s is not a declared session table", q)
@@ -1790,23 +1921,9 @@ func (iw *incomingWalk) relation(schema, name string) {
 			iw.fail("%s is the table being written (or a partition, child or parent of it): its columns are stored values", rel)
 			return false
 		}
-		// A table the catalog saw filled from other relations (CREATE
-		// TABLE ... AS) holds what they held.
-		for _, src := range w.cat.copies[rel] {
-			if iw.visiting["copy "+rel] {
-				continue
-			}
-			iw.visiting["copy "+rel] = true
-			schema, name := "", src
-			if i := strings.IndexByte(src, '.'); i >= 0 {
-				schema, name = src[:i], src[i+1:]
-			}
-			iw.relation(schema, name)
-			delete(iw.visiting, "copy "+rel)
-			if iw.why != "" {
-				iw.why = rel + " was filled from what is not incoming: " + iw.why
-				return false
-			}
+		if w.cat.filled[rel] {
+			iw.fail("%s was made from a query (CREATE TABLE ... AS, SELECT ... INTO): it holds what that query read, which is not known to be incoming", rel)
+			return false
 		}
 		return true
 	}
@@ -1911,7 +2028,7 @@ func (iw *incomingWalk) ref(ref jnode, env incomingEnv) {
 			iw.ownClean()
 		case inWrite:
 			isFrom, isVar := ownNamed(match), q != "" && w.qualifiesVariable(q)
-			isExcluded := q == "excluded" && w.Kind == "conflict-update" && w.Alias != "excluded"
+			isExcluded := q == "excluded" && w.namesExcluded()
 			n := 0
 			for _, is := range []bool{isTarget, isFrom, isVar, isExcluded} {
 				if is {
@@ -1946,8 +2063,11 @@ func (iw *incomingWalk) ref(ref jnode, env incomingEnv) {
 		iw.fail("a column reference that is not read")
 	case 1:
 		name := parts[0]
-		if is, conflict := w.variable(name); is && !star && conflict != "use_column" {
-			iw.fail("the bare name %s is a variable of the body (or may be: the body does not say which wins): what it holds is not known", name)
+		if is, _ := w.variable(name); is && !star {
+			// Whichever wins, the variable or a column of the name (an
+			// SQL function's parameter yields to a column), it is not a
+			// value handed in.
+			iw.fail("the bare name %s is a variable or a parameter of the body (or a column that hides one): what it holds is not known", name)
 			return
 		}
 		if star {
@@ -1968,6 +2088,15 @@ func (iw *incomingWalk) ref(ref jnode, env incomingEnv) {
 		}
 		if env.mode == inWrite && name == w.targetName() {
 			iw.fail("%s is the whole row being written", name)
+			return
+		}
+		if env.mode == inWrite && name == "excluded" && w.namesExcluded() {
+			// EXCLUDED's whole row ((excluded).col, row_to_json(excluded))
+			// holds what EXCLUDED.col holds: the same question (round 9:
+			// the whole row skipped it).
+			if !w.excludedIncoming() {
+				iw.fail("excluded (the whole row): EXCLUDED holds what the INSERT's own source reads, and that source is not made of incoming values alone (it reads a table that is, or may be, the one being written)")
+			}
 			return
 		}
 		if env.mode != inWrite {

@@ -38,7 +38,12 @@ const (
 // scanSQL is sql as the scanner's tokens, or its error (an open string,
 // comment or quoted name).
 func scanSQL(sql string) ([]scanTok, error) {
-	b, err := pgparser.ScanToProtobuf(sql)
+	var b []byte
+	_, err := parserCall(func() (string, error) {
+		var err error
+		b, err = pgparser.ScanToProtobuf(sql)
+		return "", err
+	})
 	if err != nil {
 		return nil, err
 	}

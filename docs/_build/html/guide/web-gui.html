@@ -350,6 +350,8 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
@@ -751,7 +753,7 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -2056,12 +2058,21 @@ when the inventory is older than the last attempt.</p>
 <p>Under the tiles a <strong>caution</strong> appears when the repository’s lockfiles went unread at the
 last analysis (0.29.214), and only then. Exact versions and transitive dependencies come
 from lockfiles, so what the page shows below is then older than its date suggests, or
-lacks them. There are two sentences. When lockfile rows are stored: “Lockfiles last read
+lacks them. There are three sentences. When lockfile rows are stored: “Lockfiles last read
 2026-11-02; the latest read did not finish (reading them took more memory than allowed).
 Versions and transitive dependencies may be out of date.” When none is stored:
 “Lockfiles could not be read (reading them took more memory than allowed). Transitive
-dependencies are not checked.” A repository whose lockfiles were read, or that has none,
-shows nothing. What to do about it is in <a class="reference internal" href="troubleshooting.html"><span class="std std-doc">troubleshooting</span></a>.</p>
+dependencies are not checked.” When some lockfiles were too large to read and the
+others were read at that analysis (0.29.216): “Some lockfiles could not be read (reading
+them would take more memory than allowed). Their versions and transitive dependencies may
+be out of date.”, with no date. A repository whose lockfiles were read, or that has none,
+shows nothing.</p>
+<p>While the caution is up, no page says the repository has no vulnerabilities (0.29.216).
+The count is unchanged, because it is a true count of what was checked: a repository
+scanned with nothing found still shows 0 and “scanned” with its date, and where a page
+would have said “No known vulnerabilities recorded for this repository.” it says
+“Scanned.” with the caution beside it. The claim returns with the first reading of the
+lockfiles that completes. What to do about it is in <a class="reference internal" href="troubleshooting.html"><span class="std std-doc">troubleshooting</span></a>.</p>
 <p>The count is a dash where a 0 would claim a check that did not happen: a repository
 never scanned with nothing found, one whose dependencies could not be sent for
 checking or were sent and not answered, or one for which nothing has recorded what it

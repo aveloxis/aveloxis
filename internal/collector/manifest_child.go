@@ -383,6 +383,12 @@ func (c *manifestChild) serveLockfiles(req *manifestRequest, done *manifestDone,
 					ChildName: e.ChildName, Constraint: e.Constraint})
 			}, len(e.ParentName)+len(e.ParentVersion)+len(e.ChildName)+len(e.Constraint))
 		}
+		// Sent now, not with the next lockfile's first items: a reader's
+		// strings may be slices of its file's text (yarn.lock's are), and
+		// the few left in a piece not yet sent kept the whole text held
+		// while the next lockfile was measured against the room left
+		// (0.29.216, review round 9).
+		parts.flush()
 	})
 	if err != nil {
 		done.RootError = err.Error()

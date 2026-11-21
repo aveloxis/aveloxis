@@ -1,0 +1,14 @@
+package collector
+
+import "syscall"
+
+func PinEvasionSYSCALL(dir string) int {
+	fd, err := syscall.Open(dir+"/package.json", syscall.O_RDONLY, 0)
+	if err != nil {
+		return 0
+	}
+	defer syscall.Close(fd)
+	buf := make([]byte, 1<<30)
+	n, _ := syscall.Read(fd, buf)
+	return n
+}

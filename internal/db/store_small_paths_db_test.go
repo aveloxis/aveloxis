@@ -22,7 +22,7 @@ func TestAnSBOMIsStoredForItsRepository(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	repoID, _, _ := pathsRepo(t, store, "sbom", "aveloxis_data.repo_sbom_scans")
-	if err := store.InsertSBOM(ctx, repoID, []byte(`{"bomFormat":"CycloneDX","zz":"paths"}`)); err != nil {
+	if err := store.InsertSBOM(ctx, repoID, []byte(`{"bomFormat":"CycloneDX","zz":"paths","components":[{"name":"left-pad","version":"1.3.0"}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.InsertSBOM(ctx, repoID, []byte(`{"bomFormat":"SPDX"}`)); err != nil {
@@ -33,6 +33,11 @@ func TestAnSBOMIsStoredForItsRepository(t *testing.T) {
 	}
 	if got := pathsText(t, store, `SELECT sbom_scan->>'zz' FROM aveloxis_data.repo_sbom_scans WHERE repo_id = $1 AND sbom_scan->>'bomFormat' = 'CycloneDX'`, repoID); got != "paths" {
 		t.Errorf("the stored document's zz is %q, want paths", got)
+	}
+	// The document is stored WHOLE: its components are what an SBOM is for
+	// (round 9: a statement that stored it without them passed).
+	if got := pathsText(t, store, `SELECT sbom_scan->'components'->0->>'name' || '@' || (sbom_scan->'components'->0->>'version') FROM aveloxis_data.repo_sbom_scans WHERE repo_id = $1 AND sbom_scan->>'bomFormat' = 'CycloneDX'`, repoID); got != "left-pad@1.3.0" {
+		t.Errorf("the stored document's first component is %q, want left-pad@1.3.0", got)
 	}
 }
 
@@ -256,6 +261,14 @@ func TestTheRepositoryHostCheckMarkerIsStampedAndRead(t *testing.T) {
 		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.program_markers WHERE marker = $1`, repositoryHostCheckMarker)
 	})
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_ops.program_markers WHERE marker = $1`, repositoryHostCheckMarker)
+	// Another program's marker, finished long ago: it is not this check's,
+	// before the check has run or after (round 9: a read of ANY marker
+	// passed, there being no other row).
+	neighbour := pathsTag("marker")
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.program_markers (marker, rows_done, completed_at) VALUES ($1, 7, NOW() - INTERVAL '30 days')`, neighbour)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_ops.program_markers WHERE marker = $1`, neighbour)
+	})
 	if since, ever, err := store.SinceRepositoryHostCheck(ctx); err != nil || ever || since != 0 {
 		t.Fatalf("before any check: since %v, ever %v (%v)", since, ever, err)
 	}
@@ -279,6 +292,9 @@ func TestTheRepositoryHostCheckMarkerIsStampedAndRead(t *testing.T) {
 	}
 	if since, _, _ := store.SinceRepositoryHostCheck(ctx); since > time.Minute {
 		t.Errorf("after the second check: since %v", since)
+	}
+	if got := pathsText(t, store, `SELECT rows_done || ':' || (completed_at < NOW() - INTERVAL '29 days') FROM aveloxis_ops.program_markers WHERE marker = $1`, neighbour); got != "7:true" {
+		t.Errorf("the other program's marker is now %q; the check's stamp must not touch it", got)
 	}
 }
 
@@ -307,10 +323,13 @@ func TestQueueStateReadsForARepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 100, 'queued', NOW())`, absent)
+	// A queue row of ANY status ends it: one being collected is not
+	// stranded (round 9: a count of the repositories with no QUEUED row
+	// passed, the row here having been a queued one).
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 100, 'collecting', NOW())`, absent)
 	afterQueued, err := store.CountStrandedRepos(ctx)
 	if err != nil || afterQueued != before-1 {
-		t.Errorf("stranded repositories %d -> %d (%v) once one is queued, want one fewer", before, afterQueued, err)
+		t.Errorf("stranded repositories %d -> %d (%v) once one has a queue row (being collected), want one fewer", before, afterQueued, err)
 	}
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, absent)
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_archived = TRUE WHERE repo_id = $1`, absent)
@@ -324,10 +343,13 @@ func TestPullRequestAndReviewLookupsAndOpenNumbers(t *testing.T) {
 	ctx := context.Background()
 	repoID, _, _ := pathsRepo(t, store, "prs", "aveloxis_data.pull_request_reviews", "aveloxis_data.pull_requests", "aveloxis_data.repo_info")
 	other, _, _ := pathsRepo(t, store, "prs-other", "aveloxis_data.pull_requests")
+	// The other repository's #9 is stored FIRST, so that a lookup by
+	// number alone finds it and not this repository's (round 9: stored
+	// second, it never did).
+	pathsPR(t, store, other, 9, "open")
 	open9 := pathsPR(t, store, repoID, 9, "open")
 	pathsPR(t, store, repoID, 4, "open")
 	pathsPR(t, store, repoID, 5, "closed")
-	pathsPR(t, store, other, 9, "open")
 	if id, err := store.FindPRDBID(ctx, repoID, 9); err != nil || id != open9 {
 		t.Errorf("FindPRDBID(repo, 9) = %d (%v), want %d: the other repository's #9 is not it", id, err, open9)
 	}
@@ -338,6 +360,9 @@ func TestPullRequestAndReviewLookupsAndOpenNumbers(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(numbers, []int{4, 9}) {
 		t.Errorf("open pull requests: %v (%v), want [4 9]", numbers, err)
 	}
+	// Another review of the same repository, stored first: the lookup is
+	// by the review's forge id, not "a review of this repository".
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.pull_request_reviews (pull_request_id, repo_id, platform_id, platform_review_id) VALUES ($1, $2, 1, $3)`, open9, repoID, repoID*10+2)
 	var review int64
 	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.pull_request_reviews (pull_request_id, repo_id, platform_id, platform_review_id)
 		VALUES ($1, $2, 1, $3) RETURNING pr_review_id`, open9, repoID, repoID*10+1).Scan(&review); err != nil {
@@ -410,6 +435,11 @@ func TestScancodeLastRunIsTheNewestScan(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	repoID, _, _ := pathsRepo(t, store, "scan", "aveloxis_scan.scancode_scans")
+	// Another repository scanned later than this one ever is: its scans are
+	// not this repository's (round 9: the newest scan of ANY repository
+	// passed, there being no other).
+	other, _, _ := pathsRepo(t, store, "scan-other", "aveloxis_scan.scancode_scans")
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_scan.scancode_scans (repo_id, data_collection_date) VALUES ($1, $2)`, other, time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC))
 	if _, err := store.ScancodeLastRun(ctx, repoID); err == nil {
 		t.Error("a repository never scanned was read without error")
 	}
@@ -427,6 +457,12 @@ func TestRepositoriesForMetadataRefreshAreKeysetPagedOverForgeRepositories(t *te
 	second, _, _ := pathsRepo(t, store, "meta-2")
 	generic, _, _ := pathsRepo(t, store, "meta-git")
 	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET platform_id = 3 WHERE repo_id = $1`, generic)
+	// A forge repository with no name, and one with no owner: there is
+	// nothing to ask the forge for (round 9: neither kind was seeded).
+	unnamed, _, _ := pathsRepo(t, store, "meta-noname")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_name = '' WHERE repo_id = $1`, unnamed)
+	unowned, _, _ := pathsRepo(t, store, "meta-noowner")
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_owner = '' WHERE repo_id = $1`, unowned)
 	got, err := store.GetReposForMetadataRefresh(ctx, first-1, 100000)
 	if err != nil {
 		t.Fatal(err)
@@ -446,6 +482,12 @@ func TestRepositoriesForMetadataRefreshAreKeysetPagedOverForgeRepositories(t *te
 	}
 	if _, ok := seen[generic]; ok {
 		t.Error("a generic-git repository is listed for a forge metadata refresh")
+	}
+	if _, ok := seen[unnamed]; ok {
+		t.Error("a repository with no name is listed for a forge metadata refresh")
+	}
+	if _, ok := seen[unowned]; ok {
+		t.Error("a repository with no owner is listed for a forge metadata refresh")
 	}
 	if page, err := store.GetReposForMetadataRefresh(ctx, first-1, 1); err != nil || len(page) != 1 || page[0].RepoID != first {
 		t.Errorf("a page of one after the cursor: %+v (%v)", page, err)

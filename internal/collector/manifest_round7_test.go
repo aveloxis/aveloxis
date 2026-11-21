@@ -214,8 +214,16 @@ func TestWhatIsTooLargeToRead(t *testing.T) {
 	runtime.GC()
 	cloneReadHeapLimit.Store(processHeapBytes() + 32<<20)
 	t.Cleanup(func() { cloneReadHeapLimit.Store(0) })
-	if cloneFileTooLarge("requirements.txt", 1<<20) {
-		t.Error("a mebibyte was refused with 32 MiB left")
+	// (A requirements.txt is taken to cost 100 times its length and a
+	// yarn.lock 14: readCostFactor.)
+	if cloneFileTooLarge("requirements.txt", 64<<10) {
+		t.Error("64 KiB of requirements.txt was refused with 32 MiB left")
+	}
+	if !cloneFileTooLarge("requirements.txt", 1<<20) {
+		t.Error("a mebibyte of requirements.txt, which costs 100, was not refused with 32 MiB left")
+	}
+	if cloneFileTooLarge("yarn.lock", 1<<20) {
+		t.Error("a mebibyte of yarn.lock, which costs 14, was refused with 32 MiB left")
 	}
 	if !cloneFileTooLarge("requirements.txt", 1<<40) {
 		t.Error("a tebibyte was not refused with 32 MiB left")

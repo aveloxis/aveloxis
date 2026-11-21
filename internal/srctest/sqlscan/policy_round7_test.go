@@ -442,8 +442,12 @@ func TestBodiesScopeNamesAsPostgreSQLDoes(t *testing.T) {
 		// use_variable last, the WHERE read the parameter and a stored
 		// value was overwritten).
 		fn("#variable_conflict use_column\n#variable_conflict use_variable\n", guarded): KindAssign,
-		fn("#variable_conflict use_variable\n#variable_conflict use_column\n", guarded): "pass",
-		fn("#variable_conflict use_column\n", guarded):                                  "pass",
+		// (Round 9: with use_column the guard IS the column's, and the
+		// statement is still refused, for another reason: $1 in a body is
+		// the function's parameter, not a value handed in to the statement,
+		// and what it holds is not known. The two that follow passed.)
+		fn("#variable_conflict use_variable\n#variable_conflict use_column\n", guarded): KindAssign,
+		fn("#variable_conflict use_column\n", guarded):                                  KindAssign,
 		fn("#variable_conflict use_variable\n", guarded):                                KindAssign,
 		fn("", guarded): KindAssign, // ambiguous: PostgreSQL stops it
 		fn("#variable_conflict use_column\n#variable_conflict error\n", guarded): KindAssign,
@@ -454,7 +458,7 @@ func TestBodiesScopeNamesAsPostgreSQLDoes(t *testing.T) {
 		// and since round 8 not an incoming leaf either: what a variable
 		// holds is not known.)
 		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET ar = ar || 'x'; END $$":        KindAssign,
-		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1); END $$": "pass",
+		"DO $$\n#variable_conflict use_variable\nDECLARE ar text;\nBEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1); END $$": KindAssign, // round 9: $1 in a body
 		// The same told apart the other way, by a fill: in the body fe is
 		// the variable, so the shape's "stored" operand is not the column;
 		// in the EXECUTEd text it is the column, and the fill conforms.

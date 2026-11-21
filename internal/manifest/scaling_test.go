@@ -594,6 +594,35 @@ func scalingShapes() []scalingShape {
 				files["pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports + "</dependencies></dependencyManagement><dependencies>" + strings.Repeat(dep, n/3/len(dep)) + "</dependencies>")
 				return files
 			}},
+		// Round 9 (R9-10). A pom that is on no repository was looked for
+		// among the poms that could not be read by reading the whole list.
+		scalingShape{name: "pom: imports that are nowhere against as many poms that could not be read",
+			read: "pom.xml",
+			files: func(n int) map[string]string {
+				files := map[string]string{}
+				imports := ""
+				for i := 0; len(imports) < n/2; i++ {
+					files[fmt.Sprintf("u%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>u</groupId><artifactId>u%d</artifactId><version>1</version><dependencies>", i)
+					imports += r4import("t", fmt.Sprintf("b%d", i), "1")
+				}
+				files["pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports + "</dependencies></dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId></dependency></dependencies>")
+				return files
+			}},
+		// Round 9 (R9-10). Each variable a file assigns is looked for in
+		// what the scripts it applies assign (gradleBuild.applyOrder).
+		scalingShape{name: "gradle: a file's assignments against as many scripts it applies",
+			read: "build.gradle",
+			files: func(n int) map[string]string {
+				files := map[string]string{}
+				var build strings.Builder
+				for i := 0; build.Len() < n/2; i++ {
+					fmt.Fprintf(&build, "ext.v%d = '1'\napply from: 's%d.gradle'\n", i, i)
+					files[fmt.Sprintf("s%d.gradle", i)] = fmt.Sprintf("ext.w%d = '2'\n", i)
+				}
+				build.WriteString("dependencies {\n implementation \"g:a:$v0\"\n}\n")
+				files["build.gradle"] = build.String()
+				return files
+			}},
 		one("pom: version-less dependencies against as many entries keyed by a reference under one artifact", "pom.xml",
 			func(n int) string {
 				entry := "<dependency><groupId>${a}</groupId><artifactId>x</artifactId><version>1</version></dependency>"
@@ -698,7 +727,7 @@ func TestBuildFileReadersScaleLinearly(t *testing.T) {
 	shapes := scalingShapes()
 	// The count is stated where a reader looks for it (the ledger once said
 	// 28 for 26): change it with the list.
-	if want := 56; len(shapes) != want {
+	if want := 58; len(shapes) != want {
 		t.Errorf("%d shapes; this test's comment and the ledger say %d", len(shapes), want)
 	}
 	known := map[string]bool{}

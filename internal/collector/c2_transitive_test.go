@@ -68,6 +68,10 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 		// never whole (TestAGoModuleGraphLargerThanIsTakenIsAbandonedAsIncomplete
 		// drives it).
 		"boundedLines(cmd, goModOutputBytes",
+		// The walk for go.mod files runs in the worker, under the bound a
+		// worker's own walk of a clone has (walkBounded's own tests drive
+		// the bound; this holds the caller to it).
+		"walkBounded(workDir, cloneWalkEntries, func(",
 	} {
 		if !strings.Contains(s, needle) {
 			t.Errorf("gomod_graph.go missing %q", needle)

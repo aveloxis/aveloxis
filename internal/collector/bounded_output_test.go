@@ -109,7 +109,7 @@ func TestBoundedCaptureAndCappedOutputHoldABoundedAmount(t *testing.T) {
 // GB). The expansion is now abandoned at goModGraphLines as INCOMPLETE,
 // with nothing of it kept.
 func TestAGoModuleGraphLargerThanIsTakenIsAbandonedAsIncomplete(t *testing.T) {
-	const n = 800 // 800 * 800 edges is past goModGraphLines
+	const n = 1500 // 1500 * 1500 edges is past goModGraphLines, and past one invocation's bytes
 	if n*n <= goModGraphLines {
 		t.Fatalf("the fixture's %d edges do not pass the bound %d", n*n, goModGraphLines)
 	}
@@ -160,10 +160,104 @@ func TestAGoModuleGraphLargerThanIsTakenIsAbandonedAsIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := 0
-	_, gotEdges, ok := ac.goModGraphOne(context.Background(), 1, goBin, dir, dir, map[string]bool{}, nil, nil, &lines)
-	if ok || lines != goModGraphLines+1 || len(gotEdges) > goModGraphLines {
-		t.Errorf("one module: ok %v, %d lines taken (the bound is %d), %d edges held", ok, lines, goModGraphLines, len(gotEdges))
+	taken := &goModTaken{}
+	_, gotEdges, ok := ac.goModGraphOne(context.Background(), 1, goBin, dir, dir, map[string]bool{}, nil, nil, taken)
+	// (Which bound stops it depends on the lines' length: these are short,
+	// so the invocation's own byte bound comes before the line count.)
+	if ok || !taken.over || taken.lines > goModGraphLines+1 || taken.lines >= n*n || len(gotEdges) > taken.lines {
+		t.Errorf("one module: ok %v, over %v, %d lines taken of %d printed (the bound is %d), %d edges held", ok, taken.over, taken.lines, n*n, goModGraphLines, len(gotEdges))
+	}
+}
+
+// goBomb writes k main modules, each requiring n modules whose paths are l
+// bytes long, every one replaced by one local module (under testdata, which
+// discovery skips) that requires the same n: n*n edges of about 2*l bytes
+// for each main module, with no network.
+func goBomb(t *testing.T, k, n, l int) string {
+	t.Helper()
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	dir := t.TempDir()
+	pad := strings.Repeat("a", l)
+	var req, rep strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&req, "\tx.example/%s%d v1.0.0\n", pad, i)
+		fmt.Fprintf(&rep, "\tx.example/%s%d v1.0.0 => ../testdata/m\n", pad, i)
+	}
+	body := "\n\ngo 1.21\n\nrequire (\n" + req.String() + ")\n"
+	files := map[string]string{"testdata/m/go.mod": "module x.example/m" + body}
+	for i := 0; i < k; i++ {
+		files[fmt.Sprintf("a%03d/go.mod", i)] = "module x.example/main" + body + "\nreplace (\n" + rep.String() + ")\n"
+	}
+	for path, text := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// Review round 9 (B9-1): the byte bound was on ONE invocation and a line
+// could be a mebibyte, so many go.mod files with long module paths were
+// held at 3.7 GiB with every bound respected, and reported complete. What
+// is bounded now is what is held for the REPOSITORY, and one line's length.
+func TestWhatTheGoExpansionHoldsIsBoundedForTheRepository(t *testing.T) {
+	heap := func() uint64 {
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	for _, c := range []struct {
+		name    string
+		k, n, l int
+		why     string
+	}{
+		// Three modules of 89*89 edges of about 8,000 bytes: each is inside
+		// the per-invocation bound, together they pass goModHeldBytes.
+		{"many modules whose lines add up", 3, 89, 4000, "bytes_taken"},
+		// One line longer than two module paths can be.
+		{"one line too long", 1, 3, goModLineBytes, "line_bytes_limit"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := goBomb(t, c.k, c.n, c.l)
+			var log strings.Builder
+			ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(&log, nil)), TransitiveLockfiles: true}
+			before := heap()
+			pkgs, edges, complete := ac.scanGoModGraph(context.Background(), 1, dir, map[string]bool{})
+			grew := int64(heap()) - int64(before)
+			if complete || pkgs != nil || edges != nil {
+				t.Errorf("complete %v, %d packages, %d edges; want an incomplete expansion with nothing kept", complete, len(pkgs), len(edges))
+			}
+			if !strings.Contains(log.String(), "larger than is taken for one repository") || !strings.Contains(log.String(), c.why) {
+				t.Errorf("the log does not say why (%s):\n%.600s", c.why, log.String())
+			}
+			if grew > 8<<20 {
+				t.Errorf("the worker's live heap grew %d MiB over an abandoned expansion", grew>>20)
+			}
+		})
+	}
+	// The counter: each bound alone ends it, and inside all three it goes on.
+	for _, c := range []struct {
+		g    goModTaken
+		line string
+		ok   bool
+	}{
+		{goModTaken{}, strings.Repeat("x", goModLineBytes), true},
+		{goModTaken{}, strings.Repeat("x", goModLineBytes+1), false},
+		{goModTaken{lines: goModGraphLines - 1}, "a b", true},
+		{goModTaken{lines: goModGraphLines}, "a b", false},
+		{goModTaken{bytes: goModHeldBytes - 3}, "a b", true},
+		{goModTaken{bytes: goModHeldBytes - 2}, "a b", false},
+		{goModTaken{over: true}, "a b", false},
+	} {
+		g := c.g
+		if got := g.take(c.line); got != c.ok {
+			t.Errorf("take(%d bytes) at %+v = %v, want %v", len(c.line), c.g, got, c.ok)
+		}
 	}
 }
 
@@ -291,5 +385,56 @@ func TestAScorecardReportPastItsBoundIsAFailure(t *testing.T) {
 	}
 	if n, err := out.Write([]byte("e")); n != 1 || err != nil || !out.Over() || out.Len() != 4 {
 		t.Errorf("a fifth byte: wrote %d, %v, over %v, holds %d; want it taken as written, dropped, and marked", n, err, out.Over(), out.Len())
+	}
+}
+
+// A tool's report that grew after it was measured is refused, not read past
+// the size it had (review round 9: nothing drove the refusal).
+func TestAReportThatGrewAfterItWasMeasuredIsRefused(t *testing.T) {
+	if got, err := readMeasured(strings.NewReader("12345"), "report.json", 5); err != nil || string(got) != "12345" {
+		t.Errorf("a report of the size it was measured at: %q, %v", got, err)
+	}
+	if got, err := readMeasured(strings.NewReader("123"), "report.json", 5); err != nil || string(got) != "123" {
+		t.Errorf("a report that is shorter than it was measured: %q, %v", got, err)
+	}
+	got, err := readMeasured(strings.NewReader("123456"), "report.json", 5)
+	if !errors.Is(err, errOutputPastBound) || got != nil {
+		t.Errorf("a report one byte longer than it was measured: %q, %v; want it refused", got, err)
+	}
+	boom := errors.New("the disk went")
+	if _, err := readMeasured(io.MultiReader(strings.NewReader("12"), errReader{boom}), "report.json", 5); !errors.Is(err, boom) {
+		t.Errorf("a read that failed: %v; want its own error", err)
+	}
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// The scancode report is read under its bound where it is only looked at
+// for its header, too (salvageScancodeOutput): a report past the bound is
+// not salvaged. The file is sparse: its length is all that is read of it.
+func TestAScancodeReportPastTheBoundIsNotSalvaged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan.json")
+	if err := os.WriteFile(path, []byte(`{"headers":[{"tool_name":"scancode-toolkit","extra_data":{"files_count":3}}],"files":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, ok := salvageScancodeOutput(path); !ok || n != 3 {
+		t.Fatalf("a small report: %d files, ok %v; want it salvaged", n, ok)
+	}
+	if err := os.Truncate(path, scancodeOutputMaxBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := salvageScancodeOutput(path); ok {
+		t.Error("a report one byte past scancodeOutputMaxBytes was salvaged: it was read whole")
+	}
+	if _, err := decodeScancodeReport(path); !errors.Is(err, errOutputPastBound) {
+		t.Errorf("the same report, ingested: %v; want it refused past the bound", err)
+	}
+	// A report of zeros is not salvaged whatever is read of it, so the
+	// outcome above cannot tell a salvage that read it whole: the bound it
+	// reads under is held by its text.
+	if body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func salvageScancodeOutput(")); !strings.Contains(body, "readToolOutputWithin(outputPath, scancodeOutputMaxBytes)") {
+		t.Error("salvageScancodeOutput does not read the report under scancodeOutputMaxBytes")
 	}
 }

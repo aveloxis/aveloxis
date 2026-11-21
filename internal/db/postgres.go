@@ -1976,6 +1976,15 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		// recovered, all recurring forever.
 		renamedTo := s.knownRenames(ctx, tx, merged, logins)
 
+		// The logins this batch is about to replace go to the history
+		// first: one statement for the whole batch, which writes nothing
+		// when no login changes (replacedLoginsToHistorySQL). In a
+		// savepoint of its own, so that a failure costs those history
+		// rows and not the batch.
+		if err := s.keepReplacedLoginsOfBatch(ctx, tx, merged, identMap, logins, captureErr, &spCounter); err != nil {
+			return err
+		}
+
 		for _, login := range logins {
 			if err := s.upsertOneContributor(ctx, tx, login, merged[login], identMap[login], renamedTo, captureErr, &spCounter); err != nil {
 				return err
@@ -2110,7 +2119,8 @@ const renameRecoveryUpdateSQL = `
 	    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical, ''), $7),
 	    tool_version    = $8,
 	    data_collection_date = NOW()
-	WHERE cntrb_id = $1::uuid`
+	WHERE cntrb_id = $1::uuid
+	RETURNING COALESCE(cntrb_email, ''), COALESCE(cntrb_deleted, 0)`
 
 // The savepoint statements of the contributor batch: one savepoint per
 // contributor (cntrb_sp_N) and one per identity row (ident_sp_N), N the
@@ -2142,6 +2152,10 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// rename-recovered so the contributor_login_history rows
 	// for its identities get the correct source tag.
 	var wasRenameRecovery bool
+	// What the row holds after this contributor's write, for the alias
+	// step (keepObservedAddressInBatch): the address is fill-only, so an
+	// incoming one that is not it would otherwise be dropped.
+	var kept storedAddress
 
 	// Idempotent upsert: INSERT with ON CONFLICT on the partial unique index.
 	// If the login already exists, backfill empty fields and update tool_version.
@@ -2209,11 +2223,11 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// below runs and fails exactly as it did before.
 	if id, ok := desiredCntrbID.(string); ok && renamedTo != nil {
 		if storedLogin, isRename := renamedTo[id]; isRename {
-			if _, updErr := tx.Exec(ctx, renameRecoveryUpdateSQL,
+			if updErr := kept.scan(tx.QueryRow(ctx, renameRecoveryUpdateSQL,
 				id, contrib.Login, contrib.Email,
 				contrib.FullName, contrib.Company, contrib.Location,
 				contrib.Canonical, ToolVersion,
-			); updErr != nil {
+			)); updErr != nil {
 				// Roll back to the savepoint so the tx is usable. A deadlock
 				// or serialization failure returns (the batch retries);
 				// anything else falls through to the ordinary path: the
@@ -2235,11 +2249,20 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 					"stored_cntrb_login", storedLogin,
 					"new_gh_login", contrib.Login,
 					"cause", "known rename — insert skipped (deterministic cntrb_id already present under the first-observed login)")
+				if err := s.keepObservedAddressInBatch(ctx, tx, id, login, kept, contrib.Email, captureErr, spCounter); err != nil {
+					return err
+				}
 				return s.upsertContributorIdentities(ctx, tx, id, login, contrib, idents, true, captureErr, spCounter)
 			}
 		}
 	}
 
+	// cntrb_email and cntrb_canonical are STORED first since 0.29.216
+	// (operator, 2026-11-21; SR-11 fill-only): the address on the row is the
+	// first one observed, and a later one never replaces it (both preferred
+	// the incoming one before). The statement returns what the row holds
+	// after it, and an incoming address that is not it is kept as an alias
+	// once the row is settled (keepObservedAddressInBatch, R5).
 	err := tx.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.contributors
 			(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name,
@@ -2248,20 +2271,21 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		VALUES (COALESCE($1::uuid, gen_random_uuid()),
 		        $2,$3,$4,$5,$6,$7,$8,'aveloxis',$9,'GitHub API')
 		ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO UPDATE SET
-			cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email, ''), contributors.cntrb_email),
+			cntrb_email = COALESCE(NULLIF(contributors.cntrb_email, ''), EXCLUDED.cntrb_email),
 			cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name, ''), contributors.cntrb_full_name),
 			cntrb_company = COALESCE(NULLIF(EXCLUDED.cntrb_company, ''), contributors.cntrb_company),
 			cntrb_location = COALESCE(NULLIF(EXCLUDED.cntrb_location, ''), contributors.cntrb_location),
-			cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical),
+			cntrb_canonical = COALESCE(NULLIF(contributors.cntrb_canonical, ''), EXCLUDED.cntrb_canonical),
 			cntrb_created_at = COALESCE(contributors.cntrb_created_at, EXCLUDED.cntrb_created_at),
 			tool_version = EXCLUDED.tool_version,
 			data_collection_date = NOW()
-		RETURNING cntrb_id`,
+		RETURNING cntrb_id, COALESCE(cntrb_email, ''), COALESCE(cntrb_deleted, 0)`,
 		desiredCntrbID,
 		contrib.Login, contrib.Email, contrib.FullName,
 		contrib.Company, contrib.Location, contrib.Canonical, createdAt,
 		ToolVersion,
-	).Scan(&cntrb_id)
+	).Scan(&cntrb_id, &kept.email, &kept.deleted)
+	kept.known = err == nil
 	if err != nil {
 		// v0.22.13: classify the failure to decide between
 		// rename-recovery (recoverable, this person already
@@ -2296,11 +2320,11 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			// RenameContributorGhLogin, inlined here so it
 			// runs inside the batch tx.
 			existingID := desiredCntrbID.(string)
-			if _, updErr := tx.Exec(ctx, renameRecoveryUpdateSQL,
+			if updErr := kept.scan(tx.QueryRow(ctx, renameRecoveryUpdateSQL,
 				existingID, contrib.Login, contrib.Email,
 				contrib.FullName, contrib.Company, contrib.Location,
 				contrib.Canonical, ToolVersion,
-			); updErr != nil {
+			)); updErr != nil {
 				// Recovery UPDATE itself failed (rare —
 				// would require some other constraint
 				// violation on this row). Roll back and capture;
@@ -2353,7 +2377,106 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		return relErr
 	}
 
+	if err := s.keepObservedAddressInBatch(ctx, tx, cntrb_id, login, kept, contrib.Email, captureErr, spCounter); err != nil {
+		return err
+	}
 	return s.upsertContributorIdentities(ctx, tx, cntrb_id, login, contrib, idents, wasRenameRecovery, captureErr, spCounter)
+}
+
+// keepReplacedLoginsOfBatch is the replaced-login step of a batch: every
+// identity the batch carries with a platform user id is asked for the
+// login stored under it, and (for GitHub) the contributor row of that
+// deterministic id for its gh_login; those that differ from the incoming
+// login are the ones the loop that follows overwrites.
+func (s *PostgresStore) keepReplacedLoginsOfBatch(ctx context.Context, tx pgx.Tx, merged map[string]*model.Contributor, identMap map[string][]model.ContributorIdentity, logins []string, captureErr func(kind, login string, e error), spCounter *int) error {
+	var replaced replacedLogins
+	for _, login := range logins {
+		idents := identMap[login]
+		id := desiredCntrbIDFor(idents)
+		for _, ident := range idents {
+			if ident.UserID <= 0 {
+				continue
+			}
+			cntrbID := ""
+			if id == PlatformUUID(int(ident.Platform), ident.UserID).String() {
+				// The row renameRecoveryUpdateSQL relabels with the
+				// contributor's login.
+				cntrbID = id
+				if c := merged[login]; c != nil && c.Login != ident.Login {
+					replaced.add(id, int16(ident.Platform), 0, c.Login)
+					cntrbID = ""
+				}
+			}
+			replaced.add(cntrbID, int16(ident.Platform), ident.UserID, ident.Login)
+		}
+	}
+	if len(replaced.logins) == 0 {
+		return nil
+	}
+	*spCounter++
+	sp := uint(*spCounter)
+	if _, spErr := tx.Exec(ctx, identSavepointSQL(sp)); spErr != nil {
+		return spErr
+	}
+	if err := recordReplacedLogins(ctx, tx, &replaced); err != nil {
+		if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(sp)); rbErr != nil {
+			return rbErr
+		}
+		captureErr("contributor_login_history_replaced", "", err)
+	}
+	if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(sp)); relErr != nil {
+		return relErr
+	}
+	return nil
+}
+
+// storedAddress is what a contributor's row holds after the batch's write
+// to it: its address, and whether the row is a merge's deleted loser.
+type storedAddress struct {
+	email   string
+	deleted int
+	known   bool
+}
+
+// scan reads renameRecoveryUpdateSQL's answer. No row is not a failure: the
+// statement changed nothing, as when it was sent without RETURNING, and
+// the alias step then has nothing to compare with and does nothing.
+func (a *storedAddress) scan(row pgx.Row) error {
+	err := row.Scan(&a.email, &a.deleted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		*a = storedAddress{}
+		return nil
+	}
+	a.known = err == nil
+	return err
+}
+
+// keepObservedAddressInBatch is the alias step of one contributor of a
+// batch (keepObservedAddress, R5), bracketed in a savepoint of its own as
+// the identity rows are, so that a failure here costs this contributor's
+// alias and nothing else of the batch. A deadlock or serialization
+// failure is not escaped to the batch's retry, for the reason given at the
+// login-history write below: the alias is written the next time the
+// address is observed.
+func (s *PostgresStore) keepObservedAddressInBatch(ctx context.Context, tx pgx.Tx, cntrbID, login string, kept storedAddress, observed string, captureErr func(kind, login string, e error), spCounter *int) error {
+	if observed == "" || !kept.known || kept.deleted != 0 || strings.EqualFold(kept.email, observed) {
+		return nil
+	}
+	*spCounter++
+	sp := uint(*spCounter)
+	if _, spErr := tx.Exec(ctx, identSavepointSQL(sp)); spErr != nil {
+		return spErr
+	}
+	if err := s.keepObservedAddress(ctx, tx, cntrbID, kept.email, observed); err != nil {
+		if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(sp)); rbErr != nil {
+			return rbErr
+		}
+		captureErr("contributors_aliases_observed_address", login, err)
+	}
+	if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(sp)); relErr != nil {
+		return relErr
+	}
+	return nil
 }
 
 // upsertContributorIdentities is the per-identity half of a

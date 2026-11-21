@@ -123,13 +123,20 @@ func TestOneStatementWritersChangeTheirRowAndNoOther(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, closed_by_id) VALUES ($1, 2, 2, $2::uuid) RETURNING issue_id`, repoID, other).Scan(&closed); err != nil {
 		t.Fatal(err)
 	}
+	// A third issue, with no closer, that is NOT named: it keeps none
+	// (round 9: every issue seeded was named, so a statement that stamped
+	// every issue without a closer passed).
+	var untouched int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number) VALUES ($1, 3, 3) RETURNING issue_id`, repoID).Scan(&untouched); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []int64{open, closed} {
 		if err := store.SetIssueClosedBy(ctx, id, mine); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := text(`SELECT string_agg(closed_by_id::text, ',' ORDER BY issue_number) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID); got != mine+","+other {
-		t.Errorf("the issues' closers are %q; want the one without a closer given it, and the other's kept", got)
+	if got := text(`SELECT string_agg(COALESCE(closed_by_id::text, 'none'), ',' ORDER BY issue_number) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID); got != mine+","+other+",none" {
+		t.Errorf("the issues' closers are %q; want the one without a closer given it, the other's kept, and the issue not named left without one", got)
 	}
 
 	// A commit's author login: set on every file row of the commit that
@@ -137,8 +144,15 @@ func TestOneStatementWritersChangeTheirRowAndNoOther(t *testing.T) {
 	for _, c := range [][3]string{{"h1", "a.go", ""}, {"h1", "b.go", "already"}, {"h2", "a.go", ""}} {
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_platform_username) VALUES ($1, $2, $3, $4)`, repoID, c[0], c[1], c[2])
 	}
+	// The same hash in another repository (a fork carries its parent's
+	// commits): that row is the other repository's.
+	fork, _, _ := pathsRepo(t, store, "r9-commit-neighbour", "aveloxis_data.commits")
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_platform_username) VALUES ($1, 'h1', 'a.go', '')`, fork)
 	if err := store.SetCommitAuthorLogin(ctx, repoID, "h1", "octo"); err != nil {
 		t.Fatal(err)
+	}
+	if got := text(`SELECT COALESCE(cmt_author_platform_username, '') FROM aveloxis_data.commits WHERE repo_id = $1`, fork); got != "" {
+		t.Errorf("the same hash in another repository was given the author login %q", got)
 	}
 	if got := text(`SELECT string_agg(cmt_commit_hash || '/' || cmt_filename || '=' || COALESCE(cmt_author_platform_username, ''), ',' ORDER BY cmt_commit_hash, cmt_filename) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID); got != "h1/a.go=octo,h1/b.go=already,h2/a.go=" {
 		t.Errorf("the commits' author logins are %q", got)
@@ -150,12 +164,19 @@ func TestOneStatementWritersChangeTheirRowAndNoOther(t *testing.T) {
 		t.Error("SetForceFullCollect on a repository with no queue row reported success")
 	}
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 100, 'queued', NOW())`, repoID)
+	// Another repository's queue row: its flag is its own (round 9: there
+	// was one queue row, so a statement that flagged every row passed).
+	neighbour, _, _ := pathsRepo(t, store, "r9-flag-neighbour")
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 100, 'queued', NOW())`, neighbour)
 	for _, want := range []bool{true, false} {
 		if err := store.SetForceFullCollect(ctx, repoID, want); err != nil {
 			t.Fatal(err)
 		}
 		if got := text(`SELECT force_full_collect::text FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID); got != fmt.Sprint(want) {
 			t.Errorf("force_full_collect is %s after it was set to %v", got, want)
+		}
+		if got := text(`SELECT COALESCE(force_full_collect, FALSE)::text FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, neighbour); got != "false" {
+			t.Errorf("another repository's force_full_collect is %s after this one's was set to %v", got, want)
 		}
 	}
 }
@@ -204,9 +225,11 @@ func TestLinkingAContributorMergesTheDuplicateAndLinksTheWinner(t *testing.T) {
 	target := seedR6Contributor(t, store, login+"-a", "", nil)
 	other := seedR6Contributor(t, store, login+"-b", login+"@example.org", uid)
 	r8MergeFields(t, store, target, other)
+	bystanders := r9Bystanders(t, store, login)
 	if err := store.LinkContributorToGitHubUser(ctx, target, login, uid); err != nil {
 		t.Fatal(err)
 	}
+	bystanders()
 	r8MergedAsBestOf(t, store, target, other)
 	if r6Deleted(t, store, target)+r6Deleted(t, store, other) != 1 {
 		t.Errorf("after the link, exactly one of the two rows is soft-deleted: target %d, other %d", r6Deleted(t, store, target), r6Deleted(t, store, other))
@@ -229,9 +252,11 @@ func TestRenamingAContributorMergesTheDuplicateAndRecordsTheLogin(t *testing.T) 
 	target := seedR6Contributor(t, store, login+"-old", "", nil)
 	other := seedR6Contributor(t, store, login+"-dup", login+"@example.org", uid)
 	r8MergeFields(t, store, target, other)
+	bystanders := r9Bystanders(t, store, login)
 	if err := store.RenameContributorGhLogin(ctx, target, login+"-new", uid); err != nil {
 		t.Fatal(err)
 	}
+	bystanders()
 	r8MergedAsBestOf(t, store, target, other)
 	if r6Deleted(t, store, target)+r6Deleted(t, store, other) != 1 {
 		t.Errorf("after the rename, exactly one of the two rows is soft-deleted: target %d, other %d", r6Deleted(t, store, target), r6Deleted(t, store, other))
@@ -252,11 +277,17 @@ func TestUpsertContributorFullUpdatesTheRowThatHasTheLogin(t *testing.T) {
 	ctx := context.Background()
 	uid := time.Now().UnixNano()%1_000_000_000 + 9_000_000_000
 	login := fmt.Sprintf("r6-full-%d", uid)
+	// A contributor stored before the one with the login, and (inside
+	// r9Bystanders) one after: the row found is the one WITH the login,
+	// wherever it lies in the table.
+	seedR6Contributor(t, store, login+"-earlier", "", nil)
 	have := seedR6Contributor(t, store, login, "", nil)
+	bystanders := r9Bystanders(t, store, login)
 	created, id, err := store.UpsertContributorFull(ctx, "0100000a-0000-0000-0000-000000000006", login, uid, login+"@example.org")
 	if err != nil {
 		t.Fatal(err)
 	}
+	bystanders()
 	if created || id != have {
 		t.Errorf("created %v, id %s; want the existing row %s, not created", created, id, have)
 	}
@@ -281,6 +312,88 @@ func TestUpsertContributorFullUpdatesTheRowThatHasTheLogin(t *testing.T) {
 	}
 	if gh != uid || canonical != login+"@example.org" {
 		t.Errorf("after a second meeting with other values: gh_user_id %d (want the established %d), canonical %q (want the established one)", gh, uid, canonical)
+	}
+	// And met under its OWN id (the row found by id): that row's update is
+	// by id too.
+	if _, id, err := store.UpsertContributorFull(ctx, have, login, uid, login+"@example.org"); err != nil || id != have {
+		t.Fatalf("met under its own id: id %s, %v", id, err)
+	}
+	bystanders()
+}
+
+// The conflict arm of UpsertContributorFull, taken with two sessions: one
+// holds an uncommitted row under the contributor id, so the function's two
+// probes see nothing and its INSERT waits on that row; the first session
+// commits, and the INSERT takes ON CONFLICT (cntrb_id) against a stored
+// GitHub user id that differs from the incoming one. The stored one stands
+// (SR-6; review round 9: no test took this arm, and the arm reverted to
+// "the incoming id replaces it" passed the suite).
+func TestUpsertContributorFullConflictArmKeepsTheStoredGitHubID(t *testing.T) {
+	store := openTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	n := time.Now().UnixNano()
+	id := fmt.Sprintf("01000000-0000-4000-8000-%012x", n&0xffffffffffff)
+	login := fmt.Sprintf("r9-ucf-%d", n)
+	t.Cleanup(func() {
+		cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, id)
+	})
+	first, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Rollback(context.Background()) })
+	if _, err := first.Exec(ctx, `INSERT INTO aveloxis_data.contributors (cntrb_id, cntrb_login, gh_user_id) VALUES ($1::uuid, $2, 111)`, id, login+"-first"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := store.UpsertContributorFull(ctx, id, login, 222, "r9@example.com")
+		done <- err
+	}()
+	// Until the function's INSERT waits on the first session's row.
+	for waiting := false; !waiting; time.Sleep(10 * time.Millisecond) {
+		if err := store.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%aveloxis-commit-resolver%' AND pid <> pg_backend_pid())`).Scan(&waiting); err != nil {
+			t.Fatalf("waiting for the INSERT to block on the first session's row: %v", err)
+		}
+	}
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var gh int64
+	var cntrbLogin, ghLogin string
+	if err := store.pool.QueryRow(ctx, `SELECT gh_user_id, cntrb_login, gh_login FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, id).Scan(&gh, &cntrbLogin, &ghLogin); err != nil {
+		t.Fatal(err)
+	}
+	if gh != 111 || cntrbLogin != login+"-first" || ghLogin != login {
+		t.Errorf("after the conflict arm: gh_user_id %d, cntrb_login %q, gh_login %q; want the stored 111 and the first login kept, and gh_login %q (which shows the arm ran)", gh, cntrbLogin, ghLogin, login)
+	}
+}
+
+// r9Bystanders seeds two contributors that the call under test does not
+// name, one with every merge field empty and one with them filled, and
+// returns a check that both are as they were (round 9: a statement whose
+// WHERE had lost its key passed these tests, there being no row but the
+// named ones for it to change).
+func r9Bystanders(t *testing.T, store *PostgresStore, tag string) func() {
+	t.Helper()
+	ctx := context.Background()
+	ids := []string{seedR6Contributor(t, store, tag+"-bystander-empty", "", nil), seedR6Contributor(t, store, tag+"-bystander-full", tag+"-bystander@example.org", nil)}
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.contributors SET gh_login = 'bystander', cntrb_canonical = 'bystander@example.org', cntrb_company = 'bystander co', cntrb_location = 'bystander place', cntrb_full_name = 'By Stander' WHERE cntrb_id = $1::uuid`, ids[1])
+	state := func() string {
+		return pathsText(t, store, `SELECT string_agg(concat_ws('|', cntrb_login, gh_login, gh_user_id, cntrb_canonical, cntrb_company, cntrb_location, cntrb_full_name, cntrb_deleted, cntrb_last_search_attempted_at IS NULL, data_collection_date), ' ; ' ORDER BY cntrb_login)
+			FROM aveloxis_data.contributors WHERE cntrb_id = ANY($1::uuid[])`, ids)
+	}
+	before := state()
+	return func() {
+		t.Helper()
+		if after := state(); after != before {
+			t.Errorf("contributors the call did not name were changed:\n before %s\n after  %s", before, after)
+		}
 	}
 }
 

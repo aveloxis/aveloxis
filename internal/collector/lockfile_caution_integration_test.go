@@ -84,7 +84,7 @@ func TestUnreadLockfilesAreRecordedCautionedAndDoNotLockWhatIsGone(t *testing.T)
 		t.Fatal(err)
 	}
 	f.write(t, "package.json", `{"dependencies": {"express": "^5.0.0"}}`)
-	f.write(t, "big/yarn.lock", lockfileThatOutgrowsItsCost(outgrowingLockfileBytes))
+	f.write(t, "big/"+outgrowingLockfile, lockfileThatOutgrowsItsCost(outgrowingLockfileBytes))
 	SetManifestLimits(limitsFromConfig(t, outgrownMemorySetting))
 	t.Cleanup(func() { installedManifestLimits.Store(nil) })
 
@@ -175,5 +175,65 @@ func TestARepositoryWithNoLockfileIsNeverCautioned(t *testing.T) {
 	cov, found := f.coverage(t)
 	if !found || cov.LockfilesUnreadReason != "" || cov.LockfilesReadAt != nil {
 		t.Errorf("a clone known to hold no lockfile: %+v (found %v); want no reason and no date", cov, found)
+	}
+}
+
+// A completed reading of a clone with no lockfile is recorded as one that
+// found none: no date. Recorded as "has lockfiles" it would leave a date,
+// and the next reading that was stopped knowing nothing of the clone would
+// then caution "Lockfiles could not be read" about a repository that has
+// none (review round 9: `Lockfiles: true` passed every test).
+func TestACompletedReadingOfACloneWithNoLockfileLeavesNothingToBeBehindOn(t *testing.T) {
+	f := lockFixture(t, "locks-none-completed")
+	ctx := context.Background()
+	f.write(t, "package.json", `{"dependencies": {"express": "^4.0.0"}}`)
+	if err := f.lockPhase(t); err != nil {
+		t.Fatal(err)
+	}
+	cov, found := f.coverage(t)
+	if !found || cov.LockfilesReadAt != nil || cov.LockfilesUnreadReason != "" {
+		t.Fatalf("after a completed reading that found no lockfile: %+v (found %v); want a record with no date and no reason", cov, found)
+	}
+	// The reader is stopped before it learns what the clone holds.
+	if err := f.store.RecordLockfileReading(ctx, f.repoID, model.LockfileReading{NotCompleted: model.InventoryAttemptReadCPULimit}); err != nil {
+		t.Fatal(err)
+	}
+	cov, _ = f.coverage(t)
+	v := vulnclass.Coverage(vulnclass.CoverageInputs{HasRow: true, Coverage: cov})
+	if said := vulnclass.CoverageLockfileCaution(&v); cov.LockfilesUnreadReason != "" || said != "" {
+		t.Errorf("a repository with no lockfile is cautioned after a stopped reading: reason %q, %q", cov.LockfilesUnreadReason, said)
+	}
+}
+
+// A completed reading's record is written in the transaction that replaces
+// the snapshot: the rows and what is said of them commit together, so no
+// page is ever built from new rows under the previous reading's caution
+// (review round 9: recording it after the replace passed every test). The
+// transaction that last wrote a row is its xmin.
+func TestTheReadingIsRecordedInTheTransactionThatReplacesTheSnapshot(t *testing.T) {
+	f := lockFixture(t, "locks-one-tx")
+	ctx := context.Background()
+	f.write(t, "package.json", `{"dependencies": {"express": "^4.0.0"}}`)
+	f.write(t, "package-lock.json", goodNpmLock)
+	// A record from an earlier reading, so that this one UPDATES it.
+	if err := f.store.RecordLockfileReading(ctx, f.repoID, model.LockfileReading{NotCompleted: model.InventoryAttemptReadFailed, Lockfiles: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.lockPhase(t); err != nil {
+		t.Fatal(err)
+	}
+	var record, rows string
+	var snapshots int
+	if err := f.store.Pool().QueryRow(ctx, `
+		SELECT (SELECT c.xmin::text FROM aveloxis_data.repo_dependency_coverage c WHERE c.repo_id = $1),
+		       MIN(l.xmin::text), COUNT(DISTINCT l.xmin::text)
+		FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = $1`, f.repoID).Scan(&record, &rows, &snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 1 || record != rows {
+		t.Errorf("the coverage record was last written by transaction %s and the snapshot's rows by %s (%d transactions): want one transaction for both", record, rows, snapshots)
+	}
+	if cov, _ := f.coverage(t); cov.LockfilesReadAt == nil || cov.LockfilesUnreadReason != "" {
+		t.Errorf("the reading was not recorded: %+v", cov)
 	}
 }

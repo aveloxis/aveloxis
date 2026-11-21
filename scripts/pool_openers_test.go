@@ -258,7 +258,7 @@ func TestEveryPoolAndConnectionIsOpenedInOneFile(t *testing.T) {
 	// The denominators: the tree was read, the command's sources among it
 	// (its tooling opened sixteen pools of its own until 0.29.214), and the
 	// one file holds the two library calls.
-	if files < 600 || inOne != 2 || !sawCmd {
+	if openerDenominatorsOff(files, inOne, sawCmd) {
 		t.Errorf("%d files read (cmd/aveloxis among them: %v); %s names a library opener %d times (want 2: pgxpool.NewWithConfig and pgx.ConnectConfig; OpenPool and OpenConn parse and call those)", files, sawCmd, openersFile, inOne)
 	}
 	for f, why := range productionOpenersElsewhere {
@@ -283,7 +283,18 @@ func TestEveryPoolAndConnectionIsOpenedInOneFile(t *testing.T) {
 // the pgconn and stdlib entries removed, and every test passed). A made-up
 // tree with one offender per file: each is named in a finding, and the
 // clean files are not.
+// openerDenominatorsOff: the tree was not read whole, the command's sources
+// were not among it, or the one file does not hold exactly the two library
+// calls. With any of these the check above examined too little to mean
+// what it says.
+func openerDenominatorsOff(files, inOne int, sawCmd bool) bool {
+	return files < 600 || inOne != 2 || !sawCmd
+}
+
 func TestTheOpenerCheckFailsOnEachOffender(t *testing.T) {
+	if openerDenominatorsOff(600, 2, true) || !openerDenominatorsOff(599, 2, true) || !openerDenominatorsOff(600, 1, true) || !openerDenominatorsOff(600, 3, true) || !openerDenominatorsOff(600, 2, false) {
+		t.Error("the opener check's denominators: 600 files with the command's among them and two library calls in the one file are enough; fewer files, another count of calls, or no command source are not")
+	}
 	const pgxImports = "import (\n\t\"context\"\n\t\"github.com/jackc/pgx/v5\"\n\t\"github.com/jackc/pgx/v5/pgconn\"\n\t\"github.com/jackc/pgx/v5/pgxpool\"\n\t\"github.com/jackc/pgx/v5/stdlib\"\n\t\"database/sql\"\n)\n" // parsed only: an unused import is no matter
 	file := func(pkg, body string) []byte { return []byte("package " + pkg + "\n" + pgxImports + body) }
 	sources := map[string][]byte{
@@ -293,6 +304,10 @@ func TestTheOpenerCheckFailsOnEachOffender(t *testing.T) {
 		"internal/x/stdlib.go":          file("x", "func a() { stdlib.OpenDB(pgx.ConnConfig{}) }\n"),
 		"internal/x/connector.go":       file("x", "func a() { stdlib.GetConnector(pgx.ConnConfig{}).Connect(nil) }\n"),
 		"internal/x/sql.go":             file("x", "func a() { sql.Open(\"pgx\", \"\") }\n"),
+		"internal/x/sql_opendb.go":      file("x", "func a() { sql.OpenDB(nil) }\n"),
+		"internal/x/pgx_options.go":     file("x", "func a() { pgx.ConnectWithOptions(nil, \"\", pgx.ParseConfigOptions{}) }\n"),
+		"internal/x/pgconn_config.go":   file("x", "func a() { pgconn.ConnectConfig(nil, nil) }\n"),
+		"internal/x/pgconn_options.go":  file("x", "func a() { pgconn.ConnectWithOptions(nil, \"\", pgconn.ParseConfigOptions{}) }\n"),
 		"internal/x/dot.go":             []byte("package x\nimport . \"github.com/jackc/pgx/v5/pgxpool\"\nfunc a() { New(nil, \"\") }\n"),
 		"internal/x/value.go":           file("x", "var open = pgxpool.New\n"),
 		"internal/x/tracer.go":          file("x", "func a(cfg *pgxpool.Config) { cfg.ConnConfig.Tracer = nil }\n"),
@@ -310,6 +325,7 @@ func TestTheOpenerCheckFailsOnEachOffender(t *testing.T) {
 	}
 	all := strings.Join(problems, "\n")
 	for _, offender := range []string{"cmd/aveloxis/tool.go", "internal/x/pgconn.go", "internal/x/stdlib.go", "internal/x/connector.go", "internal/x/sql.go",
+		"internal/x/sql_opendb.go", "internal/x/pgx_options.go", "internal/x/pgconn_config.go", "internal/x/pgconn_options.go",
 		"internal/x/dot.go", "internal/x/value.go", "internal/x/tracer.go", "internal/x/tracer_literal.go", "internal/x/hook.go", "internal/tier/own_test.go"} {
 		n := 0
 		for _, p := range problems {
@@ -333,8 +349,8 @@ func TestTheOpenerCheckFailsOnEachOffender(t *testing.T) {
 	if failed.n != len(problems) {
 		t.Errorf("%d findings were reported as %d failures", len(problems), failed.n)
 	}
-	if len(problems) != 11 || files != 14 || inOne != 2 || !usedProd["internal/x/reviewed.go"] || !usedTracer[openersFile] {
-		t.Errorf("%d findings (want 11), %d files read (want 14: the test of a package with no database is not), the one file's openers %d (want 2), reviewed file used %v, the one file's tracer use seen %v",
+	if len(problems) != 15 || files != 18 || inOne != 2 || !usedProd["internal/x/reviewed.go"] || !usedTracer[openersFile] {
+		t.Errorf("%d findings (want 15), %d files read (want 18: the test of a package with no database is not), the one file's openers %d (want 2), reviewed file used %v, the one file's tracer use seen %v",
 			len(problems), files, inOne, usedProd["internal/x/reviewed.go"], usedTracer[openersFile])
 	}
 }

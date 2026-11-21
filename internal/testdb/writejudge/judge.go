@@ -64,18 +64,16 @@ package writejudge
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db/stmttrace"
 	"github.com/aveloxis/aveloxis/internal/srctest/sqlscan"
@@ -125,11 +123,10 @@ type Judge struct {
 	rewritten map[string]bool
 	fixtures  int
 	sends     int
-	// through counts the statements that reached the library through test
-	// code under a production frame; via is, for those judged as
-	// production's, the test frame they came through (for the finding).
-	through map[string]int
-	via     map[string]Frame
+	// via is, for the statements that reached the library through test
+	// code under a production frame and were judged as production's, the
+	// test frame they came through (for the finding).
+	via map[string]Frame
 	// spill, in a re-executed test binary (InstallChild), is the file each
 	// thing this judge records is also appended to, for the process that
 	// owns the database to judge (AdoptChildren).
@@ -138,7 +135,7 @@ type Judge struct {
 
 // New is a judge that is not installed (a test of the judge builds one).
 func New() *Judge {
-	return &Judge{sent: map[string]*Sent{}, fixtureDDL: map[string]int{}, rewritten: map[string]bool{}, through: map[string]int{}, via: map[string]Frame{}}
+	return &Judge{sent: map[string]*Sent{}, fixtureDDL: map[string]int{}, rewritten: map[string]bool{}, via: map[string]Frame{}}
 }
 
 var installed *Judge
@@ -175,7 +172,11 @@ const ChildDirEnv = "AVELOXIS_WRITE_JUDGE_CHILD_DIR"
 func InstallChild() *Judge {
 	j := Install()
 	if dir := os.Getenv(ChildDirEnv); dir != "" {
-		j.spill = filepath.Join(dir, fmt.Sprintf("child-%d.jsonl", os.Getpid()))
+		// The process id and the moment: a later child given a dead one's
+		// id writes a file of its own (round 9: it appended to the dead
+		// one's, whose cut-short last line then stood in the middle of the
+		// file and failed the run as "not a record").
+		j.spill = filepath.Join(dir, fmt.Sprintf("child-%d-%d.jsonl", os.Getpid(), time.Now().UnixNano()))
 	}
 	return j
 }
@@ -419,29 +420,12 @@ func (j *Judge) record(sql string, batched bool, args []any) {
 	if fixture {
 		frames = nil
 	}
-	if via != nil {
+	if via != nil && !fixture {
 		j.mu.Lock()
-		j.through[fmt.Sprintf("%s\x00%s\x00%v", via.File, via.Decl, fixture)]++
-		if !fixture {
-			j.via[sentKey(sql, frames)] = *via
-		}
+		j.via[sentKey(sql, frames)] = *via
 		j.mu.Unlock()
 	}
 	j.RecordFrom(frames, sql, batched, args)
-}
-
-// Through is how many statements reached the library through test code
-// standing under a production frame, by the test frame nearest the library
-// ("file\x00declaration\x00true" for one on FixtureSenders, taken for a
-// fixture; "...\x00false" for one judged as production's).
-func (j *Judge) Through() map[string]int {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	out := map[string]int{}
-	for k, n := range j.through {
-		out[k] = n
-	}
-	return out
 }
 
 // RecordFrom records one statement sent from the given production frames
@@ -766,35 +750,12 @@ type Sites struct {
 	// by its text sent under its OWN declaration (0.29.214: three calls
 	// queue the same stamp, and a batch from any one marked all three).
 	BatchTextDecls map[string]bool
-	// Texts are the TextKey of every statement production code sent,
-	// batched or not (0.29.215). A call site is reached by ANY statement
-	// sent through it, and a site that a builder feeds can send many: the
-	// texts are what says which of them a test in fact sent (internal/db:
-	// the shrink-only list of statement texts no test sent).
-	Texts map[string]bool
 }
 
 // NewSites is an empty record.
 func NewSites() *Sites {
-	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}, BatchTextDecls: map[string]bool{}, Texts: map[string]bool{}}
+	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}, BatchTextDecls: map[string]bool{}}
 }
-
-// TextKey names a statement by its text, white space folded: the first
-// sixteen hex digits of its SHA-256. It is how the texts a run sent are
-// compared with the texts the static reading reads, without the record
-// holding every statement whole.
-//
-// One part of one statement is left out of the key: the release in the
-// tool-version default (`ALTER COLUMN tool_version SET DEFAULT '0.29.215'`).
-// That text changes at every version bump, and a key that changed with it
-// made the list of unsent texts stale at every release (0.29.215's closing
-// run, the first after the list existed).
-func TextKey(sql string) string {
-	sum := sha256.Sum256([]byte(toolVersionDefault.ReplaceAllString(Fold(sql), "${1}'<release>'")))
-	return hex.EncodeToString(sum[:8])
-}
-
-var toolVersionDefault = regexp.MustCompile(`(ALTER COLUMN tool_version SET DEFAULT )'[^']*'`)
 
 // Fold is a statement with its white space folded: how batch texts are
 // compared.
@@ -806,7 +767,6 @@ const storeDir = "internal/db/"
 func SitesOf(sent []*Sent) *Sites {
 	s := NewSites()
 	for _, st := range sent {
-		s.Texts[TextKey(st.SQL)] = true
 		if at := st.Frames[0]; strings.HasPrefix(at.File, storeDir) {
 			s.Lines[fmt.Sprintf("%s:%d", at.File, at.Line)] = true
 		}
@@ -841,7 +801,6 @@ func (s *Sites) Write(dir, name string) error {
 	put("T", s.BatchTexts)
 	put("D", s.BatchDecls)
 	put("X", s.BatchTextDecls)
-	put("S", s.Texts)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -892,8 +851,6 @@ func ReadSites(dir string) (*Sites, int, error) {
 				union.BatchDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
 			case "X":
 				union.BatchTextDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
-			case "S":
-				union.Texts[rest] = true
 			}
 		}
 	}
@@ -1009,34 +966,6 @@ func (j *Judge) writeSites(sent []*Sent) error {
 		return nil
 	}
 	return SitesOf(sent).Write(dir, packageName())
-}
-
-// WriteThrough leaves, beside the package's record when the closing suite
-// asked for records (SitesDirEnv), what reached the library through test
-// code under a production frame (Through): "file, declaration, taken for a
-// fixture, how many", one line each; no file when there was none. It is
-// written whether or not the tests passed: it is how the tests on
-// FixtureSenders are found, and how a reader of the suite's folder sees
-// what was judged as production's on the strength of the stack's shape.
-func (j *Judge) WriteThrough() error {
-	dir := os.Getenv(SitesDirEnv)
-	through := j.Through()
-	if dir == "" || j != installed || len(through) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(through))
-	for k := range through {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		fmt.Fprintf(&b, "%s\t%d\n", strings.ReplaceAll(k, "\x00", "\t"), through[k])
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, packageName()+".through"), []byte(b.String()), 0o644)
 }
 
 // DatabaseCatalog is the catalog of the database itself: every base table,

@@ -123,7 +123,6 @@ var round6StillPass = map[string]string{
 	"y07":  "CREATE SUBSCRIPTION names no table; replication writes are not statements of the store",
 	"y08":  "ALTER TYPE ... RENAME VALUE rewrites no row",
 	"y10":  "DELETE removes rows; the policies are of the values rows hold",
-	"y15":  "control: the guarded fill in an SQL function, whose parameter is not named like the column",
 }
 
 // round6Refused are the conforming statements of fp.txt that are refused,

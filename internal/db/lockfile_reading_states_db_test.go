@@ -323,3 +323,113 @@ func TestTheLockfileReadingColumnsHaveOneWriter(t *testing.T) {
 		}
 	}
 }
+
+// Two cells the table above cannot hold, because the reading REPLACES the
+// snapshot (review round 9): a lockfile left unread for its size fails
+// alone, every other lockfile is read and stored now, and the unread one's
+// previous rows are carried into the new snapshot. Before 0.29.216 this was
+// recorded with the reason of a reading that replaced nothing, and the page
+// said "Lockfiles last read <the kept date>" over rows read today. It has a
+// reason of its own, whose sentence has no date; the record's date is kept
+// (it is still when a reading last COMPLETED).
+func TestAReadingThatReplacedTheSnapshotWithALockfileUnreadSaysSoWithoutADate(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	const want = "Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date."
+	for _, record := range []string{"date", "none"} {
+		t.Run("record="+record, func(t *testing.T) {
+			repoID := seedLibyearRotationRepo(t, store, ctx, "lockfile-too-large-"+record)
+			neighbour := seedLibyearRotationRepo(t, store, ctx, "lockfile-too-large-neighbour-"+record)
+			t.Cleanup(func() {
+				for _, id := range []int64{repoID, neighbour} {
+					cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1`, id)
+					cleanupExecRetry(context.Background(), store, `DELETE FROM aveloxis_data.repo_dependency_coverage WHERE repo_id = $1`, id)
+				}
+			})
+			// The earlier snapshot: two lockfiles, dated D0; with a record
+			// of the reading (D1) or none (rows from before the columns).
+			for _, id := range []int64{repoID, neighbour} {
+				mustExecRetry(ctx, t, store, `
+					INSERT INTO aveloxis_data.repo_lockfiles (repo_id, ecosystem, lockfile_path, lockfile_kind, data_collection_date)
+					VALUES ($1, 'npm', 'package-lock.json', 'package-lock.json', $2), ($1, 'npm', 'web/yarn.lock', 'yarn.lock', $2)`, id, lockfileStateD0)
+			}
+			if record == "date" {
+				mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_dependency_coverage (repo_id, lockfiles_read_at) VALUES ($1, $2)`, repoID, lockfileStateD1)
+			}
+			before := time.Now().Add(-2 * time.Second)
+			// This reading: package-lock.json read, web/yarn.lock too large.
+			// The caller hands the unread lockfile's previous rows back in
+			// (the collector's carry), and the replace writes every row of
+			// the new snapshot as of now, carried or read.
+			failed := []model.ManifestFailure{{Path: "web/yarn.lock", Kind: "yarn.lock", Reason: model.ManifestFailedRead, TooLarge: true, RowsCarried: 1}}
+			err := store.ReplaceRepoLockfileSnapshotFrom(ctx, repoID, func(write func(LockfileRows) error) error {
+				return write(LockfileRows{Inventory: []*RepoLockfileInfo{
+					{Ecosystem: "npm", LockfilePath: "package-lock.json", LockfileKind: "package-lock.json", EntryCount: 1, DirectCount: 1},
+					{Ecosystem: "npm", LockfilePath: "web/yarn.lock", LockfileKind: "yarn.lock", EntryCount: 1, DirectCount: 1}}})
+			}, failed, func() model.LockfileReading {
+				return model.LockfileReading{NotCompleted: model.LockfileUnreadTooLarge, Lockfiles: true}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cov, found, err := store.GetRepoDependencyCoverage(ctx, repoID)
+			if err != nil || !found {
+				t.Fatalf("found %v err %v", found, err)
+			}
+			if cov.LockfilesUnreadReason != model.LockfileUnreadTooLarge {
+				t.Errorf("reason column = %q", cov.LockfilesUnreadReason)
+			}
+			if record == "date" && (cov.LockfilesReadAt == nil || !cov.LockfilesReadAt.Equal(lockfileStateD1)) {
+				t.Errorf("date column = %v, want %v kept: no reading has completed since", cov.LockfilesReadAt, lockfileStateD1)
+			}
+			if record == "none" && cov.LockfilesReadAt != nil {
+				t.Errorf("date column = %v, want none: no reading has ever completed", cov.LockfilesReadAt)
+			}
+			// The snapshot was replaced: the lockfile that was read is
+			// stored as of now, and the unread one is still there.
+			// The carried row is dated now too: a row's date is when its
+			// snapshot was written, not when its lockfile was read, which
+			// is why this case's sentence can name no date.
+			var readAt, carriedAt time.Time
+			var carried int
+			if err := store.pool.QueryRow(ctx, `SELECT MAX(data_collection_date) FILTER (WHERE lockfile_path = 'package-lock.json'),
+				MAX(data_collection_date) FILTER (WHERE lockfile_path = 'web/yarn.lock'),
+				COUNT(*) FILTER (WHERE lockfile_path = 'web/yarn.lock') FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1`, repoID).Scan(&readAt, &carriedAt, &carried); err != nil {
+				t.Fatal(err)
+			}
+			if readAt.Before(before) || carried != 1 || !carriedAt.Equal(readAt) {
+				t.Fatalf("the lockfile read is dated %v (want now); %d rows of the unread one are stored (want 1 carried), dated %v (want the snapshot's)", readAt, carried, carriedAt)
+			}
+			if got := cov.LockfilesFailed; len(got) != 1 || got[0].Path != "web/yarn.lock" || got[0].RowsCarried != 1 {
+				t.Errorf("the record's failed lockfiles: %+v; want web/yarn.lock with one row carried", got)
+			}
+			scanned := time.Now()
+			for name, in := range map[string]func() vulnclass.CoverageInputs{
+				"single": func() vulnclass.CoverageInputs {
+					return vulnclass.CoverageInputs{HasRow: true, ScanStamp: &scanned, Coverage: cov}
+				},
+				"batch": func() vulnclass.CoverageInputs {
+					all, err := store.GetRepoCoverageInputs(ctx, []int64{repoID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return all[repoID]
+				},
+			} {
+				view := vulnclass.Coverage(in())
+				if got := vulnclass.CoverageLockfileCaution(&view); got != want {
+					t.Errorf("%s read: caution:\n got %q\nwant %q", name, got, want)
+				}
+			}
+			// The neighbour is as it was: its rows, and no record.
+			var n int
+			var oldest time.Time
+			if err := store.pool.QueryRow(ctx, `SELECT COUNT(*), MAX(data_collection_date) FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1`, neighbour).Scan(&n, &oldest); err != nil {
+				t.Fatal(err)
+			}
+			if _, found, _ := store.GetRepoDependencyCoverage(ctx, neighbour); found || n != 2 || !oldest.Equal(lockfileStateD0) {
+				t.Errorf("the neighbour repository changed: %d rows dated %v, record %v", n, oldest, found)
+			}
+		})
+	}
+}

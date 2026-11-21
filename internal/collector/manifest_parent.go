@@ -185,8 +185,8 @@ const procSelfExe = "/proc/self/exe"
 // installs the new binary first and stops serve afterwards, and from the
 // install to the stop no manifest was read (review round 7). On Linux the
 // running program itself is started. Elsewhere there is no such link, the
-// path is used, and the version check in the child (ManifestChildMain) is
-// what catches a replaced file.
+// path is used, and the version and build checks in the child
+// (ManifestChildMain) are what catch a replaced file.
 func manifestChildProgram(goos string, executable func() (string, error)) (string, error) {
 	if goos == "linux" {
 		return procSelfExe, nil
@@ -197,6 +197,13 @@ func manifestChildProgram(goos string, executable func() (string, error)) (strin
 // manifestChildFallback is the file started when the one manifestChildCommand
 // names could not be: this program's path, when what failed was the running
 // program's link, and nothing otherwise. A variable for a test.
+//
+// What it is NOT for, said after review round 9: a Linux host with no procfs
+// at all. os.Executable on Linux is itself a reading of that link, so there
+// both fail and the reader cannot be started (the error names both, and
+// the self-test says so at serve's start). It helps where the link can be
+// read and not executed: an emulator or a sandbox that answers readlink and
+// refuses the exec.
 var manifestChildFallback = func(failed string) (string, error) {
 	if failed != procSelfExe {
 		return "", nil
@@ -213,6 +220,14 @@ var manifestFallbackSaid atomic.Bool
 // another program). Not a digest of the contents: the child takes it at
 // every start, of a file of tens of megabytes. "" when the file cannot be
 // examined, and then nothing is compared.
+//
+// The time is taken to the nanosecond the filesystem keeps, and a file
+// written again WITHOUT a change (a `touch`, a restore that resets times) is
+// another build by this rule. It is compared only for a child started from
+// a path (manifestBuildAsked), so on Linux, where the running program
+// itself is started, nothing done to the file's times matters; elsewhere
+// such a file is refused as another build until serve is restarted, which
+// is what the refusal says to do.
 func programBuild(path string) string {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -233,6 +248,20 @@ var manifestParentBuild = sync.OnceValue(func() string {
 	}
 	return programBuild(exe)
 })
+
+// manifestBuildAsked is the build a child started from the file startedFrom
+// is asked to be: none when that file is the running program's own link,
+// since what is started is then this very program whatever its file's
+// times say (0.29.216, review round 9: a `touch` of the binary under a
+// running serve changed the time the child read through the link, and
+// every reading failed as "another build" until a restart); this process's
+// build when it is a path, which may name another file by now.
+func manifestBuildAsked(startedFrom string) string {
+	if startedFrom == procSelfExe {
+		return ""
+	}
+	return manifestParentBuild()
+}
 
 // manifestChildEnv is the child's whole environment: nothing. It reads no
 // variable, and what the parent's environment holds (a database password,
@@ -256,6 +285,8 @@ type manifestRun struct {
 	// treated as the child breaking the protocol, which discards them all
 	// and blames the reader).
 	passFail map[string]error
+	// program is the file the child was started from.
+	program string
 	// cpu, heapPeak and maxRSS are what the child says the passes cost it.
 	cpu      time.Duration
 	heapPeak int64
@@ -311,7 +342,6 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	req.PomSource = src != nil
 	req.ParentPID = os.Getpid()
 	req.Version = manifestParentVersion
-	req.Build = manifestParentBuild()
 
 	// The child's working directory is not this process's (below), so the
 	// clone is named to it in full: a relative clone path (a relative
@@ -355,11 +385,11 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	started := time.Now()
 	swept, err := startSweptCommand(cmd)
 	if err != nil && ctx.Err() == nil {
-		// The running program's link could not be started (a host without
-		// procfs, a container that hides it, an emulator that does not
-		// answer for it): the file at this program's path is started
-		// instead, and the build check in the child is then what catches a
-		// file replaced under a running serve (0.29.215).
+		// The running program's link could not be started (an emulator or
+		// a sandbox that does not execute it): the file at this program's
+		// path is started instead, when that path can be told
+		// (manifestChildFallback), and the build check in the child is then
+		// what catches a file replaced under a running serve (0.29.215).
 		if alt, altErr := manifestChildFallback(exe); altErr == nil && alt != "" {
 			first := err
 			cmd = command(alt)
@@ -383,6 +413,9 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 		return nil, manifestChildFailed("the manifest reader could not be started (%s): %v", exe, err)
 	}
 	defer swept.Close()
+	// Which build the child must be is known only now: it depends on the
+	// file that was started.
+	req.Build = manifestBuildAsked(exe)
 
 	// The clock. answering is the time spent in src, which is not the
 	// child's.
@@ -417,6 +450,9 @@ func runManifestChild(ctx context.Context, req manifestRequest, limits ManifestL
 	}()
 
 	run, complete, protoErr := manifestConverse(req, limits, src, logger, bufio.NewReader(swept.Stdout), inW, &answering)
+	if run != nil {
+		run.program = exe
+	}
 	if protoErr != nil {
 		// What the child sent is not to be trusted further, nor what it
 		// sent before: end it now.

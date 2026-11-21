@@ -182,7 +182,7 @@ func TestWhatThePomTreeDoesNotAskRemotely(t *testing.T) {
 	<dependencies><dependency><groupId>x</groupId><artifactId>y</artifactId></dependency></dependencies></project>`
 	bom := `<project><groupId>b</groupId><artifactId>bom</artifactId><version>1</version></project>`
 	src = &fakePoms{}
-	remoteDeps(t, src, map[string]string{"pom.xml": app, "one/pom.xml": bom, "two/pom.xml": bom}, "pom.xml")
+	remoteDeps(t, src, oneBuild(map[string]string{"pom.xml": app, "one/pom.xml": bom, "two/pom.xml": bom}), "pom.xml")
 	if len(src.asked) != 0 {
 		t.Errorf("an ambiguous BOM was asked for remotely: %v", src.asked)
 	}
@@ -242,7 +242,7 @@ func TestIndexingTheTreeAsksNothingRemotely(t *testing.T) {
 	<dependencyManagement><dependencies><dependency><groupId>x</groupId><artifactId>y</artifactId><version>7</version></dependency></dependencies></dependencyManagement></project>`
 	bystander := `<project><parent><groupId>far</groupId><artifactId>away</artifactId><version>3</version><relativePath/></parent><artifactId>bystander</artifactId></project>`
 	src := &fakePoms{}
-	d := remoteDeps(t, src, map[string]string{"pom.xml": app, "bom/pom.xml": bom, "other/pom.xml": bystander}, "pom.xml")["x:y"]
+	d := remoteDeps(t, src, oneBuild(map[string]string{"pom.xml": app, "bom/pom.xml": bom, "other/pom.xml": bystander}), "pom.xml")["x:y"]
 	if d.Version != "7" {
 		t.Fatalf("the BOM in the tree did not answer: %+v", d)
 	}

@@ -350,6 +350,8 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
@@ -751,7 +753,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-what-changed-in-the-data">After upgrading to 0.29.214: what changed in the data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -2042,7 +2044,7 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
 <li><p><strong>coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
 <li><p><strong>coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
-<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known, there is no current exposure finding and (since 0.29.216) <code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code> is null. It speaks of exposure at a known version only. While the lockfiles are unread it is false and the counts are unchanged, so a count of 0 is shown as 0 with the caution beside it, and no “no vulnerabilities” sentence.</p></li>
 <li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
@@ -2054,8 +2056,14 @@ with it null, no lockfile row is stored, so transitive
 dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
 (null, never absent). Since 0.29.215 it is the date of the
 lockfile rows that are stored, whichever reading stored them,
-and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
+and null when none is. Absent on an older server: show nothing.
+With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
+did replace the stored rows: every lockfile but the ones too
+large was read then, and those keep their previous rows. No one
+date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
+holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
+(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -2183,7 +2191,7 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>{repo_id}.coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
 <li><p><strong>{repo_id}.coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
 <li><p><strong>{repo_id}.coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
-<li><p><strong>{repo_id}.coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>{repo_id}.coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known, there is no current exposure finding and (since 0.29.216) <code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code> is null. It speaks of exposure at a known version only. While the lockfiles are unread it is false and the counts are unchanged, so a count of 0 is shown as 0 with the caution beside it, and no “no vulnerabilities” sentence.</p></li>
 <li><p><strong>{repo_id}.coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>{repo_id}.coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
@@ -2195,8 +2203,14 @@ with it null, no lockfile row is stored, so transitive
 dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
 (null, never absent). Since 0.29.215 it is the date of the
 lockfile rows that are stored, whichever reading stored them,
-and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
+and null when none is. Absent on an older server: show nothing.
+With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
+did replace the stored rows: every lockfile but the ones too
+large was read then, and those keep their previous rows. No one
+date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
+holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
+(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>{repo_id}.coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>{repo_id}.archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>{repo_id}.last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -3200,7 +3214,7 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.dependencies_without_row.{key}</strong> (<em>integer</em>) – One entry per {key}.</p></li>
 <li><p><strong>coverage.second_line</strong> (<em>string:enum, required</em>) – Which second line applies, shown beside the state and never in its place. Empty for none.</p></li>
 <li><p><strong>coverage.dependencies_unknown</strong> (<em>boolean, required</em>) – Nothing has ever said what the repository depends on.</p></li>
-<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known and there is no current exposure finding. It speaks of exposure at a known version only.</p></li>
+<li><p><strong>coverage.clean_result</strong> (<em>boolean, required</em>) – True only when the state is <code class="docutils literal notranslate"><span class="pre">scanned</span></code> or <code class="docutils literal notranslate"><span class="pre">nothing_to_scan</span></code>, the dependencies are known, there is no current exposure finding and (since 0.29.216) <code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code> is null. It speaks of exposure at a known version only. While the lockfiles are unread it is false and the counts are unchanged, so a count of 0 is shown as 0 with the caution beside it, and no “no vulnerabilities” sentence.</p></li>
 <li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
@@ -3212,8 +3226,14 @@ with it null, no lockfile row is stored, so transitive
 dependencies are not checked. <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is always sent
 (null, never absent). Since 0.29.215 it is the date of the
 lockfile rows that are stored, whichever reading stored them,
-and null when none is. Absent on an older server: show nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. A value a client does not know should be shown as written.</p></li>
+and null when none is. Absent on an older server: show nothing.
+With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
+did replace the stored rows: every lockfile but the ones too
+large was read then, and those keep their previous rows. No one
+date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
+holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
+(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>counts</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>counts.current</strong> (<em>integer, required</em>)</p></li>
@@ -8795,7 +8815,22 @@ written before 0.29.162. A row is an unknown when <code class="docutils literal 
 null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
 <li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
 <li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
-<li><p><strong>version_reason</strong> (<em>string</em>) – Why there is no version, when a parent pom or BOM that might have supplied it could not be obtained (<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_reason</strong> (<em>string:enum</em>) – Why there is no version, when the build file names none that can
+be relied on. Absent otherwise. A value a client does not know
+should be shown as written.
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>,
+<code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: a parent pom or BOM that might
+have supplied it could not be obtained.
+<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): a Maven profile of the build
+manages the dependency, and which profiles a build activates is
+not known, so the version the pom would give with no profile
+active is withheld.
+<code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code> (0.29.215): Gradle; more than one platform
+(or a platform and Spring’s dependency-management plugin) gives
+the dependency a version, and they do not agree in a way that
+can be settled.
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written as
+an expression too large to be read whole.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>
@@ -8884,7 +8919,22 @@ written before 0.29.162. A row is an unknown when <code class="docutils literal 
 null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
 <li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
 <li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
-<li><p><strong>version_reason</strong> (<em>string</em>) – Why there is no version, when a parent pom or BOM that might have supplied it could not be obtained (<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_reason</strong> (<em>string:enum</em>) – Why there is no version, when the build file names none that can
+be relied on. Absent otherwise. A value a client does not know
+should be shown as written.
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>,
+<code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: a parent pom or BOM that might
+have supplied it could not be obtained.
+<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): a Maven profile of the build
+manages the dependency, and which profiles a build activates is
+not known, so the version the pom would give with no profile
+active is withheld.
+<code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code> (0.29.215): Gradle; more than one platform
+(or a platform and Spring’s dependency-management plugin) gives
+the dependency a version, and they do not agree in a way that
+can be settled.
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written as
+an expression too large to be read whole.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>

@@ -291,7 +291,9 @@ func coverageMarker(v *vulnclass.CoverageView) []cdxProperty {
 	// lockfile rows of the date given (or there are none, with no date).
 	if u := v.LockfilesUnread; u != nil {
 		out = append(out, cdxProperty{Name: "lockfiles_unread_reason", Value: u.Reason})
-		if u.LastReadAt != nil {
+		// Some lockfiles too large, the others read at this analysis: no
+		// one date is true of the rows, so none is given (0.29.216).
+		if u.LastReadAt != nil && u.Reason != model.LockfileUnreadTooLarge {
 			out = append(out, cdxProperty{Name: "lockfiles_last_read_at", Value: u.LastReadAt.UTC().Format(time.RFC3339)})
 		}
 	}

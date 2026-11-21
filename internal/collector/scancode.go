@@ -36,9 +36,13 @@ import (
 )
 
 // scancodeOutputMaxBytes is the largest scancode report that is ingested.
-// PROVISIONAL. A record is about 1.5 KB per file with a finding; the Linux
-// kernel's some 80,000 files make a report of about 120 MB; 256 MiB is
-// twice that. Ingestion holds about two and a half times the report (its
+// PROVISIONAL, and from an estimate, not from a report: a record was taken
+// to be about 1.5 KB per file with one finding (a synthetic record; real
+// ones carry every match and are larger), by which the Linux kernel's some
+// 80,000 files make a report of about 120 MB, and 256 MiB is twice that,
+// or some 183,000 files of one finding each. It is to be sized again on
+// the largest reports a fleet has produced (the vulnerability program's
+// chunk 3 takes this with the worker's other memory bounds). Ingestion holds about two and a half times the report (its
 // text, then the decoded records and the rows made of them), so the bound
 // on what one ingestion holds is about 640 MiB. Past it the repository's
 // scan fails by name and its previous results stand.

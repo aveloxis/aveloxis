@@ -131,32 +131,34 @@ func TestTheRealSchemasRoutesAreHeld(t *testing.T) {
 	}
 }
 
-// round8Refused are the correct statements of fp.txt that are refused,
-// each with why and the way out. A statement a maintainer might well write
-// that is refused pushes toward an Exception, so the list is kept short
-// and every entry says what to write instead.
-var round8Refused = map[string]string{
-	"V06 created_at guarded bare from FROM derived over other table":               "a guarded bare fill takes one incoming operand (a placeholder, EXCLUDED's, an incoming batch's column). Way out: the COALESCE form, which may fill from another table: SET created_at = COALESCE(r.created_at, s.c)",
-	"V46 package_key fill computed in SQL from other columns":                      "as V06. Way out: SET package_key = COALESCE(package_key, lower(name))",
-	"V10 updated_at conditional keep: CASE WHEN $2 > updated_at":                   "GreatestNonNull has two shapes and a CASE is neither. Way out: GREATEST($2, updated_at), which is this (GREATEST ignores a NULL)",
-	"V12 forked_from prefer nonempty with lower()":                                 "an incoming operand may be trimmed, not otherwise changed. Way out: lower it before it is handed in",
-	"V14 forked_from where guard instead":                                          "the shape is the COALESCE; a guard on the placeholder is not read. Way out: COALESCE(NULLIF($2, ''), forked_from)",
-	"V17 vuln_scan_last_run from other table derived with join to repos to filter": "round 8: the derived table JOINs the table being written, so it is an item that reads it, and nothing of such an item is taken. Way out: filter in its WHERE, which is a condition: WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos rr WHERE rr.repo_id = v.repo_id AND rr.repo_archived IS NOT TRUE)",
-	"V24 msg_text_clean batch json":                                                "round 8: a function in FROM is an incoming batch only as unnest of placeholders. Way out: two arrays, FROM unnest($1::bigint[], $2::text[]) AS j(msg_id, clean)",
-	"V30 cntrb_login fill CASE reversed arms":                                      "the fill as CASE is read with the empty test first. Way out: COALESCE(NULLIF(contributors.cntrb_login, ''), EXCLUDED.cntrb_login)",
-	"V32 node_id prefer nonempty via CASE":                                         "prefer-nonempty has one shape. Way out: COALESCE(NULLIF($3, ''), node_id)",
-	"V33 node_id only when given (WHERE guard on param)":                           "as V14. Way out: COALESCE(NULLIF($3, ''), node_id)",
-	"V40 first_detected least coalesce param now":                                  "the earliest-of shape is LEAST(stored, incoming) and COALESCE($2, NOW()) is not an incoming operand. Way out: hand the time in, or an Exception",
-	"V42 entered_exposure COALESCE(stored, NOW())":                                 "KeepCarryOrNow is read as a CASE over the three results. Way out: CASE WHEN entered_exposure_at IS NULL THEN NOW() ELSE entered_exposure_at END, or an Exception",
-	"V44 entered_exposure reset NULL on leaving exposure":                          "NULL is none of keep, carry or now: a reset is another operation. An Exception",
-	"V49 package_key guard inside EXISTS / IN (keyset window)":                     "the guard of a bare fill is a condition ANDed at the top of the write's own WHERE. Way out: add AND package_key IS NULL there",
-	"V50 merge fill": "a MERGE action's own condition is not read as a guard. Way out: UPDATE ... WHERE COALESCE(platform_repo_id, '') = ''",
-	"V53 repo_description copy on dedup merge (InsertOnly -> must be exception)": "InsertOnly allows no UPDATE at all: an Exception, as the case itself says",
-	"V54 created_at fill on merge from loser row (self join; fill)":              "round 8: what a fill fills with is incoming, and another row of the table is not. A merge of two rows of one repository is another operation than the policy describes: an Exception",
-	"V55 updated_at merge from loser greatest":                                   "the loser row's value is neither the row's own stored value nor incoming: an Exception, as V54",
-	"V56 forked_from merge from loser":                                           "as V55: an Exception",
-	"V57 platform id merge from loser guarded":                                   "as V54: an Exception",
-	"V58 vuln_scan_last_run merge from loser (AR: stored of other row)":          "AlwaysRefresh from another row's stored value is exactly what the policy forbids; a merge that means to keep it takes an Exception",
+// round8Refused are the correct statements of fp.txt that are refused. A
+// statement a maintainer might well write that is refused pushes toward an
+// Exception, so the list is kept short; why each is refused and what to
+// write instead is what the refusal itself says (sqlscan.WaysOut, round 9:
+// this list held that text, where nobody refused would read it), and the
+// test holds each refusal to it.
+var round8Refused = map[string]bool{
+	"V06 created_at guarded bare from FROM derived over other table":               true,
+	"V46 package_key fill computed in SQL from other columns":                      true,
+	"V10 updated_at conditional keep: CASE WHEN $2 > updated_at":                   true,
+	"V12 forked_from prefer nonempty with lower()":                                 true,
+	"V14 forked_from where guard instead":                                          true,
+	"V17 vuln_scan_last_run from other table derived with join to repos to filter": true,
+	"V24 msg_text_clean batch json":                                                true,
+	"V30 cntrb_login fill CASE reversed arms":                                      true,
+	"V32 node_id prefer nonempty via CASE":                                         true,
+	"V33 node_id only when given (WHERE guard on param)":                           true,
+	"V40 first_detected least coalesce param now":                                  true,
+	"V42 entered_exposure COALESCE(stored, NOW())":                                 true,
+	"V44 entered_exposure reset NULL on leaving exposure":                          true,
+	"V49 package_key guard inside EXISTS / IN (keyset window)":                     true,
+	"V50 merge fill": true,
+	"V53 repo_description copy on dedup merge (InsertOnly -> must be exception)": true,
+	"V54 created_at fill on merge from loser row (self join; fill)":              true,
+	"V55 updated_at merge from loser greatest":                                   true,
+	"V56 forked_from merge from loser":                                           true,
+	"V57 platform id merge from loser guarded":                                   true,
+	"V58 vuln_scan_last_run merge from loser (AR: stored of other row)":          true,
 }
 
 func TestTheCorrectStatementsRefusedEachHaveAWayOut(t *testing.T) {
@@ -165,7 +167,8 @@ func TestTheCorrectStatementsRefusedEachHaveAWayOut(t *testing.T) {
 		n++
 		if v := round8Verdict(c); v != "pass" {
 			refused[c.head] = true
-			if round8Refused[c.head] == "" {
+			holdWayOut(t, c)
+			if !round8Refused[c.head] {
 				t.Errorf("fp.txt %q, a correct statement, is refused (%s):\n  %s", c.head, v, c.sql)
 			}
 		}
@@ -177,5 +180,22 @@ func TestTheCorrectStatementsRefusedEachHaveAWayOut(t *testing.T) {
 	}
 	if n != 58 {
 		t.Fatalf("%d cases read, fp.txt holds 58", n)
+	}
+}
+
+// holdWayOut: every refusal of an assignment in the statement ends with the
+// ways out of the column's policy.
+func holdWayOut(t *testing.T, c round8Case) {
+	t.Helper()
+	for _, v := range round9Report(c).Violations {
+		out := ""
+		for _, p := range Policies {
+			if p.Table == v.Table && p.Column == v.Column {
+				out = sqlscan.WaysOut[p.Policy]
+			}
+		}
+		if v.Kind == sqlscan.KindAssign && (out == "" || !strings.HasSuffix(v.Detail, " — "+out)) {
+			t.Errorf("%s %q is refused and the refusal does not end with the policy's ways out:\n  %s", c.file, c.head, v.Detail)
+		}
 	}
 }

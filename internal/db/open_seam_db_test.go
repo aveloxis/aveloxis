@@ -79,3 +79,23 @@ func TestAPoolsBeforeConnectHookCannotTakeTheStatementSeamOff(t *testing.T) {
 		t.Error("a configuration that carries the seam was wrapped again")
 	}
 }
+
+// A single connection (OpenConn, OpenConnConfig) carries the statement seam
+// as a pool's connections do (review round 9: OpenConnConfig without it
+// failed nothing but the closing suite, where the one call that opens a
+// connection this way went unreached).
+func TestASingleConnectionCarriesTheStatementSeam(t *testing.T) {
+	openTestStore(t)
+	if stmttrace.Wrap == nil {
+		t.Fatal("the DB-tier harness did not set the statement seam: this test has nothing to show")
+	}
+	ctx := context.Background()
+	conn, err := OpenConn(ctx, os.Getenv("AVELOXIS_TEST_DB"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if _, seamed := conn.Config().Tracer.(stmttrace.Seamed); !seamed {
+		t.Errorf("the connection's tracer is %T; want the statement seam", conn.Config().Tracer)
+	}
+}

@@ -51,12 +51,19 @@ package manifest
 //	    (default ../pom.xml; a directory means the pom.xml in it) and the
 //	    file there is the parent only when its coordinates are the ones
 //	    asked for. An empty <relativePath/> skips that place.
-//	M3  VERIFIED-BY-DOCS-FROM-MEMORY for projects of one multi-module build;
-//	    UNSURE beyond it. A parent or an imported BOM that is a project of
-//	    the build being run is taken from the build (the reactor), before
-//	    any repository, wherever its file is. The reference takes "the
-//	    build" to be every pom of the clone; Maven's is the modules reached
-//	    from the pom it was started on (DISAGREEMENT D1, below).
+//	M3  VERIFIED-BY-DOCS-FROM-MEMORY. A parent or an imported BOM that is a
+//	    project of the build being run is taken from the build (the
+//	    reactor), before any repository, wherever its file is. The build
+//	    is the pom Maven is started on and the poms its <modules> name,
+//	    and theirs. Round 9: the reference takes a pom's build to be the
+//	    poms joined to it by <modules> entries, in either direction, and
+//	    looks a pom up by its coordinates among those ONLY: a pom of the
+//	    clone that no <modules> entry joins to the asker (a test fixture,
+//	    an example, an archetype's template) is in no build with it,
+//	    whatever coordinates it gives itself. UNSURE: a pom FETCHED from a
+//	    repository is taken to find nothing in the clone (Maven's reactor
+//	    would in fact serve a fetched pom's parent that is a project of
+//	    the build; DISAGREEMENT D1, below).
 //	M4  VERIFIED-BY-DOCS-FROM-MEMORY. Otherwise the pom is asked of the
 //	    repositories the build declares, and Central. A snapshot, a range,
 //	    LATEST and RELEASE do not name one pom.
@@ -78,13 +85,22 @@ package manifest
 //	    does not already have; among imports the first declared wins; a BOM's
 //	    own imports are followed the same way. UNSURE: the order between the
 //	    imports of a child and those of its parent (the child's first here).
-//	M8  VERIFIED-BY-DOCS-FROM-MEMORY. A profile's dependencyManagement and
-//	    dependencies are merged over the pom's own when the profile is
-//	    active, before a child inherits. activeByDefault holds only while no
-//	    other profile of the pom is activated, and the other activations
-//	    (property, JDK, OS, file, the command line) are not knowable from the
-//	    files. So what a profile manages, or declares with a version, is NOT
-//	    KNOWN from that pom outward; an entry in a NEARER pom still wins.
+//	M8  VERIFIED-BY-DOCS-FROM-MEMORY. A profile's properties,
+//	    dependencyManagement and dependencies are merged over the pom's own
+//	    when the profile is active, before a child inherits. Round 9: the
+//	    build that is modelled is the DEFAULT one (no -P, no -D): a profile
+//	    with <activeByDefault>true</activeByDefault> is active in it, and
+//	    its properties and managed entries are the pom's (an entry for an
+//	    artifact the pom manages itself replaces the pom's; any other
+//	    comes after the pom's own). UNSURE: that a profile's entry for the
+//	    same artifact REPLACES the pom's rather than following it (the
+//	    model merger's "source dominant" rule as recalled); and the order
+//	    of a profile's imports among the pom's (after them, here). A
+//	    profile with any other activation, or none, is taken to be
+//	    inactive (DISAGREEMENT D2). What an active profile DECLARES as a
+//	    dependency with a version is the version of the pom's own
+//	    declaration of that dependency: no managed version is given to it
+//	    (profile_managed), whichever pom manages it.
 //	M9  VERIFIED-BY-DOCS-FROM-MEMORY. A repository whose address is http is
 //	    refused by Maven 3.8.1 and later unless mirrored; one that needs
 //	    credentials, or is a file path, is not reachable from here. While
@@ -103,13 +119,17 @@ package manifest
 // DISAGREEMENTS between this reference and the reader that remain: none in
 // the trees generated. Between BOTH and Maven, known and not closed:
 //
-//	D1  (M3) a pom of the clone that is not a module of the build Maven was
-//	    started on is not in Maven's reactor; both take it by coordinates.
-//	    The clone does not say which pom a build starts on.
-//	D2  (M8) a profile that is active changes more than managed versions
-//	    (properties, modules, repositories); only what it manages or
-//	    declares is treated as unknown. A profile's property that a managed
-//	    version refers to is read as if the profile were inactive.
+//	D1  (M3) the clone does not say which pom a build starts on. A pom
+//	    that two aggregators list as a module joins both into one build
+//	    here; Maven's reactor is the one it was started on. And a fetched
+//	    pom's parent or import that is a project of the build is asked of
+//	    the repositories here, where Maven's reactor serves it.
+//	D2  (M8) a profile activated by a property, the JDK, the OS or a file
+//	    is taken to be inactive, and may be active in the default build
+//	    (<jdk>[11,)</jdk> on a current JDK; <property><name>!skip</name>).
+//	    activeByDefault is taken to hold, where Maven drops it as soon as
+//	    another profile of the same pom is activated. A profile's modules
+//	    and repositories are not read.
 //	D3  (M8) a fetched pom carries no profiles (RemotePom has none): a
 //	    profile of a parent or BOM that came from a repository is not seen.
 //	D4  (M9) a mirror or a settings.xml of the machine is not known; the
@@ -169,6 +189,10 @@ type oraclePoms struct {
 	// relativePath names and from nothing else (byCoordinates asks for every
 	// pom's coordinates, and must not ask itself).
 	pathOnly bool
+	// joined is which poms a <modules> entry joins, read once from the
+	// decoded poms (it is what they say, as decoded is, and working it out
+	// again for every question was most of the reference's time).
+	joined map[string][]string
 }
 
 // model is the pom at path, decoded.
@@ -261,12 +285,12 @@ func (o *oraclePoms) couldBe(g, a, v string) bool {
 // chosen between), else a repository's (M4), and what "not found" there is
 // worth (M5: an unreadable pom of the clone may be it; M9: a declared
 // repository was never asked).
-func (o *oraclePoms) obtain(g, a, v string, chain []*oraclePom) (pom *oraclePom, reason, unknown string) {
+func (o *oraclePoms) obtain(g, a, v string, chain []*oraclePom, from *oraclePom) (pom *oraclePom, reason, unknown string) {
 	const notFound, failed = "inherited_not_found", "inherited_lookup_failed"
 	if o.pathOnly {
 		return o.remote(g, a, v) // no source: not known
 	}
-	in, ambiguous := o.byCoordinates(g, a, v)
+	in, ambiguous := o.byCoordinates(g, a, v, from)
 	if ambiguous {
 		return nil, notFound, notFound
 	}
@@ -277,7 +301,7 @@ func (o *oraclePoms) obtain(g, a, v string, chain []*oraclePom) (pom *oraclePom,
 	if pom != nil || unknown != "" {
 		return pom, reason, unknown
 	}
-	if o.couldBe(g, a, v) {
+	if from != nil && o.couldBe(g, a, v) {
 		return nil, failed, failed
 	}
 	if o.src != nil {
@@ -329,6 +353,12 @@ type oracleCtx struct {
 	// unknown: why what the missing end of the chain says is not known.
 	unknown string
 	whole   bool
+	// over, for a BOM read by Spring's dependency-management plugin (the
+	// Gradle reference's G9): the project's properties, which come before
+	// the BOM's own.
+	over map[string]string
+	// overHits counts the references over answered.
+	overHits *int
 }
 
 func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
@@ -358,7 +388,7 @@ func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
 			}
 		}
 		if p == nil {
-			r, reason, unknown := o.obtain(cur.parent.group, cur.parent.artifact, cur.parent.version, c.chain)
+			r, reason, unknown := o.obtain(cur.parent.group, cur.parent.artifact, cur.parent.version, c.chain, cur)
 			if r == nil {
 				c.gap, c.unknown, c.whole = reason, unknown, false
 				break
@@ -392,6 +422,10 @@ func (c *oracleCtx) interp(s string) string {
 		if v := pick[name]; v != "" {
 			return v, true
 		}
+		if v, ok := c.over[name]; ok {
+			*c.overHits++
+			return v, true
+		}
 		for _, m := range c.chain {
 			if v, ok := m.props[name]; ok {
 				return v, true
@@ -414,21 +448,22 @@ func (o *oraclePoms) allPoms() []string {
 	return out
 }
 
-// byCoordinates scans every pom of the clone for the ones with these
+// byCoordinates scans the poms of from's build (M3) for the ones with these
 // coordinates, as the clone alone gives them (no source asked).
-func (o *oraclePoms) byCoordinates(g, a, v string) (m *oraclePom, ambiguous bool) {
-	if g == "" || a == "" || v == "" || strings.Contains(g+a+v, "${") {
+func (o *oraclePoms) byCoordinates(g, a, v string, from *oraclePom) (m *oraclePom, ambiguous bool) {
+	// No pom asks for a Gradle platform (from is nil): Gradle takes it from
+	// its repositories and never from a pom.xml of the checkout.
+	if from == nil || g == "" || a == "" || v == "" || strings.Contains(g+a+v, "${") || strings.HasPrefix(from.path, "remote:") {
 		return nil, false
 	}
-	treeOnly := &oraclePoms{root: o.root, decoded: o.decoded, pathOnly: true}
+	among := o.buildOf(from.path)
 	var found []*oraclePom
-	for _, p := range o.allPoms() {
-		cand := treeOnly.model(p)
+	for _, p := range among {
+		cand := o.model(p)
 		if cand == nil {
 			continue
 		}
-		c := treeOnly.ctx(cand)
-		if c.interp(c.group) == g && c.interp(c.artifact) == a && c.interp(c.version) == v {
+		if cg, ca, cv := o.coordinates(cand); cg == g && ca == a && cv == v {
 			found = append(found, cand)
 		}
 	}
@@ -438,6 +473,57 @@ func (o *oraclePoms) byCoordinates(g, a, v string) (m *oraclePom, ambiguous bool
 	return found[0], false
 }
 
+// coordinates are a pom's own, from the clone alone and from the parents
+// its relativePath names (a pom whose coordinates need a parent that is
+// itself found only by coordinates is beyond the reference: the generated
+// trees have none, and TestCoordinatesBehindCoordinatesDoNotDependOnTheWalk
+// holds the reader to them).
+func (o *oraclePoms) coordinates(m *oraclePom) (g, a, v string) {
+	c := (&oraclePoms{root: o.root, decoded: o.decoded, pathOnly: true}).ctx(m)
+	return c.interp(c.group), c.interp(c.artifact), c.interp(c.version)
+}
+
+// buildOf lists the poms joined to the one at path by <modules> entries, in
+// either direction and through any number of them, the pom itself first.
+func (o *oraclePoms) buildOf(path string) []string {
+	if o.joined != nil {
+		return o.reach(path)
+	}
+	joined := map[string][]string{}
+	for _, p := range o.allPoms() {
+		m := o.model(p)
+		if m == nil {
+			continue
+		}
+		for _, mod := range m.modules {
+			target := filepath.Join(filepath.Dir(p), filepath.FromSlash(mod))
+			if info, err := os.Lstat(target); (err == nil && info.IsDir()) || !strings.HasSuffix(strings.ToLower(mod), ".xml") {
+				target = filepath.Join(target, "pom.xml")
+			}
+			target = filepath.Clean(target)
+			joined[p] = append(joined[p], target)
+			joined[target] = append(joined[target], p)
+		}
+	}
+	o.joined = joined
+	return o.reach(path)
+}
+
+func (o *oraclePoms) reach(path string) []string {
+	out, seen := []string{filepath.Clean(path)}, map[string]bool{filepath.Clean(path): true}
+	for i := 0; i < len(out); i++ {
+		for _, next := range o.joined[out[i]] {
+			if !seen[next] {
+				seen[next] = true
+				out = append(out, next)
+			}
+		}
+	}
+	return out
+}
+
+// oracleHosts are the hosts that served the fetched poms of a chain, and
+// more, each once, sorted.
 func oracleHosts(chain []*oraclePom, more []string) []string {
 	set := map[string]bool{}
 	for _, m := range chain {
@@ -479,9 +565,14 @@ type oracleQuestion struct {
 func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int) (version string, found bool, hosts []string, stop bool) {
 	// An explicit entry anywhere in the chain: the nearest pom, and in a pom
 	// the first entry written that means this coordinate here.
-	// M8: from the first pom whose profiles manage the artifact outward,
-	// the answer is not known to be the build's.
+	// M8: a default profile of a pom of the chain declares the dependency
+	// with a version: no managed version is the build's, whoever manages.
 	profiled := false
+	for _, m := range c.chain {
+		if m.profileDeclares[group+":"+artifact] {
+			profiled = true
+		}
+	}
 	doubt := func() {
 		if profiled {
 			q.gap = oracleWorse(q.gap, "profile_managed")
@@ -489,9 +580,6 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 		}
 	}
 	for _, m := range c.chain {
-		if m.profileAny || m.profileNames[group+":"+artifact] {
-			profiled = true
-		}
 		for _, e := range m.managed {
 			if e.isImport {
 				continue
@@ -529,7 +617,7 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 				continue
 			}
 			bg, ba, bv := c.interp(e.group), c.interp(e.artifact), c.interp(e.version)
-			bom, reason, unknown := c.o.obtain(bg, ba, bv, c.chain)
+			bom, reason, unknown := c.o.obtain(bg, ba, bv, c.chain, m)
 			if bom == nil {
 				q.gap = oracleWorse(q.gap, reason)
 				q.before = oracleWorse(q.before, unknown)
@@ -664,10 +752,9 @@ type oraclePom struct {
 	modules                  []string
 	profileManagement        bool
 	servedBy                 string
-	// M8: the "group:artifact" a profile manages or declares with a version
-	// (profileAny: it cannot be said which, a reference or an import).
-	profileNames map[string]bool
-	profileAny   bool
+	// M8: the "group:artifact" a profile that is active by default declares
+	// as a dependency with a version.
+	profileDeclares map[string]bool
 	// M9: it declares a repository for dependencies that is never asked.
 	unasked bool
 }
@@ -717,6 +804,13 @@ func oracleDecode(content, path string) *oraclePom {
 		Modules  []string       `xml:"modules>module"`
 		Repos    []string       `xml:"repositories>repository>url"`
 		Profiles []struct {
+			Default string `xml:"activation>activeByDefault"`
+			Props   struct {
+				All []struct {
+					XMLName xml.Name
+					Text    string `xml:",chardata"`
+				} `xml:",any"`
+			} `xml:"properties"`
 			Managed []oracleXMLDep `xml:"dependencyManagement>dependencies>dependency"`
 			Deps    []oracleXMLDep `xml:"dependencies>dependency"`
 		} `xml:"profiles>profile"`
@@ -779,32 +873,64 @@ func oracleDecode(content, path string) *oraclePom {
 			m.unasked = true
 		}
 	}
-	m.profileNames = map[string]bool{}
+	m.profileDeclares = map[string]bool{}
 	for _, pr := range x.Profiles {
 		if len(pr.Managed) > 0 {
 			m.profileManagement = true
 		}
-		name := func(d oracleXMLDep) {
-			if strings.Contains(d.G+d.A, "${") {
-				m.profileAny = true
-			}
-			m.profileNames[t(d.G)+":"+t(d.A)] = true
-		}
-		for _, d := range pr.Managed {
-			if t(d.Scope) == "import" && t(d.Type) == "pom" {
-				m.profileAny = true
-				continue
-			}
-			name(d)
-		}
 		for _, d := range pr.Deps {
-			if t(d.V) != "" {
-				name(d)
-			}
 			// What a profile declares is declared by the pom: a row of its
 			// own, whether or not the profile is active (the inventory is of
 			// what the files declare).
 			m.deps = append(m.deps, oracleManaged{group: t(d.G), artifact: t(d.A), version: t(d.V)})
+		}
+		if t(pr.Default) != "true" {
+			continue // M8: not part of the default build
+		}
+		for _, p := range pr.Props.All {
+			m.props[p.XMLName.Local] = t(p.Text)
+		}
+		// The pom's entries, each replaced by the profile's LAST entry for
+		// the same artifact when it has one; then the profile's others, in
+		// the order written.
+		same := func(a, b oracleManaged) bool {
+			return a.group == b.group && a.artifact == b.artifact && a.isImport == b.isImport
+		}
+		var mine []oracleManaged
+		for _, d := range pr.Managed {
+			mine = append(mine, oracleManaged{t(d.G), t(d.A), t(d.V), t(d.Scope) == "import" && t(d.Type) == "pom"})
+		}
+		merged := append([]oracleManaged{}, m.managed...)
+		for i := range merged {
+			for _, e := range mine {
+				if same(merged[i], e) {
+					merged[i] = e
+				}
+			}
+		}
+		for i, e := range mine {
+			placed := false
+			for _, own := range m.managed {
+				placed = placed || same(own, e)
+			}
+			for _, earlier := range mine[:i] {
+				placed = placed || same(earlier, e)
+			}
+			if !placed {
+				last := e
+				for _, later := range mine[i+1:] {
+					if same(later, e) {
+						last = later
+					}
+				}
+				merged = append(merged, last)
+			}
+		}
+		m.managed = merged
+		for _, d := range pr.Deps {
+			if t(d.V) != "" {
+				m.profileDeclares[t(d.G)+":"+t(d.A)] = true
+			}
 		}
 	}
 	return m
@@ -919,7 +1045,7 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 				if !e.isImport {
 					continue
 				}
-				next, _, _ := o.obtain(bc.interp(e.group), bc.interp(e.artifact), bc.interp(e.version), bc.chain)
+				next, _, _ := o.obtain(bc.interp(e.group), bc.interp(e.artifact), bc.interp(e.version), bc.chain, cm)
 				if next == nil {
 					whole = false
 					continue
@@ -974,7 +1100,7 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 					continue
 				}
 				bg, ba, bv := c.interp(e.group), c.interp(e.artifact), c.interp(e.version)
-				bom, ambiguous := o.byCoordinates(bg, ba, bv)
+				bom, ambiguous := o.byCoordinates(bg, ba, bv, cm)
 				switch {
 				case ambiguous:
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
@@ -983,7 +1109,7 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 						gapOf[p] = "an imported BOM could not be read whole"
 					}
 				case bom == nil:
-					r, _, _ := o.obtain(bg, ba, bv, c.chain)
+					r, _, _ := o.obtain(bg, ba, bv, c.chain, cm)
 					if r == nil {
 						gapOf[p] = "an imported BOM could not be obtained"
 						continue
@@ -1115,9 +1241,21 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 		}
 		// Round 8 (M8): profiles that manage, declare with a version, or
 		// import, active by default or not.
-		if rng.Intn(8) == 0 {
-			sb.WriteString("<profiles><profile><id>p</id>" + pick([]string{"", "<activation><activeByDefault>true</activeByDefault></activation>"}))
-			switch rng.Intn(4) {
+		// Round 9 (M8): half of them active by default, which are applied,
+		// their properties too; the others (no activation, or one by a
+		// property) change nothing.
+		if rng.Intn(5) == 0 {
+			sb.WriteString("<profiles><profile><id>p</id>" + pick([]string{"", "<activation><property><name>x</name></property></activation>",
+				"<activation><activeByDefault>true</activeByDefault></activation>", "<activation><activeByDefault>true</activeByDefault></activation>"}))
+			if rng.Intn(3) == 0 {
+				name := pick(propNames)
+				sb.WriteString("<properties><" + name + ">" + pick(propVals) + "</" + name + "></properties>")
+			}
+			switch rng.Intn(5) {
+			case 4:
+				// An artifact the main section may manage too, and a second
+				// entry for it.
+				sb.WriteString("<dependencyManagement><dependencies>" + r4dep("g1", "a1", "${v1}") + r4dep(pick(groups), pick(arts), "6") + r4dep("g1", "a1", "7") + "</dependencies></dependencyManagement>")
 			case 0:
 				sb.WriteString("<dependencyManagement><dependencies>" + r4dep(pick(groups), pick(arts), "5") + "</dependencies></dependencyManagement>")
 			case 1:
@@ -1185,12 +1323,8 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 		}
 		return r
 	}
-	mods := ""
-	if rng.Intn(2) == 0 {
-		mods = "<modules><module>../mid</module><module>../app2</module>" + pick([]string{"", "<module>../missing</module>", "<module>../app3</module>", "<module>../fix</module>"}) + "</modules>"
-	}
+	rootParent := pick([]string{"", "", "ext", "extgone"})
 	files = map[string]string{
-		"root/pom.xml": gen("root", pick([]string{"", "", "ext", "extgone"}), "1", mods),
 		"mid/pom.xml":  gen("mid", "root", pick([]string{"1", ""}), ""),
 		"app/pom.xml":  gen("app", "mid", pick([]string{"1", "", "7"}), ""),
 		"app2/pom.xml": gen("app2", "root", pick([]string{"1", "", "${revision}"}), ""),
@@ -1212,6 +1346,48 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 	if rng.Intn(4) == 0 {
 		files["svc/snapp/pom.xml"] = gen("snapp", pick([]string{"", "root"}), "1-SNAPSHOT", "")
 		files["svc/m/pom.xml"] = gen("m", "reactor", "1", "")
+	}
+	// Round 9 (M3): the build. The root names its modules: most of the poms
+	// above, most of the time, so that a parent or a BOM found by its
+	// coordinates is a project of the asker's build; and sometimes not, so
+	// that it is not.
+	var listed []string
+	for rel := range files {
+		listed = append(listed, strings.TrimSuffix(rel, "/pom.xml"))
+	}
+	sort.Strings(listed)
+	mods := ""
+	if rng.Intn(5) != 0 {
+		mods = "<modules>"
+		for _, dir := range listed {
+			if dir == "mid" || dir == "app2" || rng.Intn(4) != 0 {
+				mods += "<module>../" + dir + "</module>"
+			}
+		}
+		mods += pick([]string{"", "", "<module>../missing</module>"}) + "</modules>"
+	}
+	files["root/pom.xml"] = gen("root", rootParent, "1", mods)
+	// Round 9 (M3): poms of the clone that are part of no build of the
+	// root's, or of one of their own, and give themselves coordinates the
+	// build asks for: a fixture or an example that carries a published
+	// parent's or BOM's coordinates (t:rparent:1 and t:rb1:1 are on the
+	// repositories), a copy of a BOM of the build, an archetype's template.
+	if rng.Intn(4) == 0 {
+		files["examples/rparent/pom.xml"] = gen("rparent", "", "1", "")
+		if rng.Intn(2) == 0 {
+			files["examples/pom.xml"] = "<project><groupId>t</groupId><artifactId>examples</artifactId><version>1</version><modules><module>rparent</module>" +
+				pick([]string{"", "<module>../app3</module>"}) + "</modules></project>"
+		}
+	}
+	if rng.Intn(5) == 0 {
+		files["src/it/rb1/pom.xml"] = gen("rb1", "", "1", "")
+	}
+	if rng.Intn(5) == 0 {
+		files["src/test/resources/bomA/pom.xml"] = gen("bomA", "", "1", "")
+	}
+	if rng.Intn(6) == 0 {
+		_, _, inner := body(true)
+		files["src/main/resources/archetype-resources/pom.xml"] = "<project><groupId>${groupId}</groupId><artifactId>${artifactId}</artifactId><version>${version}</version>" + inner + "</project>"
 	}
 	// Round 8 (M5): a chain of parents, and BOMs nested in BOMs, about as
 	// long as is followed: 31 to 34, the far end managing what nothing
@@ -1245,6 +1421,16 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 			}
 			files["nest/0/pom.xml"] = link("nest", 0, "<dependencyManagement><dependencies>"+r4import("t", "nest1", "1")+r4import("t", "bomA", "1")+"</dependencies></dependencyManagement>"+deps)
 		}
+		// One build of their own, with the BOM both import.
+		agg := "<project><groupId>t</groupId><artifactId>chains</artifactId><version>1</version><modules><module>../bomA</module>"
+		var links []string
+		for rel := range files {
+			if strings.HasPrefix(rel, "long/") || strings.HasPrefix(rel, "nest/") {
+				links = append(links, "<module>../"+strings.TrimSuffix(rel, "/pom.xml")+"</module>")
+			}
+		}
+		sort.Strings(links)
+		files["chains/pom.xml"] = agg + strings.Join(links, "") + "</modules></project>"
 	}
 	if rng.Intn(4) == 0 {
 		return files, nil // no source: nothing outside the clone is asked
@@ -1497,9 +1683,18 @@ func (o *oracleGradle) applied(applies []string, dir string, vars map[string]str
 		vars = o.applied(first.applies, filepath.Dir(p), vars, depth+1, seen, assigned)
 		script := o.read(content, vars, nil)
 		own, gone := script.result()
+		// The last script that assigns a name answers for it: with its
+		// value where it sets a property of the project at its top (the
+		// file reader's own mark, setAt: this reference shares the reading
+		// of one file, and the rule is checked without it by the
+		// independent reference, round6_gradle_reference_test.go, S1), and
+		// with nothing otherwise.
 		for name, v := range own {
 			v := v
-			assigned[name] = &v
+			assigned[name] = nil
+			if _, sure := script.setAt[name]; sure {
+				assigned[name] = &v
+			}
 		}
 		for name := range gone {
 			assigned[name] = nil
@@ -1529,22 +1724,12 @@ func (o *oracleGradle) readOrdered(content string, vars map[string]string, libs 
 
 // oracleOrder is rule S1 over the assignments of one file read as b.
 func oracleOrder(b *gradleBuild, assigned map[string]*string) *gradleBuild {
-	if b.firstApply == 0 {
+	if b.firstApply == 0 || b.applyNested {
 		return b
 	}
 	for name, at := range b.setAt {
-		script, by := assigned[name]
-		switch {
-		case !by, at > b.lastApply:
-		case at < b.firstApply && script != nil:
+		if script, by := assigned[name]; by && script != nil && at < b.firstApply && !b.conflicted[name] {
 			b.own[name] = *script
-			delete(b.conflicted, name)
-		case at < b.firstApply:
-			b.conflicted[name] = true
-		default:
-			if own, has := b.own[name]; script == nil || !has || own != *script {
-				b.conflicted[name] = true
-			}
 		}
 	}
 	return b

@@ -1648,7 +1648,20 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	dec := json.NewDecoder(counted)
 	now := time.Now()
 	var laborRows []*db.RepoLaborRow
+	// The rows are held until the snapshot is written, one for a file, so
+	// their count is bounded (0.29.216): at the first row past
+	// sccLaborRowsLimit scc is stopped and the scan FAILS below, like any
+	// report that could not be taken, with nothing written.
+	tooMany := false
 	decodeErr := streamSCCLabor(dec, absWork, now, func(row *db.RepoLaborRow) {
+		if tooMany {
+			return
+		}
+		if len(laborRows) >= sccLaborRowsLimit {
+			tooMany = true
+			cancelSCC()
+			return
+		}
 		laborRows = append(laborRows, row)
 		if sccRowStreamed != nil {
 			sccRowStreamed()
@@ -1667,6 +1680,13 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	if decodeErr != nil && !sccStreamEnded(decodeErr) {
 		cancelSCC()
 		weKilled = true
+	}
+	if tooMany {
+		// Our own stop, and the cause: whatever the decoder then said of
+		// the stream that ended under it is not the reason.
+		weKilled = true
+		laborRows = nil
+		decodeErr = fmt.Errorf("%w: more than %d", errSCCTooManyFiles, sccLaborRowsLimit)
 	}
 
 	// Drain BEFORE reaping. streamSCCLabor stops at the top-level "]", so
@@ -1741,8 +1761,8 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 		return fmt.Errorf("scc output: %d bytes of trailing data after the top-level array", trailing.n)
 	}
 
-	// Observation only (SR-7): nothing here skips, truncates or caps a
-	// repo. The WARN exists so the frequency of the repo class that caused
+	// Observation only (SR-7): nothing here skips or truncates a repo (the
+	// one cap is sccLaborRowsLimit above, which fails the scan). The WARN exists so the frequency of the repo class that caused
 	// the 2026-09-15 OOM stays greppable now that it no longer announces
 	// itself by killing the process. See sccOutputLargeBytes for what the
 	// threshold is and — importantly — what it is not: scc_output_bytes
@@ -1783,6 +1803,17 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 
 	return nil
 }
+
+// errSCCTooManyFiles: scc reported more files than a worker keeps rows for.
+var errSCCTooManyFiles = errors.New("scc reported more files than are kept for one repository")
+
+// sccLaborRowsLimit is the most per-file rows scanSCC holds for one
+// repository: cloneWalkEntries, the bound a worker's own walk of a clone
+// has, since scc reports one row for a file (215 bytes a row measured, so
+// about 1 GiB at the limit; PROVISIONAL with that constant). A variable only
+// so that a test can reach the limit with a handful of rows
+// (TestScanSCCStopsAtMoreFilesThanAreKept pins its value).
+var sccLaborRowsLimit = cloneWalkEntries
 
 // sccDataSourceUnknown is repo_labor.data_source for rows whose scc version
 // is not known: every row written before 0.29.144, and a scan whose version

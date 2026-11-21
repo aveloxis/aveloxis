@@ -98,6 +98,30 @@ func start(runTests func() int, base, prefix string, prepare, verify func(ctx co
 	return run(runTests, base, prepare, verify)
 }
 
+// unjudgedChild is a re-executed test binary's exit status: its own, or 1
+// when it sent production statements with nowhere to hand them (the
+// directory's variable was cleared from its environment, so its ancestor's
+// verdict will not include them: round 9, such a child passed in silence).
+// A child that sent none is as it was: most re-executed binaries are a
+// subprocess under test that opens no pool, started with an environment
+// of the test's own making.
+func unjudgedChild(child *writejudge.Judge, dir string, code int) int {
+	if dir != "" {
+		return code
+	}
+	sent := child.Statements()
+	if len(sent) == 0 {
+		return code
+	}
+	at := sent[0].Frames[0]
+	fmt.Fprintf(os.Stderr, "testdb: this re-executed test binary sent %d production statements (the first from %s:%d) and %s is not in its environment, so the write-policy judge of the run that started it never sees them. Start it with the parent's environment, or keep that variable in the one you build.\n",
+		len(sent), at.File, at.Line, writejudge.ChildDirEnv)
+	if code == 0 {
+		return 1
+	}
+	return code
+}
+
 // sweepCalls counts this process's sweeps, for the test that pins where
 // they happen (TestSweepsOnlyWhereMainStarts).
 var sweepCalls atomic.Int64
@@ -116,8 +140,9 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 		// and is judged with it (0.29.215: it ran with no judge, so a
 		// production statement sent there was neither judged nor counted).
 		// It records and hands on; the ancestor gives the verdict.
-		writejudge.InstallChild()
-		return runTests()
+		child := writejudge.InstallChild()
+		code := runTests()
+		return unjudgedChild(child, os.Getenv(writejudge.ChildDirEnv), code)
 	}
 	originalBase = base
 	ctx := context.Background()
@@ -166,9 +191,6 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 		}
 	}
 	code := runTests()
-	if err := judge.WriteThrough(); err != nil {
-		fmt.Fprintf(os.Stderr, "testdb: the record of statements that came through test code could not be written: %v\n", err)
-	}
 	if code == 0 && verify != nil {
 		if err := verify(ctx, d.DSN); err != nil {
 			fmt.Fprintf(os.Stderr, "testdb: the tests passed but left %s failing verification: %v\n", d.Name, err)

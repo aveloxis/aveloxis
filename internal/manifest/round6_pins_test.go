@@ -60,7 +60,7 @@ func TestAProjectsOwnPlatformsAndTheOnesFromAboveAreSettledTogether(t *testing.T
 			"above/pom.xml":    r6Bom("above", "g", "x", c.above, "g", "onlyabove", "5.0"),
 			"own/pom.xml":      r6Bom("own", "g", "x", c.own),
 		}
-		got := r6Read(t, files, "app/build.gradle", nil)
+		got := r6Read(t, files, "app/build.gradle", r9Published(files, RemoteNotFound))
 		if got["g:x"].Version != c.want || got["g:onlyabove"].Version != "5.0" {
 			t.Errorf("%s: g:x at %q and g:onlyabove at %q; want %s (the highest) and 5.0 (from above)", name, got["g:x"].Version, got["g:onlyabove"].Version, c.want)
 		}
@@ -125,7 +125,7 @@ func TestAPlatformNamedByTheCatalogueInABuildFileAboveIsApplied(t *testing.T) {
 		"app/build.gradle":          "dependencies {\n  implementation 'g:x'\n}\n",
 		"shared/pom.xml":            r6Bom("shared", "g", "x", "6.0"),
 	}
-	got := r6Read(t, files, "app/build.gradle", nil)
+	got := r6Read(t, files, "app/build.gradle", r9Published(files, RemoteNotFound))
 	if got["g:x"].Version != "6.0" {
 		t.Errorf("g:x at %q; want 6.0 from the platform the root names through its catalogue", got["g:x"].Version)
 	}

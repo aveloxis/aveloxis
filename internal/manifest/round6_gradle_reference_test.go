@@ -57,10 +57,13 @@ import (
 //	   enforced platforms that differ (taken here as not determined).
 //	G3 VERIFIED-BY-DOCS-FROM-MEMORY. A version written on the dependency
 //	   takes part in the same settling: a platform that recommends a higher
-//	   one raises it. So a platform that is NOT KNOWN could raise it too:
-//	   the written version is kept as what the build DECLARES (the
-//	   inventory's meaning for every written version), and this is a known
-//	   difference from what Gradle would resolve (DISAGREEMENT E1).
+//	   one raises it, and an enforced platform's replaces it. Round 9:
+//	   NEITHER is done. Which platform reaches which configuration, and a
+//	   strict ("1.0!!") declaration, are not read, and a platform that is
+//	   not known could raise it too; the written version is kept as what
+//	   the build DECLARES (the inventory's meaning for every written
+//	   version), as until 0.29.214. A known difference from what Gradle
+//	   would resolve (DISAGREEMENT E1).
 //	G4 VERIFIED-BY-DOCS-FROM-MEMORY. Version ordering: a version is split at
 //	   . - _ + and where digits meet letters; numbers compare as numbers; a
 //	   number is above a word; a version with a further numeric part is
@@ -86,6 +89,34 @@ import (
 //	   from both is taken, anything else is "platforms_disagree"
 //	   (DISAGREEMENT E2: withheld where Gradle would answer).
 //
+//	G9 VERIFIED-BY-DOCS-FROM-MEMORY (the Spring Boot Gradle plugin's
+//	   reference, "Customizing managed versions": ext['slf4j.version'] =
+//	   '1.7.20'). Spring's plugin reads a BOM with the project's properties
+//	   over the BOM's own, so a property of the project changes every
+//	   version the BOM writes with it, and the version of a BOM it imports
+//	   with it. Not so for platform(...) of the same BOM. UNSURE: that a
+//	   property set in gradle.properties counts (taken here to: the
+//	   dependency-management plugin's reference names it with the command
+//	   line, as recalled); that the property reaches the BOMs a BOM
+//	   imports (taken here not to: only the BOM named is read with it).
+//	G10 VERIFIED-BY-DOCS-FROM-MEMORY. What a subprojects { } block of a
+//	   build file declares is for the projects below, not for the file's
+//	   own project: a platform declared there does not manage the file's
+//	   own dependencies. (Until round 9 both sides gave it to them.)
+//	S1 VERIFIED-BY-DOCS-FROM-MEMORY for the plain case, which is all the
+//	   dialect has (every assignment is "ext.name = ..." at the top of its
+//	   file, every "apply from:" a line at the top of its file): Gradle
+//	   runs a build file from the top, so a script applied AFTER the file
+//	   assigned a variable assigns over it. The reference takes the
+//	   script's value for a variable the file assigns in front of its
+//	   FIRST "apply from:" line and a script it applies assigns. UNSURE,
+//	   and not decided: an assignment between two "apply from:" lines
+//	   (which script assigns is not looked at: the file's own value is
+//	   kept, as it is after the last of them, where it is right). Only the
+//	   build files (the one read and the ones above it) are read so; a
+//	   script's own assignments stand over those of the scripts it applies
+//	   (UNSURE: the same order would hold inside a script).
+//
 // What is not known withholds exactly where it could change the answer:
 // any platform for G1 (it could be the highest), an enforced one for G2, and
 // for G5 only a BOM imported AFTER the one that answers.
@@ -93,7 +124,14 @@ import (
 // DISAGREEMENTS that remain between the reference and the reader: none in
 // the trees generated. Of both with Gradle: E1 and E2 above; E3: the
 // configuration a platform is declared on is not looked at (a platform on
-// testImplementation manages implementation dependencies here); E4: a
+// testImplementation manages implementation dependencies here); E6: S1's
+// undecided cases, and every assignment or "apply from:" that is under a
+// condition, inside a block or not a property of the project, keep the
+// file's own value, where Gradle may read the script's; E7: the plugin's
+// overriddenByDependencies = false, which lets its version replace a written
+// one, is not read; E8: a dotted property that is in truth a key of a map
+// variable ("ext.x = [version: '1']" read as x.version) is taken for a
+// property of the project by the reader (the dialect has no maps); E4: a
 // build's own resolutionStrategy, constraints { } blocks, strictly/prefer on
 // a declaration and BOM imports of a parent project's dependencyManagement
 // are not read; E5: mavenBom imports given to subprojects from above are
@@ -125,6 +163,10 @@ type refGradle struct {
 	// withheld counts the answers a platform gave that were not taken
 	// because one before it could not be read.
 	withheld int
+	// notOrdered counts the variables S1 gave a script's value over the
+	// file's own; overridden the
+	// references a property of the project answered inside a BOM (G9).
+	notOrdered, overridden int
 }
 
 func (g *refGradle) text(path string) (string, bool) {
@@ -143,6 +185,7 @@ var (
 	refMavenBom   = regexp.MustCompile(`^dependencyManagement \{ imports \{ mavenBom '([^']*)' \} \}$`)
 	refManagedDep = regexp.MustCompile(`^dependencyManagement \{ dependencies \{ dependency '([^:']*):([^:']*):([^']*)' \} \}$`)
 	refBootPlugin = regexp.MustCompile(`^plugins \{ id 'org.springframework.boot' version '([^']*)' \}$`)
+	refProperty   = regexp.MustCompile(`^ext\['([\w.\-]+)'\] = '([^']*)'$`)
 	refPart       = regexp.MustCompile(`[0-9]+|[^0-9._+\-]+`)
 	refRef        = regexp.MustCompile(`\$\{([^}]+)\}|\$(\w+)`)
 	refConst      = regexp.MustCompile(`^const val (\w+) = "([^"]*)"$`)
@@ -191,15 +234,22 @@ const refApplyDepth = 8
 // own assignments. An assignment whose value names something not known
 // assigns nothing. An assignment is known to the whole file it is in (a
 // build file's dependencies may be written above it).
-func (g *refGradle) run(path string, s *refScope, depth int, applied map[string]bool) (own, forSubprojects []string) {
+//
+// S1: byScripts collects what the scripts assign (the last value each name
+// is given); a build file (depth 0) is read with it.
+func (g *refGradle) run(path string, s *refScope, depth int, applied map[string]bool, byScripts map[string]string) (own, forSubprojects []string) {
 	content, ok := g.text(path)
 	if !ok {
 		return nil, nil
 	}
 	dir := filepath.Dir(path)
 	lines := strings.Split(content, "\n")
-	for _, raw := range lines {
+	firstApply := -1
+	for i, raw := range lines {
 		m := refApply.FindStringSubmatch(strings.TrimSpace(raw))
+		if m != nil && firstApply < 0 {
+			firstApply = i
+		}
 		if m == nil || depth >= refApplyDepth {
 			continue
 		}
@@ -214,10 +264,10 @@ func (g *refGradle) run(path string, s *refScope, depth int, applied map[string]
 			continue
 		}
 		applied[target] = true
-		g.run(target, s, depth+1, applied)
+		g.run(target, s, depth+1, applied, byScripts)
 	}
 	block := ""
-	for _, raw := range lines {
+	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
 		switch {
 		case block == "" && (strings.HasPrefix(line, "dependencyManagement { ") || strings.HasPrefix(line, "plugins { ")):
@@ -234,9 +284,22 @@ func (g *refGradle) run(path string, s *refScope, depth int, applied map[string]
 				if m[3] != "" || strings.HasSuffix(line, `""`) {
 					value, known = s.interpolate(m[3])
 				}
-				if known {
+				script, by := byScripts[m[1]]
+				switch {
+				case !known:
+				case depth > 0:
+					s.vars[m[1]] = value
+					byScripts[m[1]] = value
+				case by && i < firstApply:
+					s.vars[m[1]] = script // S1: the script ran after it
+					if script != value {
+						g.notOrdered++
+					}
+				default:
 					s.vars[m[1]] = value
 				}
+			} else if m := refProperty.FindStringSubmatch(line); m != nil {
+				s.vars[m[1]] = m[2] // G9: a property of the project
 			}
 		case block == "/dependencies":
 			own = append(own, line)
@@ -381,7 +444,7 @@ func (g *refGradle) at(dir string) (refScope, []string) {
 		// there, and what it assigns is known below. Its subprojects'
 		// platform lines are read with ITS scope.
 		above := s.copy()
-		_, lines := g.run(filepath.Join(d, "build.gradle"), &above, 0, map[string]bool{})
+		_, lines := g.run(filepath.Join(d, "build.gradle"), &above, 0, map[string]bool{}, map[string]string{})
 		for _, line := range lines {
 			inherited = append(inherited, g.resolvePlatformLine(line, above))
 		}
@@ -420,9 +483,9 @@ func refNotOneVersion(v string) bool {
 func (g *refGradle) declared(rel string) []oracleAnswer {
 	path := filepath.Join(g.root, filepath.FromSlash(rel))
 	scope, inherited := g.at(filepath.Dir(path))
-	lines, forSubprojects := g.run(path, &scope, 0, map[string]bool{})
+	lines, _ := g.run(path, &scope, 0, map[string]bool{}, map[string]string{})
 	// The BOMs of the build, by mechanism. Gradle's platforms (G1, G2): the
-	// file's own, those it gives its subprojects, those from above; their
+	// file's own and those from above; their
 	// order does not matter. The Spring plugin's (G5, G6): the Boot
 	// plugin's first, then the imports as written.
 	type bomRef struct {
@@ -432,7 +495,9 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 	var platformRefs, springRefs []bomRef
 	explicit := map[string]string{}
 	boot, management := "", false
-	for _, line := range append(append([]string{}, lines...), forSubprojects...) {
+	// G10: the lines of the file's subprojects block are not for its own
+	// project.
+	for _, line := range lines {
 		if m := refEnforced.FindStringSubmatch(line); m != nil {
 			platformRefs = append(platformRefs, bomRef{m[1], true})
 		} else if p := g.resolvePlatformLine(line, scope); p != "" {
@@ -466,14 +531,22 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 		enforced bool
 	}
 	worst := ""
-	load := func(refs []bomRef) []platform {
+	// G9: the project's properties, for the BOMs Spring's plugin reads: the
+	// names no variable of a build file can have.
+	properties := map[string]string{}
+	for name, value := range scope.vars {
+		if strings.ContainsAny(name, ".-") {
+			properties[name] = value
+		}
+	}
+	load := func(refs []bomRef, spring bool) []platform {
 		var boms []platform
 		for _, r := range refs {
 			parts := strings.Split(r.coord, ":")
 			if len(parts) != 3 || parts[2] == "" {
 				continue
 			}
-			bom, reason, unknown := g.poms.obtain(parts[0], parts[1], parts[2], nil)
+			bom, reason, unknown := g.poms.obtain(parts[0], parts[1], parts[2], nil, nil)
 			worst = oracleWorse(worst, reason)
 			if bom == nil {
 				if unknown != "" {
@@ -482,6 +555,9 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 				continue
 			}
 			c := g.poms.ctx(bom)
+			if spring {
+				c.over, c.overHits = properties, &g.overridden
+			}
 			// Everything that could not be obtained anywhere in this BOM.
 			q := &oracleQuestion{searched: map[string]bool{}, gap: c.gap}
 			c.lookup(q, "\x00", "\x00", 0)
@@ -490,8 +566,8 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 		}
 		return boms
 	}
-	springBoms := load(springRefs)
-	platforms := load(platformRefs)
+	springBoms := load(springRefs, true)
+	platforms := load(platformRefs, false)
 
 	// said is what a set of platforms says of one module.
 	type said struct {
@@ -557,20 +633,7 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 		}
 		defer func() { out = append(out, a) }()
 		if a.Version != "" {
-			// G2, G3: written. One enforced version replaces it; with
-			// nothing enforced, a higher recommendation raises it.
-			enf := ask(group, artifact, true)
-			if enf.unknown != "" || enf.notOne || len(enf.versions) > 0 {
-				if enf.unknown == "" && !enf.notOne && len(enf.versions) == 1 && enf.versions[0] != a.Version {
-					a.Version, a.Source, a.Hosts = enf.versions[0], "managed", append([]string{}, enf.hosts[enf.versions[0]]...)
-				}
-				return
-			}
-			all := ask(group, artifact, false)
-			if v, ok := refHighest(all.versions); ok && refCompare(v, a.Version) > 0 {
-				a.Version, a.Source, a.Hosts = v, "managed", append([]string{}, all.hosts[v]...)
-			}
-			return
+			return // G3: written, and it stands
 		}
 		if written {
 			return // written with a version that could not be read
@@ -702,22 +765,12 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 				read = append(read, n)
 			}
 		}
-		for i, n := 0, rng.Intn(3); i < n; i++ {
-			s := pick(scripts)
-			switch rng.Intn(3) {
-			case 0:
-				sb.WriteString("apply from: \"$rootDir/gradle/" + s + ".gradle\"\n")
-			case 1:
-				sb.WriteString("apply from: '" + up + "gradle/" + s + ".gradle'\n")
-			default:
-				sb.WriteString("apply from: \"" + up + "gradle/" + s + ".gradle\"\n")
-			}
-		}
 		var assigns []string
 		for n := range assigned {
 			assigns = append(assigns, n)
 		}
 		sort.Strings(assigns)
+		half := len(assigns) / 2
 		writeAssigns := func(list []string) {
 			for _, n := range list {
 				switch rng.Intn(3) {
@@ -730,8 +783,34 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 				}
 			}
 		}
-		half := len(assigns) / 2
-		writeAssigns(assigns[:half])
+		// Round 9 (S1): where the first half of the assignments stands: in
+		// front of the scripts the file applies, after the first of them,
+		// or after them all.
+		place, applies := rng.Intn(3), rng.Intn(3)
+		if place == 0 {
+			writeAssigns(assigns[:half])
+		}
+		for i := 0; i < applies; i++ {
+			s := pick(scripts)
+			switch rng.Intn(3) {
+			case 0:
+				sb.WriteString("apply from: \"$rootDir/gradle/" + s + ".gradle\"\n")
+			case 1:
+				sb.WriteString("apply from: '" + up + "gradle/" + s + ".gradle'\n")
+			default:
+				sb.WriteString("apply from: \"" + up + "gradle/" + s + ".gradle\"\n")
+			}
+			if place == 1 && i == 0 {
+				writeAssigns(assigns[:half])
+			}
+		}
+		if place == 2 || place == 1 && applies == 0 {
+			writeAssigns(assigns[:half])
+		}
+		if withDeps && rng.Intn(2) == 0 {
+			// Round 9 (G9): a property of the project that a BOM may set.
+			sb.WriteString("ext['m.version'] = '" + pick([]string{"8.8", "5.5"}) + "'\n")
+		}
 		if withDeps {
 			sb.WriteString("dependencies {\n")
 			if rng.Intn(3) == 0 {
@@ -812,11 +891,26 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 	maybe(0.7, "gradle.properties", properties())
 	maybe(0.7, pick([]string{"settings.gradle", "settings.gradle.kts"}), "rootProject.name = 'r'\n")
 	maybe(0.6, "gradle/libs.versions.toml", catalogue())
-	rootBuild := body("", false)
+	// Round 9 (G10): the root project sometimes has dependencies of its
+	// own, which what its subprojects block declares is not for.
+	rootDeps := rng.Intn(2) == 0
+	rootBuild := body("", rootDeps)
+	// G9: from the build file above. Not beside an assignment of the body's
+	// own: Gradle takes the last of two in one file, and the reader does
+	// not read a property a file sets twice (a known difference, held by
+	// TestAProjectPropertyOverridesASpringBOMsProperty's "two values" case;
+	// until the platforms of these trees were published ones the two met
+	// too seldom for the test to see it).
+	if rng.Intn(3) == 0 && !strings.Contains(rootBuild, "ext['m.version']") {
+		rootBuild += "ext['m.version'] = '7.7'\n"
+	}
 	if rng.Intn(2) == 0 {
 		rootBuild += "subprojects {\n  dependencies {\n    implementation platform(" + pick([]string{"'t:bomA:1'", "'t:bomB:1'", "libs.bom", "'t:gone1:1'", "'t:rb1:1'"}) + ")\n  }\n}\n"
 	}
 	maybe(0.8, "build.gradle", rootBuild)
+	if _, has := files["build.gradle"]; has && rootDeps {
+		builds = append(builds, "build.gradle")
+	}
 	for _, s := range scripts {
 		maybe(0.75, "gradle/"+s+".gradle", body("../", false))
 	}
@@ -835,10 +929,21 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 	maybe(0.3, "pa/gradle/s1.gradle", body("../../", false))
 	sort.Strings(builds)
 
-	// The platforms: BOMs of the clone, and what repositories have.
+	// The platforms: what repositories have. The poms of the clone that
+	// give themselves the coordinates of two of them (bomA, bomB) are what
+	// a fixture is: Gradle reads no pom.xml of the checkout for a platform,
+	// and their versions (5.0 to 7.0) are never the published ones (8.x).
 	entry := func(i int, version string) string { return r4dep("g", fmt.Sprintf("m%d", i), version) }
 	bom := func(artifact string, extra string) string {
-		s := "<project><groupId>t</groupId><artifactId>" + artifact + "</artifactId><version>1</version><dependencyManagement><dependencies>"
+		s := "<project><groupId>t</groupId><artifactId>" + artifact + "</artifactId><version>1</version>"
+		byProperty := rng.Intn(2) == 0
+		if byProperty {
+			s += "<properties><m.version>6.0</m.version></properties>"
+		}
+		s += "<dependencyManagement><dependencies>"
+		if byProperty {
+			s += entry(0, "${m.version}") // G9: first, so it is the BOM's entry for m0
+		}
 		for i := range names {
 			if rng.Intn(2) == 0 {
 				s += entry(i, pick([]string{"5.0", "6.1", "[1,2)", "7.0", "6.1.Final", "6.1-rc1", "6-1", "6.1.1"}))
@@ -860,6 +965,11 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 	}
 	fetched := func(name string) *RemotePom {
 		r := &RemotePom{Group: "t", Artifact: name, Version: "1", ServedBy: pick([]string{"repo.example", "other.example"})}
+		if rng.Intn(2) == 0 {
+			// G9: a version the BOM writes with a property.
+			r.Properties = map[string]string{"m.version": "8.1"}
+			r.Managed = append(r.Managed, RemoteManaged{Group: "g", Artifact: "m0", Version: "${m.version}"})
+		}
 		for i := range names {
 			if rng.Intn(2) == 0 {
 				r.Managed = append(r.Managed, RemoteManaged{Group: "g", Artifact: fmt.Sprintf("m%d", i), Version: pick([]string{"8.0", "8.5"})})
@@ -869,7 +979,12 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 	}
 	bootBOM := fetched("spring-boot-dependencies")
 	bootBOM.Group, bootBOM.Version = "org.springframework.boot", "3.3.0"
+	publishedB := fetched("bomB")
+	if rng.Intn(2) == 0 {
+		publishedB.Managed = append(publishedB.Managed, RemoteManaged{Group: "t", Artifact: pick([]string{"bomA", "gone1", "rb1"}), Version: "1", Import: true})
+	}
 	src = &oracleSource{poms: map[string]*RemotePom{"t:rb1:1": fetched("rb1"), "t:bomR:1": fetched("bomR"),
+		"t:bomA:1": fetched("bomA"), "t:bomB:1": publishedB,
 		"org.springframework.boot:spring-boot-dependencies:3.3.0": bootBOM}, outcomes: map[string]RemoteOutcome{}}
 	for _, k := range []string{"t:gone1:1", "t:gone2:1", "t:rb1:1", "t:bomR:1", "org.springframework.boot:spring-boot-dependencies:3.3.0"} {
 		switch rng.Intn(6) {
@@ -892,7 +1007,7 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261122))
 	root := t.TempDir()
-	readings, versions, managed, withheld, fromPlatformsAbove := 0, 0, 0, 0, 0
+	readings, versions, managed, withheld, fromPlatformsAbove, notOrdered, overridden := 0, 0, 0, 0, 0, 0, 0
 	for it := 0; it < refGradleTrees; it++ {
 		files, builds, src := refGradleTree(rng)
 		oracleWrite(t, root, files)
@@ -914,6 +1029,8 @@ func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 			want[rel] = oracleJSON(answers)
 		}
 		withheld += ref.withheld
+		notOrdered += ref.notOrdered
+		overridden += ref.overridden
 		if strings.Contains(files["build.gradle"], "subprojects {") {
 			fromPlatformsAbove++
 		}
@@ -945,6 +1062,10 @@ func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 		}
 	}
 	t.Logf("%d trees: %d readings compared; the reference read %d versions, %d of them from a platform, and withheld %d; %d trees give their projects a platform from above", refGradleTrees, readings, versions, managed, withheld, fromPlatformsAbove)
+	t.Logf("the reference took a script's value over the file's own for %d variables (S1), and a property of the project answered inside a BOM %d times (G9)", notOrdered, overridden)
+	if notOrdered < refGradleTrees/20 || overridden < refGradleTrees/20 {
+		t.Errorf("too little to compare: %d variables not ordered and %d property overrides over %d trees", notOrdered, overridden, refGradleTrees)
+	}
 	if versions < 5*refGradleTrees || managed < refGradleTrees/2 || fromPlatformsAbove < refGradleTrees/4 || withheld < refGradleTrees/20 {
 		t.Errorf("too little to compare: %d versions, %d from platforms, %d withheld, %d trees with a platform from above, over %d trees", versions, managed, withheld, fromPlatformsAbove, refGradleTrees)
 	}

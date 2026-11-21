@@ -200,14 +200,16 @@ func TestGradlePlatformForms(t *testing.T) {
 	if d := by["com.fasterxml.jackson.core:jackson-databind"]; d.Version != "" || d.VersionSource == SourceManaged {
 		t.Errorf("a written, unread version was replaced by the platform's %q", d.Version)
 	}
-	// A BOM that is a pom of the clone needs no source.
+	// A pom of the clone with the platform's coordinates is not the
+	// platform (0.29.216: until then it was taken, a test fixture's too).
+	// Gradle asks its repositories; with none to ask, it is not known.
 	_, by, _ = gradlePlatformDeps(t, nil, map[string]string{
 		"bom/pom.xml": `<project><groupId>own</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
 <dependencyManagement><dependencies><dependency><groupId>own</groupId><artifactId>lib</artifactId><version>4.5</version></dependency></dependencies></dependencyManagement></project>`,
 		"app/build.gradle": "dependencies { implementation platform('own:bom:1.0')\n implementation 'own:lib' }",
 	}, "app/build.gradle")
-	if d := by["own:lib"]; d.Version != "4.5" || d.VersionSource != SourceManaged {
-		t.Errorf("an in-clone BOM: %q (source %q)", d.Version, d.VersionSource)
+	if d := by["own:lib"]; d.Version != "" || d.VersionSource == SourceManaged {
+		t.Errorf("a pom of the clone was taken for a platform: %q (source %q, reason %q)", d.Version, d.VersionSource, d.VersionReason)
 	}
 }
 

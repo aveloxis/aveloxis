@@ -1,0 +1,19 @@
+package collector
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+)
+
+func PinEvasionTEMPFILE(dir string) int {
+	tmp, _ := os.CreateTemp("", "x")
+	defer os.Remove(tmp.Name())
+	cmd := exec.Command("git", "-C", dir, "ls-files")
+	cmd.Stdout = tmp
+	_ = cmd.Run()
+	_, _ = tmp.Seek(0, 0)
+	var b bytes.Buffer
+	_, _ = b.ReadFrom(tmp)
+	return b.Len()
+}

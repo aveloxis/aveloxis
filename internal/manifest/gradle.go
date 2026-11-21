@@ -140,8 +140,17 @@ type gradleDecl struct {
 	// not answer for a dependency the build gave a version to.
 	versionWritten bool
 	// forSubprojects: declared in an allprojects or subprojects block, so
-	// for the projects below this build file too.
+	// for the projects below this build file too. subOnly: in a subprojects
+	// block and no allprojects one, so NOT for this file's own project.
 	forSubprojects bool
+	subOnly        bool
+	// forConfig, of a BOM or a managed version of Spring's plugin: the
+	// configuration whose block it is written in (dependencyManagement {
+	// testImplementation { ... } }); "" when it is for all of them.
+	forConfig string
+	// bomProps, of a mavenBom: the properties its closure sets
+	// (bomProperty, bomProperties).
+	bomProps map[string]string
 	// Set when a platform supplied the version (gradle_tree.go).
 	source  string
 	hosts   []string
@@ -182,10 +191,12 @@ type gradleBuild struct {
 	boms []gradleDecl
 	// managed are the versions Spring's dependency-management plugin is
 	// given outright: dependencyManagement { dependencies { dependency
-	// 'g:a:v' } }, and dependencySet's entries. "group:artifact" -> version;
-	// "" for an entry whose version could not be read. They override every
-	// imported BOM (gradleTree.applyPlatforms).
-	managed map[string]string
+	// 'g:a:v' } }, and dependencySet's entries, in the order written, each
+	// a declaration of the configuration "managed" (its version "" when it
+	// could not be read). They override every imported BOM
+	// (gradleTree.applyPlatforms), and go to the projects below as a
+	// platform does (platformDecls).
+	managed []gradleDecl
 	// set is the dependencySet whose entries are being read.
 	setGroup, setVersion string
 	// unread are the variables this file assigns a value too long to be
@@ -193,16 +204,25 @@ type gradleBuild struct {
 	// is not read, and says so (model.VersionReasonValueNotRead).
 	unread map[string]bool
 	// seq counts the statements the assignments pass has looked at; setAt is
-	// where each variable was last assigned, and firstApply and lastApply
-	// where the file's first and last "apply from:" stand (0: none). What an
-	// applied script assigns comes after what the file assigned before
-	// applying it (applyOrder).
-	seq                   int
-	setAt                 map[string]int
-	firstApply, lastApply int
+	// where each variable was last assigned, for the names the file assigns
+	// ONLY as a property of the project at its top (assigning: this
+	// assignment is one; otherwise: the names assigned some other way).
+	// firstApply is where the file's first "apply from:" stands (0: none),
+	// applyNested whether one of them is inside a block: applyOrder.
+	seq         int
+	setAt       map[string]int
+	otherwise   map[string]bool
+	assigning   bool
+	atTop       bool
+	firstApply  int
+	applyNested bool
 	// plugins are the plugins block's ids and versions ("" when none is
 	// written).
 	plugins map[string]string
+	// inSubOnly: inside a subprojects block and no allprojects one.
+	// forConfig: gradleLevel's, where the walk is.
+	inSubOnly bool
+	forConfig string
 	// inShared is set while the walk is inside an allprojects or
 	// subprojects block.
 	inShared bool
@@ -556,11 +576,19 @@ type gradleLevel struct {
 	forPlugins, repoShared bool
 	// inManagement: inside Spring's dependencyManagement { } block, where a
 	// dependencies block holds managed versions and not dependencies.
-	inManagement bool
+	// isManagement: this IS that block. forConfig: the block directly inside
+	// it that is neither dependencies nor imports, which names the one
+	// configuration what is inside is for.
+	inManagement, isManagement bool
+	forConfig                  string
 }
 
 func (above gradleLevel) enter(name string) gradleLevel {
-	lv := gradleLevel{forPlugins: above.forPlugins, repoShared: above.repoShared, inManagement: above.inManagement || name == "dependencyManagement"}
+	lv := gradleLevel{forPlugins: above.forPlugins, repoShared: above.repoShared, inManagement: above.inManagement || name == "dependencyManagement",
+		isManagement: name == "dependencyManagement", forConfig: above.forConfig}
+	if above.isManagement && name != "dependencies" && name != "imports" {
+		lv.forConfig = name
+	}
 	switch name {
 	case "pluginManagement", "buildscript":
 		lv.forPlugins = true
@@ -611,6 +639,10 @@ type gradleVars struct {
 	own    map[string]string
 	gone   map[string]bool
 	parent *gradleVars
+	// sure are the names of own that the source assigns only as a property
+	// of the project, at the top of the file, under no condition
+	// (gradleBuild.applyOrder); nil for a source that is not a script.
+	sure map[string]int
 	// seg, when set, stands for a run of layers in this place: a chain of
 	// its own, ending in nil, built once and shared by every scope it is
 	// part of (what one applied script and the scripts it applies leave
@@ -662,6 +694,15 @@ func (s *gradleVars) find(name string) (value string, ok, settled bool, layers i
 		}
 	}
 	return "", false, false, layers
+}
+
+// sure are the names the file assigns only as a property of the project at
+// its top (setAt), for the layer a script leaves (gradleVars.sure).
+func (b *gradleBuild) sure() map[string]int {
+	if len(b.setAt) == 0 {
+		return nil
+	}
+	return b.setAt
 }
 
 // result is what the file leaves known below it, as a layer's two maps:
@@ -797,58 +838,60 @@ func readGradleAfter(toks []gradleTok, idx *gradleIndex, outer, applied *gradleV
 	return b
 }
 
-// applyOrder puts what the applied scripts assign in its place among the
-// file's own assignments. Gradle runs a build file from the top: a script
-// applied AFTER the file assigned a variable assigns over it, and one
-// applied before is assigned over. The reader keeps the file's own
-// assignments in front of everything the scripts assign, which is right only
-// for the second (round 8: `ext.v = '1.0.0'` and then `apply from:` a script
-// that sets it to 2.0.0 read as 1.0.0).
+// applyOrder puts what an applied script assigns over what the file
+// assigned before applying it, in the ONE case where that is sure. Gradle
+// runs a build file from the top, so a script applied after an assignment
+// assigns over it (round 8: `ext.v = '1.0.0'` and then `apply from:` a
+// script that sets it to 2.0.0 read as 1.0.0). But that holds only when
+// both are run where they stand and set the same thing:
 //
-// For each variable both assign: assigned by the file before its first
-// "apply from:", the scripts' value stands; after its last, the file's; in
-// between, it is not known which script it is (the scripts' assignments are
-// one scope here), and the variable is not read.
+//   - the file's assignment is a property of the project (ext.v = ..,
+//     ext { v = .. }, ext['v'] = .., extra["v"] = ..), at the top of the
+//     file, and the file assigns the name in no other way (setAt);
+//   - the script's is the same, at the top of the script (gradleVars.sure);
+//   - every "apply from:" of the file is at its top, and the assignment
+//     stands in front of the first of them.
+//
+// Then the script's value stands. In every other case the file's own does,
+// as until 0.29.214: an assignment under a condition, a local "def" beside
+// a property, an "apply from:" inside a block, an assignment between two
+// applied scripts (which of them assigns is not tracked: the scripts'
+// assignments are one scope here). Which of those Gradle would read
+// otherwise is a known difference; round 9 took out 0.29.215's rule, which
+// read the script's value for all of them.
 func (b *gradleBuild) applyOrder(stop *gradleVars) {
-	if b.firstApply == 0 {
+	if b.firstApply == 0 || b.applyNested {
 		return
 	}
 	for name, at := range b.setAt {
-		v, ok, settled := b.outer.findUntil(stop, name)
-		if !settled || at > b.lastApply {
+		if at > b.firstApply || b.conflicted[name] {
 			continue
 		}
-		own, has := b.own[name]
-		switch {
-		case at < b.firstApply && ok:
+		if v, ok, _, sure := b.outer.findUntil(stop, name); ok && sure {
 			b.own[name] = v
-			delete(b.conflicted, name)
-		case at < b.firstApply:
-			b.conflicted[name] = true // the scripts left it with two values
-		case !ok || !has || own != v:
-			b.conflicted[name] = true
 		}
 	}
 }
 
 // findUntil is find over the layers in front of stop: what was pushed onto
-// stop to make s.
-func (s *gradleVars) findUntil(stop *gradleVars, name string) (value string, ok, settled bool) {
+// stop to make s. sure: the layer that answers marks the name so.
+func (s *gradleVars) findUntil(stop *gradleVars, name string) (value string, ok, settled, sure bool) {
 	for ; s != nil && s != stop; s = s.parent {
 		if s.seg != nil {
-			if v, has, done, _ := s.seg.find(name); done {
-				return v, has, true
+			if v, has, done, sure := s.seg.findUntil(nil, name); done {
+				return v, has, true, sure
 			}
 			continue
 		}
 		if s.gone[name] {
-			return "", false, true
+			return "", false, true, false
 		}
 		if v, has := s.own[name]; has {
-			return v, true, true
+			_, sure := s.sure[name]
+			return v, true, true, sure
 		}
 	}
-	return "", false, false
+	return "", false, false, false
 }
 
 // managedEntry reads one statement of a dependencyManagement block's
@@ -868,11 +911,8 @@ func (b *gradleBuild) managedEntry(toks []gradleTok, i int, head, block string) 
 		if !gradleIsVersion(version) {
 			version = ""
 		}
-		if b.managed == nil {
-			b.managed = map[string]string{}
-		}
-		// The plugin takes the last one given; so does this.
-		b.managed[group+":"+artifact] = version
+		b.managed = append(b.managed, gradleDecl{config: "managed", group: group, artifact: artifact, version: version,
+			forSubprojects: b.inShared, subOnly: b.inSubOnly, forConfig: b.forConfig})
 	}
 	switch {
 	case head == "dependency" && block != "dependencySet":
@@ -951,8 +991,9 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 		return stack[len(stack)-1]
 	}
 	parens := 0 // a line end inside parentheses does not end the statement
-	// shared counts the allprojects and subprojects blocks on the stack.
-	shared := 0
+	// shared counts the allprojects and subprojects blocks on the stack,
+	// forAll the allprojects ones.
+	shared, forAll := 0, 0
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
 		switch {
@@ -972,6 +1013,9 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 			stack = append(stack, head)
 			if head == "allprojects" || head == "subprojects" {
 				shared++
+			}
+			if head == "allprojects" {
+				forAll++
 			}
 			outer := ""
 			if len(quals) > 0 {
@@ -995,6 +1039,9 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 			if len(stack) > 0 {
 				if name := stack[len(stack)-1]; name == "allprojects" || name == "subprojects" {
 					shared--
+					if name == "allprojects" {
+						forAll--
+					}
 				}
 				stack, quals, levels = stack[:len(stack)-1], quals[:len(quals)-1], levels[:len(levels)-1]
 			}
@@ -1018,7 +1065,7 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 		}
 		at := level()
 		inDeps := at.inDeps
-		b.inShared = shared > 0
+		b.inShared, b.inSubOnly, b.forConfig = shared > 0, shared > 0 && forAll == 0, at.forConfig
 		switch {
 		case decls && at.inManagement && (inDeps || top() == "dependencySet"):
 			// dependencyManagement { dependencies { dependency 'g:a:v' } }: a
@@ -1037,6 +1084,8 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 			}
 		case decls && head == "mavenBom" && top() == "imports":
 			b.mavenBom(toks, i)
+		case decls && (head == "bomProperty" || head == "bomProperties") && top() == "mavenBom":
+			b.bomProperty(toks, i)
 		case decls && head == "id" && top() == "plugins":
 			b.plugin(toks, i)
 		case !decls && !inDeps && t.kind == 'i':
@@ -1045,6 +1094,7 @@ func (b *gradleBuild) walk(toks []gradleTok, decls bool) {
 				qual = quals[len(quals)-1]
 			}
 			if qual != gradleNoQualifier {
+				b.atTop = len(stack) == 0 || len(stack) == 1 && (stack[0] == "ext" || stack[0] == "extra")
 				b.assignment(toks, i, top(), qual)
 			}
 		}
@@ -1325,7 +1375,7 @@ func (b *gradleBuild) arguments(config string, args []gradleTok, platform bool) 
 func (b *gradleBuild) accessor(config, name string, platform bool) {
 	if decls, ok := b.libs.get(strings.TrimSuffix(name, ".get")); ok {
 		for _, d := range decls {
-			d.config, d.platform, d.forSubprojects = config, platform, b.inShared
+			d.config, d.platform, d.forSubprojects, d.subOnly = config, platform, b.inShared, b.inSubOnly
 			d.versionWritten = strings.Count(d.written, ":") >= 2
 			b.decls = append(b.decls, d)
 		}
@@ -1456,7 +1506,7 @@ func (b *gradleBuild) add(config, group, artifact, version, written string, plat
 		version = ""
 	}
 	b.decls = append(b.decls, gradleDecl{config: config, group: group, artifact: artifact, version: version, written: written,
-		platform: platform, enforced: platform && b.enforcing, versionWritten: versionWritten, forSubprojects: b.inShared})
+		platform: platform, enforced: platform && b.enforcing, versionWritten: versionWritten, forSubprojects: b.inShared, subOnly: b.inSubOnly})
 }
 
 // gradleIsVersion reports whether s is one version: not empty, and not a
@@ -1574,8 +1624,14 @@ func (b *gradleBuild) set(name, value string) {
 	if b.conflicted[name] {
 		return
 	}
-	if b.setAt != nil {
+	if b.assigning && !b.otherwise[name] {
 		b.setAt[name] = b.seq
+	} else {
+		if b.otherwise == nil {
+			b.otherwise = map[string]bool{}
+		}
+		b.otherwise[name] = true
+		delete(b.setAt, name)
 	}
 	if earlier, assigned := b.own[name]; assigned && earlier != value {
 		b.conflicted[name] = true
@@ -1613,7 +1669,7 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 			if b.firstApply == 0 {
 				b.firstApply = b.seq
 			}
-			b.lastApply = b.seq
+			b.applyNested = b.applyNested || !b.atTop || block != ""
 		}
 		return
 	}
@@ -1623,14 +1679,18 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 			// Two parts and no more: a third is looked for, and no further.
 			parts, more := b.parts(b.unparen(stmt[1:]), 2)
 			if !more && len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 's' {
+				b.assigning = b.atTop
 				b.assign(parts[0][0].text, parts[1])
+				b.assigning = false
 			}
 		}
 		return
 	}
 	// ext["name"] = "value"; extra["name"] = "value".
 	if len(stmt) >= 6 && stmt[1].kind == 'p' && stmt[1].text == "[" && stmt[2].kind == 's' && stmt[3].text == "]" && stmt[4].text == "=" && gradleVarName(head+".") == "" {
+		b.assigning = b.atTop
 		b.assign(stmt[2].text, stmt[5:])
+		b.assigning = false
 		return
 	}
 	// [modifiers] name [: Type] = value   |   val name by extra("value")
@@ -1655,7 +1715,9 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 	case stmt[j].kind == 'i' && stmt[j].text == "by" && declared:
 		rest := stmt[j+1:]
 		if len(rest) >= 2 && rest[0].kind == 'i' && (rest[0].text == "extra" || strings.HasSuffix(rest[0].text, ".extra")) {
+			b.assigning = b.atTop
 			b.assign(name, b.unparen(rest[1:]))
+			b.assigning = false
 		}
 	case stmt[j].kind == 'p' && stmt[j].text == "=":
 		// A plain "name = value" sets a property of the project where it is
@@ -1670,7 +1732,15 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 		if declared {
 			normal = qual + normal // a constant of an object: Versions.kotlin
 		}
+		// A property of the project: written on ext or extra, or inside
+		// their block.
+		onExt := false
+		for _, prefix := range []string{"ext.", "extra.", "project.ext.", "project.extra."} {
+			onExt = onExt || strings.HasPrefix(name, prefix)
+		}
+		b.assigning = b.atTop && !declared && (onExt || (block == "ext" || block == "extra") && normal == name)
 		b.assign(normal, stmt[j+1:])
+		b.assigning = false
 	}
 }
 
@@ -1846,9 +1916,71 @@ func (b *gradleBuild) mavenBom(toks []gradleTok, i int) {
 	before := len(b.decls)
 	b.coordinate("mavenBom", args, true)
 	if len(b.decls) > before {
-		b.boms = append(b.boms, b.decls[before:]...)
+		for _, d := range b.decls[before:] {
+			d.forConfig = b.forConfig
+			b.boms = append(b.boms, d)
+		}
 		b.decls = b.decls[:before]
 	}
+}
+
+// bomProperty reads a statement of a mavenBom's closure: bomProperty 'name',
+// 'value', or bomProperties([name: 'value', ...]). They are properties of
+// the BOM for this import (the last mavenBom read), over the BOM's own.
+func (b *gradleBuild) bomProperty(toks []gradleTok, i int) {
+	stmt, _ := b.statement(toks, i)
+	if len(stmt) < 2 || len(b.boms) == 0 {
+		return
+	}
+	bom := &b.boms[len(b.boms)-1]
+	set := func(name string, value []gradleTok) {
+		if v, _, ok := b.value(value); ok && name != "" {
+			if bom.bomProps == nil {
+				bom.bomProps = map[string]string{}
+			}
+			bom.bomProps[name] = v
+		}
+	}
+	args := b.unparen(stmt[1:])
+	if stmt[0].text == "bomProperty" {
+		if parts, more := b.parts(args, 2); !more && len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 's' {
+			set(parts[0][0].text, parts[1])
+		}
+		return
+	}
+	if len(args) >= 2 && args[0].kind == 'p' && args[0].text == "[" && b.encloses(args, 0) {
+		args = args[1 : len(args)-1]
+	}
+	for _, entry := range gradleSplit(args) {
+		if len(entry) >= 3 && entry[0].kind == 's' && entry[1].kind == 'p' && entry[1].text == ":" {
+			set(entry[0].text, entry[2:])
+		}
+	}
+}
+
+// projectProperty is the value the build gives a property that a BOM of
+// Spring's dependency-management plugin sets: the plugin reads a BOM with
+// the project's properties over the BOM's own (ext['slf4j.version'] =
+// '1.7.20' is how a Spring Boot build changes a managed version). The
+// project's properties are the variables known here: what the file, the
+// files above it and the scripts they apply assign, and gradle.properties.
+//
+// Only for a name that no local variable can have (it holds a "." or a
+// "-"): a "def" or "val" of the file is not a property of the project, and
+// is not told apart from one here. known is true with no value when the
+// build assigns the name and what it assigns was not read.
+func (b *gradleBuild) projectProperty(name string) (value string, known bool) {
+	if !strings.ContainsAny(name, ".-") {
+		return "", false
+	}
+	if b.conflicted[name] || b.unread[name] {
+		return "", true
+	}
+	if v, ok := b.own[name]; ok {
+		return v, true
+	}
+	v, ok, _ := b.outer.get(name)
+	return v, ok
 }
 
 // plugin reads one line of a plugins block: id 'x' [version 'y'].
@@ -1928,7 +2060,7 @@ func (b *gradleBuild) platformDecls() []gradleDecl {
 			out = append(out, d)
 		}
 	}
-	return append(out, b.boms...)
+	return append(append(out, b.boms...), b.managed...)
 }
 
 // parseBuildGradle extracts dependency names from build.gradle /

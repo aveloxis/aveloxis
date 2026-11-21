@@ -100,11 +100,40 @@ func TestTheAggregateTablesAreRebuiltFromTheCommits(t *testing.T) {
 	// One repository's group, rebuilt through the repository: the group's
 	// rows are emptied by hand first, and come back.
 	mustExecRetry(ctx, t, store, `DELETE FROM aveloxis_data.dm_repo_group_annual WHERE repo_group_id = $1`, group)
+	// Another group, with a repository that has a commit, whose aggregate
+	// rows are replaced here by one marked row a table: the rebuild of ONE
+	// repository's group neither deletes nor rebuilds another group's rows
+	// (round 9: each of the six statements passed with its group predicate
+	// gone, the test's group being the only one looked at).
+	var otherGroup int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repo_groups (rg_name, rg_type) VALUES ($1, 'manual') RETURNING repo_group_id`, tag+"-other").Scan(&otherGroup); err != nil {
+		t.Fatal(err)
+	}
+	otherRepo, _, _ := pathsRepo(t, store, "agg-other-group", "aveloxis_data.commits")
+	t.Cleanup(func() {
+		c := context.Background()
+		for _, d := range dmGroup {
+			cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.`+d+` WHERE repo_group_id = $1`, otherGroup)
+		}
+		cleanupExecRetry(c, store, `UPDATE aveloxis_data.repos SET repo_group_id = NULL WHERE repo_group_id = $1`, otherGroup)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.repo_groups WHERE repo_group_id = $1`, otherGroup)
+	})
+	mustExecRetry(ctx, t, store, `UPDATE aveloxis_data.repos SET repo_group_id = $2 WHERE repo_id = $1`, otherRepo, otherGroup)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_email, cmt_author_timestamp, cmt_added, cmt_removed, cmt_whitespace)
+		VALUES ($1, 'o1', 'o.go', 'other@example.org', '2026-04-04T12:00:00Z', 1, 0, 0)`, otherRepo)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.dm_repo_group_annual (repo_group_id, email, year, added) VALUES ($1, 'marked@example.org', 1998, 98)`, otherGroup)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.dm_repo_group_monthly (repo_group_id, email, year, month, added) VALUES ($1, 'marked@example.org', 1998, 1, 98)`, otherGroup)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.dm_repo_group_weekly (repo_group_id, email, year, week, added) VALUES ($1, 'marked@example.org', 1998, 1, 98)`, otherGroup)
 	if err := store.RefreshRepoGroupAggregates(ctx, repoID); err != nil {
 		t.Fatal(err)
 	}
 	if got := annual("dm_repo_group_annual", "repo_group_id", group); got != want {
 		t.Errorf("the group's annual aggregates after the rebuild through its repository: %q", got)
+	}
+	for _, d := range dmGroup {
+		if got := pathsText(t, store, `SELECT COALESCE(string_agg(email || ':' || year || ':' || added, ',' ORDER BY email), '') FROM aveloxis_data.`+d+` WHERE repo_group_id = $1`, otherGroup); got != "marked@example.org:1998:98" {
+			t.Errorf("the OTHER group's %s rows after the rebuild of this repository's group: %q; want its one marked row, untouched", d, got)
+		}
 	}
 	// A repository in no group: nothing to do, and no error. One that does
 	// not exist: an error, never "no group".
@@ -128,6 +157,12 @@ func TestTheAssignmentDryRunCountsAndTheSweepLists(t *testing.T) {
 	who := seedR6Contributor(t, store, tag, "", nil)
 	uid := pathsUserID()
 	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.contributor_identities (cntrb_id, platform_id, platform_user_id, login) VALUES ($1::uuid, 1, $2, 'x')`, who, uid)
+	// The same NUMBER on another forge is another person: an identity of
+	// platform 2 carrying the second assignee's id does not make that
+	// GitHub assignee derivable (round 9: no identity of another platform
+	// was seeded, so a count that ignored the platform passed).
+	elsewhere := seedR6Contributor(t, store, tag+"-gl", "", nil)
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.contributor_identities (cntrb_id, platform_id, platform_user_id, login) VALUES ($1::uuid, 2, $2, 'y')`, elsewhere, uid+1)
 
 	before, err := store.BackfillAssignmentIdentities(ctx, 1000, 0, true)
 	if err != nil {

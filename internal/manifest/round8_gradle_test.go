@@ -189,11 +189,12 @@ func TestPlatformsAreSettledInGradlesVersionOrdering(t *testing.T) {
 	}
 }
 
-// A version the build writes is what the build declares. A platform read
-// here that recommends a higher one raises it, and an enforced platform's
-// replaces it; a platform that could not be obtained does not take it away
-// (R8-10).
-func TestAWrittenVersionAndThePlatformsThatManageIt(t *testing.T) {
+// A version the build writes is what the build declares, and it stands,
+// whatever a platform says of the artifact (as until 0.29.214). Gradle would
+// raise it to a higher recommendation and replace it by an enforced
+// platform's: 0.29.215 did both, across configurations and for a strict
+// declaration too, and round 9 took it out (a known difference).
+func TestAWrittenVersionStands(t *testing.T) {
 	failed := r8Remote
 	failed.outcomes = map[string]RemoteOutcome{"corp:plat:1": RemoteFailed}
 	for name, c := range map[string]struct {
@@ -202,9 +203,10 @@ func TestAWrittenVersionAndThePlatformsThatManageIt(t *testing.T) {
 		source    string
 	}{
 		"no platform manages it higher":         {" implementation platform('o:lower:1')\n", "9", ""},
-		"a platform recommends higher":          {" implementation platform('o:higher:1')\n", "10", SourceManaged},
-		"an enforced platform, lower":           {" implementation enforcedPlatform('o:lower:1')\n", "8", SourceManaged},
-		"an enforced platform beside a higher":  {" implementation enforcedPlatform('o:lower:1')\n implementation platform('o:higher:1')\n", "8", SourceManaged},
+		"a platform recommends higher":          {" implementation platform('o:higher:1')\n", "9", ""},
+		"an enforced platform, lower":           {" implementation enforcedPlatform('o:lower:1')\n", "9", ""},
+		"an enforced platform beside a higher":  {" implementation enforcedPlatform('o:lower:1')\n implementation platform('o:higher:1')\n", "9", ""},
+		"a platform of another configuration":   {" testImplementation platform('o:higher:1')\n", "9", ""},
 		"a platform that could not be had":      {" implementation platform('corp:plat:1')\n", "9", ""},
 		"an enforced one that could not be":     {" implementation enforcedPlatform('corp:plat:1')\n implementation platform('o:higher:1')\n", "9", ""},
 		"a platform that manages it at a range": {" implementation platform('o:range:1')\n", "9", ""},
@@ -232,22 +234,41 @@ func TestAPlatformAndSpringsPluginThatBothManageADependency(t *testing.T) {
 }
 
 // Gradle runs a build file from the top: a script applied after the file
-// assigned a variable assigns over it. The file's own assignment was kept
-// whichever came first.
-func TestAnAppliedScriptAssignsOverWhatTheFileAssignedBeforeIt(t *testing.T) {
+// assigned a variable assigns over it, and that is read in the one case
+// where it is sure (gradleBuild.applyOrder): both set a property of the
+// project at the top of their files, and every "apply from:" is at the top
+// too. Everywhere else the file's own value is read, as until 0.29.214
+// (round 9: 0.29.215 read the script's for all of these).
+func TestAnAppliedScriptAssignsOverTheFileOnlyWhereThatIsSure(t *testing.T) {
 	deps := "dependencies {\n implementation \"g:foo:$fooVersion\"\n}\n"
 	for name, c := range map[string]struct {
 		build string
 		want  string
 	}{
 		"assigned, then the script applied":           {"ext.fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "2.0.0"},
+		"in an ext block, then the script applied":    {"ext {\n fooVersion = '1.0.0'\n}\napply from: 'v.gradle'\n" + deps, "2.0.0"},
+		"ext['..'], then the script applied":          {"ext['fooVersion'] = '1.0.0'\napply from: 'v.gradle'\n" + deps, "2.0.0"},
+		"assigned, then a script with an ext block":   {"ext.fooVersion = '1.0.0'\napply from: 'block.gradle'\n" + deps, "2.0.0"},
+		"assigned twice the same, then the script":    {"ext.fooVersion = '1.0.0'\next.fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "2.0.0"},
+		"assigned under a condition, then the script": {"if (true) {\n ext.fooVersion = '1.0.0'\n}\napply from: 'v.gradle'\n" + deps, "1.0.0"},
+		"as a local and then as a property":           {"def fooVersion = '1.0.0'\next.fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "1.0.0"},
+		"as a property and as a local, the script":    {"ext.fooVersion = '1.0.0'\ndef fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "1.0.0"},
+		"assigned, then a script that sets a local":   {"ext.fooVersion = '1.0.0'\napply from: 'local.gradle'\n" + deps, "1.0.0"},
+		"assigned, then a script inside a script":     {"ext.fooVersion = '1.0.0'\napply from: 'outer.gradle'\n" + deps, "2.0.0"},
+		"assigned, then a script that agrees":         {"ext.fooVersion = '1.0.0'\napply from: 'same.gradle'\n" + deps, "1.0.0"},
+		"assigned, then a script under a condition":   {"ext.fooVersion = '1.0.0'\napply from: 'cond.gradle'\n" + deps, "1.0.0"},
+		"a local of the file, then the script":        {"def fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "1.0.0"},
+		"assigned, the script applied inside a block": {"ext.fooVersion = '1.0.0'\nsubprojects {\n apply from: 'v.gradle'\n}\n" + deps, "1.0.0"},
+		"assigned, one of two applies inside a block": {"ext.fooVersion = '1.0.0'\napply from: 'v.gradle'\nif (ci) {\n apply from: 'other.gradle'\n}\n" + deps, "1.0.0"},
 		"the script applied, then assigned":           {"apply from: 'v.gradle'\next.fooVersion = '1.0.0'\n" + deps, "1.0.0"},
-		"assigned between two applied scripts":        {"apply from: 'other.gradle'\next.fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, ""},
+		"assigned between two applied scripts":        {"apply from: 'other.gradle'\next.fooVersion = '1.0.0'\napply from: 'v.gradle'\n" + deps, "1.0.0"},
 		"only the script assigns it":                  {"apply from: 'v.gradle'\n" + deps, "2.0.0"},
 		"assigned after the last of two scripts":      {"apply from: 'other.gradle'\napply from: 'v.gradle'\next.fooVersion = '1.0.0'\n" + deps, "1.0.0"},
 		"assigned before, a script that does not set": {"ext.fooVersion = '1.0.0'\napply from: 'other.gradle'\n" + deps, "1.0.0"},
 	} {
-		files := map[string]string{"build.gradle": c.build, "v.gradle": "ext.fooVersion = '2.0.0'\n", "other.gradle": "ext.unrelated = '3'\n"}
+		files := map[string]string{"build.gradle": c.build, "v.gradle": "ext.fooVersion = '2.0.0'\n", "other.gradle": "ext.unrelated = '3'\n",
+			"block.gradle": "ext {\n fooVersion = '2.0.0'\n}\n", "local.gradle": "def fooVersion = '2.0.0'\n", "outer.gradle": "apply from: 'v.gradle'\n",
+			"same.gradle": "ext.fooVersion = '1.0.0'\n", "cond.gradle": "if (!project.hasProperty('fooVersion')) {\n ext.fooVersion = '2.0.0'\n}\n"}
 		if foo := r8Gradle(t, r8Remote, files, "build.gradle")["g:foo"]; foo.Version != c.want {
 			t.Errorf("%s: g:foo at %q, want %q", name, foo.Version, c.want)
 		}

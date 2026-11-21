@@ -112,10 +112,10 @@ func TestBOMsImportingBOMsAreFollowedToTheLimit(t *testing.T) {
 		}
 		return files
 	}
-	if x := r6Versions(t, chain(pomChainLimit), "pom.xml", nil)["g:x"]; x.Version != "3.3" {
+	if x := r6Versions(t, oneBuild(chain(pomChainLimit)), "pom.xml", nil)["g:x"]; x.Version != "3.3" {
 		t.Errorf("a BOM %d imports deep manages g:x: read at %q, want 3.3", pomChainLimit, x.Version)
 	}
-	if x := r6Versions(t, chain(pomChainLimit+1), "pom.xml", nil)["g:x"]; x.Version != "" {
+	if x := r6Versions(t, oneBuild(chain(pomChainLimit+1)), "pom.xml", nil)["g:x"]; x.Version != "" {
 		t.Errorf("a BOM %d imports deep, one past the limit, was reached: g:x at %q", pomChainLimit+1, x.Version)
 	}
 }

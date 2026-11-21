@@ -99,6 +99,13 @@ func TestAUsersStarsAndTheirGitHubLoginAreRead(t *testing.T) {
 	if _, err := store.GetUserIDByGHLogin(ctx, tag+"-nobody"); err == nil {
 		t.Error("a GitHub login no user has was found")
 	}
+	// The lookup is by the login AS STORED (the statement compares it
+	// exactly; the function's contract names no folding). Pinned as it is,
+	// so that a change to case-insensitive matching is a decision and not
+	// an accident (round 9: either reading passed).
+	if id, err := store.GetUserIDByGHLogin(ctx, strings.ToUpper(tag+"-gh")); err == nil {
+		t.Errorf("the login in another case found user %d; the lookup is exact", id)
+	}
 }
 
 func TestAFoundationMembershipIsUpsertedByItsKey(t *testing.T) {

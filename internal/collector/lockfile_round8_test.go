@@ -199,8 +199,8 @@ func TestALockfileTooLargeToReadIsOneFailureAndTheReadingSaysSo(t *testing.T) {
 	if keptBig != wantBig || wantBig == 0 || !freshSmall {
 		t.Errorf("rows of the large lockfile: %d, were %d; the other lockfile's rows fresh: %v", keptBig, wantBig, freshSmall)
 	}
-	if n := len(rec.got); n != 2 || rec.got[n-1] != (LockfileReading{NotCompleted: model.InventoryAttemptReadMemoryLimit, Lockfiles: true}) {
-		t.Errorf("the readings recorded: %+v; want the second not completed, at the memory limit, with lockfiles", rec.got)
+	if n := len(rec.got); n != 2 || rec.got[n-1] != (LockfileReading{NotCompleted: model.LockfileUnreadTooLarge, Lockfiles: true}) {
+		t.Errorf("the readings recorded: %+v; want the second not completed, its lockfiles too large, with lockfiles", rec.got)
 	}
 	said := false
 	for _, line := range log.lines {

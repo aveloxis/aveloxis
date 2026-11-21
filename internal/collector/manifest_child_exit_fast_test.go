@@ -8,6 +8,7 @@ package collector
 import (
 	"bytes"
 	"os"
+	"runtime/debug"
 	"syscall"
 )
 
@@ -30,7 +31,16 @@ import (
 //
 // Only an exit by RETURNING from ManifestChildMain is shortened. A child that
 // ends itself inside it (a limit, an orphan, another version) leaves through
-// os.Exit as everywhere, pause included.
+// os.Exit as everywhere, pause included: it keeps the status it chose, and
+// what it wrote to descriptor 2 before that, a race report included, stays
+// in the held file and is not handed on. Nothing is changed there.
+//
+// A child that PANICS never returns either, in whichever goroutine. The
+// runtime writes a crash to descriptor 2, the held file, and also to the
+// file given to debug.SetCrashOutput: that is the real descriptor 2 here,
+// so the parent's test reads "panic: ..." and the trace beside the exit
+// status 2, as it does without the detector (review round 9: under the
+// detector it read "exit status 2" and nothing else).
 func runManifestChildIfAskedInATest() {
 	if len(os.Args) != 2 || os.Args[1] != ManifestChildArg {
 		return
@@ -45,6 +55,15 @@ func runManifestChildIfAskedInATest() {
 	if err != nil || syscall.Dup2(int(held.Fd()), 2) != nil {
 		RunManifestChildIfAsked()
 		return
+	}
+	// Not fatal when it fails: the child then works as it did, and a panic's
+	// text is lost as it was.
+	// (SetCrashOutput keeps a descriptor of its own, so the copy made for it
+	// is closed at once and the one this function writes to is untouched.)
+	if crash, err := syscall.Dup(real); err == nil {
+		to := os.NewFile(uintptr(crash), "the parent's stderr")
+		_ = debug.SetCrashOutput(to, debug.CrashOptions{})
+		_ = to.Close()
 	}
 	code := ManifestChildMain(os.Stdin, os.Stdout)
 	said := make([]byte, 0, 4096)

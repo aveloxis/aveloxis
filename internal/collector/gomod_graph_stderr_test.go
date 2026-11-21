@@ -39,7 +39,7 @@ func TestGoModGraphOneLogsToolchainStderr(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(&logBuf, nil))}
-	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, new(int))
+	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, &goModTaken{})
 	if ok {
 		t.Fatal("goModGraphOne reported success on a go.mod the toolchain rejects")
 	}
@@ -80,7 +80,7 @@ func TestGoModGraphOneWorksInsideAGoWorkspace(t *testing.T) {
 	}
 	var logBuf bytes.Buffer
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(&logBuf, nil))}
-	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, new(int))
+	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, &goModTaken{})
 	if !ok || strings.Contains(logBuf.String(), "go toolchain invocation failed") {
 		t.Fatalf("a module inside a go.work must expand (GOWORK=off); ok=%v log:\n%s", ok, logBuf.String())
 	}

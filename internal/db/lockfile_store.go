@@ -232,6 +232,38 @@ func (s *PostgresStore) ReplaceRepoLockfileSnapshot(ctx context.Context, repoID 
 	})
 }
 
+// deleteRepoLockfileRowsAtPathsSQL removes, for one repository, every stored
+// row of the lockfiles at the given paths from the three lockfile tables, in
+// one statement, and returns how many rows went.
+const deleteRepoLockfileRowsAtPathsSQL = `
+	WITH edges AS (
+		DELETE FROM aveloxis_data.repo_lockfile_edges WHERE repo_id = $1 AND lockfile_path = ANY($2::text[]) RETURNING 1
+	), packages AS (
+		DELETE FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1 AND lockfile_path = ANY($2::text[]) RETURNING 1
+	), lockfiles AS (
+		DELETE FROM aveloxis_data.repo_lockfiles WHERE repo_id = $1 AND lockfile_path = ANY($2::text[]) RETURNING 1
+	)
+	SELECT (SELECT COUNT(*) FROM edges) + (SELECT COUNT(*) FROM packages) + (SELECT COUNT(*) FROM lockfiles)`
+
+// DeleteRepoLockfileRowsAtPaths removes the stored rows of the lockfiles at
+// the given paths and returns how many rows it removed (0.29.214). It is for
+// an analysis whose lockfiles went unread, so that the snapshot is not
+// replaced: the rows of a lockfile the repository has since DELETED would
+// otherwise stand, and go on giving the vulnerability scan versions that
+// nothing locks any more. The caller names exactly the lockfiles that are
+// gone from the clone; rows of every other lockfile are untouched, and with
+// no path nothing is sent.
+func (s *PostgresStore) DeleteRepoLockfileRowsAtPaths(ctx context.Context, repoID int64, paths []string) (int64, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	var removed int64
+	err := s.withRetry(ctx, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, deleteRepoLockfileRowsAtPathsSQL, repoID, paths).Scan(&removed)
+	})
+	return removed, err
+}
+
 // GetRepoLockfileRowsAtPaths returns what the current snapshot holds for the
 // lockfiles at paths: their inventory rows, their package rows (with
 // namespace, direct flag and scope) and their edges. It is what a lockfile

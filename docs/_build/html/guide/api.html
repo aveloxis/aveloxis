@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.213 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.214 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
+      <script src="../_static/documentation_options.js?v=84582877"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -350,6 +350,7 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
@@ -1854,6 +1855,27 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-214">
+<h2>Changes for API clients in 0.29.214<a class="headerlink" href="#changes-for-api-clients-in-0-29-214" title="Link to this heading"></a></h2>
+<p>The <strong><code class="docutils literal notranslate"><span class="pre">coverage</span></code></strong> object (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/vulnerabilities</span></code>,
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stats</span></code>, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code>) gains
+<strong><code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code></strong>. It is <code class="docutils literal notranslate"><span class="pre">null</span></code> except when the repository’s lockfiles went unread at
+the last analysis; then it is an object:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">reason</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>,
+<code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code> or <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">last_read_at</span></code></strong>: when the lockfiles were last read to the end, or <code class="docutils literal notranslate"><span class="pre">null</span></code> when they
+never were.</p></li>
+</ul>
+<p>Show it as a caution beside the coverage state, never in its place. With a date: the
+exact versions and transitive dependencies in the answer are as old as that date. With no
+date: the repository has lockfiles and none was ever read, so transitive dependencies are
+not checked. When the field is <code class="docutils literal notranslate"><span class="pre">null</span></code>, or absent (an older server), show nothing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">last_analysis_attempt.reason</span></code> can also be one of the four <code class="docutils literal notranslate"><span class="pre">manifest_read_*</span></code> values
+(since 0.29.213; the reference listed three).</p>
+<p>The SBOM’s coverage marker gains <code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">lockfiles_last_read_at</span></code>
+in the same cases.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-199">
 <h2>Changes for API clients in 0.29.199<a class="headerlink" href="#changes-for-api-clients-in-0-29-199" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/sbom</span></code>, both formats, with or without <code class="docutils literal notranslate"><span class="pre">vulns=1</span></code>:</p>

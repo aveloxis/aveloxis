@@ -13,7 +13,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestCommitResolverIntegration_Strategy4ViaSharedResolver is the v0.25.x
@@ -35,7 +34,7 @@ func TestCommitResolverIntegration_Strategy4ViaSharedResolver(t *testing.T) {
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}

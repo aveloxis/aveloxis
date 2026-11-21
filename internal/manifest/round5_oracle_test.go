@@ -104,23 +104,32 @@ func (o *oraclePoms) decode(path string) *oraclePom {
 	return oracleDecode(string(data), path)
 }
 
-func (o *oraclePoms) remote(g, a, v string) (*oraclePom, string) {
+// remote is the pom a repository has under these coordinates, or why there
+// is none (reason), and, when what the pom says is therefore NOT KNOWN, the
+// reason a version behind it is withheld with (unknown). Round 7: only an
+// answer of "not found" makes a pom known to say nothing. One that was not
+// asked for (no source; a snapshot, a range, coordinates that hold a
+// reference; a source that says it did not ask) is not known.
+func (o *oraclePoms) remote(g, a, v string) (pom *oraclePom, reason, unknown string) {
+	const notFound = "inherited_not_found"
 	if o.src == nil {
-		return nil, ""
+		return nil, "", notFound
 	}
 	if g == "" || a == "" || v == "" || strings.Contains(g+a+v, "${") || strings.Contains(strings.ToUpper(v), "SNAPSHOT") || strings.ContainsAny(v, "[](),") {
-		return nil, model.VersionReasonInheritedNotFound
+		return nil, notFound, notFound
 	}
-	pom, outcome := o.src.RemotePom(g, a, v, nil)
+	got, outcome := o.src.RemotePom(g, a, v, nil)
 	switch {
-	case outcome == RemoteFound && pom != nil:
-		return oracleRemoteModel(pom, g+":"+a+":"+v), ""
+	case outcome == RemoteFound && got != nil:
+		return oracleRemoteModel(got, g+":"+a+":"+v), "", ""
 	case outcome == RemoteFound, outcome == RemoteFailed:
-		return nil, model.VersionReasonInheritedLookupFailed
+		return nil, "inherited_lookup_failed", "inherited_lookup_failed"
 	case outcome == RemoteRefused:
-		return nil, model.VersionReasonInheritedRepositoryRefused
+		return nil, "inherited_repository_refused", "inherited_repository_refused"
+	case outcome == RemoteNotAsked:
+		return nil, notFound, notFound
 	}
-	return nil, model.VersionReasonInheritedNotFound
+	return nil, notFound, ""
 }
 
 // oracleCtx is one pom's effective model, built for the question.
@@ -130,12 +139,13 @@ type oracleCtx struct {
 	group, artifact, version string
 	parentGroup, parentVer   string
 	gap                      string
-	whole                    bool
+	// unknown: why what the missing end of the chain says is not known.
+	unknown string
+	whole   bool
 }
 
 func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
 	c := &oracleCtx{o: o, chain: []*oraclePom{m}, artifact: m.artifact, group: m.group, version: m.version}
-	seen := map[string]bool{m.path: true}
 	c.whole = true
 	for cur := m; cur.parent != nil; {
 		if len(c.chain) >= oracleChainLimit {
@@ -149,10 +159,6 @@ func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
 				at = filepath.Join(at, "pom.xml")
 			}
 			at = filepath.Clean(at)
-			if seen[at] {
-				c.whole = false
-				break
-			}
 			if cand := o.model(at); cand != nil && cand.artifact == cur.parent.artifact &&
 				(cand.group == "" || cand.group == cur.parent.group) &&
 				(cand.version == "" || strings.Contains(cand.version, "${") || cand.version == cur.parent.version) {
@@ -160,18 +166,13 @@ func (o *oraclePoms) ctx(m *oraclePom) *oracleCtx {
 			}
 		}
 		if p == nil {
-			r, reason := o.remote(cur.parent.group, cur.parent.artifact, cur.parent.version)
+			r, reason, unknown := o.remote(cur.parent.group, cur.parent.artifact, cur.parent.version)
 			if r == nil {
-				c.gap, c.whole = reason, false
+				c.gap, c.unknown, c.whole = reason, unknown, false
 				break
 			}
 			p = r
 		}
-		if seen[p.path] {
-			c.whole = false
-			break
-		}
-		seen[p.path] = true
 		c.chain = append(c.chain, p)
 		cur = p
 	}
@@ -276,7 +277,13 @@ type oracleQuestion struct {
 	before string
 }
 
-func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int) (version string, found bool, hosts []string) {
+// lookup is the question in c. stop: a pom that was read manages the
+// artifact and cannot give its version; that is the answer (no version),
+// and nothing after it is asked.
+//
+// The rule (rounds 6 and 7): a managed version is taken from a pom only if
+// every pom consulted before it is KNOWN not to manage the artifact.
+func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int) (version string, found bool, hosts []string, stop bool) {
 	// An explicit entry anywhere in the chain: the nearest pom, and in a pom
 	// the first entry written that means this coordinate here.
 	for _, m := range c.chain {
@@ -286,14 +293,17 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 			}
 			if c.interp(e.group) == group && c.interp(e.artifact) == artifact {
 				v := c.interp(e.version)
-				return v, v != "" && !strings.Contains(v, "${"), nil
+				if v != "" && !strings.Contains(v, "${") {
+					return v, true, nil, false
+				}
+				return v, false, nil, true
 			}
 		}
 	}
 	// The chain's missing end comes before every import.
-	q.before = oracleWorse(q.before, oracleNotKnown(c.gap))
+	q.before = oracleWorse(q.before, c.unknown)
 	if depth >= oracleChainLimit {
-		return "", false, nil
+		return "", false, nil, false
 	}
 	// Then the BOMs the chain imports, in order.
 	for _, m := range c.chain {
@@ -303,13 +313,15 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 			}
 			bg, ba, bv := c.interp(e.group), c.interp(e.artifact), c.interp(e.version)
 			bom, ambiguous := c.o.byCoordinates(bg, ba, bv)
-			reason := ""
-			if bom == nil && !ambiguous {
-				bom, reason = c.o.remote(bg, ba, bv)
+			reason, unknown := "", ""
+			if ambiguous {
+				unknown = "inherited_not_found" // two poms of the clone: which is meant is not known
+			} else if bom == nil {
+				bom, reason, unknown = c.o.remote(bg, ba, bv)
 			}
 			if bom == nil {
 				q.gap = oracleWorse(q.gap, reason)
-				q.before = oracleWorse(q.before, oracleNotKnown(reason))
+				q.before = oracleWorse(q.before, unknown)
 				continue
 			}
 			if q.searched[bom.path] {
@@ -318,12 +330,14 @@ func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int)
 			q.searched[bom.path] = true
 			bc := c.o.ctx(bom)
 			q.gap = oracleWorse(q.gap, bc.gap)
-			if v, ok, via := bc.lookup(q, group, artifact, depth+1); ok {
-				return v, true, oracleHosts(bc.chain, via)
+			if v, ok, via, stop := bc.lookup(q, group, artifact, depth+1); ok {
+				return v, true, oracleHosts(bc.chain, via), false
+			} else if stop {
+				return v, false, nil, true
 			}
 		}
 	}
-	return "", false, nil
+	return "", false, nil, false
 }
 
 // oracleAnswer is what a reader says of one declared dependency: the
@@ -381,7 +395,7 @@ func (o *oraclePoms) settle(path string) []oracleAnswer {
 			}
 		case a.Version == "":
 			q := &oracleQuestion{searched: map[string]bool{}, gap: c.gap}
-			v, found, via := c.lookup(q, d.group, d.artifact, 0)
+			v, found, via, _ := c.lookup(q, d.group, d.artifact, 0)
 			gap = oracleWorse(gap, q.gap)
 			switch {
 			case found && q.before == "":
@@ -574,16 +588,6 @@ func oracleSubstitute(s string, resolve func(string) (string, bool)) string {
 	return s
 }
 
-// oracleNotKnown is a reason that means a pom's content is not known: its
-// lookup failed, or its repository may not be fetched from. A pom that is
-// on no repository has been answered for.
-func oracleNotKnown(reason string) string {
-	if reason == "inherited_lookup_failed" || reason == "inherited_repository_refused" {
-		return reason
-	}
-	return ""
-}
-
 // oracleWorse is the reason to report of two: a lookup that failed may yet
 // succeed and is said first, then a refusal, then "not found".
 func oracleWorse(a, b string) string {
@@ -609,6 +613,39 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 	}
 	union := func(a, b string) { parent[find(a)] = find(b) }
 	gapOf, hostsOf := map[string]string{}, map[string][]string{}
+	// A BOM is whole when its own chain is, and every BOM its chain imports
+	// was obtained and is whole (round 7): a tree that is whole has had
+	// nothing withheld.
+	wholeBOM := map[string]bool{}
+	var bomWhole func(b *oraclePom, depth int) bool
+	bomWhole = func(b *oraclePom, depth int) bool {
+		if w, ok := wholeBOM[b.path]; ok {
+			return w
+		}
+		wholeBOM[b.path] = true
+		ok := depth < oracleChainLimit
+		if ok {
+			bc := o.ctx(b)
+			ok = bc.whole
+			for _, cm := range bc.chain {
+				for _, e := range cm.managed {
+					if !e.isImport {
+						continue
+					}
+					bg, ba, bv := bc.interp(e.group), bc.interp(e.artifact), bc.interp(e.version)
+					next, ambiguous := o.byCoordinates(bg, ba, bv)
+					if next == nil && !ambiguous {
+						next, _, _ = o.remote(bg, ba, bv)
+					}
+					if next == nil || !bomWhole(next, depth+1) {
+						ok = false
+					}
+				}
+			}
+		}
+		wholeBOM[b.path] = ok
+		return ok
+	}
 	for _, p := range poms {
 		find(p)
 		m := o.model(p)
@@ -650,13 +687,20 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 				switch {
 				case ambiguous:
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
+				case bom != nil:
+					if !bomWhole(bom, 0) {
+						gapOf[p] = "an imported BOM could not be read whole"
+					}
 				case bom == nil:
-					r, _ := o.remote(bg, ba, bv)
+					r, _, _ := o.remote(bg, ba, bv)
 					if r == nil {
 						gapOf[p] = "an imported BOM could not be obtained"
 						continue
 					}
 					hostsOf[p] = oracleHosts(o.ctx(r).chain, hostsOf[p])
+					if !bomWhole(r, 0) {
+						gapOf[p] = "an imported BOM could not be read whole"
+					}
 				}
 			}
 		}
@@ -859,6 +903,9 @@ func oraclePomTree(rng *rand.Rand) (files map[string]string, src *oracleSource) 
 			src.outcomes[k] = RemoteRefused
 		case 4:
 			src.outcomes[k] = RemoteNotFound
+		case 5:
+			// Round 7: not asked for, which is not "not found".
+			src.outcomes[k] = RemoteNotAsked
 		}
 	}
 	return files, src

@@ -171,7 +171,7 @@ func TestColumnFillDiffHandlesShapeDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	sideCfg.ConnConfig.Database = sideDB
-	sidePool, err := pgxpool.NewWithConfig(ctx, sideCfg)
+	sidePool, err := OpenPoolConfig(ctx, sideCfg)
 	if err != nil {
 		t.Fatal(err)
 	}

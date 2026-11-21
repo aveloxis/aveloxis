@@ -291,11 +291,11 @@ func TestAnHonestLockfileIsHeldInAKnownMultipleOfItsSize(t *testing.T) {
 				t.Errorf("%s of %.1f MB, %s: %v", kind, float64(len(body))/(1<<20), what, err)
 				return
 			}
-			if lerr := run.passErr(manifestPassLockfiles, nil); lerr != nil || len(run.locks.Parsed) != 1 || len(run.locks.Parsed[0].Result.Entries) < wantPackages {
-				t.Fatalf("%s, %s: %v, %d lockfiles", kind, what, lerr, len(run.locks.Parsed))
+			if lerr := run.passErr(manifestPassLockfiles, nil); lerr != nil || len(heldLockfiles(*run.locks)) != 1 || len(heldLockfiles(*run.locks)[0].Result.Entries) < wantPackages {
+				t.Fatalf("%s, %s: %v, %d lockfiles", kind, what, lerr, len(heldLockfiles(*run.locks)))
 			}
 			t.Logf("%s of %.1f MB, %d packages, %s: heap samples at most %.1f times the file, %d MiB resident at most, %s of CPU; %s by the clock",
-				kind, float64(len(body))/(1<<20), len(run.locks.Parsed[0].Result.Entries), what, float64(run.heapPeak)/float64(len(body)), run.maxRSS>>20, run.cpu.Round(time.Millisecond), time.Since(began).Round(time.Millisecond))
+				kind, float64(len(body))/(1<<20), len(heldLockfiles(*run.locks)[0].Result.Entries), what, float64(run.heapPeak)/float64(len(body)), run.maxRSS>>20, run.cpu.Round(time.Millisecond), time.Since(began).Round(time.Millisecond))
 		}
 		read("under the default limits", ManifestLimits{})
 		if manifestRaceEnabled {

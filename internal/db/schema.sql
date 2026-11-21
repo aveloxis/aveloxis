@@ -1742,6 +1742,12 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_dependency_coverage (
     -- The attempt columns.
     last_attempt_at          TIMESTAMPTZ,
     last_attempt_result      TEXT,
+    -- v0.29.214: the lockfiles (RecordLockfileReading, their one writer).
+    -- lockfiles_read_at is when they were last read to the end; NULL when
+    -- they never were, or the last reading found none. lockfiles_unread_reason
+    -- is why the last reading did not finish, NULL when it did.
+    lockfiles_read_at        TIMESTAMPTZ,
+    lockfiles_unread_reason  TEXT,
     -- v0.29.161: the SCAN half, written by the vulnerability scan in one
     -- statement of its own (RecordScanCoverage). last_scan_attempt_at is the
     -- time of the last scan ATTEMPT, whatever came of it; it is not

@@ -92,6 +92,9 @@ else
 	# SKIP_CENSUS_GOFLAGS: go test flags. The default is what CI passes
 	# (integration.yml): a closing run without -race read green while every
 	# CI run that executed internal/api under -race raced (0.29.105).
+	# An earlier run's answer of the sites check must not be read as this
+	# run's when this run stops before the check.
+	rm -f "$OUT/sites-check.txt"
 	# shellcheck disable=SC2086
 	AVELOXIS_STATEMENT_SITES_DIR="$SITES" go test ${SKIP_CENSUS_GOFLAGS:--race -shuffle=on} ./... -count=1 -json > "$OUT/suite.json" 2> "$OUT/stderr.txt"
 	suite_status=$?

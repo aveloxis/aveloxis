@@ -385,9 +385,12 @@ type npmV1Dep struct {
 // npmV1Tree reads the top-level "dependencies" of a document that
 // encoding/json has already accepted, in one pass over its tokens. It reads
 // as encoding/json read the same text into structs: a field's name matches
-// without regard to case, a null leaves a field as it was, a name given
-// twice in one object keeps its last value, and a "dependencies" given twice
-// adds to the first.
+// without regard to case, a name given twice in one object keeps its last
+// value, a "dependencies" given twice adds to the first, and a
+// "dependencies" that is null EMPTIES it (encoding/json sets a map to nil
+// for a null; round 7: the null was read as leaving the first in place, and
+// a node's nested dependencies written before a null gave edges
+// encoding/json did not).
 func npmV1Tree(data []byte) []npmV1Dep {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
@@ -415,7 +418,7 @@ func npmV1Tree(data []byte) []npmV1Dep {
 }
 
 // npmV1Deps reads a "dependencies" value into deps: an object's names, each
-// with its node; a null adds nothing. wellFormed is false when the value is
+// with its node; a null empties it. wellFormed is false when the value is
 // anything else (it has been read past all the same), and when the text
 // ended.
 func npmV1Deps(dec *json.Decoder, deps []npmV1Dep, index map[string]int) (_ []npmV1Dep, wellFormed bool) {
@@ -424,7 +427,10 @@ func npmV1Deps(dec *json.Decoder, deps []npmV1Dep, index map[string]int) (_ []np
 		return deps, false
 	}
 	if tok == nil {
-		return deps, true
+		for name := range index {
+			delete(index, name)
+		}
+		return deps[:0], true
 	}
 	if tok != json.Delim('{') {
 		jsonSkipRest(dec, tok)

@@ -159,6 +159,14 @@ func TestPackageExposureProfileNumbers(t *testing.T) {
 	if pg, err := store.ListPackageExposure(ctx, PackageExposureQuery{Search: pkg}); err != nil || pg.Total != 1 || !pg.Live {
 		t.Fatalf("leaderboard without the view: %v (page %+v)", err, pg)
 	}
+	// A page past the end, without the view: the total is counted over the
+	// live fleet too (0.29.214: no test sent that count).
+	if pg, err := store.ListPackageExposure(ctx, PackageExposureQuery{Search: pkg, Limit: 10, Offset: 50}); err != nil || pg.Total != 1 || len(pg.Rows) != 0 || !pg.Live {
+		t.Fatalf("leaderboard past the end without the view: %v (page %+v); want total 1, no rows, live", err, pg)
+	}
+	if pg, err := store.ListPackageExposure(ctx, PackageExposureQuery{Search: pkg + "-no-such", Limit: 10, Offset: 50}); err != nil || pg.Total != 0 {
+		t.Fatalf("leaderboard past the end without the view, nothing matching: %v (page %+v); want total 0", err, pg)
+	}
 
 	// The matview built from the same SQL reports the same figures (the
 	// per-package test database holds only this test's findings for pkg).

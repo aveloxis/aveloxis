@@ -320,6 +320,16 @@ func TestTheLinearYAMLReadersReadWhatTheDecoderRead(t *testing.T) {
 		"packages:\n  a@1.0.0: {}\n  a@1.0.0: {}\n", "packages:\n  1: {}\n  '1': {}\n", "packages:\n  a: {version: 1.10, dependency: direct dev}\n", "packages:\n- completed: {hackage: x-1.0@sha256:a}\n- ~\n- completed: ~\n",
 		"packages: {a: {version: [1]}}\n", "packages: [[1]]\n", "packages: {a: 5}\n", "packages:\n  a@1.0.0:\n    dependencies: {c: {d: 1}}\n", "importers: {.: {dependencies: {x: [1, 2]}}}\n", "importers: {.: 5}\n",
 		"packages:\n  p@1.0.0:\n    dependencies:\n      c: 1\n      c: 2\n", "\tpackages: 1\n", "packages: {a: {version: !!binary aGVsbG8=}}\n", "packages:\n  ? [a, b]\n  : {}\n"}
+	// Round 7: keys that are written differently and decode to one string
+	// are one key; a scalar tagged !!null that is not a null is refused; a
+	// key that is not a scalar beside one whose text is empty.
+	docs = append(docs,
+		"packages:\n  a@1.0.0: {version: 1}\n  !!binary YUAxLjAuMA==: {version: 2}\n", "packages:\n  !!binary YUAxLjAuMA==: {version: 2}\n  a@1.0.0: {version: 1}\n",
+		"packages:\n  a: {version: 1, dependency: direct main}\n  !!binary YQ==: {version: 2, dependency: transitive}\n",
+		"packages: {a: {version: !!null x}}\n", "packages: !!null x\n", "packages: {a: !!null x}\n", "packages: {a: {version: !!null ~}}\n", "packages: !!null null\n",
+		"packages:\n  ? [a]\n  : {}\n  '': {}\n", "packages:\n  '': {}\n  ? [a]\n  : {}\n", "packages:\n  ? {a: 1}\n  : {}\n  '': {}\n",
+		"packages:\n  1: {version: 1}\n  !!str 1: {version: 2}\n", "packages:\n  a: {version: 1}\n  'a': {version: 2}\n", "packages:\n  ~: {version: 1}\n  a: {version: 2}\n",
+		"importers: {.: {dependencies: {x: {version: 1}, !!binary eA==: {version: 2}}}}\n")
 	for i := 0; i < 1500; i++ {
 		docs = append(docs, strings.TrimPrefix(genYAMLNode(r, 0, keys), "\n"), genLockYAML(r, "pnpm"), genLockYAML(r, "pubspec"), genLockYAML(r, "stack"))
 	}
@@ -451,8 +461,21 @@ func TestTheLinearPackageLockV1ReaderReadsWhatTheOldOneRead(t *testing.T) {
 		`{"dependencies":{"a":null,"b":{"version":"1"},"b":{"version":"2"}}}`, `{"dependencies":{"a":{"version":"1"}},"Dependencies":{"b":{"version":"2"},"a":{"version":"3"}}}`,
 		`{"dependencies":{"a":{"dependencies":{"b":null}}}}`, `{"dependencies":5}`, `[1]`, `{"dependencies":{"a":{"version":"1","dependencies":{"b":{"version":"2"}},"dependencies":{"c":{"version":"3"},"b":{"version":"4"}}}}}`,
 		`{"dependencies":{"a":{"version":"1","dependencies":{"b":{"version":"2"}},"dependencies":7}}}`, `{"dependencies":{"":{"version":"1","dependencies":{"x":{"version":"2"}}}}}`}
+	// Round 7: a "dependencies" that is null after one that is not empties
+	// it, as encoding/json sets a map to nil for a null.
+	docs = append(docs,
+		`{"lockfileVersion":1,"dependencies":{"resolved":{"dependencies":{"@s/c":{}},"dependencies":null}}}`,
+		`{"dependencies":{"a":{"version":"1"}},"dependencies":null}`,
+		`{"dependencies":{"a":{"version":"1"}},"dependencies":null,"dependencies":{"b":{"version":"2"}}}`,
+		`{"dependencies":{"a":{"version":"1","dependencies":{"b":{"version":"2"}},"dependencies":null,"dependencies":{"c":{"version":"3"}}}}}`,
+		`{"dependencies":null,"dependencies":{"a":{"version":"1"}}}`, `{"dependencies":{"a":{"version":"1"}},"DEPENDENCIES":null}`)
 	for i := 0; i < 3000; i++ {
 		docs = append(docs, `{"lockfileVersion":1,"dependencies":{"top":`+genNpmV1(r, 0)+`,"c1":`+genNpmV1(r, 3)+`}}`)
+		// The same with keys given twice, a null among them.
+		node := func() string { return genNpmV1(r, 2) }
+		docs = append(docs, `{"lockfileVersion":1,"dependencies":{"top":{"version":"1","dependencies":{"x":`+node()+`},"dependencies":`+
+			[]string{"null", `{"y":` + node() + `}`, `{"x":null}`}[r.Intn(3)]+`,"dependencies":`+[]string{"null", `{"z":` + node() + `}`, `{}`}[r.Intn(3)]+`}}`+
+			[]string{"", `,"dependencies":null`, `,"dependencies":{"w":` + node() + `}`}[r.Intn(3)]+`}`)
 	}
 	refused, entries, edges := 0, 0, 0
 	for _, doc := range docs {

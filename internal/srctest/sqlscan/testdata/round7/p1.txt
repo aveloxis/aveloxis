@@ -1,0 +1,84 @@
+@@ base-fe-coalesce (ok)
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1) WHERE repo_id = $2
+@@ selfjoin-ar reads another row's stored
+UPDATE aveloxis_data.repos r SET ar = r2.ar FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ selfjoin-ar same row via alias
+UPDATE aveloxis_data.repos SET ar = r2.ar || 'x' FROM aveloxis_data.repos r2 WHERE r2.repo_id = repos.repo_id
+@@ cte-over-target ar
+WITH old AS (SELECT repo_id, ar FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = old.ar FROM old WHERE old.repo_id = r.repo_id
+@@ subselect-in-from ar
+UPDATE aveloxis_data.repos r SET ar = s.x FROM (SELECT repo_id, ar AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ view-in-subselect ar
+UPDATE aveloxis_data.repos r SET ar = (SELECT v.ar FROM aveloxis_data.v_repos v WHERE v.repo_id = r.repo_id)
+@@ view-in-from ar
+UPDATE aveloxis_data.repos r SET ar = v.ar FROM aveloxis_data.v_repos v WHERE v.repo_id = r.repo_id
+@@ fe guarded bare from selfjoin
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, r2.fe) FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id + 1
+@@ pnn incoming is $ but stored is from-other
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, r2.pnn) FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id + 1
+@@ g with selfjoin
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, r.g), COALESCE(r.g, $1)) FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ conflict alias x
+INSERT INTO aveloxis_data.repos AS x (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(x.fe, EXCLUDED.fe)
+@@ conflict alias excluded-other-col
+INSERT INTO aveloxis_data.repos AS x (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(EXCLUDED.pnn, x.pnn), pn = COALESCE(NULLIF(EXCLUDED.pn,''), repos.pn)
+@@ conflict bare stored
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(fe, EXCLUDED.fe)
+@@ conflict guard in DO UPDATE WHERE
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE repos.fe IS NULL
+@@ conflict guard in index predicate only
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) WHERE fe IS NULL DO UPDATE SET fe = EXCLUDED.fe
+@@ conflict excluded in subselect
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = (SELECT EXCLUDED.ar)
+@@ conflict subselect aliased excluded over target
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = (SELECT excluded.ar FROM aveloxis_data.other excluded LIMIT 1)
+@@ ar via function of stored other-col whole row
+UPDATE aveloxis_data.repos SET ar = (repos).ar
+@@ ar via quoted name
+UPDATE aveloxis_data.repos SET ar = "ar" || 'x'
+@@ ar via quoted uppercase (a different column)
+UPDATE aveloxis_data.repos SET ar = "AR"
+@@ fe guard with OR true
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL OR TRUE
+@@ fe guard IS NOT DISTINCT FROM NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NOT DISTINCT FROM NULL
+@@ fe guard = '' only
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe = ''
+@@ fe guard on outer stmt of CTE
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 WHERE repo_id = $2 RETURNING repo_id) SELECT 1 FROM u, aveloxis_data.repos r WHERE r.fe IS NULL
+@@ fe default
+UPDATE aveloxis_data.repos SET fe = DEFAULT
+@@ io default
+UPDATE aveloxis_data.repos SET io = DEFAULT
+@@ ar default
+UPDATE aveloxis_data.repos SET ar = DEFAULT
+@@ pnn default
+UPDATE aveloxis_data.repos SET pnn = DEFAULT
+@@ fe coalesce(fe, default)?
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, NULL)
+@@ fe NULLIF trim
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(trim(fe), ''), $1)
+@@ fe NULLIF cast
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe::text, ''), $1)
+@@ fe NULLIF ''::text
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, ''::text), $1)
+@@ fe three args
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1, $2)
+@@ fe case
+UPDATE aveloxis_data.repos SET fe = CASE WHEN fe IS NULL THEN $1 ELSE fe END
+@@ merge update
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.src s ON t.repo_id = s.repo_id WHEN MATCHED THEN UPDATE SET fe = COALESCE(t.fe, s.fe), ar = s.ar
+@@ merge update bare src with target-name alias
+MERGE INTO aveloxis_data.repos USING aveloxis_data.src repos ON true WHEN MATCHED THEN UPDATE SET ar = repos.ar
+@@ merge guard in WHEN MATCHED AND
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.src s ON t.repo_id = s.repo_id WHEN MATCHED AND t.fe IS NULL THEN UPDATE SET fe = $1
+@@ merge guard in ON
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.src s ON t.repo_id = s.repo_id AND t.fe IS NULL WHEN MATCHED THEN UPDATE SET fe = $1
+@@ merge insert io
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.src s ON t.repo_id = s.repo_id WHEN NOT MATCHED THEN INSERT (repo_id, io) VALUES (s.repo_id, s.io)
+@@ delete
+DELETE FROM aveloxis_data.repos WHERE repo_id = $1
+@@ insert-select same table
+INSERT INTO aveloxis_data.repos (repo_id, io, fe) SELECT repo_id+1, io, fe FROM aveloxis_data.repos
+@@ insert overriding
+INSERT INTO aveloxis_data.repos (repo_id, io) OVERRIDING SYSTEM VALUE VALUES ($1, $2)

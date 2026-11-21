@@ -138,7 +138,7 @@ func TestRenvLockSources(t *testing.T) {
 func TestABioconductorEntryDoesNotLockACRANDependency(t *testing.T) {
 	res := parseFixture(t, "renv.lock", "renv.lock")
 	ac := &AnalysisCollector{}
-	inUse := ac.lockfilesInUse(t.Context(), 1, lockfileSet{Parsed: []parsedLockfile{{Path: "renv.lock", Result: res}}})
+	inUse := ac.lockfilesInUse(t.Context(), 1, lockfileSet{Parsed: []parsedLockfile{{Path: "renv.lock", Result: res}}}, nil)
 	if len(inUse) != 1 || inUse[0].Ecosystem != "cran" {
 		t.Fatalf("lockfiles in use = %+v", inUse)
 	}

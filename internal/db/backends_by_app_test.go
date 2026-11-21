@@ -106,7 +106,7 @@ func TestBackendsByAppNameScopesToThisHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = tag
-	other, err := pgxpool.NewWithConfig(ctx, cfg)
+	other, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -159,9 +159,9 @@ func TestTheHostProbeDialsADeclaredHostUnderNoTrust(t *testing.T) {
 	}
 }
 
-// A coordinate that cannot be asked for is answered as a range or a
-// snapshot is (the reader's own "never asked" answer, not found), counted
-// on its own, and said in the summary line. Round 2 called it "refused",
+// A coordinate that cannot be asked for is answered "not asked" (0.29.214;
+// it was "not found", which is a repository's answer), counted on its own,
+// and said in the summary line. Round 2 called it "refused",
 // which every page and document defines as a repository that may not be
 // fetched from: no repository refused anything (round 3).
 func TestAnUnaskableCoordinateIsCountedAndSaid(t *testing.T) {
@@ -170,8 +170,8 @@ func TestAnUnaskableCoordinateIsCountedAndSaid(t *testing.T) {
 	withMavenRepositories(t, repo.srv.URL)
 	var logged bytes.Buffer
 	src.logger = slog.New(slog.NewTextHandler(&logged, nil))
-	if _, outcome := src.RemotePom("org.remote", "parent", "5.0~rc1", nil); outcome != manifest.RemoteNotFound || repo.asked.Load() != 0 {
-		t.Errorf("outcome %v, asked %d; want not found and nothing asked", outcome, repo.asked.Load())
+	if _, outcome := src.RemotePom("org.remote", "parent", "5.0~rc1", nil); outcome != manifest.RemoteNotAsked || repo.asked.Load() != 0 {
+		t.Errorf("outcome %v, asked %d; want not asked and nothing asked", outcome, repo.asked.Load())
 	}
 	if src.unaskable != 1 || src.refused != 0 {
 		t.Errorf("unaskable %d, refused %d; want 1 and 0", src.unaskable, src.refused)

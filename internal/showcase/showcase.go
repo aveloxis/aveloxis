@@ -141,6 +141,10 @@ type RepoPageData struct {
 	VulnState      string
 	VulnSecondLine string
 	VulnAbsence    string
+	// VulnLockfileCaution (0.29.214) is the caution under the posture
+	// sentence when the repository's lockfiles went unread at the last
+	// analysis; "" otherwise. Set by SetVulnCoverage with the others.
+	VulnLockfileCaution string
 
 	// ActivityChart is the static weekly-activity SVG (v0.27.80,
 	// trailing 12 months) in the signed-in grammar: commits + issues +
@@ -449,6 +453,7 @@ func (d *RepoPageData) SetVulnCoverage(v *vulnclass.CoverageView) {
 	d.VulnState = vulnclass.CoverageLine(v)
 	d.VulnSecondLine = vulnclass.CoverageSecondLineText(v)
 	d.VulnAbsence = vulnclass.CoverageAbsenceClause(v)
+	d.VulnLockfileCaution = vulnclass.CoverageLockfileCaution(v)
 	if v == nil {
 		d.VulnCountBlank, d.VulnClean = d.VulnTotal == 0, false
 		return

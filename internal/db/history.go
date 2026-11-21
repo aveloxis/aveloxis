@@ -506,6 +506,69 @@ func (s *PostgresStore) RecordInventoryAttempt(ctx context.Context, repoID int64
 	})
 }
 
+// lockfileUnreadReasons are the values RecordLockfileReading accepts for a
+// reading that did not finish: model's list.
+var lockfileUnreadReasons = func() map[string]bool {
+	m := map[string]bool{}
+	for _, r := range model.LockfileUnreadReasons() {
+		m[r] = true
+	}
+	return m
+}()
+
+// RecordLockfileReading keeps how one analysis's reading of a repository's
+// lockfiles ended (0.29.214). It is the only writer of lockfiles_read_at and
+// lockfiles_unread_reason, and touches nothing else of the coverage record.
+// A reading that is not exactly one of completed and not-completed, or whose
+// reason is not one of model.LockfileUnreadReasons, is refused (SR-18).
+//
+// One statement ($1 the repository, $2 whether the reading completed, $3
+// whether the clone holds lockfiles (known to, when it did not complete), $4
+// the reason, NULL when it completed):
+//
+//   - Completed with lockfiles: read now, no reason.
+//   - Completed with none: no date and no reason (nothing to be behind on;
+//     a date here would later read as "last read" for lockfiles that did
+//     not then exist).
+//   - Not completed: the date is KEPT. The reason is written when the clone
+//     is known to hold a lockfile or an earlier reading read some; with
+//     neither, nothing is claimed (the repository may have no lockfile).
+//
+// It moves the repository's cache state, as the attempt writer does: the
+// caution is on the coverage object cached answers carry.
+//
+// The caller does not call it on shutdown.
+func (s *PostgresStore) RecordLockfileReading(ctx context.Context, repoID int64, reading model.LockfileReading) error {
+	var reason *string
+	switch {
+	case reading.Completed && reading.NotCompleted != "":
+		return fmt.Errorf("a lockfile reading both completed and did not (%q)", reading.NotCompleted)
+	case reading.Completed:
+	case !lockfileUnreadReasons[reading.NotCompleted]:
+		return fmt.Errorf("lockfile reading reason %q is not one of %s", reading.NotCompleted, strings.Join(model.LockfileUnreadReasons(), ", "))
+	default:
+		reason = &reading.NotCompleted
+	}
+	return s.withRetry(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `
+			WITH written AS (
+				INSERT INTO aveloxis_data.repo_dependency_coverage AS c (repo_id, lockfiles_read_at, lockfiles_unread_reason)
+				VALUES ($1,
+				        CASE WHEN $2::boolean AND $3::boolean THEN NOW() END,
+				        CASE WHEN NOT $2::boolean AND $3::boolean THEN $4::text END)
+				ON CONFLICT (repo_id) DO UPDATE SET
+					lockfiles_read_at = CASE WHEN $2::boolean THEN EXCLUDED.lockfiles_read_at ELSE c.lockfiles_read_at END,
+					lockfiles_unread_reason = CASE
+						WHEN $2::boolean THEN NULL
+						WHEN $3::boolean OR c.lockfiles_read_at IS NOT NULL THEN $4::text
+						ELSE c.lockfiles_unread_reason END
+				RETURNING repo_id
+			)
+			`+stampRepoCacheStateSQL+` WHERE repo_id IN (SELECT repo_id FROM written)`, repoID, reading.Completed, reading.Lockfiles, reason)
+		return err
+	})
+}
+
 // GetRepoDependencyCoverage returns a repository's coverage record. found is
 // false when it has none, which is a state every reader handles (a repository
 // not analysed since 0.29.159), and not an error.
@@ -535,7 +598,8 @@ const coverageColumnsSQL = `c.analysed_at, c.manifests_found, c.manifests_parsed
 		       c.last_scan_attempt_at, c.scan_outcome, c.scan_partial, c.scan_targets_sent,
 		       c.scan_targets_dropped, c.dependencies_unknown, c.first_scan_at,
 		       c.scan_targets_rejected, c.scan_closures_held, c.scan_targets_truncated, c.lockfiles_failed,
-		       c.maven_trees_not_whole, c.maven_tree_hosts`
+		       c.maven_trees_not_whole, c.maven_tree_hosts,
+		       c.lockfiles_read_at, c.lockfiles_unread_reason`
 
 // coverageScan receives one coverage record's columns and builds the record.
 // Every column is nullable for it, so a LEFT JOIN with no record scans too.
@@ -546,13 +610,15 @@ type coverageScan struct {
 	found, parsed, declared                   *int
 	result, outcome                           *string
 	partial                                   *bool
+	lockfilesUnread                           *string
 }
 
 func (c *coverageScan) dests() []any {
 	return []any{&c.cov.AnalysedAt, &c.found, &c.parsed, &c.failed, &c.declared, &c.withoutRow, &c.cov.LastAttemptAt, &c.result,
 		&c.cov.ScanAttemptAt, &c.outcome, &c.partial, &c.cov.Scan.TargetsSent,
 		&c.cov.Scan.TargetsDropped, &c.cov.Scan.DependenciesUnknown, &c.cov.FirstScanAt,
-		&c.cov.Scan.TargetsRejected, &c.cov.Scan.ClosuresHeld, &c.cov.Scan.TargetsTruncated, &c.lockfilesFailed, &c.treesNotWhole, &c.treeHosts}
+		&c.cov.Scan.TargetsRejected, &c.cov.Scan.ClosuresHeld, &c.cov.Scan.TargetsTruncated, &c.lockfilesFailed, &c.treesNotWhole, &c.treeHosts,
+		&c.cov.LockfilesReadAt, &c.lockfilesUnread}
 }
 
 func (c *coverageScan) finish() (model.DependencyCoverage, error) {
@@ -571,6 +637,9 @@ func (c *coverageScan) finish() (model.DependencyCoverage, error) {
 	}
 	if c.outcome != nil {
 		cov.Scan.Outcome = *c.outcome
+	}
+	if c.lockfilesUnread != nil {
+		cov.LockfilesUnreadReason = *c.lockfilesUnread
 	}
 	if c.partial != nil {
 		cov.Scan.Partial = *c.partial

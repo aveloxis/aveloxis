@@ -48,7 +48,13 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 	var out []tomlDepEntry
 	index := map[string]int{} // section + name → out index
 	section := ""
-	var pendingKey, pendingValue string
+	// A value that spans lines is collected in a builder, and an entry's
+	// declarations in a list joined at the end: each was a string appended
+	// to line by line, which copies what it holds every time (round 7: an
+	// unclosed bracket and 512 KB of lines took 16 s).
+	var pendingKey string
+	var pendingValue strings.Builder
+	var raws [][]string // out index → its declarations
 	depth := 0
 
 	add := func(key, value string) {
@@ -68,6 +74,7 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		i, ok := index[k]
 		if !ok {
 			out = append(out, tomlDepEntry{Section: section, Name: name})
+			raws = append(raws, nil)
 			i = len(out) - 1
 			index[k] = i
 		}
@@ -81,11 +88,7 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		if len(decl) > maxTOMLDeclLen {
 			decl = decl[:maxTOMLDeclLen] + "…"
 		}
-		if e.Raw == "" {
-			e.Raw = decl
-		} else {
-			e.Raw += "; " + decl
-		}
+		raws[i] = append(raws[i], decl)
 		switch sub {
 		case "":
 			switch {
@@ -128,15 +131,16 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 			// it from the inventory, from libyear and from the OSV scan,
 			// and pendingValue grew to hold the rest of the file (v0.29.57).
 			if tomlSectionHeader(line) {
-				add(pendingKey, pendingValue)
+				add(pendingKey, pendingValue.String())
 				depth = 0
 				section = line
 				continue
 			}
-			pendingValue += " " + line
+			pendingValue.WriteString(" ")
+			pendingValue.WriteString(line)
 			depth += bracketDelta(line)
 			if depth <= 0 {
-				add(pendingKey, pendingValue)
+				add(pendingKey, pendingValue.String())
 				depth = 0
 			}
 			continue
@@ -154,10 +158,15 @@ func scanTOMLDepTables(content string, sections map[string]bool) []tomlDepEntry 
 		}
 		key = strings.TrimSpace(key)
 		if d := bracketDelta(value); d > 0 {
-			pendingKey, pendingValue, depth = key, value, d
+			pendingKey, depth = key, d
+			pendingValue.Reset()
+			pendingValue.WriteString(value)
 			continue
 		}
 		add(key, value)
+	}
+	for i := range out {
+		out[i].Raw = strings.Join(raws[i], "; ")
 	}
 	return out
 }

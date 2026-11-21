@@ -8205,7 +8205,7 @@ components:
         be read, or the server is older) show "coverage not known": a count of
         zero is then blank, never 0 and never "not yet scanned". A `state` you
         do not know is "coverage not known" too.
-      required: [state, partial, last_completed_scan_at, last_scan_attempt_at, analysed_at, last_analysis_attempt, manifests_failed, manifests_carried, lockfiles_carried, dependencies_without_row, second_line, dependencies_unknown, clean_result, count_blank]
+      required: [state, partial, last_completed_scan_at, last_scan_attempt_at, analysed_at, last_analysis_attempt, manifests_failed, manifests_carried, lockfiles_carried, dependencies_without_row, second_line, dependencies_unknown, clean_result, count_blank, lockfiles_unread]
       properties:
         state:
           type: string
@@ -8245,7 +8245,7 @@ components:
               format: date-time
             reason:
               type: string
-              enum: [clone_unavailable, root_unreadable, replace_failed]
+              enum: [clone_unavailable, root_unreadable, replace_failed, manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed]
         manifests_failed:
           type: integer
           description: Manifests that could not be read or parsed.
@@ -8283,6 +8283,24 @@ components:
           description: The vulnerability list answer only. The paths behind `manifests_carried`.
           items:
             type: string
+        lockfiles_unread:
+          type: [object, "null"]
+          description: |
+            A caution beside the state (0.29.214). Null except when the
+            repository's lockfiles went unread at the last analysis. With
+            `last_read_at` set, the exact versions and transitive
+            dependencies are as old as that time; with it null, the
+            repository has lockfiles and none was ever read, so transitive
+            dependencies are not checked. Absent on an older server: show
+            nothing.
+          required: [reason, last_read_at]
+          properties:
+            reason:
+              type: string
+              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable]
+            last_read_at:
+              type: [string, "null"]
+              format: date-time
     LockfileCertainty:
       type: object
       description: How much of the repository's dependency set a lockfile pins (`db.LockfileCertainty`).

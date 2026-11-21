@@ -87,13 +87,28 @@ type Write struct {
 	Note string
 	// NewName (rename-table, set-schema) is the name the relation takes.
 	NewName string
+	// Cascade (truncate): TRUNCATE ... CASCADE, which empties every table
+	// that references the named one as well.
+	Cascade bool
 	// where is the write's own WHERE, as the parser read it.
 	where any
 	loc   int
+	// seq is the write's place in the order the text was read in (shared
+	// with the text's definitions: Def.seq), bodies included.
+	seq int
 	// scope is what a name can mean where the write stands (resolve.go's
 	// reading in policy.go); node is the statement that holds the write.
 	scope *scope
 	node  any
+	// cat is the catalog the write is judged in (CheckIn sets it): what a
+	// FROM item reads is followed through its views.
+	cat *Catalog
+	// top and src: the whole statement the write stands in, as a node and
+	// as it was written: the top-level statement of the text, or, for a
+	// write in a body, the statement of the body (a WITH and everything
+	// under it is one statement). It is what an Exception pins.
+	top any
+	src string
 }
 
 // FKAction is one column a foreign key's referential action can write.
@@ -109,11 +124,32 @@ type FKAction struct {
 type scope struct {
 	from []fromItem
 	env  *bodyEnv
+	// ctes are the queries of every WITH of the top-level statement the
+	// write stands in, by name: a FROM item that names one reads what that
+	// query reads.
+	ctes map[string]any
 }
 
 // fromItem is one relation of a FROM list, as a qualifier names it: by its
 // alias, or with none by its name (and schema.name).
-type fromItem struct{ schema, name, alias string }
+type fromItem struct {
+	schema, name, alias string
+	// direct: the item is a relation written in place (a RangeVar).
+	direct bool
+	// rels are the relations the item reads: itself for a relation written
+	// in place, every relation named in a sub-select or a function's
+	// arguments otherwise.
+	rels []string
+	// sub is the item's query when it is a sub-select written in place
+	// (FROM (SELECT ...) s); colnames: its alias renames its columns
+	// (AS s(a, b)).
+	sub      any
+	colnames bool
+	// incoming: the item holds nothing but values handed in: unnest of
+	// placeholders, a VALUES list of placeholders, or a sub-select whose
+	// every output is one (incomingItem). Its columns are incoming values.
+	incoming bool
+}
 
 // bodyEnv is the body (DO block, function) a statement stands in: the names
 // that are variables there.
@@ -145,6 +181,13 @@ type Def struct {
 	// INHERITS).
 	Sources []string
 	Parents []string
+	// Refs (Kind "table", and "ref" for a foreign key added to an existing
+	// table): the tables this one's foreign keys reference.
+	Refs []string
+	// seq and env: where in the reading order the definition stands
+	// (Write.seq), and the body it stands in (nil at the top of a text).
+	seq int
+	env *bodyEnv
 }
 
 // SetItem is one assignment.
@@ -243,11 +286,11 @@ var stmtKinds = map[string]int{
 	"CreateSubscriptionStmt": kindPasses, "CreateTableAsStmt": kindReads, "CreateTableSpaceStmt": kindPasses,
 	"CreateTransformStmt": kindPasses, "CreateTrigStmt": kindReads, "CreateUserMappingStmt": kindPasses,
 	"CreatedbStmt": kindPasses, "DeallocateStmt": kindPasses, "DeclareCursorStmt": kindPasses, "DefineStmt": kindPasses,
-	"DiscardStmt": kindPasses, "DropOwnedStmt": kindPasses, "DropRoleStmt": kindPasses, "DropSubscriptionStmt": kindPasses,
+	"DiscardStmt": kindPasses, "DropOwnedStmt": kindReads, "DropRoleStmt": kindPasses, "DropSubscriptionStmt": kindPasses,
 	"DropTableSpaceStmt": kindPasses, "DropUserMappingStmt": kindPasses, "DropdbStmt": kindPasses, "ExecuteStmt": kindPasses,
 	"ExplainStmt": kindPasses, "FetchStmt": kindPasses, "GrantRoleStmt": kindPasses, "GrantStmt": kindPasses,
 	"ImportForeignSchemaStmt": kindPasses, "IndexStmt": kindPasses, "ListenStmt": kindPasses, "LoadStmt": kindPasses,
-	"LockStmt": kindPasses, "NotifyStmt": kindPasses, "PrepareStmt": kindPasses, "ReassignOwnedStmt": kindPasses,
+	"LockStmt": kindPasses, "NotifyStmt": kindPasses, "PrepareStmt": kindPasses, "ReassignOwnedStmt": kindReads,
 	"RefreshMatViewStmt": kindPasses, "ReindexStmt": kindPasses, "ReplicaIdentityStmt": kindPasses, "ReturnStmt": kindPasses,
 	"RuleStmt": kindReads, "SecLabelStmt": kindPasses, "SelectStmt": kindReads, "TransactionStmt": kindPasses,
 	"UnlistenStmt": kindPasses, "VacuumStmt": kindPasses, "VariableSetStmt": kindPasses, "VariableShowStmt": kindPasses,
@@ -346,6 +389,12 @@ func Defs(sql string) ([]Def, error) {
 }
 
 func readWrites(sql string, nesting int, env *bodyEnv) ([]Write, []Def, error) {
+	return readWritesSeq(sql, nesting, env, new(int))
+}
+
+// readWritesSeq reads a text; seq counts the writes and definitions read so
+// far, across the bodies of one top-level text.
+func readWritesSeq(sql string, nesting int, env *bodyEnv, seq *int) ([]Write, []Def, error) {
 	if nesting > maxBodyNesting {
 		return nil, nil, fmt.Errorf("bodies nested more than %d deep are not read", maxBodyNesting)
 	}
@@ -358,7 +407,7 @@ func readWrites(sql string, nesting int, env *bodyEnv) ([]Write, []Def, error) {
 	if p.err != nil {
 		return nil, nil, p.err
 	}
-	r := &reader{sql: sql, nesting: nesting, env: env}
+	r := &reader{sql: sql, nesting: nesting, env: env, seq: seq}
 	for _, raw := range p.stmts {
 		rs, _ := raw.(jnode)
 		if kind, _ := wrapped(rs["stmt"]); kind == "" {
@@ -373,6 +422,8 @@ func readWrites(sql string, nesting int, env *bodyEnv) ([]Write, []Def, error) {
 			r.text = sql[from : from+n]
 		}
 		r.base = from
+		r.top = rs["stmt"]
+		r.ctes = ctesOf(rs["stmt"])
 		r.walk(rs["stmt"])
 		if r.err != nil {
 			return nil, nil, r.err
@@ -396,6 +447,49 @@ type reader struct {
 	base int
 	out  []Write
 	err  error
+	// seq is the shared reading-order counter; ctes the WITH queries of the
+	// top-level statement being read.
+	seq  *int
+	ctes map[string]any
+	// top is the top-level statement being read.
+	top any
+}
+
+// ctesOf are the queries of every WITH anywhere in a statement, by name.
+// Two of one name (in two sub-selects) are both kept: what the name reads
+// is then what either reads.
+func ctesOf(stmt any) map[string]any {
+	out := map[string]any{}
+	var find func(any)
+	find = func(n any) {
+		switch t := n.(type) {
+		case []any:
+			for _, e := range t {
+				find(e)
+			}
+		case jnode:
+			if k, c := wrapped(t); k == "CommonTableExpr" {
+				name := jstr(c["ctename"])
+				if prev, ok := out[name]; ok {
+					out[name] = []any{prev, c["ctequery"]}
+				} else {
+					out[name] = c["ctequery"]
+				}
+			}
+			for _, k := range sortedKeys(t) {
+				find(t[k])
+			}
+		}
+	}
+	find(stmt)
+	return out
+}
+
+// def records a relation the text defines, with where it stands.
+func (r *reader) def(d Def) {
+	*r.seq++
+	d.seq, d.env = *r.seq, r.env
+	r.defs = append(r.defs, d)
 }
 
 func (r *reader) fail(format string, args ...any) {
@@ -459,7 +553,7 @@ func (r *reader) walk(v any) {
 				// parameters are names there.
 				outer := r.env
 				fn, params := funcSig(body)
-				r.env = sqlEnv(fn, params, outer)
+				r.env = sqlEnv(fn, params, nil)
 				defer func() { r.env = outer }()
 			}
 			t = body
@@ -490,10 +584,15 @@ func (r *reader) add(w Write, from ...any) {
 		w.node = r.stmt
 	}
 	if w.scope == nil {
-		w.scope = &scope{env: r.env}
+		w.scope = &scope{env: r.env, ctes: r.ctes}
 		for _, f := range from {
 			w.scope.from = append(w.scope.from, fromItems(f)...)
 		}
+	}
+	*r.seq++
+	w.seq = *r.seq
+	if w.top == nil {
+		w.top, w.src = r.top, strings.TrimSpace(r.text)
 	}
 	r.out = append(r.out, w)
 }
@@ -513,38 +612,69 @@ func fromItems(v any) []fromItem {
 			}
 		case jnode:
 			kind, body := wrapped(t)
+			aliasOf := func() (name string, colnames bool) {
+				a, ok := body["alias"].(jnode)
+				if !ok {
+					return "", false
+				}
+				return jstr(a["aliasname"]), len(jlist(a["colnames"])) > 0
+			}
 			switch kind {
 			case "RangeVar":
-				it := fromItem{schema: jstr(body["schemaname"]), name: jstr(body["relname"])}
-				if a, ok := body["alias"].(jnode); ok {
-					it.alias = jstr(a["aliasname"])
-				}
+				it := fromItem{schema: jstr(body["schemaname"]), name: jstr(body["relname"]), direct: true, rels: []string{relName(body)}}
+				it.alias, it.colnames = aliasOf()
 				out = append(out, it)
 				return
 			case "SelectStmt", "SubLink":
 				return
+			case "RangeSubselect":
+				it := fromItem{sub: body["subquery"], rels: relsIn(body["subquery"]), incoming: incomingQuery(body["subquery"])}
+				if it.alias, it.colnames = aliasOf(); it.alias != "" {
+					out = append(out, it)
+				}
+				return
 			case "RangeFunction":
-				if _, ok := body["alias"].(jnode); !ok {
-					// A function in FROM with no alias is named by its name.
-					for _, f := range jlist(body["functions"]) {
-						_, l := wrapped(f)
-						for _, fc := range jlist(l["items"]) {
-							if k, c := wrapped(fc); k == "FuncCall" {
-								if names := jlist(c["funcname"]); len(names) > 0 {
-									if s, ok := sval(names[len(names)-1]); ok {
-										out = append(out, fromItem{alias: s})
-									}
-								}
+				it := fromItem{rels: relsIn(body["functions"]), incoming: true}
+				var names []string
+				n := 0
+				for _, f := range jlist(body["functions"]) {
+					_, l := wrapped(f)
+					for _, fc := range jlist(l["items"]) {
+						k, c := wrapped(fc)
+						if k == "" {
+							continue // the column definitions' place, empty
+						}
+						n++
+						if k != "FuncCall" || !unnestOfIncoming(fc) {
+							it.incoming = false
+						}
+						if fnames := jlist(c["funcname"]); k == "FuncCall" && len(fnames) > 0 {
+							if s, ok := sval(fnames[len(fnames)-1]); ok {
+								names = append(names, s)
 							}
 						}
 					}
 				}
+				it.incoming = it.incoming && n > 0 && len(it.rels) == 0
+				if it.alias, it.colnames = aliasOf(); it.alias != "" {
+					out = append(out, it)
+				} else {
+					// A function in FROM with no alias is named by its name.
+					for _, name := range names {
+						named := it
+						named.alias = name
+						out = append(out, named)
+					}
+				}
+				return
 			}
 			if kind != "" {
 				t = body
 			}
 			if a, ok := t["alias"].(jnode); ok && jstr(a["aliasname"]) != "" {
-				out = append(out, fromItem{alias: jstr(a["aliasname"])})
+				// A join's alias (or a form this does not know): it reads
+				// everything written under it.
+				out = append(out, fromItem{alias: jstr(a["aliasname"]), rels: relsIn(t), colnames: true})
 			}
 			for _, k := range sortedKeys(t) {
 				if k == "subquery" || k == "alias" {
@@ -556,6 +686,130 @@ func fromItems(v any) []fromItem {
 	}
 	walk(v)
 	return out
+}
+
+// incomingValue: v is a value handed in and nothing else: a placeholder,
+// or a cast (or casts) of one.
+func incomingValue(v any) bool {
+	for {
+		k, b := wrapped(v)
+		switch k {
+		case "ParamRef":
+			return true
+		case "TypeCast":
+			v = b["arg"]
+		default:
+			return false
+		}
+	}
+}
+
+// unnestOfIncoming: v is unnest(...) of incoming values (one array, or
+// several side by side), with nothing else about the call.
+func unnestOfIncoming(v any) bool {
+	k, f := wrapped(v)
+	names := jlist(f["funcname"])
+	if k != "FuncCall" || len(names) == 0 || len(jlist(f["args"])) == 0 {
+		return false
+	}
+	if name, _ := sval(names[len(names)-1]); name != "unnest" {
+		return false
+	}
+	if len(names) == 2 {
+		if schema, _ := sval(names[0]); schema != "pg_catalog" {
+			return false
+		}
+	} else if len(names) != 1 {
+		return false
+	}
+	for _, extra := range []string{"agg_order", "agg_filter", "over", "agg_star", "agg_distinct", "func_variadic", "agg_within_group"} {
+		if f[extra] != nil {
+			return false
+		}
+	}
+	for _, a := range jlist(f["args"]) {
+		if !incomingValue(a) {
+			return false
+		}
+	}
+	return true
+}
+
+// incomingQuery: a sub-select in FROM that holds nothing but values handed
+// in. STRICTLY: it names no relation at all (at any depth), has no WITH and
+// no set operation, and is either a VALUES list whose every value is an
+// incoming value, or a SELECT whose every output is an incoming value or
+// unnest of incoming values, over no FROM or over FROM items that are
+// themselves incoming. Anything that reads a table is not this.
+func incomingQuery(q any) bool {
+	k, sel := wrapped(q)
+	if k != "SelectStmt" || len(relsIn(q)) > 0 || sel["withClause"] != nil || sel["larg"] != nil || sel["rarg"] != nil {
+		return false
+	}
+	for key := range sel {
+		switch key {
+		case "targetList", "fromClause", "valuesLists", "limitOption", "op":
+		default:
+			// WHERE, GROUP BY, HAVING, a window, ORDER BY, LIMIT, a lock,
+			// DISTINCT: not the plain list of values this accepts.
+			return false
+		}
+	}
+	if rows := jlist(sel["valuesLists"]); len(rows) > 0 {
+		for _, row := range rows {
+			_, l := wrapped(row)
+			items := jlist(l["items"])
+			if len(items) == 0 {
+				return false
+			}
+			for _, e := range items {
+				if !incomingValue(e) {
+					return false
+				}
+			}
+		}
+		return sel["targetList"] == nil && sel["fromClause"] == nil
+	}
+	targets := jlist(sel["targetList"])
+	if len(targets) == 0 {
+		return false
+	}
+	from := fromItems(sel["fromClause"])
+	for _, it := range from {
+		if !it.incoming {
+			return false
+		}
+	}
+	if len(jlist(sel["fromClause"])) != len(from) {
+		// An item with no name to go by (a join, a form not known).
+		return false
+	}
+	for _, e := range targets {
+		tk, rt := wrapped(e)
+		if tk != "ResTarget" {
+			return false
+		}
+		val := rt["val"]
+		if incomingValue(val) || unnestOfIncoming(val) {
+			continue
+		}
+		// A column of an incoming item of this FROM (SELECT t.a FROM
+		// unnest($1) AS t(a)), or all of them.
+		ck, c := wrapped(val)
+		if ck != "ColumnRef" || len(from) == 0 {
+			return false
+		}
+		fields := jlist(c["fields"])
+		if len(fields) == 2 {
+			q, _ := sval(fields[0])
+			if !fromNamed(from, q) {
+				return false
+			}
+		} else if len(fields) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // relName is "schema.name" of a relation written in place (a RangeVar's
@@ -584,6 +838,11 @@ func relsIn(v any) []string {
 		case jnode:
 			if k, rv := wrapped(t); k == "RangeVar" {
 				out = append(out, relName(rv))
+			} else if k == "" && jstr(t["relname"]) != "" {
+				// A relation held in place, with no wrapper: the target of
+				// a data-modifying statement (WITH d AS (DELETE FROM t ...
+				// RETURNING *) reads t).
+				out = append(out, relName(t))
 			}
 			for _, k := range sortedKeys(t) {
 				find(t[k])
@@ -591,6 +850,19 @@ func relsIn(v any) []string {
 		}
 	}
 	find(v)
+	return out
+}
+
+// relsRead are the relations a query reads: every relation named under v
+// but the names of the query's own WITH queries (a CTE is no relation).
+func relsRead(v any) []string {
+	ctes := ctesOf(v)
+	var out []string
+	for _, n := range relsIn(v) {
+		if _, isCTE := ctes[n]; !isCTE {
+			out = append(out, n)
+		}
+	}
 	return out
 }
 
@@ -747,6 +1019,7 @@ func (r *reader) visit(kind string, body jnode) {
 				return
 			}
 			if w, ok := r.target("truncate", rv); ok {
+				w.Cascade = jstr(body["behavior"]) == "DROP_CASCADE"
 				r.add(w)
 			}
 		}
@@ -795,8 +1068,12 @@ func (r *reader) visit(kind string, body jnode) {
 			case action != "":
 				w.Alters = append(w.Alters, AlterAction{Column: jstr(c["name"]), Action: action})
 			}
-			if k, con := wrapped(c["def"]); k == "Constraint" {
-				w.FKs = append(w.FKs, fkActions(con, "")...)
+			// A foreign key the action adds: as a table constraint, or as a
+			// column's own (ADD COLUMN c ... REFERENCES ...).
+			fks, refs := defFKs(c["def"])
+			w.FKs = append(w.FKs, fks...)
+			if len(refs) > 0 {
+				r.def(Def{Kind: "ref", Name: relName(body["relation"]), Refs: refs})
 			}
 		}
 		r.add(w)
@@ -813,21 +1090,21 @@ func (r *reader) visit(kind string, body jnode) {
 		if jstr(body["objtype"]) == "OBJECT_MATVIEW" {
 			kind = "matview"
 		}
-		r.defs = append(r.defs, Def{Kind: kind, Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t"})
+		r.def(Def{Kind: kind, Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t", Sources: relsRead(body["query"])})
 	case "SelectStmt":
 		// SELECT ... INTO t makes a table.
 		if into, ok := body["intoClause"].(jnode); ok {
 			rv, _ := into["rel"].(jnode)
-			r.defs = append(r.defs, Def{Kind: "table", Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t"})
+			r.def(Def{Kind: "table", Name: relName(rv), Temp: jstr(rv["relpersistence"]) == "t"})
 		}
 	case "ViewStmt":
 		view, _ := body["view"].(jnode)
-		r.defs = append(r.defs, Def{Kind: "view", Name: relName(view), Temp: jstr(view["relpersistence"]) == "t", Sources: relsIn(body["query"])})
+		r.def(Def{Kind: "view", Name: relName(view), Temp: jstr(view["relpersistence"]) == "t", Sources: relsRead(body["query"])})
 	case "RuleStmt":
 		rel, _ := body["relation"].(jnode)
 		if jstr(body["event"]) == "CMD_SELECT" {
 			// ON SELECT DO INSTEAD makes the relation a view.
-			r.defs = append(r.defs, Def{Kind: "view", Name: relName(rel), Sources: relsIn(body["actions"])})
+			r.def(Def{Kind: "view", Name: relName(rel), Sources: relsRead(body["actions"])})
 		}
 		if w, ok := r.target("rule", rel); ok {
 			w.Alias, w.Note = "", "rule "+jstr(body["rulename"])
@@ -848,13 +1125,18 @@ func (r *reader) visit(kind string, body jnode) {
 		if !ok {
 			return
 		}
-		r.defs = append(r.defs, Def{Kind: "rename", Name: jstr(body["newschema"]) + "." + jstr(rel["relname"]), Sources: []string{relName(rel)}})
+		r.def(Def{Kind: "rename", Name: jstr(body["newschema"]) + "." + jstr(rel["relname"]), Sources: []string{relName(rel)}})
 		if w, ok := r.target("set-schema", rel); ok {
 			w.Alias, w.Note = "", "to schema "+jstr(body["newschema"])
 			w.NewName = jstr(body["newschema"]) + "." + jstr(rel["relname"])
 			r.add(w)
 		}
 	case "RenameStmt":
+		if jstr(body["renameType"]) == "OBJECT_SCHEMA" {
+			// Every table of the schema is named otherwise afterwards.
+			r.add(Write{Kind: "rename-schema", Schema: jstr(body["subname"]), NewName: jstr(body["newname"]), loc: r.base})
+			return
+		}
 		rel, _ := body["relation"].(jnode)
 		if rel == nil {
 			return
@@ -871,7 +1153,7 @@ func (r *reader) visit(kind string, body jnode) {
 			if s := jstr(rel["schemaname"]); s != "" {
 				name = s + "." + name
 			}
-			r.defs = append(r.defs, Def{Kind: "rename", Name: name, Sources: []string{relName(rel)}})
+			r.def(Def{Kind: "rename", Name: name, Sources: []string{relName(rel)}})
 			if w, ok := r.target("rename-table", rel); ok {
 				w.Alias, w.Note, w.NewName = "", "to "+jstr(body["newname"]), name
 				r.add(w)
@@ -886,6 +1168,12 @@ func (r *reader) visit(kind string, body jnode) {
 					r.fail("DROP SCHEMA: a name that is not read")
 				}
 			}
+			return
+		}
+		if t := jstr(body["removeType"]); (t == "OBJECT_TYPE" || t == "OBJECT_DOMAIN") && jstr(body["behavior"]) == "DROP_CASCADE" {
+			// DROP TYPE / DOMAIN ... CASCADE drops every COLUMN of the type,
+			// in whatever table: which, no reader of text can know.
+			r.add(Write{Kind: "drop-type", Note: "DROP " + strings.TrimPrefix(t, "OBJECT_") + " ... CASCADE", loc: r.base})
 			return
 		}
 		if t := jstr(body["removeType"]); t != "OBJECT_TABLE" && t != "OBJECT_FOREIGN_TABLE" {
@@ -914,6 +1202,10 @@ func (r *reader) visit(kind string, body jnode) {
 			}
 			r.add(w)
 		}
+	case "DropOwnedStmt":
+		r.add(Write{Kind: "owned", Note: "DROP OWNED BY", loc: r.base})
+	case "ReassignOwnedStmt":
+		r.add(Write{Kind: "owned", Note: "REASSIGN OWNED BY", loc: r.base})
 	case "DoStmt":
 		lang, text, has := "plpgsql", "", false
 		for _, e := range jlist(body["args"]) {
@@ -971,24 +1263,17 @@ func (r *reader) create(body jnode, kind string) {
 	for _, e := range jlist(body["inhRelations"]) {
 		def.Parents = append(def.Parents, relName(e))
 	}
-	r.defs = append(r.defs, def)
+	var fks []FKAction
+	for _, e := range jlist(body["tableElts"]) {
+		f, refs := defFKs(e)
+		fks = append(fks, f...)
+		def.Refs = append(def.Refs, refs...)
+	}
+	r.def(def)
 	if len(def.Parents) > 0 {
 		if w, ok := r.target("create-child", rel); ok {
 			w.Alias, w.Parents = "", def.Parents
 			r.add(w)
-		}
-	}
-	var fks []FKAction
-	for _, e := range jlist(body["tableElts"]) {
-		switch k, b := wrapped(e); k {
-		case "Constraint":
-			fks = append(fks, fkActions(b, "")...)
-		case "ColumnDef":
-			for _, c := range jlist(b["constraints"]) {
-				if ck, con := wrapped(c); ck == "Constraint" {
-					fks = append(fks, fkActions(con, jstr(b["colname"]))...)
-				}
-			}
 		}
 	}
 	if len(fks) > 0 {
@@ -997,6 +1282,36 @@ func (r *reader) create(body jnode, kind string) {
 			r.add(w)
 		}
 	}
+}
+
+// defFKs reads the foreign keys of one element of a table's definition,
+// wherever one can stand (CREATE TABLE's elements, typed and partition
+// tables' column options, ALTER TABLE's ADD CONSTRAINT and ADD COLUMN): a
+// table constraint, or the constraints written on a column. It is the ONE
+// reading of both (round 7: ALTER TABLE ... ADD COLUMN c ... REFERENCES ...
+// ON DELETE SET NULL was read by nothing). fks are the columns an action
+// can write, refs the tables referenced.
+func defFKs(elt any) (fks []FKAction, refs []string) {
+	one := func(con jnode, own string) {
+		if jstr(con["contype"]) != "CONSTR_FOREIGN" {
+			return
+		}
+		fks = append(fks, fkActions(con, own)...)
+		if pk, ok := con["pktable"].(jnode); ok {
+			refs = append(refs, relName(pk))
+		}
+	}
+	switch k, b := wrapped(elt); k {
+	case "Constraint":
+		one(b, "")
+	case "ColumnDef":
+		for _, c := range jlist(b["constraints"]) {
+			if ck, con := wrapped(c); ck == "Constraint" {
+				one(con, jstr(b["colname"]))
+			}
+		}
+	}
+	return fks, refs
 }
 
 // fkActions are the columns a foreign-key constraint's referential action
@@ -1068,7 +1383,9 @@ func sqlEnv(fn string, params []string, outer *bodyEnv) *bodyEnv {
 func (r *reader) body(lang, text, fn string, params []string) {
 	switch strings.ToLower(lang) {
 	case "sql":
-		ws, defs, err := readWrites(text, r.nesting+1, sqlEnv(fn, params, r.env))
+		// A function's (or DO block's) body starts with no variable of
+		// the text that creates it: those are not in scope when it runs.
+		ws, defs, err := readWritesSeq(text, r.nesting+1, sqlEnv(fn, params, nil), r.seq)
 		if err != nil {
 			r.fail("in a body: %w", err)
 			return
@@ -1098,15 +1415,20 @@ func variableConflict(body string) string {
 	if err != nil {
 		return ""
 	}
+	// The LAST one written decides, as in PostgreSQL (round 7: the first
+	// was taken).
+	last := ""
 	for i := 0; i+2 < len(toks); i++ {
 		if body[toks[i].start:toks[i].end] == "#" && strings.EqualFold(body[toks[i+1].start:toks[i+1].end], "variable_conflict") {
 			switch w := strings.ToLower(body[toks[i+2].start:toks[i+2].end]); w {
 			case "use_variable", "use_column":
-				return w
+				last = w
+			default:
+				last = ""
 			}
 		}
 	}
-	return ""
+	return last
 }
 
 // plpgsql reads the PL/pgSQL body of the statement at r.text, through the
@@ -1139,7 +1461,9 @@ func (r *reader) plpgsql(fnName, bodyText string) {
 	}
 	// What a name can be in this body: its variables, records and
 	// parameters (the parser lists them all as datums).
-	p.env = &bodyEnv{lang: "plpgsql", vars: map[string]bool{}, fn: fnName, conflict: variableConflict(bodyText), outer: r.env}
+	// outer is nil: a body created inside another body (or run by its
+	// EXECUTE) has none of that body's variables (round 7).
+	p.env = &bodyEnv{lang: "plpgsql", vars: map[string]bool{}, fn: fnName, conflict: variableConflict(bodyText)}
 	for _, d := range p.datums {
 		if _, b := wrapped(d); jstr(b["refname"]) != "" {
 			name := strings.ToLower(jstr(b["refname"]))
@@ -1355,7 +1679,10 @@ func (p *plReader) expr(e jnode, stmt, field string) {
 			r.fail("EXECUTE of text made at run time is not read")
 			return
 		}
-		ws, defs, err := readWrites(text, r.nesting+1, p.env)
+		// The text is planned by itself: none of the body's variables is
+		// a name in it (round 7: it was read with them). Its own empty
+		// body, so that what it creates is of no other text's level.
+		ws, defs, err := readWritesSeq(text, r.nesting+1, &bodyEnv{lang: "execute", vars: map[string]bool{}}, r.seq)
 		if err != nil {
 			r.fail("in EXECUTE: %w", err)
 			return
@@ -1385,7 +1712,7 @@ func (p *plReader) expr(e jnode, stmt, field string) {
 	if p.trigger() && stmt != "PLpgSQL_stmt_return" && rowRefs(text, false) {
 		p.form("the whole row NEW or OLD is used as a value (" + strings.Join(strings.Fields(q), " ") + ")")
 	}
-	ws, defs, err := readWrites(text, r.nesting+1, p.env)
+	ws, defs, err := readWritesSeq(text, r.nesting+1, p.env, r.seq)
 	if err != nil {
 		r.fail("in a body: %w", err)
 		return
@@ -1532,6 +1859,12 @@ func columnRef(v any) ([]string, bool) {
 //	col IS NULL                    COALESCE(col, '') = ''
 //	NULLIF(col, '') IS NULL        (col IS NULL OR col = '')
 //
+// An equality may be written either way round, as in
+//
+//	'' = COALESCE(col, '')
+//
+// and length(col) = 0 is NOT one of these: it is not true of a NULL.
+//
 // where col is a reference the resolver gives to the target's own column
 // (Write.classify: bare, or qualified by the target's alias, or by its name
 // or schema.name when it has no alias; never another relation's column of
@@ -1602,9 +1935,16 @@ func (w Write) isEmptyGuard(c any, col string) bool {
 		return ok && stored(inner)
 	}
 	if l, r, ok := equals(c); ok {
-		k, co := wrapped(l)
-		args := jlist(co["args"])
-		return k == "CoalesceExpr" && len(args) == 2 && stored(args[0]) && empty(args[1]) && empty(r)
+		// COALESCE(col, '') = '', and the same written the other way
+		// round ('' = COALESCE(col, '')): equality is symmetric.
+		for _, side := range [][2]any{{l, r}, {r, l}} {
+			k, co := wrapped(side[0])
+			args := jlist(co["args"])
+			if k == "CoalesceExpr" && len(args) == 2 && stored(args[0]) && empty(args[1]) && empty(side[1]) {
+				return true
+			}
+		}
+		return false
 	}
 	// (col IS NULL OR col = ''), in either order, and nothing else under
 	// the OR.
@@ -1613,7 +1953,8 @@ func (w Write) isEmptyGuard(c any, col string) bool {
 		for _, pair := range [][2]any{{args[0], args[1]}, {args[1], args[0]}} {
 			arg, isN := isNull(pair[0])
 			l, r, isEq := equals(pair[1])
-			if isN && isEq && stored(arg) && stored(l) && empty(r) {
+			// col = '' or '' = col.
+			if isN && isEq && stored(arg) && ((stored(l) && empty(r)) || (stored(r) && empty(l))) {
 				return true
 			}
 		}

@@ -357,7 +357,7 @@ func resolveLocalBinary(ctx context.Context, logger *slog.Logger, workDir string
 func provisionScratchDB(ctx context.Context, logger *slog.Logger, cfg *config.Config, dbname string) error {
 	adminCfg := cfg.Database
 	adminCfg.DBName = "postgres"
-	pool, err := pgxpool.New(ctx, adminCfg.ConnectionString())
+	pool, err := openPool(ctx, adminCfg.ConnectionString())
 	if err != nil {
 		return fmt.Errorf("connect to postgres for DDL: %w", err)
 	}
@@ -545,7 +545,7 @@ func runMigrate(ctx context.Context, logger *slog.Logger, side, binary, cfgPath 
 // repo_directory paths) follow into the scratch DBs. ON CONFLICT on
 // the natural key (access_token, platform) makes the copy idempotent.
 func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, scratchDBName string) error {
-	primaryPool, err := pgxpool.New(ctx, cfg.Database.ConnectionString())
+	primaryPool, err := openPool(ctx, cfg.Database.ConnectionString())
 	if err != nil {
 		return fmt.Errorf("connect primary: %w", err)
 	}
@@ -553,7 +553,7 @@ func copyAPIKeys(ctx context.Context, logger *slog.Logger, cfg *config.Config, s
 
 	scratchCfg := cfg.Database
 	scratchCfg.DBName = scratchDBName
-	scratchPool, err := pgxpool.New(ctx, scratchCfg.ConnectionString())
+	scratchPool, err := openPool(ctx, scratchCfg.ConnectionString())
 	if err != nil {
 		return fmt.Errorf("connect scratch %s: %w", scratchDBName, err)
 	}
@@ -656,7 +656,7 @@ func runRowCountDiff(ctx context.Context, logger *slog.Logger, cfg *config.Confi
 	for i, side := range dataTestSides {
 		sideCfg := cfg.Database
 		sideCfg.DBName = side.dbname
-		pool, err := pgxpool.New(ctx, sideCfg.ConnectionString())
+		pool, err := openPool(ctx, sideCfg.ConnectionString())
 		if err != nil {
 			return nil, nil, fmt.Errorf("connect %s: %w", side.dbname, err)
 		}
@@ -816,7 +816,7 @@ func writeReport(path string, report *db.RowCountDiffReport, colReport *db.Colum
 func cleanupScratchDBs(ctx context.Context, logger *slog.Logger, cfg *config.Config) error {
 	adminCfg := cfg.Database
 	adminCfg.DBName = "postgres"
-	pool, err := pgxpool.New(ctx, adminCfg.ConnectionString())
+	pool, err := openPool(ctx, adminCfg.ConnectionString())
 	if err != nil {
 		return fmt.Errorf("connect to postgres for cleanup: %w", err)
 	}

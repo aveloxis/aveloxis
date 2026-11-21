@@ -4,6 +4,7 @@
 package testdb
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,23 @@ func TestRunInstallsTheJudgeAndFailsOnItsVerdict(t *testing.T) {
 	}, base, nil, nil)
 	if code != 1 {
 		t.Errorf("a run during which production sent a forbidden write: exit %d, want 1", code)
+	}
+	// The judge is installed BEFORE the preparation (round 7: installed
+	// after it, every test passed): what the preparation sends through the
+	// store, its migrate included, is judged like anything else.
+	before, sawItsOwnJudge := writejudge.Installed(), false
+	code = run(func() int { return 0 }, base, func(context.Context, string) error {
+		j := writejudge.Installed()
+		sawItsOwnJudge = j != nil && j != before
+		if j != nil {
+			// What the preparation sends goes to whichever judge is in
+			// place: this run's, when it is installed first.
+			j.RecordFrom(at, "UPDATE aveloxis_data.repos SET platform_repo_id = 0", false, nil)
+		}
+		return nil
+	}, nil)
+	if !sawItsOwnJudge || code != 1 {
+		t.Errorf("a run whose PREPARATION sent a forbidden write from production: its own judge in place %v, exit %d; want it judged by this run's judge (exit 1)", sawItsOwnJudge, code)
 	}
 	// Failed tests keep their own exit code: there is no verdict to add.
 	code = run(func() int {

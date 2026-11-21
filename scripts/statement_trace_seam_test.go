@@ -22,8 +22,8 @@ import (
 // PostgreSQL parser it links, is in none (0.29.213). Over every non-test Go
 // file of the module:
 //
-//   - only the store's pool construction reads the seam, and only the judge
-//     gives it a value;
+//   - only the one file that opens pools and connections (internal/db: every
+//     opener, 0.29.214) reads the seam, and only the judge gives it a value;
 //   - only the DB-tier test harness (internal/testdb) imports the judge, and
 //     installs it;
 //   - nothing outside internal/testdb imports the harness.
@@ -37,7 +37,7 @@ func TestTheStatementSeamIsSetOnlyByTheTestHarness(t *testing.T) {
 		harness  = module + "internal/testdb"
 		// (Named in two parts: this test walks the tree, it does not read
 		// that file by name.)
-		storeFile = "internal/db/" + "postgres" + ".go"
+		storeFile = "internal/db/" + "open" + ".go"
 		judgeDir  = "internal/testdb/writejudge/"
 		harnessIn = "internal/testdb/"
 	)

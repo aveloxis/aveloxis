@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.213 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.214 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
+      <script src="../_static/documentation_options.js?v=84582877"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -350,6 +350,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
@@ -2044,6 +2045,15 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
+repository’s lockfiles went unread at the last analysis. With
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
+dependencies are as old as that time; with it null, the
+repository has lockfiles and none was ever read, so transitive
+dependencies are not checked. Absent on an older server: show
+nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
 <li><p><strong>forked_from</strong> (<em>string</em>) – Single-repository answer only (always absent in the batch answer). The upstream <code class="docutils literal notranslate"><span class="pre">owner/name</span></code> of a fork; <code class="docutils literal notranslate"><span class="pre">(unknown</span> <span class="pre">upstream)</span></code> when the forge reports a fork but not its upstream; absent otherwise.</p></li>
@@ -2174,6 +2184,15 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>{repo_id}.coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>{repo_id}.coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>{repo_id}.coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
+repository’s lockfiles went unread at the last analysis. With
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
+dependencies are as old as that time; with it null, the
+repository has lockfiles and none was ever read, so transitive
+dependencies are not checked. Absent on an older server: show
+nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>{repo_id}.archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>{repo_id}.last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
 <li><p><strong>{repo_id}.forked_from</strong> (<em>string</em>) – Single-repository answer only (always absent in the batch answer). The upstream <code class="docutils literal notranslate"><span class="pre">owner/name</span></code> of a fork; <code class="docutils literal notranslate"><span class="pre">(unknown</span> <span class="pre">upstream)</span></code> when the forge reports a fork but not its upstream; absent otherwise.</p></li>
@@ -3180,6 +3199,15 @@ recorded. <code class="docutils literal notranslate"><span class="pre">not_scann
 <li><p><strong>coverage.count_blank</strong> (<em>boolean, required</em>) – A count of findings is shown blank, because a 0 would claim a check that did not happen.</p></li>
 <li><p><strong>coverage.manifest_paths_failed[]</strong> (<em>string</em>)</p></li>
 <li><p><strong>coverage.manifest_paths_carried[]</strong> (<em>string</em>)</p></li>
+<li><p><strong>coverage.lockfiles_unread</strong> (<em>object, required</em>) – A caution beside the state (0.29.214). Null except when the
+repository’s lockfiles went unread at the last analysis. With
+<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set, the exact versions and transitive
+dependencies are as old as that time; with it null, the
+repository has lockfiles and none was ever read, so transitive
+dependencies are not checked. Absent on an older server: show
+nothing. Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>)</p></li>
+<li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>counts</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>counts.current</strong> (<em>integer, required</em>)</p></li>
 <li><p><strong>counts.resolved</strong> (<em>integer, required</em>)</p></li>

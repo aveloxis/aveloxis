@@ -60,25 +60,92 @@ func TestTheContributorResolverSendsItsStatements(t *testing.T) {
 	}
 }
 
-// One-statement writers on rows that do not exist: each statement is sent,
-// and changes nothing.
-func TestOneStatementWritersSendTheirStatements(t *testing.T) {
+// One-statement writers: each changes the row it names, as it says, and no
+// other (round 7: this test sent each on a row that did not exist and
+// asserted only that no error came back).
+func TestOneStatementWritersChangeTheirRowAndNoOther(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	const missing = "01000000-0000-0000-0000-0000000006a6"
-	for name, run := range map[string]func() error{
-		"MarkContributorEnriched":        func() error { return store.MarkContributorEnriched(ctx, "r6-no-such-login") },
-		"MarkContributorSearchAttempted": func() error { return store.MarkContributorSearchAttempted(ctx, missing) },
-		"SetIssueClosedBy":               func() error { return store.SetIssueClosedBy(ctx, -6006, missing) },
-		"SetCommitAuthorLogin":           func() error { return store.SetCommitAuthorLogin(ctx, -6006, "r6-no-such-hash", "r6-login") },
-	} {
-		if err := run(); err != nil {
-			t.Errorf("%s on a row that does not exist: %v", name, err)
+	tag := fmt.Sprintf("r7-writers-%d", time.Now().UnixNano())
+	mine := seedR6Contributor(t, store, tag, "", nil)
+	other := seedR6Contributor(t, store, tag+"-other", "", nil)
+	repoID := seedRepoForDeps(t, store, ctx, "r7-writers", tag)
+	t.Cleanup(func() {
+		c := context.Background()
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.issues WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.commits WHERE repo_id = $1`, repoID)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID)
+	})
+	text := func(sql string, args ...any) string {
+		t.Helper()
+		var s *string
+		if err := store.pool.QueryRow(ctx, sql, args...).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	stamps := func() string {
+		return text(`SELECT string_agg(cntrb_login || ':' || (cntrb_last_enriched_at IS NOT NULL) || ':' || (cntrb_last_search_attempted_at IS NOT NULL), ',' ORDER BY cntrb_login)
+			FROM aveloxis_data.contributors WHERE cntrb_id = ANY($1::uuid[])`, []string{mine, other})
+	}
+	if err := store.MarkContributorEnriched(ctx, tag); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamps(); got != tag+":true:false,"+tag+"-other:false:false" {
+		t.Errorf("after the enrichment mark: %q; want it on the named login alone", got)
+	}
+	if err := store.MarkContributorSearchAttempted(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if got := stamps(); got != tag+":true:false,"+tag+"-other:false:true" {
+		t.Errorf("after the search mark: %q; want it on the named contributor alone", got)
+	}
+
+	// The closer of an issue: set where there is none, and never replaced.
+	var open, closed int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number) VALUES ($1, 1, 1) RETURNING issue_id`, repoID).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.issues (repo_id, platform_issue_id, issue_number, closed_by_id) VALUES ($1, 2, 2, $2::uuid) RETURNING issue_id`, repoID, other).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{open, closed} {
+		if err := store.SetIssueClosedBy(ctx, id, mine); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// This one says so when the row is not there; its statement was sent.
-	if err := store.SetForceFullCollect(ctx, -6006, true); err == nil {
+	if got := text(`SELECT string_agg(closed_by_id::text, ',' ORDER BY issue_number) FROM aveloxis_data.issues WHERE repo_id = $1`, repoID); got != mine+","+other {
+		t.Errorf("the issues' closers are %q; want the one without a closer given it, and the other's kept", got)
+	}
+
+	// A commit's author login: set on every file row of the commit that
+	// has none, and on no other commit.
+	for _, c := range [][3]string{{"h1", "a.go", ""}, {"h1", "b.go", "already"}, {"h2", "a.go", ""}} {
+		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.commits (repo_id, cmt_commit_hash, cmt_filename, cmt_author_platform_username) VALUES ($1, $2, $3, $4)`, repoID, c[0], c[1], c[2])
+	}
+	if err := store.SetCommitAuthorLogin(ctx, repoID, "h1", "octo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := text(`SELECT string_agg(cmt_commit_hash || '/' || cmt_filename || '=' || COALESCE(cmt_author_platform_username, ''), ',' ORDER BY cmt_commit_hash, cmt_filename) FROM aveloxis_data.commits WHERE repo_id = $1`, repoID); got != "h1/a.go=octo,h1/b.go=already,h2/a.go=" {
+		t.Errorf("the commits' author logins are %q", got)
+	}
+
+	// The full-collection flag: an error when the repository has no queue
+	// row (nothing was changed), and the flag set and cleared when it has.
+	if err := store.SetForceFullCollect(ctx, repoID, true); err == nil {
 		t.Error("SetForceFullCollect on a repository with no queue row reported success")
+	}
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.collection_queue (repo_id, priority, status, due_at) VALUES ($1, 100, 'queued', NOW())`, repoID)
+	for _, want := range []bool{true, false} {
+		if err := store.SetForceFullCollect(ctx, repoID, want); err != nil {
+			t.Fatal(err)
+		}
+		if got := text(`SELECT force_full_collect::text FROM aveloxis_ops.collection_queue WHERE repo_id = $1`, repoID); got != fmt.Sprint(want) {
+			t.Errorf("force_full_collect is %s after it was set to %v", got, want)
+		}
 	}
 }
 

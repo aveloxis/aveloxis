@@ -13,8 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -84,7 +82,7 @@ func TestCommitResolverMemoisesATransientSearchFailure(t *testing.T) {
 	}
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +192,7 @@ func TestKeyExhaustionExcludesMemoisedCommits(t *testing.T) {
 	}
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +257,7 @@ func TestWriteFailuresAreNotCountedAsResolved(t *testing.T) {
 	}
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +341,7 @@ func TestContributorWriteFailuresAreCountedOnce(t *testing.T) {
 	}
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

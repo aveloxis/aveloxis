@@ -20,7 +20,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestUserOrgPassListsGitLabGroups (AVELOXIS_TEST_DB; stage 1e of
@@ -49,7 +48,7 @@ func TestUserOrgPassListsGitLabGroups(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

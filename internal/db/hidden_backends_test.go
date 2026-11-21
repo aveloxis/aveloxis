@@ -113,7 +113,7 @@ func TestHiddenBackendsNeverReadAsThisHost(t *testing.T) {
 		}
 		cfg.ConnConfig.RuntimeParams["application_name"] = app
 		cfg.MaxConns = 1
-		p, err := pgxpool.NewWithConfig(ctx, cfg)
+		p, err := OpenPoolConfig(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +201,7 @@ func TestHiddenBackendsNeverReadAsThisHost(t *testing.T) {
 	const waiterApp = "aveloxis-avhidden-waiter"
 	wcfg.ConnConfig.RuntimeParams["application_name"] = waiterApp
 	wcfg.MaxConns = 1
-	waiterPool, err := pgxpool.NewWithConfig(ctx, wcfg)
+	waiterPool, err := OpenPoolConfig(ctx, wcfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestNoninheritedStatsGrantStillReadsHidden(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = tag
 	cfg.MaxConns = 1
-	tagged, err := pgxpool.NewWithConfig(ctx, cfg)
+	tagged, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestInheritedRoleReadsBackendsOfThatRoleAsThisHost(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = tag
 	cfg.MaxConns = 1
-	tagged, err := pgxpool.NewWithConfig(ctx, cfg)
+	tagged, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

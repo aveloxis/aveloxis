@@ -2215,10 +2215,12 @@ func validateMavenRepositoryURL(raw string) error {
 // that manages a thousand artifacts and imports twenty BOMs used half a
 // second of CPU time, and a Gradle build of 3,000 projects under a platform
 // that imports thirty BOMs used 0.7 s (CPU time on every thread, the garbage
-// collector's included). Two minutes is some 170 times the larger, for a
+// collector's included). Three minutes is some 250 times the larger, for a
 // machine several times slower and a build many times larger than any
 // measured, and it is what a hostile repository can cost one worker in CPU
-// time per analysis. TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits
+// time per analysis. (120 until 0.29.214; raised by the operator, 2026-11-20:
+// the measurements are an M-series machine's with nothing else running, and
+// a production host's cores are slower and loaded.) TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits
 // (internal/collector) reads both under the defaults and holds them to a
 // fiftieth of this.
 //
@@ -2229,22 +2231,50 @@ func validateMavenRepositoryURL(raw string) error {
 // forty gibibytes.
 //
 // The lockfiles are read by the same child and are the larger demand: a
-// lockfile is read whole and has no largest size. Measured in the child, at
-// this default: a package-lock.json of 50 MB (89,000 packages) held 97 MiB
-// and one of 200 MB (352,000 packages) 605 MiB; a yarn.lock of 50 MB 174 MiB
-// and of 200 MB 672 MiB; a pnpm-lock.yaml of 50 MB (177,000 packages) 752
-// MiB, some fifteen times its size, which is what the YAML parser's nodes
-// weigh. So the default reads a pnpm-lock.yaml of about 65 MB and the other
-// formats past 200 MB. The largest lockfile among the 50,000 of the fleet
-// this was sized against holds 6,749 packages, a thirteenth of the smallest
-// of those files. Each took two seconds of CPU time or less.
+// lockfile is read whole and has no largest size. Measured THROUGH THE CHILD
+// at this default, on an Apple M-series machine (0.29.214, review round 7:
+// honest generated files, sizes stepped; "read" is the largest step read
+// and "stopped" the next, at which the child ended itself at the limit):
 //
-// The maxima are what fits the types the limits are used as (a Duration,
-// a count of bytes).
+//	format                       read     stopped   heap peak   resident peak
+//	package-lock.json (v3)       448 MB   512 MB    2.2 x file  1,234 MiB
+//	package-lock.json (v1)       448 MB   512 MB    2.3 x       1,212 MiB
+//	composer.lock                512 MB   640 MB    1.7 x         975 MiB
+//	yarn.lock (v1)               320 MB   384 MB    2.6 x       1,089 MiB
+//	yarn.lock (berry)            320 MB   384 MB    2.7 x       1,180 MiB
+//	Gemfile.lock                  96 MB   128 MB    8.9 x       1,188 MiB
+//	stack.yaml.lock               80 MB    96 MB   11.2 x       1,087 MiB
+//	pnpm-lock.yaml (v9)           79 MB    95 MB   12.5 x       1,318 MiB
+//	pnpm-lock.yaml (v6)           64 MB    80 MB   13.0 x         832 MiB heap, 1,065 resident
+//	pubspec.lock                  64 MB    80 MB   13.6 x       1,076 MiB
+//
+// So the default reads a YAML lockfile (pnpm, pubspec, stack) of some 64 MB
+// and the JSON and yarn formats past 300 MB. Two things these numbers are
+// not. The heap peak is the largest the child's watchdog SAW, ten times a
+// second, with Go's collector pressed to nine tenths of the limit; a
+// reading that is near the limit is stopped on some runs and not others.
+// And the limit is on the Go heap's objects: what the system counted
+// resident was up to 1.3 times the setting, which is what a worker's child
+// can take from the host. Each reading took under 35 s of CPU time (the
+// YAML formats, most of it the collector's), and the others under 13 s. The
+// largest lockfile among the 50,000 of the fleet this was sized against
+// holds 6,749 packages, under a megabyte.
+//
+// A file whose size alone is more than the limit leaves is not read at all
+// and is one manifest or lockfile that failed (collector.cloneFileTooLarge).
+//
+// The maxima. MaxManifestReadCPUSeconds is a day: the longest an analysis
+// is ever let read one clone for, and small enough that everything derived
+// from the limit is a valid Duration (the parent's clock allowance is a
+// minute and four times it, four days; until 0.29.214 the maximum was what
+// fits a Duration, and the allowance derived from the largest values
+// overflowed to a negative one, so the reader was stopped at its first
+// check). MaxManifestReadMemoryMB is what fits a count of bytes; nothing is
+// derived from the memory limit but a share of it.
 const (
-	DefaultManifestReadCPUSeconds = 120
+	DefaultManifestReadCPUSeconds = 180
 	DefaultManifestReadMemoryMB   = 1024
-	MaxManifestReadCPUSeconds     = int(math.MaxInt64 / int64(time.Second))
+	MaxManifestReadCPUSeconds     = 24 * 60 * 60
 	MaxManifestReadMemoryMB       = int(math.MaxInt64 >> 20)
 )
 

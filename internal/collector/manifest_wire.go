@@ -39,9 +39,11 @@ import (
 // file (manifest.MaxBuildFileBytes). A frame carries a piece of a result,
 // cut by the child at manifestPartTarget, or one fetched pom's extract
 // (whose document was at most mavenPomBodyLimit, the same eight mebibytes);
-// the factor of two is for the encoding. One item that does not fit a frame
-// is a declaration longer than a build file, which nothing downstream
-// could store: the child says so and the analysis fails, by name.
+// the factor of two is for the encoding. No item of a result is too large
+// for a frame: one longer than manifestItemLimit is not sent, and the file
+// it stands in is recorded as one that could not be read, by name
+// (0.29.214; this comment said so before, and the child instead exited with
+// the protocol status and said nothing).
 const manifestFrameLimit = 2 * manifest.MaxBuildFileBytes
 
 // manifestPartTarget is the size at which the child cuts a piece of the
@@ -143,6 +145,9 @@ type manifestPart struct {
 	Repositories []manifest.DeclaredRepository `json:"repositories,omitempty"`
 	// Names are name counts of the name pass: language, name, count.
 	Names []manifestNameCount `json:"names,omitempty"`
+	// Present are the lockfiles the clone holds, listed by the name pass
+	// without reading one (0.29.214).
+	Present []manifestWirePresent `json:"present,omitempty"`
 	// The lockfile pass: each lockfile that parsed is one head, then its
 	// entries and edges, which name it by its place among the heads.
 	Lockfiles []manifestWireLockfile `json:"lockfiles,omitempty"`
@@ -162,6 +167,13 @@ type manifestWireLockfile struct {
 	NotAVersion int    `json:"not_a_version,omitempty"`
 	Entries     int    `json:"entries"`
 	Edges       int    `json:"edges"`
+}
+
+// manifestWirePresent is a lockfile that is in the clone: its path and its
+// roster kind (its file name).
+type manifestWirePresent struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 // manifestWireEntry and manifestWireEdge are a LockfileEntry and a
@@ -207,8 +219,11 @@ type manifestDone struct {
 	Parsed         int    `json:"parsed"`
 	RemoteNotAsked int    `json:"remote_not_asked"`
 	// Lockfiles is how many lockfiles the lockfile pass parsed and sent.
-	Lockfiles int    `json:"lockfiles"`
-	RootError string `json:"root_error,omitempty"`
+	Lockfiles int `json:"lockfiles"`
+	// LockfilesListed: the name pass listed the clone's lockfiles (its
+	// Present items are all of them).
+	LockfilesListed bool   `json:"lockfiles_listed,omitempty"`
+	RootError       string `json:"root_error,omitempty"`
 	// What the pass cost the child, as its watchdog measured it: the CPU
 	// time used and the largest heap seen.
 	CPUNanos      int64 `json:"cpu_nanos"`

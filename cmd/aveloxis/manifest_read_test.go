@@ -51,7 +51,7 @@ func TestTheManifestReaderIsAHiddenSubcommand(t *testing.T) {
 func TestTheManifestLimitsAreInstalledFromTheConfiguration(t *testing.T) {
 	restoreOutboundPolicy(t) // the wiring rule for a test that names loadConfig; this one reads its source
 	for _, c := range []struct{ collection, wantCPU, wantMem string }{
-		{``, "manifest_read_cpu_seconds=120", "manifest_read_memory_mb=1024"},
+		{``, "manifest_read_cpu_seconds=180", "manifest_read_memory_mb=1024"},
 		{`"manifest_read_cpu_seconds": 45, "manifest_read_memory_mb": 300`, "manifest_read_cpu_seconds=45", "manifest_read_memory_mb=300"},
 	} {
 		path := filepath.Join(t.TempDir(), "aveloxis.json")

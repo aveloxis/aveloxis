@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/config"
-	"github.com/jackc/pgx/v5"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestEndpointNameDropsTheRepository(t *testing.T) {
@@ -152,7 +152,7 @@ func TestRunProbeRollsBackAndKeepsThePlan(t *testing.T) {
 	dbCfg, _ := testDatabaseConfig(t, dsn)
 	ctx := context.Background()
 	r := &snapshotRun{ctx: ctx, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), primary: &config.Config{Database: dbCfg}, workDir: t.TempDir()}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := db.OpenConn(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

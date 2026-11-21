@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -26,7 +25,7 @@ func showSettingSQL(name string) string { return "SHOW " + name }
 // returned, never guessed (SR-5): the caller sizes from demand alone and
 // says so.
 func ServerConnectionBudget(ctx context.Context, connString string) (maxConns, reserved int, err error) {
-	conn, err := pgx.Connect(ctx, connString)
+	conn, err := OpenConn(ctx, connString)
 	if err != nil {
 		return 0, 0, fmt.Errorf("connecting for the connection budget: %w", err)
 	}

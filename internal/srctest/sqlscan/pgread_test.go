@@ -137,7 +137,7 @@ func TestWritesTheParseTreeShows(t *testing.T) {
 		"a foreign table as a target":     `CREATE FOREIGN TABLE s.ft (repo_git text OPTIONS (column_name 'repo_git')) SERVER x; UPDATE s.ft SET repo_git = 'x'`,
 		"a table made a view by a rule":   `CREATE TABLE s.t (repo_git text); CREATE RULE "_RETURN" AS ON SELECT TO s.t DO INSTEAD SELECT * FROM aveloxis_data.repos; UPDATE s.t SET repo_git = 'x'`,
 		"a view under a new name":         `CREATE VIEW s.v AS SELECT * FROM aveloxis_data.repos; ALTER VIEW s.v RENAME TO v2; UPDATE s.v2 SET repo_git = 'x'`,
-		"pg_temp, by name":                `CREATE TEMP TABLE repos (repo_git text); UPDATE pg_temp.repos SET repo_git = 'x'`,
+		"pg_temp, a table nothing made":   `UPDATE pg_temp.repos SET repo_git = 'x'`,
 		// Round 6: what changes the table itself.
 		"a trigger, with any function": `CREATE TRIGGER tr BEFORE INSERT OR UPDATE OR DELETE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION t()`,
 		"a trigger with a built-in":    `CREATE TRIGGER tg BEFORE INSERT OR UPDATE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION tsvector_update_trigger(repo_git, 'pg_catalog.english', x)`,

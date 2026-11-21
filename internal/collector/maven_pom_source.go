@@ -216,13 +216,17 @@ const (
 // everything; otherwise unknown beats refused beats not found.
 func (s *mavenPomSource) RemotePom(group, artifact, version string, declared []string) (*manifest.RemotePom, manifest.RemoteOutcome) {
 	if !mavenCoordinateAskable(group, artifact, version) {
-		// Not text to build a URL from: nothing is asked. The answer is
-		// the one the reader itself gives a coordinate it never asks for
-		// (a range, a snapshot): not found. "Refused" is a REPOSITORY
-		// that may not be fetched from, which is not what happened; this
-		// is counted and said on its own (round 3).
+		// Not text to build a URL from: nothing is asked, and the answer
+		// says so (0.29.214: manifest.RemoteNotAsked; until then it was
+		// "not found", which is what a repository that ANSWERED says, and
+		// let a later BOM's version stand behind a pom nobody had read).
+		// The reader reports it as it does a range or a snapshot it never
+		// asks for (inherited_not_found) and withholds what would come
+		// after it. "Refused" is a REPOSITORY that may not be fetched
+		// from, which is not what happened; this is counted and said on
+		// its own (round 3).
 		s.unaskable++
-		return nil, manifest.RemoteNotFound
+		return nil, manifest.RemoteNotAsked
 	}
 	unknown, refused := false, false
 	settle := func(pom *manifest.RemotePom, ans repositoryAnswer) bool {

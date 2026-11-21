@@ -133,6 +133,9 @@ type gradleDecl struct {
 	version  string // "" when none is written or it could not be read
 	written  string // the coordinate as written
 	platform bool
+	// enforced: the platform was written enforcedPlatform(...), whose
+	// versions override every other (gradleTree.applyPlatforms).
+	enforced bool
 	// versionWritten: a version was written, read or not. A platform does
 	// not answer for a dependency the build gave a version to.
 	versionWritten bool
@@ -149,6 +152,8 @@ type gradleDecl struct {
 // gradleBuild is what one build file says.
 type gradleBuild struct {
 	decls []gradleDecl
+	// enforcing: the arguments being read are those of enforcedPlatform(...).
+	enforcing bool
 	// outer are the variables known from elsewhere when the file is read
 	// (gradleVars: shared, never copied). A name is looked up in own
 	// first, then there.
@@ -400,6 +405,13 @@ func (b *gradleBuild) fromParts(toks []gradleTok, seen *gradleFromsRead) [][]gra
 	// lo to hi of the list (a comma at end-1 has nothing after it here).
 	lo, hi := firstAtOrAfter(froms, at), firstAtOrAfter(froms, end-1)
 	if seen != nil {
+		// r.end == end: the parts were read for a statement that ended
+		// where this one does, so each part is the same tokens. Round 7's
+		// review dropped the condition and no test failed, and no input was
+		// found for which it decides: it is kept, because the only thing it
+		// can do is make this skip LESS often (a part read again is applied
+		// once: gradleTree.applied), and a part read for a statement with
+		// another end may be cut somewhere else.
 		if r, ok := seen.at[d]; ok && r.end == end && r.lo <= lo && hi <= r.hi {
 			return out
 		}
@@ -662,6 +674,23 @@ func (l *gradleLibs) get(name string) ([]gradleDecl, bool) {
 // interpolation produces: pomInterpolatedLimit, for the same reason (a
 // variable that is another one twice over doubles at every line).
 const gradleInterpolatedLimit = pomInterpolatedLimit
+
+// gradleValueTokens and gradleMapTokens bound how many tokens are read as
+// ONE value (a string, or strings and variables joined by +), and as one
+// map of values. A value of gradleInterpolatedLimit bytes has at most that
+// many parts and as many + between them; a map of four thousand entries is
+// larger than any a build declares its versions in. Longer is not read.
+//
+// Why a count and not only the bytes built (round 7): a statement that
+// does not end (a line that ends in +, an unclosed bracket) is begun again
+// at every line of it, each time to the end of the file. Reading each such
+// statement whole took time in the square of the file's size (`val x by
+// extra a +`, line after line: 573 KB in 269 s). With these bounds each is
+// read in constant time once it is longer than a value can be.
+const (
+	gradleValueTokens = 2 * gradleInterpolatedLimit
+	gradleMapTokens   = 1 << 14
+)
 
 // gradleRepo is one entry of a repositories block. shared: it serves the
 // projects below this file too (allprojects, subprojects, or a settings
@@ -1060,7 +1089,10 @@ func (b *gradleBuild) arguments(config string, args []gradleTok, platform bool) 
 		}
 		switch {
 		case fn == "platform" || fn == "enforcedPlatform":
+			was := b.enforcing
+			b.enforcing = was || fn == "enforcedPlatform"
 			b.arguments(config, args[1:], true)
+			b.enforcing = was
 			return
 		case fn == "testFixtures":
 			b.arguments(config, args[1:], platform)
@@ -1132,6 +1164,9 @@ func (b *gradleBuild) accessor(config, name string, platform bool) {
 // after line, doubles a value at every line, and a concatenation of n
 // strings built with += copies what it has n times.
 func (b *gradleBuild) value(toks []gradleTok) (v, written string, known bool) {
+	if len(toks) > gradleValueTokens {
+		return "", "", false
+	}
 	known = true
 	var vb, wb strings.Builder
 	add := func(sb *strings.Builder, s string) {
@@ -1175,6 +1210,9 @@ func (b *gradleBuild) coordinate(config string, toks []gradleTok, platform bool)
 	// unread version does not cost the name.
 	// Built in one buffer (a string added to at every token copied what
 	// was built so far each time).
+	if len(toks) > gradleValueTokens {
+		return // longer than a coordinate can be (gradleValueTokens)
+	}
 	var wb strings.Builder
 	for _, t := range toks {
 		switch {
@@ -1229,7 +1267,7 @@ func (b *gradleBuild) add(config, group, artifact, version, written string, plat
 		version = ""
 	}
 	b.decls = append(b.decls, gradleDecl{config: config, group: group, artifact: artifact, version: version, written: written,
-		platform: platform, versionWritten: versionWritten, forSubprojects: b.inShared})
+		platform: platform, enforced: platform && b.enforcing, versionWritten: versionWritten, forSubprojects: b.inShared})
 }
 
 // gradleIsVersion reports whether s is one version: not empty, and not a
@@ -1462,7 +1500,7 @@ func (b *gradleBuild) applyFrom(args []gradleTok) {
 // ([a: '1', b: '2'] or mapOf("a" to "1")), whose entries become name.a.
 func (b *gradleBuild) assign(name string, toks []gradleTok) {
 	name = gradleVarName(name)
-	if name == "" || len(toks) == 0 {
+	if name == "" || len(toks) == 0 || len(toks) > gradleMapTokens {
 		return
 	}
 	inner := toks

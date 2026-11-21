@@ -286,58 +286,102 @@ func TestATriggerFunctionsFormsAreHeldAgainstIt(t *testing.T) {
 	}
 }
 
-// An Exception excuses ONE violation: of its table, column and kind, in its
-// file, whose assigned expression (or statement) is exactly its Fragment
-// (or Statement) as the parser reads both. Round 6: a needle anywhere in
-// the argument's text excused every violation of the column in that text.
+// An Exception pins ONE statement, whole (round 7; round 6 matched the
+// assigned expression, and so excused the statement with any WHERE).
 func TestAnExceptionExcusesOneViolation(t *testing.T) {
 	reg := []Registered{{Table: "aveloxis_data.repos", Column: "io", Policy: InsertOnly, Reason: "r"}}
-	ex := []Exception{{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, File: "f.go", Fragment: "$2", Reason: "reviewed"}}
+	const excused = `UPDATE aveloxis_data.repos SET io = $2 WHERE id = $1`
+	ex := []Exception{{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, File: "f.go", Fragment: "$2", Statement: excused, Reason: "reviewed"}}
 	judge := func(sql string, ex []Exception) Report {
 		st := []Stmt{{File: "f.go", SQL: sql}}
 		return CheckIn(CatalogOf(st).Table("aveloxis_data.repos"), st, reg, ex)
 	}
-	const excused = `UPDATE aveloxis_data.repos SET io = $2 WHERE id = $1`
+	// The statement itself, however it is spelled and laid out.
 	for what, sql := range map[string]string{
-		"spacing and a comment": "UPDATE aveloxis_data.repos\n  SET io = /* the forge's */ $2\n WHERE id = $1",
-		"in a conflict update":  `INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET io = $2`,
+		"as written":             excused,
+		"spacing and a comment":  "UPDATE aveloxis_data.repos\n  SET io = /* the forge's */ $2\n WHERE id = $1",
+		"keywords in lower case": "update aveloxis_data.repos set io=$2 where id=$1",
+		"quoted names":           `UPDATE "aveloxis_data"."repos" SET "io" = $2 WHERE "id" = $1`,
 	} {
 		if rep := judge(sql, ex); len(rep.Violations)+len(rep.StaleExceptions)+len(rep.BadExceptions) != 0 {
-			t.Errorf("%s: %+v stale %+v", what, rep.Violations, rep.StaleExceptions)
+			t.Errorf("%s: %+v stale %+v bad %v", what, rep.Violations, rep.StaleExceptions, rep.BadExceptions)
 		}
 	}
+	// Any OTHER statement is not excused, and the Exception is then stale:
+	// the WHERE dropped, changed, or added to; another form of the write.
 	for what, sql := range map[string]string{
-		"a second statement":           excused + `; UPDATE aveloxis_data.repos SET io = NULL`,
-		"the needle in a comment":      `UPDATE aveloxis_data.repos SET io = NULL -- was: SET io = $2`,
-		"the needle in a string":       `UPDATE aveloxis_data.repos SET io = NULL, note = 'SET io = $2'`,
-		"a longer placeholder":         `UPDATE aveloxis_data.repos SET io = $20`,
-		"the value and more":           `UPDATE aveloxis_data.repos SET io = $2 || io`,
-		"another kind of violation":    excused + `; ALTER TABLE aveloxis_data.repos DROP COLUMN io`,
-		"a COPY beside it":             excused + `; COPY aveloxis_data.repos FROM STDIN`,
-		"a TRUNCATE beside it":         excused + `; TRUNCATE aveloxis_data.repos`,
-		"the same value, twice":        excused + `; UPDATE aveloxis_data.repos SET io = $2`,
-		"twice, in one conflict chain": `WITH a AS (UPDATE aveloxis_data.repos SET io = $2 RETURNING 1) UPDATE aveloxis_data.repos SET io = $2`,
+		"the WHERE dropped":             `UPDATE aveloxis_data.repos SET io = $2`,
+		"a condition dropped":           `UPDATE aveloxis_data.repos SET io = $2 WHERE TRUE`,
+		"a condition added":             excused + ` AND TRUE`,
+		"another condition":             `UPDATE aveloxis_data.repos SET io = $2 WHERE id = $3`,
+		"the condition under OR":        `UPDATE aveloxis_data.repos SET io = $2 WHERE id = $1 OR TRUE`,
+		"an alias added":                `UPDATE aveloxis_data.repos r SET io = $2 WHERE id = $1`,
+		"a FROM added":                  `UPDATE aveloxis_data.repos SET io = $2 FROM aveloxis_data.other WHERE id = $1`,
+		"another assignment beside it":  `UPDATE aveloxis_data.repos SET io = $2, note = 'x' WHERE id = $1`,
+		"RETURNING added":               excused + ` RETURNING id`,
+		"ONLY":                          `UPDATE ONLY aveloxis_data.repos SET io = $2 WHERE id = $1`,
+		"in a conflict update":          `INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET io = $2`,
+		"in a MERGE":                    `MERGE INTO aveloxis_data.repos r USING aveloxis_data.other s ON s.id = r.id WHEN MATCHED THEN UPDATE SET io = $2`,
+		"inside a WITH":                 `WITH a AS (` + excused + `) SELECT 1`,
+		"inside a WITH, returning":      `WITH a AS (` + excused + ` RETURNING 1) SELECT 1 FROM a`,
+		"the needle in a comment":       `UPDATE aveloxis_data.repos SET io = NULL WHERE id = $1 -- was: SET io = $2`,
+		"the needle in a string":        `UPDATE aveloxis_data.repos SET io = NULL, note = 'SET io = $2' WHERE id = $1`,
+		"a longer placeholder":          `UPDATE aveloxis_data.repos SET io = $20 WHERE id = $1`,
+		"the value and more":            `UPDATE aveloxis_data.repos SET io = $2 || io WHERE id = $1`,
+		"a string where a number stood": `UPDATE aveloxis_data.repos SET io = $2 WHERE id = '1'`,
 	} {
 		rep := judge(sql, ex)
-		if len(rep.Violations) != 1 {
-			t.Errorf("%s: %d violations, want the one the exception does not excuse: %+v\n  %s", what, len(rep.Violations), rep.Violations, sql)
+		if len(rep.Violations) != 1 || len(rep.StaleExceptions) != 1 {
+			t.Errorf("%s: %d violations, %d stale; want the violation reported and the exception stale\n  %s", what, len(rep.Violations), len(rep.StaleExceptions), sql)
 		}
 	}
-	// Two violations of the same value in one text take two Exceptions.
-	if rep := judge(excused+`; UPDATE aveloxis_data.repos SET io = $2`, append(ex, ex[0])); len(rep.Violations)+len(rep.StaleExceptions) != 0 {
-		t.Errorf("two exceptions for two violations: %+v stale %+v", rep.Violations, rep.StaleExceptions)
+	// Beside the excused statement, whatever else the text does is held.
+	for what, sql := range map[string]string{
+		"a second statement":        excused + `; UPDATE aveloxis_data.repos SET io = NULL`,
+		"the same value, unguarded": excused + `; UPDATE aveloxis_data.repos SET io = $2`,
+		"another kind of violation": excused + `; ALTER TABLE aveloxis_data.repos DROP COLUMN io`,
+		"a COPY beside it":          excused + `; COPY aveloxis_data.repos FROM STDIN`,
+		"a TRUNCATE beside it":      excused + `; TRUNCATE aveloxis_data.repos`,
+	} {
+		rep := judge(sql, ex)
+		if len(rep.Violations) != 1 || len(rep.StaleExceptions) != 0 {
+			t.Errorf("%s: %d violations (%d stale), want the one the exception does not excuse: %+v\n  %s", what, len(rep.Violations), len(rep.StaleExceptions), rep.Violations, sql)
+		}
 	}
-	// Another file's, another kind's, another column's exception excuses
+	// ACROSS THE TEXTS OF ONE DECLARATION (round 7: an Exception was spent
+	// per text, so one excused the guarded statement in one text and the
+	// unguarded one in the next).
+	two := []Stmt{{File: "f.go", Decl: "d", SQL: excused}, {File: "f.go", Decl: "d", SQL: `UPDATE aveloxis_data.repos SET io = $2`}}
+	declared := []Exception{{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, File: "f.go", Decl: "d", Fragment: "$2", Statement: excused, Reason: "r"}}
+	if rep := CheckIn(CatalogOf(two).Table("aveloxis_data.repos"), two, reg, declared); len(rep.Violations) != 1 || rep.Violations[0].Statement != `UPDATE aveloxis_data.repos SET io = $2` {
+		t.Errorf("two texts of one declaration, one Exception: %+v", rep.Violations)
+	}
+	// The same statement met again (a builder that gives it for two
+	// inputs) is that statement.
+	twice := []Stmt{{File: "f.go", Decl: "d", SQL: excused}, {File: "f.go", Decl: "d", SQL: excused}}
+	if rep := CheckIn(CatalogOf(twice).Table("aveloxis_data.repos"), twice, reg, declared); len(rep.Violations)+len(rep.StaleExceptions) != 0 {
+		t.Errorf("the pinned statement, twice: %+v", rep.Violations)
+	}
+	// One statement can assign a column twice (a MERGE's arms): Fragment
+	// says which assignment is the excused one.
+	const merge = `MERGE INTO aveloxis_data.repos r USING aveloxis_data.other s ON s.id = r.id WHEN MATCHED AND s.x THEN UPDATE SET io = $2 WHEN MATCHED THEN UPDATE SET io = $3`
+	arm := []Exception{{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, File: "f.go", Fragment: "$2", Statement: merge, Reason: "r"}}
+	mst := []Stmt{{File: "f.go", SQL: merge}}
+	if rep := CheckIn(CatalogOf(mst).Table("aveloxis_data.repos", "aveloxis_data.other"), mst, reg, arm); len(rep.Violations) != 1 || rep.Violations[0].Expr != "$3" || len(rep.StaleExceptions) != 0 {
+		t.Errorf("a MERGE with two arms, one excused: %+v stale %+v", rep.Violations, rep.StaleExceptions)
+	}
+	// Two statements take two Exceptions.
+	both := append(declared, Exception{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, File: "f.go", Decl: "d", Fragment: "$2", Statement: two[1].SQL, Reason: "r"})
+	if rep := CheckIn(CatalogOf(two).Table("aveloxis_data.repos"), two, reg, both); len(rep.Violations)+len(rep.StaleExceptions) != 0 {
+		t.Errorf("two exceptions for two statements: %+v stale %+v", rep.Violations, rep.StaleExceptions)
+	}
+	// Another file's, declaration's, kind's, column's exception excuses
 	// nothing, and is stale.
 	for what, change := range map[string]func(*Exception){
-		"another file":   func(e *Exception) { e.File = "g.go" },
-		"another column": func(e *Exception) { e.Column = "other" },
-		"another table":  func(e *Exception) { e.Table = "aveloxis_data.other" },
-		"another value":  func(e *Exception) { e.Fragment = "$3" },
-		"another statement": func(e *Exception) {
-			e.Statement = `UPDATE aveloxis_data.repos SET io = $2 WHERE id = $1 AND TRUE`
-		},
-		"another kind": func(e *Exception) { e.Kind, e.Fragment, e.Statement = KindCopy, "", excused },
+		"another file":        func(e *Exception) { e.File = "g.go" },
+		"another declaration": func(e *Exception) { e.Decl = "other" },
+		"another table":       func(e *Exception) { e.Table = "aveloxis_data.other" },
+		"another kind":        func(e *Exception) { e.Kind, e.Fragment = KindCopy, "" },
 	} {
 		e := ex[0]
 		change(&e)
@@ -345,29 +389,45 @@ func TestAnExceptionExcusesOneViolation(t *testing.T) {
 			t.Errorf("%s: %d violations, %d stale; want the violation and the exception stale", what, len(rep.Violations), len(rep.StaleExceptions))
 		}
 	}
-	// With a Statement, that statement and no other.
-	withStmt := []Exception{{Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2", Statement: excused, Reason: "r"}}
-	if rep := judge("update aveloxis_data.repos set io=$2 where id=$1", withStmt); len(rep.Violations)+len(rep.StaleExceptions) != 0 {
-		t.Errorf("the statement itself: %+v", rep.Violations)
-	}
-	if rep := judge(`UPDATE aveloxis_data.repos SET io = $2`, withStmt); len(rep.Violations) != 1 {
-		t.Error("the statement without its WHERE was excused by an exception that gives the statement whole")
-	}
 	// An exception that is not well formed is said to be, and excuses
 	// nothing.
 	for what, e := range map[string]Exception{
-		"no kind":                      {Table: "aveloxis_data.repos", Column: "io", Fragment: "$2", Reason: "r"},
-		"an assignment, no fragment":   {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Statement: excused, Reason: "r"},
-		"a fragment that is not one":   {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2, $3", Reason: "r"},
-		"a fragment that is a prefix":  {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2 ||", Reason: "r"},
-		"a table kind, no statement":   {Table: "aveloxis_data.repos", Kind: KindTruncate, Reason: "r"},
-		"a table kind with a fragment": {Table: "aveloxis_data.repos", Kind: KindTruncate, Fragment: "$2", Statement: "TRUNCATE aveloxis_data.repos", Reason: "r"},
-		"two statements":               {Table: "aveloxis_data.repos", Kind: KindTruncate, Statement: "TRUNCATE aveloxis_data.repos; SELECT 1", Reason: "r"},
+		"no kind":                                  {Table: "aveloxis_data.repos", Column: "io", Fragment: "$2", Statement: excused, Reason: "r"},
+		"NO STATEMENT (the round-6 form)":          {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2", Reason: "r"},
+		"an assignment, no fragment":               {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Statement: excused, Reason: "r"},
+		"a fragment that is not one":               {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2, $3", Statement: excused, Reason: "r"},
+		"a fragment that is a prefix":              {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2 ||", Statement: excused, Reason: "r"},
+		"a fragment the statement does not assign": {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$3", Statement: excused, Reason: "r"},
+		"a fragment assigned to another column":    {Table: "aveloxis_data.repos", Column: "other", Kind: KindAssign, Fragment: "$2", Statement: excused, Reason: "r"},
+		"a table kind with a fragment":             {Table: "aveloxis_data.repos", Kind: KindTruncate, Fragment: "$2", Statement: "TRUNCATE aveloxis_data.repos", Reason: "r"},
+		"a table kind, no statement":               {Table: "aveloxis_data.repos", Kind: KindTruncate, Reason: "r"},
+		"two statements":                           {Table: "aveloxis_data.repos", Kind: KindTruncate, Statement: "TRUNCATE aveloxis_data.repos; SELECT 1", Reason: "r"},
+		"a statement that is not SQL":              {Table: "aveloxis_data.repos", Column: "io", Kind: KindAssign, Fragment: "$2", Statement: "UPDATE WHERE", Reason: "r"},
 	} {
 		rep := judge(excused+`; TRUNCATE aveloxis_data.repos`, []Exception{e})
 		if len(rep.BadExceptions) != 1 || len(rep.Violations) != 2 {
 			t.Errorf("%s: %d said bad, %d violations; want 1 and 2", what, len(rep.BadExceptions), len(rep.Violations))
 		}
+		// The round-6 form is told what it lacks, in words.
+		if strings.HasPrefix(what, "NO STATEMENT") && (len(rep.BadExceptions) != 1 || !strings.Contains(rep.BadExceptions[0], "pins the one statement it excuses, whole")) {
+			t.Errorf("an exception with no Statement is not told to pin one: %v", rep.BadExceptions)
+		}
+	}
+	// Pins answers the same question for a caller that holds only text.
+	for sql, want := range map[string]bool{
+		excused: true, "update aveloxis_data.repos set io=$2 where id=$1": true,
+		`UPDATE aveloxis_data.repos SET io = $2`: false,
+		`SELECT 1; ` + excused:                   true,
+		// The WHOLE statement: the pinned one under a WITH is another.
+		`WITH a AS (` + excused + ` RETURNING 1) SELECT 1 FROM a`:                  false,
+		`DO $$ BEGIN UPDATE aveloxis_data.repos SET io = $2 WHERE id = $1; END $$`: true, // a statement inside a body counts
+	} {
+		if got, err := ex[0].Pins(sql); err != nil || got != want {
+			t.Errorf("Pins(%s) = %v, %v; want %v", sql, got, err, want)
+		}
+	}
+	if _, err := (Exception{Table: "t", Kind: KindAssign, Fragment: "$2"}).Pins(excused); err == nil {
+		t.Error("Pins of a malformed exception gave no error")
 	}
 }
 

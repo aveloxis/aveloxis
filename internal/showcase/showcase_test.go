@@ -620,3 +620,36 @@ func TestShowcaseFooterLinksTheBlog(t *testing.T) {
 		}
 	}
 }
+
+// The lockfile caution (0.29.214) is on the page under the security line in
+// both of its cases, and not otherwise.
+func TestRenderRepoShowsTheLockfileCautionAndOtherwiseNothing(t *testing.T) {
+	read := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	render := func(at *time.Time, reason string) string {
+		t.Helper()
+		d := RepoPageData{BaseURL: "https://aveloxis.io", Slug: "x-y", Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y",
+			GeneratedAt: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
+		in := vulnclass.CoverageInputs{HasRow: true}
+		in.Coverage.LockfilesReadAt, in.Coverage.LockfilesUnreadReason = at, reason
+		v := vulnclass.Coverage(in)
+		d.SetVulnCoverage(&v)
+		var b strings.Builder
+		if err := RenderRepo(&b, d); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	behind := render(&read, "manifest_read_memory_limit")
+	if !strings.Contains(behind, `<p class="note-line"><strong>Caution.</strong> Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date.</p>`) {
+		t.Errorf("behind: the caution is not on the page:\n%s", behind)
+	}
+	never := render(nil, "manifest_read_failed")
+	if !strings.Contains(never, "<strong>Caution.</strong> Lockfiles could not be read (they could not be read). Transitive dependencies are not checked.</p>") {
+		t.Error("never read: the caution is not on the page")
+	}
+	for name, out := range map[string]string{"read": render(&read, ""), "nothing known": render(nil, "")} {
+		if strings.Contains(out, "Caution.") || strings.Contains(out, "Lockfiles") {
+			t.Errorf("%s: a page with nothing to caution about says something about lockfiles", name)
+		}
+	}
+}

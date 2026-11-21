@@ -20,20 +20,31 @@
 // Exceptions; the verdict is given once, after the package's tests
 // (testdb.Main).
 //
-// Whose statement it is: the first frame of the stack that is in this
-// module, outside this package. In a _test.go file: the statement is a
-// fixture's (a test may write a protected column any way it likes) and is
-// not judged. Otherwise it is production's, and that frame's line is the
-// library call that sent it: what the coverage requirement compares with
-// the static list of such calls in internal/db (Sites).
+// Whose statement it is (Origin, 0.29.214): production's unless a test
+// wrote it. The frames of the stack that are in this module, outside this
+// package, are read from the library outwards. A _test.go frame that only
+// FORWARDS (a method named as a library function that takes SQL is: Exec,
+// Query, QueryRow, SendBatch, CopyFrom, Prepare, on a test's stand-in for
+// a transaction or pool) is passed over: the text it was handed is its
+// caller's. The first frame left decides. In a _test.go file: the
+// statement is a fixture's (a test may write a protected column any way it
+// likes) and is not judged. Otherwise it is production's, and that frame's
+// line is the call that sent it: what the coverage requirement compares
+// with the static list of such calls in internal/db (Sites). A stack with
+// NO such frame (a goroutine or a callback that starts at a library
+// function: `go pool.Exec(ctx, sql)`) is production's too, with its origin
+// unknown: the judge does not take what it cannot place for a fixture.
 //
 // What it sees, from pgx v5.11's source: the text of Query / QueryRow /
 // Exec as the caller gave it (the trace is taken BEFORE a
 // pgx.QueryRewriter runs; see Rewriters for what is done about that);
 // every statement queued on a batch, when the batch is sent; the table and
-// columns of a CopyFrom; the text of an explicit Prepare. It does not see
-// a statement sent on a connection the store did not build, nor anything
-// written past pgx to the wire.
+// columns of a CopyFrom; the text of an explicit Prepare. It is on every
+// pool and connection opened through internal/db's openers, which is every
+// one this module opens outside the test harness itself
+// (scripts/pool_openers_test.go). It does not see what is written past pgx
+// to the wire: pgconn's own Exec / ExecParams / Prepare on a connection
+// taken out of a pool (conn.Conn().PgConn()), or a raw write.
 package writejudge
 
 import (
@@ -65,7 +76,15 @@ type Sent struct {
 	SQL     string
 	Frames  []Frame // production frames, innermost first
 	Batched bool
+	// Seq is the statement's place among everything recorded (the first
+	// time it was seen): what "production made that table EARLIER" is
+	// decided by.
+	Seq int
 }
+
+// UnknownOrigin is the one frame of a statement sent from a stack that
+// holds no frame of this module.
+var UnknownOrigin = Frame{File: "(no frame of this module)", Decl: "origin unknown (no module frame: a goroutine or callback started outside this module's frames)"}
 
 // Judge collects what the tracer sees.
 type Judge struct {
@@ -148,36 +167,80 @@ func rel(file string) string {
 	return file
 }
 
-// productionFrames is the origin of the statement being traced: none when
-// the first frame in this module is a test's (a fixture), else every
-// production frame of the stack, innermost first.
-func productionFrames(skip int) []Frame {
+// StackFrame is one frame of a stack, as the runtime gives it.
+type StackFrame struct {
+	Function, File string
+	Line           int
+}
+
+// forwards are the names of the library's functions that take SQL (or
+// rows for a table): a method of one of these names in a test file, on a
+// test's stand-in for a transaction, a connection or a pool, hands on the
+// text it was given.
+var forwards = map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "SendBatch": true, "CopyFrom": true, "Prepare": true}
+
+// forwardingTestFrame: a METHOD named as a library function that takes
+// SQL, declared in a _test.go file.
+func forwardingTestFrame(f StackFrame) bool {
+	if !strings.HasSuffix(f.File, "_test.go") {
+		return false
+	}
+	typ, method, isMethod := strings.Cut(DeclOf(f.Function), ".")
+	// The declaration's own frame, not a closure inside it.
+	return isMethod && typ != "" && forwards[method] && strings.HasSuffix(f.Function, "."+method)
+}
+
+// Origin says whose statement a stack sent (the frames from the library
+// outwards): a fixture's, or production's with every production frame of
+// the stack, innermost first. The rule is the package comment's.
+func Origin(stack []StackFrame) (frames []Frame, fixture bool) {
+	decided := false
+	for _, f := range stack {
+		if !strings.HasPrefix(f.Function, module) || strings.HasPrefix(f.Function, self) {
+			continue
+		}
+		test := strings.HasSuffix(f.File, "_test.go")
+		if !decided {
+			if forwardingTestFrame(f) {
+				continue
+			}
+			if test {
+				return nil, true
+			}
+			decided = true
+		}
+		if !test {
+			frames = append(frames, Frame{File: rel(f.File), Line: f.Line, Decl: DeclOf(f.Function)})
+		}
+	}
+	if !decided {
+		return []Frame{UnknownOrigin}, false
+	}
+	return frames, false
+}
+
+// originHere is Origin of the calling goroutine's stack.
+func originHere(skip int) ([]Frame, bool) {
 	pcs := make([]uintptr, 96)
 	n := runtime.Callers(skip, pcs)
 	it := runtime.CallersFrames(pcs[:n])
-	var frames []Frame
-	first := true
+	var stack []StackFrame
 	for {
 		f, more := it.Next()
-		if strings.HasPrefix(f.Function, module) && !strings.HasPrefix(f.Function, self) {
-			test := strings.HasSuffix(f.File, "_test.go")
-			if first && test {
-				return nil
-			}
-			first = false
-			if !test {
-				frames = append(frames, Frame{File: rel(f.File), Line: f.Line, Decl: DeclOf(f.Function)})
-			}
-		}
+		stack = append(stack, StackFrame{Function: f.Function, File: f.File, Line: f.Line})
 		if !more {
 			break
 		}
 	}
-	return frames
+	return Origin(stack)
 }
 
 func (j *Judge) record(sql string, batched bool, args []any) {
-	j.RecordFrom(productionFrames(4), sql, batched, args)
+	frames, fixture := originHere(4)
+	if fixture {
+		frames = nil
+	}
+	j.RecordFrom(frames, sql, batched, args)
 }
 
 // RecordFrom records one statement sent from the given production frames
@@ -210,7 +273,7 @@ func (j *Judge) RecordFrom(frames []Frame, sql string, batched bool, args []any)
 		fmt.Fprintf(&key, "\x00%s:%d", f.File, f.Line)
 	}
 	if _, seen := j.sent[key.String()]; !seen {
-		j.sent[key.String()] = &Sent{SQL: sql, Frames: frames, Batched: batched}
+		j.sent[key.String()] = &Sent{SQL: sql, Frames: frames, Batched: batched, Seq: j.sends}
 	}
 }
 
@@ -253,6 +316,10 @@ func (j *Judge) Statements() []*Sent {
 func (j *Judge) Add(s *Sent) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.sends++
+	if s.Seq == 0 {
+		s.Seq = j.sends
+	}
 	j.sent[fmt.Sprintf("%s\x00%v", s.SQL, s.Frames)] = s
 }
 
@@ -386,7 +453,25 @@ func Violations(cat *sqlscan.Catalog, sent []*Sent, policies []sqlscan.Registere
 		out = append(out, fmt.Sprintf("%s:%d (%s) sent a statement the policy check does not read to its end (%s), so nothing was checked on it:\n  %.300s",
 			at.File, at.Line, at.Decl, u.Detail, strings.Join(strings.Fields(u.SQL), " ")))
 	}
+	// Whether the database holds the schema at all: a database with NONE of
+	// the registered tables (the harness's own tests run on an empty one)
+	// has nothing a statement could write against a policy.
+	schemaThere := false
+	for _, p := range policies {
+		schemaThere = schemaThere || cat.Kind(p.Table) == "table"
+	}
 	for _, v := range rep.Violations {
+		if v.File == "" {
+			// A finding against no statement: a registered table the
+			// catalog does not know (unknown-table), in a database that
+			// holds others of them, so it was renamed, dropped or made
+			// something else while the tests ran. It was dropped until
+			// 0.29.214, having no statement to be suspect of.
+			if schemaThere {
+				out = append(out, fmt.Sprintf("the database's catalog, as the judge read it, has a finding of its own (%s) on %s: %s", v.Kind, v.Table, v.Detail))
+			}
+			continue
+		}
 		suspect[v.File+"\x00"+v.Decl] = true
 	}
 	if len(rep.Violations) == 0 {
@@ -430,6 +515,16 @@ func Violations(cat *sqlscan.Catalog, sent []*Sent, policies []sqlscan.Registere
 	return uniq
 }
 
+// withWhatTheRunDeclared adds to the database's catalog what is not read
+// from the database at the end: what production created while the tests
+// ran (learnWhatProductionMade), and the session tables one text makes and
+// another writes, by the one declared list the static check uses too
+// (TempTables): written as pg_temp.name, each is that session's own table.
+func withWhatTheRunDeclared(cat *sqlscan.Catalog, sent []*Sent) {
+	learnWhatProductionMade(cat, sent)
+	cat.Temp(TempTables...)
+}
+
 // SitesDirEnv names the directory each DB-tier package writes the store's
 // library calls it reached into (one file per package), when it is set:
 // the closing suite sets it, and afterwards requires the UNION of the
@@ -447,11 +542,17 @@ type Sites struct {
 	// frame a batch was sent under.
 	BatchTexts map[string]bool
 	BatchDecls map[string]bool
+	// BatchTextDecls are "text\x00file\x00declaration": each statement
+	// sent on a batch with each internal/db frame it was sent under. A
+	// Queue call whose text another Queue call also queues is reached only
+	// by its text sent under its OWN declaration (0.29.214: three calls
+	// queue the same stamp, and a batch from any one marked all three).
+	BatchTextDecls map[string]bool
 }
 
 // NewSites is an empty record.
 func NewSites() *Sites {
-	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}}
+	return &Sites{Lines: map[string]bool{}, BatchTexts: map[string]bool{}, BatchDecls: map[string]bool{}, BatchTextDecls: map[string]bool{}}
 }
 
 // Fold is a statement with its white space folded: how batch texts are
@@ -472,6 +573,7 @@ func SitesOf(sent []*Sent) *Sites {
 			for _, f := range st.Frames {
 				if strings.HasPrefix(f.File, storeDir) {
 					s.BatchDecls[f.File+"\x00"+f.Decl] = true
+					s.BatchTextDecls[Fold(st.SQL)+"\x00"+f.File+"\x00"+f.Decl] = true
 				}
 			}
 		}
@@ -496,6 +598,7 @@ func (s *Sites) Write(dir, name string) error {
 	put("L", s.Lines)
 	put("T", s.BatchTexts)
 	put("D", s.BatchDecls)
+	put("X", s.BatchTextDecls)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -544,6 +647,8 @@ func ReadSites(dir string) (*Sites, int, error) {
 				union.BatchTexts[rest] = true
 			case "D":
 				union.BatchDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
+			case "X":
+				union.BatchTextDecls[strings.ReplaceAll(rest, "\t", "\x00")] = true
 			}
 		}
 	}
@@ -582,6 +687,7 @@ func (j *Judge) Verdict(ctx context.Context, dsn string) error {
 		_ = cat.Add(ddl) // a fixture's text that is not read defines nothing
 	}
 	j.mu.Unlock()
+	withWhatTheRunDeclared(cat, sent)
 	failures := Violations(cat, sent, Policies, Exceptions)
 	failures = append(failures, j.Rewriters()...)
 	if err := j.writeSites(sent); err != nil {
@@ -593,9 +699,51 @@ func (j *Judge) Verdict(ctx context.Context, dsn string) error {
 	return nil
 }
 
+// learnWhatProductionMade puts in the catalog the relations PRODUCTION
+// code made while the tests ran (0.29.214): the catalog is otherwise the
+// database as it stands at the end, so a scratch table production made,
+// filled and dropped again was unknown, and the fill was held against it
+// as an unknown target.
+//
+// Only statements that do nothing but CREATE a table, a view, a
+// materialized view or a foreign table are learned, each as what it is: a
+// view production made over a registered table is in the catalog as a
+// VIEW, so a write through it is still a violation. A rename or a move to
+// another schema is not learned (each is a finding of the policy check's
+// own), and a temporary table belongs to its session: one that another
+// text writes is declared by name, for the static check and the judge
+// alike (TempTables, Catalog.Temp), and written as pg_temp.name.
+func learnWhatProductionMade(cat *sqlscan.Catalog, sent []*Sent) {
+	ordered := append([]*Sent{}, sent...)
+	sort.Slice(ordered, func(i, k int) bool { return ordered[i].Seq < ordered[k].Seq })
+	for _, s := range ordered {
+		defs, err := sqlscan.Defs(s.SQL)
+		if err != nil || len(defs) == 0 {
+			continue
+		}
+		creates := true
+		for _, d := range defs {
+			switch d.Kind {
+			case "table", "view", "matview", "foreign":
+				creates = creates && !d.Temp
+			default:
+				creates = false
+			}
+		}
+		if creates {
+			_ = cat.Add(s.SQL)
+		}
+	}
+}
+
 func (j *Judge) writeSites(sent []*Sent) error {
 	dir := os.Getenv(SitesDirEnv)
-	if dir == "" {
+	// Only the INSTALLED judge's record is the package's: a judge a test
+	// built and asked for a verdict (the tests of the judge do) saw a few
+	// statements of that test, and its record under the package's name
+	// would replace the real one (0.29.214: it did, whenever the package's
+	// own verdict was not reached afterwards).
+	if dir == "" || j != installed {
 		return nil
 	}
 	return SitesOf(sent).Write(dir, packageName())
@@ -635,13 +783,16 @@ func DatabaseCatalog(ctx context.Context, dsn string) (*sqlscan.Catalog, error) 
 		return nil, err
 	}
 	defer rows.Close()
-	var ddl []string
+	var ddl, tables []string
 	for rows.Next() {
 		var schema, name, kind, sources, parents string
 		if err := rows.Scan(&schema, &name, &kind, &sources, &parents); err != nil {
 			return nil, err
 		}
 		q := pgx.Identifier{schema, name}.Sanitize()
+		if kind == "r" || kind == "p" {
+			tables = append(tables, schema+"."+name)
+		}
 		from := ""
 		if sources != "" {
 			from = " FROM " + sources
@@ -673,5 +824,33 @@ func DatabaseCatalog(ctx context.Context, dsn string) (*sqlscan.Catalog, error) 
 	if len(bad) > 0 {
 		return nil, errors.New("a relation of the database could not be put in the catalog: " + strings.Join(bad, "; "))
 	}
+	// The foreign keys, which this catalog reads from the database and not
+	// from DDL: with them TRUNCATE x CASCADE is held against the registered
+	// tables that reference x (and those that reference them), and without
+	// them against every registered table.
+	fks, err := conn.Query(ctx, `
+		SELECT fn.nspname, fc.relname, tn.nspname, tc.relname
+		  FROM pg_constraint k
+		  JOIN pg_class fc ON fc.oid = k.conrelid
+		  JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+		  JOIN pg_class tc ON tc.oid = k.confrelid
+		  JOIN pg_namespace tn ON tn.oid = tc.relnamespace
+		 WHERE k.contype = 'f'`)
+	if err != nil {
+		return nil, err
+	}
+	defer fks.Close()
+	for fks.Next() {
+		var fromSchema, from, toSchema, to string
+		if err := fks.Scan(&fromSchema, &from, &toSchema, &to); err != nil {
+			return nil, err
+		}
+		cat.Reference(fromSchema+"."+from, toSchema+"."+to)
+	}
+	if err := fks.Err(); err != nil {
+		return nil, err
+	}
+	// Every table's foreign keys are now declared: all of them were read.
+	cat.Defined(tables...)
 	return cat, nil
 }

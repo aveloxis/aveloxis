@@ -52,7 +52,7 @@ func (f *wholeReplaceFixture) analyse(t *testing.T) {
 	ctx := context.Background()
 	read := f.ac.readClone(ctx, f.repoID, f.dir)
 	locks := read.lockfiles()
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks), &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks, read.declaredKeys()), &AnalysisResult{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ac.scanLockfiles(ctx, f.repoID, f.dir, locks, &AnalysisResult{}); err != nil {

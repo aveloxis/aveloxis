@@ -87,10 +87,10 @@ func TestOnlyACoordinateIsAskedFor(t *testing.T) {
 		{"", "parent", "5.0"},
 	} {
 		before := repo.asked.Load()
-		// Never asked: the reader's answer for a coordinate that is not
-		// one, as for a range or a snapshot (round 3).
-		if _, outcome := src.RemotePom(c[0], c[1], c[2], nil); outcome != manifest.RemoteNotFound || repo.asked.Load() != before {
-			t.Errorf("%q: outcome %v, asked %d times; want not found and nothing asked", c, outcome, repo.asked.Load()-before)
+		// Never asked, and said so (0.29.214): what such a pom would say
+		// is not known.
+		if _, outcome := src.RemotePom(c[0], c[1], c[2], nil); outcome != manifest.RemoteNotAsked || repo.asked.Load() != before {
+			t.Errorf("%q: outcome %v, asked %d times; want not asked and nothing asked", c, outcome, repo.asked.Load()-before)
 		}
 	}
 	for _, ok := range [][3]string{{"org.remote", "parent", "5.0"}, {"com.fasterxml.jackson.core", "jackson-databind", "2.15.0-rc1"}, {"g", "a_b", "1.0+build.7"}} {

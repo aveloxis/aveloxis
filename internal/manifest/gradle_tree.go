@@ -1123,15 +1123,39 @@ func gradleTOMLArray(raw string) []string {
 // marked a managed entry: its versions are applied, and it leaves the
 // inventory with a note, as a pom's BOM import does. One that was not
 // stays a row.
+//
+// WHICH PLATFORM'S VERSION (round 7). A platform's versions are
+// recommendations, and Gradle resolves the recommendations of all a
+// project's platforms together: the highest version recommended wins,
+// whatever order they are written in, and an enforcedPlatform's version
+// overrides the others'. (Until 0.29.214 the first platform written that
+// managed the artifact answered.) So:
+//
+//   - if an enforced platform's answer is not known, the version is not
+//     determined; if enforced platforms give one version, that is it; if
+//     they give more than one, it is not determined;
+//   - otherwise, if ANY platform's answer is not known (it could not be
+//     obtained, was not asked for, or holds a pom that could not be: the
+//     reason is stored), or a platform manages the artifact at something
+//     that is not one version (a range, a reference it cannot resolve), the
+//     version is not determined: what is not known could be the highest;
+//   - otherwise the one version given, or the highest of several when each
+//     is a plain release number (digits and dots: gradleHighest); several
+//     that cannot be ordered so are not determined.
+//
+// This is Gradle's documented behaviour as this reader understands it; it
+// has NOT been checked against a running Gradle, and a build that settles
+// versions in its own resolutionStrategy is beyond it.
 func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, declared []string) {
 	if t.pom == nil || len(platforms) == 0 {
 		return
 	}
-	// applied is one platform in the order they are consulted: the BOM, or,
-	// for one that could not be obtained, why.
+	// applied is one platform: the BOM, or, for one whose content is not
+	// known, why.
 	type applied struct {
-		ctx     *pomContext
-		missing string
+		ctx      *pomContext
+		missing  string
+		enforced bool
 	}
 	var boms []applied
 	rd := &pomReading{}
@@ -1142,15 +1166,19 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 			continue
 		}
 		bom, ambiguous := t.pom.byCoordinates(p.group, p.artifact, p.version)
-		if bom == nil && !ambiguous {
+		unknown := ""
+		switch {
+		case ambiguous:
+			unknown = model.VersionReasonInheritedNotFound // two poms of the clone: neither is chosen, and neither is asked for
+		case bom == nil:
 			var reason string
-			bom, reason = t.pom.remotePom(p.group, p.artifact, p.version, func() []string { return declared })
+			bom, reason, unknown = t.pom.remotePom(p.group, p.artifact, p.version, func() []string { return declared })
 			gap = worseReason(gap, reason)
-			if bom == nil && unknownAnswer(reason) != "" {
-				boms = append(boms, applied{missing: reason})
-			}
 		}
 		if bom == nil {
+			if unknown != "" {
+				boms = append(boms, applied{missing: unknown, enforced: p.enforced})
+			}
 			continue
 		}
 		c := t.pom.context(bom)
@@ -1158,7 +1186,7 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 		// is known before anything is decided from it (a lookup of a
 		// coordinate nothing manages visits every import).
 		_, _, _, bomGap, _ := c.managed(rd, "\x00", "\x00")
-		boms = append(boms, applied{ctx: c})
+		boms = append(boms, applied{ctx: c, enforced: p.enforced})
 		if bomGap == "" {
 			whole[p.group+":"+p.artifact+":"+p.version] = true
 		} else {
@@ -1174,37 +1202,121 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, platforms []gradleDecl, decl
 		if d.version != "" || d.versionWritten {
 			continue
 		}
-		// before is why an answer may not be the answer: a platform
-		// consulted before the one that manages the dependency could not be
-		// obtained, or not whole (pomContext.managed; review round 6).
-		before, undetermined := "", false
+		// What the platforms say of this dependency, the enforced ones
+		// apart: the versions given (with the hosts each came through),
+		// why an answer is not known, and whether one manages it at
+		// something that is not a version.
+		type said struct {
+			versions []string
+			hosts    map[string][]string
+			unknown  string
+			notOne   bool
+		}
+		var enforced, all said
 		for _, bom := range boms {
+			record := func(s *said, v string, found, stop bool, via []string, passed string) {
+				s.unknown = worseReason(s.unknown, passed)
+				switch {
+				case stop, found && !gradleIsVersion(v):
+					s.notOne = true
+				case found:
+					if s.hosts == nil {
+						s.hosts = map[string][]string{}
+					}
+					if _, seen := s.hosts[v]; !seen {
+						s.versions = append(s.versions, v)
+					}
+					s.hosts[v] = mergeHosts(s.hosts[v], via)
+				}
+			}
 			if bom.ctx == nil {
-				before = worseReason(before, bom.missing)
+				if all.unknown = worseReason(all.unknown, bom.missing); bom.enforced {
+					enforced.unknown = worseReason(enforced.unknown, bom.missing)
+				}
 				continue
 			}
-			v, found, via, g, passed := bom.ctx.managed(rd, d.group, d.artifact)
+			v, found, stop, via, g, passed := bom.ctx.ask(rd, d.group, d.artifact)
 			gap = worseReason(gap, g)
-			if found && gradleIsVersion(v) {
-				if before = worseReason(before, passed); before != "" {
-					undetermined = true
-					break
-				}
-				d.version, d.source = v, SourceManaged
-				d.hosts = mergeHosts(chainHosts(bom.ctx.chain), via)
-				break
+			via = mergeHosts(chainHosts(bom.ctx.chain), via)
+			record(&all, v, found, stop, via, passed)
+			if bom.enforced {
+				record(&enforced, v, found, stop, via, passed)
 			}
-			// It did not answer: whatever of it is not known comes before
-			// the next platform.
-			before = worseReason(before, passed)
 		}
-		switch {
-		case undetermined:
-			d.reason = before
-		case d.version == "":
+		decide := func(s said) (done bool) {
+			switch {
+			case s.unknown != "" && (len(s.versions) > 0 || s.notOne):
+				d.reason = s.unknown
+				return true
+			case s.notOne:
+				d.reason = gap
+				return true
+			case len(s.versions) == 0:
+				return false
+			}
+			v, ok := gradleHighest(s.versions)
+			if !ok {
+				d.reason = gap // several, and no order among them that is known
+				return true
+			}
+			d.version, d.source, d.hosts = v, SourceManaged, s.hosts[v]
+			return true
+		}
+		// The enforced platforms decide when they say anything, or when
+		// what one of them says is not known.
+		if enforced.unknown != "" {
+			d.reason = enforced.unknown
+			continue
+		}
+		if len(enforced.versions) > 0 || enforced.notOne {
+			decide(enforced)
+			continue
+		}
+		if !decide(all) {
 			d.reason = gap
 		}
 	}
+}
+
+// gradleHighest is the highest of the versions several platforms recommend,
+// when that can be said: one version is itself; several are ordered only
+// when each is a plain release number (digits in groups separated by dots),
+// compared group by group as numbers, a shorter one that the longer begins
+// with being the lower (1.2 < 1.2.1). Anything else (a qualifier, a letter)
+// has an order in Gradle that this reader does not reproduce, and is not
+// ordered.
+func gradleHighest(versions []string) (string, bool) {
+	if len(versions) == 1 {
+		return versions[0], true
+	}
+	best := ""
+	var bestParts []string
+	for _, v := range versions {
+		parts := strings.Split(v, ".")
+		for _, p := range parts {
+			if p == "" || strings.Trim(p, "0123456789") != "" {
+				return "", false
+			}
+		}
+		if best == "" || gradleNumbersLess(bestParts, parts) {
+			best, bestParts = v, parts
+		}
+	}
+	return best, best != ""
+}
+
+// gradleNumbersLess: a < b, group by group as numbers of any length.
+func gradleNumbersLess(a, b []string) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		x, y := strings.TrimLeft(a[i], "0"), strings.TrimLeft(b[i], "0")
+		if len(x) != len(y) {
+			return len(x) < len(y)
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return len(a) < len(b)
 }
 
 // fetchable is the entry's address when it serves dependencies and may be

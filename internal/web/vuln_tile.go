@@ -28,6 +28,10 @@ type vulnTile struct {
 	// shown beside it, "" for none.
 	State      string
 	SecondLine string
+	// LockfileCaution (0.29.214) is the caution shown under the tiles when
+	// the repository's lockfiles went unread at the last analysis; "" when
+	// there is nothing to caution about.
+	LockfileCaution string
 }
 
 // statUnavailable is what a tile shows when its number could not be read. A
@@ -49,6 +53,7 @@ func vulnTileOf(stats *db.RepoStats) vulnTile {
 	t := vulnTile{
 		Value: strconv.Itoa(stats.Vulnerabilities), Critical: stats.CriticalVulns, VersionNotDetermined: stats.VulnsVersionUnknown,
 		State: vulnclass.CoverageLine(stats.Coverage), SecondLine: vulnclass.CoverageSecondLineText(stats.Coverage),
+		LockfileCaution: vulnclass.CoverageLockfileCaution(stats.Coverage),
 	}
 	if (stats.Coverage == nil && stats.Vulnerabilities == 0) || (stats.Coverage != nil && stats.Coverage.CountBlank) {
 		t.Value = statBlank

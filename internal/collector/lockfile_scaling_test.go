@@ -5,7 +5,9 @@ package collector
 
 import (
 	"fmt"
+	"math/rand"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -401,5 +403,93 @@ func TestLockfileParsersScaleLinearly(t *testing.T) {
 		if !spec.binaryOnly && !kinds[kind] {
 			t.Errorf("no scaling shape for %s", kind)
 		}
+	}
+}
+
+// THE SEARCH (round 7), the lockfile readers' half of
+// internal/manifest's TestNoRepeatedUnitIsReadInSuperLinearTime: no list of
+// shapes, but every unit of one of the words lockfiles are written in, a
+// seeded part of the units of two, and a seeded sample of longer ones, each
+// repeated to a size and given to every lockfile kind's reader. A unit that
+// is slow at the small size is read at four times the size: linear is four
+// times as long, quadratic sixteen.
+var lockSearchWords = []string{
+	"{", "}", "[", "]", ":", ",", `"`, "'", `\`, "\n", " ", "  ", "\t", "-", "- ", "#", "=", "==", "@", "/", "a", "1.0.0", `"a"`, `"a":`, `"a":"1"`, `"a":{`, `"a":[`,
+	`"version":"1.0.0"`, `"dependencies":{`, `"packages":{`, `"node_modules/a":{`, `"lockfileVersion":1`, `"requires":{`, `"resolved":"x"`, `"dev":true`,
+	"packages:", "snapshots:", "importers:", "dependencies:", "devDependencies:", "version: 1.0.0", "a@1.0.0:", "/a/1.0.0:", "'@s/a@1.0.0':", "resolution: {integrity: x}",
+	"a:", "a: 1", "dependency: direct main", "source: hosted", "description:", "sdks:", "&a", "*a", "<<:", "!!str", "? ", "---", "~", "null",
+	"[[package]]", `name = "a"`, `version = "1.0.0"`, "dependencies = [", `"a 1.0.0",`, "[metadata]", "[package.dependencies]", "a = \"1\"", "[[package]]\nname = \"a\"\nversion = \"1\"",
+	"a@^1.0.0:", "  version \"1.0.0\"", "  dependencies:", "    b \"^2\"", "__metadata:", "\"a@npm:^1\":", "  resolution: \"a@npm:1.0.0\"", "  checksum: x",
+	"GEM", "  remote: https://rubygems.org/", "  specs:", "    a (1.0.0)", "      b (>= 1)", "PLATFORMS", "DEPENDENCIES", "BUNDLED WITH", "a!",
+	`"a": {:hex, :a, "1.0.0", "x", [:mix], [{:b, "~> 1.0", [hex: :b]}], "hexpm", "y"},`, "%{", "{:hex,", "g:a:1.0.0=compileClasspath", "empty=",
+	"a v1.0.0 h1:x=", "a v1.0.0/go.mod h1:x=", `"pins" : [`, `"identity" : "a"`, `"state" : {`, `"R": {`, `"Packages": {`, `"Package": "a"`, `"Requirements": [`,
+	"completed:", "  hackage: a-1.0@sha256:x,1", "original:", "\r", "/*", "*/", "//",
+}
+
+func TestNoRepeatedUnitOfALockfileIsReadInSuperLinearTime(t *testing.T) {
+	if manifestRaceEnabled {
+		t.Log("the detector's slowdown is not uniform: times say nothing under it (the plain run judges)")
+		return
+	}
+	const small, slow, limit = 32 << 10, 40 * time.Millisecond, 8.0
+	rng := rand.New(rand.NewSource(7))
+	var units []string
+	for _, a := range lockSearchWords {
+		units = append(units, a)
+		for _, b := range lockSearchWords {
+			if rng.Intn(8) == 0 {
+				units = append(units, a+b, a+" "+b)
+			}
+		}
+	}
+	for k := 0; k < 200; k++ {
+		var b strings.Builder
+		for n := 3 + rng.Intn(3); n > 0; n-- {
+			b.WriteString(lockSearchWords[rng.Intn(len(lockSearchWords))])
+			if rng.Intn(2) == 0 {
+				b.WriteString(" ")
+			}
+		}
+		units = append(units, b.String())
+	}
+	kinds := make([]string, 0, len(lockfileKinds))
+	for kind := range lockfileKinds {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	read := func(kind, unit, prefix string, n int) time.Duration {
+		data := []byte(prefix + strings.Repeat(unit, n/len(unit)))
+		began := time.Now()
+		_, _ = ParseLockfile(kind, data)
+		return time.Since(began)
+	}
+	tried, slowUnits := 0, 0
+	for _, kind := range kinds {
+		for k, unit := range units {
+			if strings.TrimSpace(unit) == "" && len(unit) > 1 {
+				continue
+			}
+			prefix := ""
+			if k%3 == 1 {
+				prefix = lockSearchWords[rng.Intn(len(lockSearchWords))] + "\n"
+			}
+			tried++
+			t1 := read(kind, unit, prefix, small)
+			if t1 < slow {
+				continue
+			}
+			slowUnits++
+			if t4 := read(kind, unit, prefix, 4*small); float64(t4) > limit*float64(t1) {
+				t1, t4 = read(kind, unit, prefix, small), read(kind, unit, prefix, 4*small)
+				if t1 >= slow/2 && float64(t4) > limit*float64(t1) {
+					t.Errorf("%s: %q after %q, repeated: %d bytes in %v, %d bytes in %v (x%.1f); a linear reader takes about four times",
+						kind, unit, prefix, small, t1, 4*small, t4, float64(t4)/float64(t1))
+				}
+			}
+		}
+	}
+	t.Logf("%d units read over %d lockfile kinds, %d slow enough at %d bytes to be read at four times the size", tried, len(kinds), slowUnits, small)
+	if tried < 20000 {
+		t.Errorf("%d units tried: the search has lost its units", tried)
 	}
 }

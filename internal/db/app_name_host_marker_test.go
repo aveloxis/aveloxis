@@ -106,7 +106,7 @@ func TestHostMarkerBeatsCollapsedClientAddress(t *testing.T) {
 		}
 		cfg.ConnConfig.RuntimeParams["application_name"] = tag
 		cfg.MaxConns = 1
-		p, err := pgxpool.NewWithConfig(ctx, cfg)
+		p, err := OpenPoolConfig(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -233,7 +233,7 @@ func TestSharedHostnameNeverPromotesARemoteBackend(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = AppNameForHost(prefix)
 	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

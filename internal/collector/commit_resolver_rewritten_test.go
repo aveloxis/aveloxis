@@ -16,8 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -70,7 +68,7 @@ func TestCommitResolverSkipsCommitsNoLongerOnTheDefaultBranch(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "repo.git")
 	git(filepath.Dir(bare), "clone", "-q", "--bare", work, bare)
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

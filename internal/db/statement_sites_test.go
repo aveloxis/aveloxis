@@ -11,7 +11,7 @@ package db
 // this package, of a library function that takes SQL (sqlscan.RunnerCalls)
 // must have had a statement sent through it by SOME DB-tier package's tests
 // when the whole suite has run, or stand on a reviewed list that only
-// shrinks. Each package's run records what it reached
+// shrinks (empty since 0.29.214: the 96 calls it held were given tests). Each package's run records what it reached
 // (writejudge.SitesDirEnv); the closing suite (scripts/skip-census.sh) sets
 // that for the run and then runs TestTheSuiteReachesEveryStatementSite over
 // the union.
@@ -184,20 +184,47 @@ func siteIDs(calls []sqlscan.RunnerCall) []string {
 // production statement's innermost frame is one of its lines. A call that
 // QUEUES one on a batch sends nothing itself. It is reached when a batch
 // was sent holding a statement the static reading read at that call
-// (compared with white space folded). Only where the static reading's text
-// for the call is a SAMPLE (an open builder's, whose text depends on its
-// input: openQueueSites) is it reached when a batch was sent from the
-// declaration the call stands in; byDecl lists those.
+// (compared with white space folded); where ANOTHER Queue call queues the
+// same text, only when that batch was sent under the declaration this call
+// stands in (0.29.214: three calls queue one stamp, and a batch from any
+// of them reached all three). Only where the static reading's text for the
+// call is a SAMPLE (an open builder's, whose text depends on its input:
+// openQueueSites) is it reached when a batch was sent from the declaration
+// the call stands in; byDecl lists those.
 func statementSitesNotExecuted(calls []sqlscan.RunnerCall, static []sqlscan.Stmt, reached *writejudge.Sites, openQueueSites map[string]bool) (not, byDecl []string) {
 	ids := siteIDs(calls)
+	// How many Queue calls queue each text.
+	textsOf := func(c sqlscan.RunnerCall) []string {
+		var out []string
+		for _, st := range static {
+			if st.File == c.File && st.Line >= c.Line && st.Line <= c.EndLine {
+				out = append(out, writejudge.Fold(st.SQL))
+			}
+		}
+		return out
+	}
+	queuedAt := map[string]int{}
+	for _, c := range calls {
+		if c.Queues {
+			seen := map[string]bool{}
+			for _, text := range textsOf(c) {
+				if !seen[text] {
+					seen[text] = true
+					queuedAt[text]++
+				}
+			}
+		}
+	}
 	for i, c := range calls {
 		ran := false
 		if c.Queues {
 			texts := 0
-			for _, st := range static {
-				if st.File == c.File && st.Line >= c.Line && st.Line <= c.EndLine {
-					texts++
-					ran = ran || reached.BatchTexts[writejudge.Fold(st.SQL)]
+			for _, text := range textsOf(c) {
+				texts++
+				if queuedAt[text] > 1 {
+					ran = ran || reached.BatchTextDecls[text+"\x00"+c.File+"\x00"+c.Decl]
+				} else {
+					ran = ran || reached.BatchTexts[text]
 				}
 			}
 			if !ran && (texts == 0 || openQueueSites[ids[i]]) && reached.BatchDecls[c.File+"\x00"+c.Decl] {
@@ -251,7 +278,7 @@ func siteCoverageFailures(notExecuted []string, baseline map[string]bool) []stri
 	for _, id := range notExecuted {
 		not[id] = true
 		if !baseline[id] {
-			out = append(out, fmt.Sprintf("no DB-tier test of the suite sends a statement through %s: the write-policy judge never saw what it runs. Write a DB-tier test that reaches it (the baseline %s only shrinks)", id, unexecutedSitesBaseline))
+			out = append(out, fmt.Sprintf("no DB-tier test of the suite sends a statement through %s: the write-policy judge never saw what it runs. Write a DB-tier test that reaches it AND asserts what the statement did (seed what it reads, call the function, check the rows), on the store's pool or one opened through db.OpenPool / OpenPoolConfig: a pool opened with the library itself carries no judge. The baseline %s is empty and only shrinks", id, unexecutedSitesBaseline))
 		}
 	}
 	var stale []string
@@ -423,6 +450,89 @@ func TestStatementSitesNotExecutedAndTheBaseline(t *testing.T) {
 	if f := siteCoverageFailures(not[:2], map[string]bool{want[0]: true, want[1]: true, want[2]: true}); len(f) != 1 || !strings.Contains(f[0], "delete its line") {
 		t.Errorf("a baseline line whose call is now executed: %q", f)
 	}
+
+	// Two calls that queue the SAME text: a batch holding it, sent under
+	// the first one's declaration, reaches the first and not the second.
+	const stamp = "UPDATE t SET at = NOW() WHERE id = $1"
+	shared := []sqlscan.RunnerCall{
+		{File: "internal/db/b.go", Line: 10, EndLine: 10, Decl: "G", Callee: "batch.Queue", Method: "Queue", Queues: true},
+		{File: "internal/db/b.go", Line: 20, EndLine: 20, Decl: "H", Callee: "batch.Queue", Method: "Queue", Queues: true},
+	}
+	sharedStatic := []sqlscan.Stmt{{File: "internal/db/b.go", Decl: "G", Line: 10, SQL: stamp}, {File: "internal/db/b.go", Decl: "H", Line: 20, SQL: stamp}}
+	underG := writejudge.SitesOf([]*writejudge.Sent{{SQL: stamp, Batched: true, Frames: []writejudge.Frame{{File: "internal/db/send.go", Line: 3, Decl: "send"}, {File: "internal/db/b.go", Line: 12, Decl: "G"}}}})
+	if not, _ := statementSitesNotExecuted(shared, sharedStatic, underG, nil); strings.Join(not, "|") != "internal/db/b.go H batch.Queue #1" {
+		t.Errorf("two calls queue one text and a batch was sent under the first: not executed = %q, want the second alone", not)
+	}
+}
+
+// The static list of statement sites is COMPLETE: every call in the
+// store's non-test source that is named as a library function that takes
+// SQL, counted here by name alone with no types, is on it, and it holds
+// nothing else (0.29.214, review round 7: its completeness was held by "at
+// least 800", and fifteen calls through the store's own interfaces were
+// missing from it with every test green).
+//
+// The two countings differ only where this test says why: SendBatch takes
+// no text (what a batch holds is counted where it is queued), and a batch
+// RESULT's Exec() takes none either.
+func TestTheStatementSiteListIsEveryCallNamedAsOne(t *testing.T) {
+	files := srctest.PackageFiles(t, "internal/db", 30)
+	calls, err := sqlscan.RunnerCalls(srctest.Root(t), files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	static := map[string]string{}
+	for _, c := range calls {
+		static[fmt.Sprintf("%s:%d", c.File, c.Line)] = c.Callee
+	}
+	takesText := map[string]bool{"Exec": true, "Query": true, "QueryRow": true, "Queue": true, "Prepare": true}
+	byName := map[string]string{}
+	rowsOnly := 0
+	for name, src := range files {
+		fset := token.NewFileSet()
+		af, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(af, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := c.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			at := fset.Position(c.Pos())
+			switch {
+			case sel.Sel.Name == "CopyFrom":
+				// Rows with no text: the judge sees a CopyFrom, and the
+				// coverage requirement has no site for one. The store
+				// uses none; the first use is the time to count them.
+				rowsOnly++
+				t.Errorf("%s: the store calls CopyFrom, which the statement-site list does not count: add it to the list (sqlscan.RunnerCalls) before using it", at)
+			case takesText[sel.Sel.Name] && len(c.Args) > 0:
+				byName[fmt.Sprintf("%s:%d", at.Filename, at.Line)] = sel.Sel.Name
+			}
+			return true
+		})
+	}
+	for at, name := range byName {
+		if _, ok := static[at]; !ok {
+			t.Errorf("%s calls something named %s with arguments, and it is not on the statement-site list: a library function that takes SQL, or the store's own interface over one, is a site; anything else must be renamed or explained here", at, name)
+		}
+	}
+	for at, callee := range static {
+		if _, ok := byName[at]; !ok {
+			t.Errorf("%s (%s) is on the statement-site list and is no call named Exec, Query, QueryRow, Queue or Prepare", at, callee)
+		}
+	}
+	// The denominator, exactly: a call silently dropped from BOTH
+	// countings would still change this number.
+	if len(calls) != len(byName) || len(calls) < 900 {
+		t.Errorf("%d statement sites on the list, %d calls counted by name: they are the same calls, about 910", len(calls), len(byName))
+	}
+	t.Logf("%d statement sites; %d CopyFrom calls", len(calls), rowsOnly)
 }
 
 // Every line of the baseline names a library call the store has: a line
@@ -433,9 +543,7 @@ func TestTheUnexecutedSiteBaselineNamesCallsTheStoreHas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) < 800 {
-		t.Fatalf("%d library calls that take SQL were found in internal/db: the store has about 900", len(calls))
-	}
+	// (That the list is complete is TestTheStatementSiteListIsEveryCallNamedAsOne's.)
 	have := map[string]bool{}
 	for _, id := range siteIDs(calls) {
 		have[id] = true

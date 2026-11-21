@@ -99,7 +99,65 @@ type pomReading struct {
 	// product (round 4: the tree kept such a key per pom and import, 330 MB
 	// for 92 KB of poms).
 	resolved map[pomImportAt]*pomResolvedImport
+	// refKeys are lists of reference-keyed managed entries, as this file's
+	// questions worked their keys out: for one list of one pom read in one
+	// model, the first entry that means each coordinate there. Kept for
+	// this file's reading for the reason resolved is.
+	refKeys map[pomRefListAt]map[string]int
 }
+
+// pomRefListAt names one list of a pom's reference-keyed entries (pomIndex:
+// those filed under an artifact, under a group, with a reference in both
+// halves, or all of them) as one effective model reads it.
+type pomRefListAt struct {
+	c    *pomContext
+	m    *pomModel
+	kind byte // 'a', 'g', 'b', '*'
+	half string
+}
+
+// pomRefListSmall: a list this short is compared entry by entry; a longer
+// one is worked out once for the file being read (firstRef).
+const pomRefListSmall = 8
+
+// firstRef is the first entry of list (reference-keyed entries of m, in the
+// order written) whose coordinates mean key in c.
+//
+// A long list is worked out ONCE for the file being read: what each entry's
+// key is there, and the first entry for each key. Round 7: every question
+// interpolated every such entry again, so a pom's version-less dependencies
+// times the entries its chain keys by reference was a product (621 KB of
+// poms in 22 s).
+func (c *pomContext) firstRef(rd *pomReading, m *pomModel, list []int, at pomRefListAt, key string) (int, bool) {
+	means := func(j int) string {
+		return c.interpolate(m.managed[j].group) + ":" + c.interpolate(m.managed[j].artifact)
+	}
+	if rd == nil || len(list) <= pomRefListSmall {
+		for _, j := range list {
+			if means(j) == key {
+				return j, true
+			}
+		}
+		return 0, false
+	}
+	first, ok := rd.refKeys[at]
+	if !ok {
+		first = make(map[string]int, len(list))
+		for _, j := range list {
+			if k := means(j); !mapHas(first, k) {
+				first[k] = j
+			}
+		}
+		if rd.refKeys == nil {
+			rd.refKeys = map[pomRefListAt]map[string]int{}
+		}
+		rd.refKeys[at] = first
+	}
+	j, found := first[key]
+	return j, found
+}
+
+func mapHas(m map[string]int, k string) bool { _, ok := m[k]; return ok }
 
 // pomImportAt names one import of one pom as one effective model reads it.
 type pomImportAt struct {
@@ -113,7 +171,7 @@ type pomImportAt struct {
 type pomResolvedImport struct {
 	group, artifact, version string
 	dead                     bool
-	reason                   string
+	reason, unknown          string
 }
 
 // importAt is what import n of m is in c, worked out once for this file.
@@ -154,10 +212,9 @@ type RemoteOutcome int
 const (
 	// RemoteFound: the pom was obtained.
 	RemoteFound RemoteOutcome = iota
-	// RemoteNotFound: every repository asked answered that it has none; or
-	// none was asked, because the coordinate is not one pom that can be
-	// asked for (a source refuses a coordinate a request cannot be built
-	// from, as this reader does not ask for a range or a snapshot).
+	// RemoteNotFound: every repository asked answered that it has none.
+	// That is an answer. (Until 0.29.214 a source also gave it for a
+	// coordinate it would not ask for; that is RemoteNotAsked now.)
 	RemoteNotFound
 	// RemoteFailed: a repository did not answer, and nothing is stored for
 	// the coordinate. Not an answer (SR-5).
@@ -165,6 +222,14 @@ const (
 	// RemoteRefused: the only repository that could have it may not be
 	// fetched from.
 	RemoteRefused
+	// RemoteNotAsked (0.29.214): no repository was asked, because the
+	// coordinate is not one a request can be built from. What such a pom
+	// says is NOT KNOWN, which "not found" (every repository answered) is
+	// not: a version that a pom consulted after it would give is withheld
+	// (pomContext.managed). It is reported as "not found" is
+	// (inherited_not_found, whose meaning has always included "was never
+	// asked for").
+	RemoteNotAsked
 )
 
 // RemotePom is what a pom contributes to a child's effective model, as
@@ -244,15 +309,24 @@ func (r *RemotePom) modelOf(key string) *pomModel {
 // reference is another coordinate in each module that inherits it, and
 // modules times imports of them asked 199,651 times for 194 KB of poms
 // (review round 5).
-func (t *pomTree) remotePom(group, artifact, version string, declared func() []string) (m *pomModel, reason string) {
+//
+// unknown is not "" when what the pom says is NOT KNOWN, and is then the
+// reason a version that a pom consulted AFTER it would give is withheld
+// with (pomContext.managed). Only an answer of "not found" from every
+// repository read makes a pom known to say nothing. A pom that was not
+// asked for (no source is installed; a snapshot, a range, a coordinate with
+// an unresolved reference; the walk's limit) is not known (round 7: each of
+// these was passed over as if it had answered, and the next BOM's version
+// was stored).
+func (t *pomTree) remotePom(group, artifact, version string, declared func() []string) (m *pomModel, reason, unknown string) {
 	if t.remote == nil {
-		return nil, ""
+		return nil, "", model.VersionReasonInheritedNotFound
 	}
 	// A snapshot is whatever was built last, a range is not one pom, and an
 	// unresolved reference is not a coordinate: none is asked for.
 	if group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") ||
 		strings.Contains(strings.ToUpper(version), "SNAPSHOT") || strings.ContainsAny(version, "[](),") {
-		return nil, model.VersionReasonInheritedNotFound
+		return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
 	}
 	key := group + ":" + artifact + ":" + version
 	ans, asked := t.remoteAnswers[key]
@@ -265,7 +339,7 @@ func (t *pomTree) remotePom(group, artifact, version string, declared func() []s
 				t.warn("this walk has asked for as many parent and BOM poms as one analysis may; the ones still wanted are not asked for, and what depends on them is reported as not obtained", "remote:"+key, errRemotePomLimit)
 			}
 			t.notAsked++
-			return nil, model.VersionReasonInheritedLookupFailed
+			return nil, model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed
 		}
 		t.asked++
 		pom, outcome := t.remote.RemotePom(group, artifact, version, declared())
@@ -287,17 +361,22 @@ func (t *pomTree) remotePom(group, artifact, version string, declared func() []s
 // for was reached.
 var errRemotePomLimit = errors.New("the limit on the poms one analysis asks repositories for was reached")
 
-// reason is the answer as its callers take it.
-func (ans remoteAnswer) reason() (m *pomModel, reason string) {
+// reason is the answer as its callers take it: the pom, or why there is
+// none (reason), and whether what the pom says is therefore NOT KNOWN
+// (unknown: the reason a version behind it is withheld with; "" when every
+// repository answered that there is no such pom, which is an answer).
+func (ans remoteAnswer) reason() (m *pomModel, reason, unknown string) {
 	switch ans.outcome {
 	case RemoteFound:
-		return ans.model, ""
+		return ans.model, "", ""
 	case RemoteFailed:
-		return nil, model.VersionReasonInheritedLookupFailed
+		return nil, model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed
 	case RemoteRefused:
-		return nil, model.VersionReasonInheritedRepositoryRefused
+		return nil, model.VersionReasonInheritedRepositoryRefused, model.VersionReasonInheritedRepositoryRefused
+	case RemoteNotAsked:
+		return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
 	}
-	return nil, model.VersionReasonInheritedNotFound
+	return nil, model.VersionReasonInheritedNotFound, ""
 }
 
 // worseReason orders the reasons a chain can have: a failed lookup may yet
@@ -385,6 +464,10 @@ type pomIndex struct {
 	// with why (deadReason; "" for an ambiguous one).
 	dead       []bool
 	deadReason []string
+	// deadUnknown is, for a dead import, why what it says is not known
+	// (remotePom's unknown; for one that is ambiguous in the tree, that
+	// too); "" for one that every repository answered "not found" for.
+	deadUnknown []string
 	// live are the places in imports a question still tries, in order: all
 	// of them at first, less the dead ones once compact has run. So a pom
 	// with many imports that lead nowhere costs a question nothing for them
@@ -396,6 +479,9 @@ type pomIndex struct {
 	// depended on which pom had been read before).
 	live      []int
 	gapBefore []string
+	// unknownBefore is gapBefore for deadUnknown: the worst reason among
+	// the dropped imports in front of live[k] whose content is not known.
+	unknownBefore []string
 	// stale: an import has died since compact last ran; inUse counts the
 	// questions in the middle of the list, which compact must not move.
 	stale bool
@@ -408,17 +494,20 @@ func (idx *pomIndex) compact() {
 	if !idx.stale || idx.inUse > 0 {
 		return
 	}
-	live, gaps := make([]int, 0, len(idx.live)), make([]string, 0, len(idx.live)+1)
-	carry := ""
+	live, gaps, unknowns := make([]int, 0, len(idx.live)), make([]string, 0, len(idx.live)+1), make([]string, 0, len(idx.live)+1)
+	carry, carryUnknown := "", ""
 	for k, n := range idx.live {
 		if idx.dead[n] {
 			carry = worseReason(carry, idx.deadReason[n])
+			carryUnknown = worseReason(carryUnknown, idx.deadUnknown[n])
 			continue
 		}
 		live, gaps = append(live, n), append(gaps, worseReason(idx.gapBefore[k], carry))
+		unknowns = append(unknowns, worseReason(idx.unknownBefore[k], carryUnknown))
 	}
 	gaps = append(gaps, worseReason(idx.gapBefore[len(idx.live)], carry))
-	idx.live, idx.gapBefore, idx.stale = live, gaps, false
+	unknowns = append(unknowns, worseReason(idx.unknownBefore[len(idx.live)], carryUnknown))
+	idx.live, idx.gapBefore, idx.unknownBefore, idx.stale = live, gaps, unknowns, false
 }
 
 func (m *pomModel) index() *pomIndex {
@@ -459,53 +548,10 @@ func (m *pomModel) index() *pomIndex {
 			}
 		}
 	}
-	idx.dead, idx.deadReason = make([]bool, len(idx.imports)), make([]string, len(idx.imports))
-	idx.gapBefore = make([]string, len(idx.imports)+1)
+	idx.dead, idx.deadReason, idx.deadUnknown = make([]bool, len(idx.imports)), make([]string, len(idx.imports)), make([]string, len(idx.imports))
+	idx.gapBefore, idx.unknownBefore = make([]string, len(idx.imports)+1), make([]string, len(idx.imports)+1)
 	m.idx = idx
 	return idx
-}
-
-// eachCandidate calls visit with the reference-keyed entries that can be
-// the answer to a question about group:artifact, in the order written: the
-// ones filed under that artifact or that group, and the ones with a
-// reference in both halves. It stops when visit returns false. A coordinate
-// with a colon in it is not told apart from the colon between the halves, so
-// a question that has one is shown them all, as the comparison of whole keys
-// always did.
-//
-// The three lists are merged as they are walked, and nothing is built: a
-// question answered by an entry written first never looks at the rest
-// (review round 6: the merged list was built whole for every question, 5 s
-// for a pom whose first entry answered each).
-func (idx *pomIndex) eachCandidate(group, artifact string, visit func(j int) bool) {
-	if len(idx.dynamic) == 0 {
-		return
-	}
-	if strings.Contains(group, ":") || strings.Contains(artifact, ":") {
-		for _, j := range idx.dynamic {
-			if !visit(j) {
-				return
-			}
-		}
-		return
-	}
-	lists := [3][]int{idx.dynByArtifact[artifact], idx.dynByGroup[group], idx.dynBoth}
-	for {
-		next := -1
-		for k, l := range lists {
-			if len(l) > 0 && (next < 0 || l[0] < lists[next][0]) {
-				next = k
-			}
-		}
-		if next < 0 {
-			return
-		}
-		j := lists[next][0]
-		lists[next] = lists[next][1:]
-		if !visit(j) {
-			return
-		}
-	}
 }
 
 type pomParentRef struct {
@@ -658,18 +704,30 @@ const pomChainLimit = 32
 // A parent that is not there (an empty relativePath, no such file, another
 // project at that place) is asked of the remote source, as Maven would
 // resolve it from a repository; so is every parent of a remote pom.
-func (t *pomTree) chain(m *pomModel) ([]*pomModel, string) {
-	out, gap, _ := t.chainWhole(m)
-	return out, gap
+func (t *pomTree) chain(m *pomModel) (chain []*pomModel, gap, unknown string) {
+	chain, gap, unknown, _ = t.chainWhole(m)
+	return chain, gap, unknown
 }
 
 // chainWhole is chain that also says whether the chain was followed to its
 // end: a pom with no parent. It is not when a parent could not be obtained
 // (in the tree or from a repository), the chain loops, or it is too long.
-func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap string, whole bool) {
+//
+// unknown is remotePom's for the parent that could not be obtained: why
+// what the far end of the chain says is not known, "" when the chain is
+// whole or its missing parent is known to exist nowhere.
+func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap, unknown string, whole bool) {
 	out := []*pomModel{m}
-	seen := map[string]bool{m.path: true}
-	for cur := m; cur.parent != nil && len(out) < pomChainLimit; {
+	// A cycle of parents ends at pomChainLimit and nowhere sooner (round 7).
+	// Two guards used to end one at the first pom met twice, each covered
+	// by the other and by the limit, so that no test could tell either was
+	// there; and the first of them stopped at a relativePath that led back
+	// to a pom already in the chain BEFORE its coordinates were compared,
+	// where Maven, finding the coordinates do not match, asks a repository.
+	// The chain of a cycle is the cycle repeated, which answers every
+	// question as its first turn does, and is never whole.
+	cur := m
+	for cur.parent != nil && len(out) < pomChainLimit {
 		var p *pomModel
 		if cur.parent.inTree {
 			at := filepath.Join(filepath.Dir(cur.path), filepath.FromSlash(cur.parent.relativePath))
@@ -677,9 +735,6 @@ func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap string, whole 
 				at = filepath.Join(at, "pom.xml")
 			}
 			at = filepath.Clean(at)
-			if seen[at] {
-				return out, "", false
-			}
 			// Verified by coordinates. The parent's own group and version
 			// may be inherited from ITS parent; what it states must agree.
 			if c := t.model(at); c != nil && c.artifact == cur.parent.artifact &&
@@ -690,23 +745,22 @@ func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap string, whole 
 		}
 		if p == nil {
 			soFar := out
-			remote, reason := t.remotePom(cur.parent.group, cur.parent.artifact, cur.parent.version, func() []string {
+			remote, reason, unknown := t.remotePom(cur.parent.group, cur.parent.artifact, cur.parent.version, func() []string {
 				return fetchableDeclared(soFar)
 			})
 			if remote == nil {
-				return out, reason, false
+				return out, reason, unknown, false
 			}
 			p = remote
 		}
-		if seen[p.path] {
-			return out, "", false
-		}
-		seen[p.path] = true
 		out = append(out, p)
 		cur = p
 	}
-	// The loop ended at a pom with no parent (whole), or at the bound.
-	return out, "", len(out) < pomChainLimit
+	// The loop ended at a pom with no parent (whole), or at the bound with a
+	// parent still to follow. (Until 0.29.214 a chain of exactly
+	// pomChainLimit poms that ended was called not whole: the count was
+	// compared and not the end.)
+	return out, "", "", cur.parent == nil
 }
 
 // pomContext is the effective model of one pom: what Maven builds from it
@@ -728,6 +782,10 @@ type pomContext struct {
 	// chainGap is why this model is not whole in its own chain: a parent
 	// could not be obtained. "" when the chain is whole.
 	chainGap string
+	// chainUnknown is why what the missing end of the chain says is NOT
+	// KNOWN (remotePom's unknown); "" when the chain is whole or its
+	// missing parent is on no repository.
+	chainUnknown string
 	// declaredList is declaredFor's answer: the one declaring pom's own
 	// list, by reference, or a merged one.
 	declaredList []string
@@ -783,8 +841,8 @@ func (t *pomTree) context(m *pomModel) *pomContext {
 }
 
 func (t *pomTree) newContext(m *pomModel) *pomContext {
-	chain, gap := t.chain(m)
-	c := &pomContext{tree: t, chain: chain, chainGap: gap, artifact: m.artifact}
+	chain, gap, unknown := t.chain(m)
+	c := &pomContext{tree: t, chain: chain, chainGap: gap, chainUnknown: unknown, artifact: m.artifact}
 	// Group and version are the pom's own, else the parent's as the pom
 	// NAMES it (which holds even when the parent is not in the tree).
 	c.group, c.version = m.group, m.version
@@ -999,60 +1057,93 @@ type pomLookup struct {
 // gap is why the answer may not be the whole truth: a pom of this chain, or
 // a BOM this question looked for, could not be obtained ("" when all were).
 //
-// before is why a FOUND answer is not known to be the answer: what a pom
-// consulted before the one that answered says is not known (its lookup
-// failed or was not made, or its repository may not be fetched from:
-// unknownAnswer); "" when there is none such. An answer with a before is NOT the version (review round 6,
-// SR-5): the pom that could not be read comes first, and what it says is not
-// known. A first BOM that a repository failed to serve, followed by a second
-// that manages the artifact, gave the second one's version as if the first
-// had said nothing.
+// THE RULE (rounds 6 and 7; SR-5): a managed version is taken from a pom
+// only if every pom Maven consults BEFORE it for the artifact is KNOWN not
+// to manage it. Known needs the pom's content:
+//
+//   - before is why a FOUND answer is not known to be the answer: what a
+//     pom consulted before the one that answered says is not known. Its
+//     lookup failed, its repository may not be fetched from, or it was
+//     never asked for (a snapshot, a range, a coordinate with an unresolved
+//     reference or that no request can be built from, no source installed,
+//     the walk's limit on requests), or the tree holds two poms under its
+//     coordinates. "" when there is none such. An answer with a before is
+//     NOT the version: it is withheld, and before is the reason stored. A
+//     pom that every repository read answered "not found" for is known to
+//     say nothing, and the search goes on past it as Maven's build would
+//     not: that is an answer.
+//   - a pom that DOES manage the artifact, at a version it cannot give (a
+//     reference to a property nothing it could read sets), has answered:
+//     the search stops there with no version, and a later BOM's is not
+//     used. gap then says what of that pom's chain could not be obtained.
 func (c *pomContext) managed(rd *pomReading, group, artifact string) (version string, found bool, hosts []string, gap, before string) {
-	lk := &pomLookup{rd: rd, searched: map[*pomModel]bool{}, gap: c.chainGap}
-	version, found, hosts = c.lookup(lk, group, artifact, 0)
-	return version, found, hosts, lk.gap, lk.before
+	version, found, _, hosts, gap, before = c.ask(rd, group, artifact)
+	return version, found, hosts, gap, before
 }
 
-func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (version string, found bool, bomHosts []string) {
+// ask is managed that also says whether the question was ANSWERED with no
+// version (stop: a pom that was read manages the artifact and cannot give
+// its version). A caller that consults several poms in turn, as the Gradle
+// tree does its platforms, must not go on to the next one then.
+func (c *pomContext) ask(rd *pomReading, group, artifact string) (version string, found, stop bool, hosts []string, gap, before string) {
+	lk := &pomLookup{rd: rd, searched: map[*pomModel]bool{}, gap: c.chainGap}
+	version, found, hosts, stop = c.lookup(lk, group, artifact, 0)
+	return version, found, stop, hosts, lk.gap, lk.before
+}
+
+// lookup answers the question in c. stop is true when a pom that was read
+// manages the artifact at a version that cannot be resolved: the question
+// is answered (with no version), and no pom after it is asked.
+func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (version string, found bool, bomHosts []string, stop bool) {
 	key := group + ":" + artifact
 	for _, m := range c.chain {
 		idx := m.index()
 		best, has := idx.plain[key]
 		// An entry whose coordinates hold a reference comes first if it is
-		// written first and means this coordinate here.
-		idx.eachCandidate(group, artifact, func(j int) bool {
-			if has && j > best {
-				return false
+		// written first and means this coordinate here. Such an entry can
+		// only answer a question about the half of its key that IS written
+		// out, so the lists asked are the ones filed under this artifact
+		// and this group and the one with a reference in both halves. A
+		// coordinate with a colon in it is not told apart from the colon
+		// between the halves, so a question that has one asks them all.
+		if len(idx.dynamic) > 0 {
+			earlier := func(j int, ok bool) {
+				if ok && (!has || j < best) {
+					best, has = j, true
+				}
 			}
-			if c.interpolate(m.managed[j].group)+":"+c.interpolate(m.managed[j].artifact) == key {
-				best, has = j, true
-				return false
+			if strings.Contains(group, ":") || strings.Contains(artifact, ":") {
+				earlier(c.firstRef(lk.rd, m, idx.dynamic, pomRefListAt{c, m, '*', ""}, key))
+			} else {
+				earlier(c.firstRef(lk.rd, m, idx.dynByArtifact[artifact], pomRefListAt{c, m, 'a', artifact}, key))
+				earlier(c.firstRef(lk.rd, m, idx.dynByGroup[group], pomRefListAt{c, m, 'g', group}, key))
+				earlier(c.firstRef(lk.rd, m, idx.dynBoth, pomRefListAt{c, m, 'b', ""}, key))
 			}
-			return true
-		})
+		}
 		if has {
 			v := c.interpolate(m.managed[best].version)
 			if v != "" && !strings.Contains(v, "${") {
 				// The chain's own entry: nothing that could not be obtained
 				// comes before it (a chain is missing its far end, and the
 				// nearer pom wins).
-				return v, true, nil
+				return v, true, nil, false
 			}
-			return v, false, nil
+			// It manages the artifact and cannot say at what version.
+			return v, false, nil, true
 		}
 	}
 	// No pom of the chain that was read manages it. One that could not be
 	// obtained may, and it comes before every import.
-	lk.before = worseReason(lk.before, unknownAnswer(c.chainGap))
+	lk.before = worseReason(lk.before, c.chainUnknown)
 	if depth >= pomChainLimit {
-		return "", false, nil
+		return "", false, nil, false
 	}
 	for _, m := range c.chain {
-		if v, ok, via := c.lookupImports(lk, m, group, artifact, depth); ok {
-			return v, ok, via
+		if v, ok, via, stop := c.lookupImports(lk, m, group, artifact, depth); ok || stop {
+			return v, ok, via, stop
 		}
 	}
-	return "", false, nil
+	return "", false, nil, false
 }
 
 // lookupImports asks the BOMs that m imports, in order.
@@ -1061,7 +1152,7 @@ func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (v
 // nowhere, and of none it does not reach: the ones in front of its answer
 // (idx.gapBefore, and what it finds dead itself), or all of them when no
 // import answers.
-func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact string, depth int) (version string, found bool, bomHosts []string) {
+func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact string, depth int) (version string, found bool, bomHosts []string, stop bool) {
 	idx := m.index()
 	idx.compact()
 	idx.inUse++
@@ -1071,7 +1162,7 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 		c.tree.importSteps++
 		if idx.dead[n] {
 			// Found so by a question inside this one, and passed.
-			lk.pass(idx.deadReason[n])
+			lk.pass(idx.deadReason[n], idx.deadUnknown[n])
 			continue
 		}
 		e := m.managed[idx.imports[n]]
@@ -1084,28 +1175,32 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 			// read.
 			at = lk.rd.importAt(c, m, n)
 			if at.dead {
-				lk.pass(at.reason)
+				lk.pass(at.reason, at.unknown)
 				continue
 			}
 			bg, ba, bv = at.group, at.artifact, at.version
 		}
 		bom, ambiguous := c.tree.byCoordinates(bg, ba, bv)
-		reason := ""
-		if bom == nil && !ambiguous {
-			// Not in the tree: asked of a repository. An AMBIGUOUS one is
-			// not: the tree holds two poms under that name, and a
-			// repository's would be a third candidate, not the answer.
-			bom, reason = c.tree.remotePom(bg, ba, bv, c.declaredFor)
+		reason, unknown := "", ""
+		switch {
+		case ambiguous:
+			// The tree holds two poms under that name, and a repository's
+			// would be a third candidate, not the answer: it is not asked,
+			// and what the import says is not known.
+			unknown = model.VersionReasonInheritedNotFound
+		case bom == nil:
+			// Not in the tree: asked of a repository.
+			bom, reason, unknown = c.tree.remotePom(bg, ba, bv, c.declaredFor)
 		}
 		if bom == nil {
 			// It leads nowhere: for every question of this walk when its
 			// coordinates are written out, for this file's when they depend
 			// on the model. Not looked for again.
-			lk.pass(reason)
+			lk.pass(reason, unknown)
 			if plain {
-				idx.dead[n], idx.deadReason[n], idx.stale = true, reason, true
+				idx.dead[n], idx.deadReason[n], idx.deadUnknown[n], idx.stale = true, reason, unknown, true
 			} else {
-				at.dead, at.reason = true, reason
+				at.dead, at.reason, at.unknown = true, reason, unknown
 			}
 			continue
 		}
@@ -1116,32 +1211,26 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 		// A BOM is built in its OWN context.
 		bc := c.tree.context(bom)
 		lk.gap = worseReason(lk.gap, bc.chainGap)
-		if v, ok, via := bc.lookup(lk, group, artifact, depth+1); ok {
-			lk.pass(idx.gapBefore[k])
-			return v, true, mergeHosts(chainHosts(bc.chain), via)
+		v, ok, via, stop := bc.lookup(lk, group, artifact, depth+1)
+		if ok || stop {
+			lk.pass(idx.gapBefore[k], idx.unknownBefore[k])
+			if !ok {
+				return v, false, nil, true
+			}
+			return v, true, mergeHosts(chainHosts(bc.chain), via), false
 		}
 	}
-	lk.pass(idx.gapBefore[len(idx.live)])
-	return "", false, nil
+	lk.pass(idx.gapBefore[len(idx.live)], idx.unknownBefore[len(idx.live)])
+	return "", false, nil, false
 }
 
-// pass records an import the question came past that could not be obtained.
-func (lk *pomLookup) pass(reason string) {
+// pass records an import the question came past that could not be obtained:
+// why (reason), and why what it says is not known (unknown; "" when every
+// repository read answered that there is no such pom, which is an answer:
+// SR-5).
+func (lk *pomLookup) pass(reason, unknown string) {
 	lk.gap = worseReason(lk.gap, reason)
-	lk.before = worseReason(lk.before, unknownAnswer(reason))
-}
-
-// unknownAnswer is reason when it means that what a pom says is NOT KNOWN: a
-// lookup that failed (or was not made), a repository that may not be
-// fetched from. "Not found" is not that: every repository that is read
-// answered that it has no such pom, which is an answer (SR-5), and the build
-// goes on as it always did, to the next pom. Such a pom still makes the tree
-// not whole, and a dependency nothing manages still says so.
-func unknownAnswer(reason string) string {
-	if reason == model.VersionReasonInheritedLookupFailed || reason == model.VersionReasonInheritedRepositoryRefused {
-		return reason
-	}
-	return ""
+	lk.before = worseReason(lk.before, unknown)
 }
 
 // byCoordinates returns the one pom in the tree with these coordinates, or

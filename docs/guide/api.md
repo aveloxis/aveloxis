@@ -8,6 +8,29 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.214
+
+The **`coverage`** object (`GET /api/v1/repos/{id}/vulnerabilities`,
+`GET /api/v1/repos/{id}/stats`, `GET /api/v1/repos/stats?ids=`) gains
+**`lockfiles_unread`**. It is `null` except when the repository's lockfiles went unread at
+the last analysis; then it is an object:
+
+- **`reason`**: `manifest_read_cpu_limit`, `manifest_read_memory_limit`,
+  `manifest_read_timed_out`, `manifest_read_failed` or `root_unreadable`.
+- **`last_read_at`**: when the lockfiles were last read to the end, or `null` when they
+  never were.
+
+Show it as a caution beside the coverage state, never in its place. With a date: the
+exact versions and transitive dependencies in the answer are as old as that date. With no
+date: the repository has lockfiles and none was ever read, so transitive dependencies are
+not checked. When the field is `null`, or absent (an older server), show nothing.
+
+`last_analysis_attempt.reason` can also be one of the four `manifest_read_*` values
+(since 0.29.213; the reference listed three).
+
+The SBOM's coverage marker gains `lockfiles_unread_reason` and `lockfiles_last_read_at`
+in the same cases.
+
 ## Changes for API clients in 0.29.199
 
 `GET /api/v1/repos/{id}/sbom`, both formats, with or without `vulns=1`:

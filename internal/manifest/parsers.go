@@ -6,6 +6,8 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
@@ -1332,9 +1336,106 @@ func yamlScalar(v string) string {
 // files, a BOM on "astroid" and on a root package.json).
 // TestAnalysisReadsManifestsThroughOneReader pins it.
 func ReadManifest(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	if bound := readBound.Load(); bound != nil {
+		// The bound is told the file's length (-1 when it has none to
+		// tell: not a regular file, or it cannot be looked at), so that it
+		// can make room for a file it would otherwise refuse. A process
+		// with a bound never reads a file whole: when no room is left the
+		// bound is one byte, which only an empty file fits.
+		size := int64(-1)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			size = info.Size()
+		}
+		max := (*bound)(size)
+		if max < 1 {
+			max = 1
+		}
+		return ReadManifestWithin(path, max)
+	}
+	return ReadManifestWithin(path, 0)
+}
+
+// readBound is the process's bound on one read of a manifest, when it has
+// one; nil in every process that does not install it.
+var readBound atomic.Pointer[func(size int64) int64]
+
+// SetReadBound installs, for the whole process, how many bytes one read of a
+// manifest or lockfile may take (0.29.214), and returns what removes it
+// again. It is for the process that exists to read one clone under a memory
+// limit (the collector's manifest reader): bound is asked before each read
+// for the room left now, with the length of the file about to be read (-1
+// when that is not known), and every reader in this package (they all read
+// through ReadManifest) then refuses a file longer than that from its
+// length, and stops reading one that grows at it (ReadManifestWithin). The
+// refusal is a *ManifestTooLargeError, which the roster reports as a
+// manifest that could not be read.
+//
+// It is process-wide, and not a field of Walk, because most readers here are
+// functions of a path that no walk reaches; a process serving other work
+// must not install it. With none installed a read is whole, as it always
+// was.
+//
+// The bound should answer the same for the same file a moment later (the
+// roster reads a file once to decide it is readable and its reader reads it
+// again, and several readers treat a file they cannot read as declaring
+// nothing): a bound made of the room a heap limit leaves frees what it can
+// before it refuses.
+func SetReadBound(bound func(size int64) int64) (restore func()) {
+	prev := readBound.Swap(&bound)
+	return func() { readBound.Store(prev) }
+}
+
+// ManifestTooLargeError is ReadManifestWithin's refusal of a file longer
+// than its caller allows. Size is the file's length when it was known
+// before reading, else -1 (it was read up to the limit and went on).
+type ManifestTooLargeError struct {
+	Path string
+	Size int64
+	Max  int64
+}
+
+func (e *ManifestTooLargeError) Error() string {
+	if e.Size < 0 {
+		return fmt.Sprintf("%s is longer than the %d bytes that may be read of it; it was not read", e.Path, e.Max)
+	}
+	return fmt.Sprintf("%s is %d bytes, more than the %d that may be read of it; it was not read", e.Path, e.Size, e.Max)
+}
+
+// ReadManifestWithin is ReadManifest for a caller that has a bound on what
+// it may hold (round 7: a file was read whole whatever its size, and a
+// reader with a memory limit was two gibibytes past it before anything
+// looked). max <= 0 is no bound, which is ReadManifest.
+//
+// A regular file longer than max is refused BEFORE any of it is read, from
+// its length (*ManifestTooLargeError). Anything else is read in pieces and
+// never more than max+1 bytes of it, so a file that grows while it is read,
+// or one whose length is not known (a pipe), is refused at the limit and not
+// held. The bound is on the bytes of the file: a UTF-16 file's text is
+// about half of them.
+func ReadManifestWithin(path string, max int64) ([]byte, error) {
+	var data []byte
+	if max <= 0 {
+		var err error
+		if data, err = os.ReadFile(path); err != nil {
+			return nil, err
+		}
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		if info, err := f.Stat(); err != nil {
+			return nil, err
+		} else if info.Mode().IsRegular() && info.Size() > max {
+			return nil, &ManifestTooLargeError{Path: path, Size: info.Size(), Max: max}
+		}
+		if data, err = io.ReadAll(io.LimitReader(f, max+1)); err != nil {
+			return nil, err
+		}
+		if int64(len(data)) > max {
+			return nil, &ManifestTooLargeError{Path: path, Size: -1, Max: max}
+		}
 	}
 	data = decodeIfUTF16(data)
 	return bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), nil
@@ -1546,19 +1647,30 @@ var (
 
 // gemLogicalLines splits a line at each `;` that ends a whole statement: a
 // block that opens and closes on the line (`group :test do gem 'a' end; gem
-// 'b'`), or a gem declaration. A `;` inside a block that is still open
+// 'b'`), or a gem declaration (`gem 'a'; gem 'b'` is two declarations, as it
+// is in Ruby, and gives two rows). A `;` inside a block that is still open
 // (`group :x do; gem 'a'; end`) is not such a place, and the line is left
 // whole for the one-line block's own reading.
 //
 // Round 6: the one-line patterns end at the end of the line, so a block
 // followed by `; ...` was not seen as closed: its gem's requirement held the
 // `end`, and every gem after it took the block's group.
+//
+// Round 7: that fix asked three patterns about the whole head at every `;`
+// and read the rest again from its start after every split, so a line of
+// many `;` took time in the square of its length (100 KB: over a minute).
+// The line is now masked once, the places the patterns look for are found
+// once, and each `;` is decided from them: the same answers
+// (TestGemLogicalLinesAnswersAsThePatternsDo), in one pass.
 func gemLogicalLines(line string) []string {
 	literals := quotedLiteral.FindAllString(line, -1)
 	n := -1
 	masked := quotedLiteral.ReplaceAllStringFunc(line, func(string) string { n++; return `"` + quotedMark + strconv.Itoa(n) + `"` })
 	if i := strings.Index(masked, "#"); i >= 0 {
 		masked = masked[:i]
+	}
+	if !strings.Contains(masked, ";") {
+		return []string{line}
 	}
 	restore := func(piece string) string {
 		return maskedLiteral.ReplaceAllStringFunc(piece, func(mark string) string {
@@ -1569,19 +1681,179 @@ func gemLogicalLines(line string) []string {
 			return literals[k]
 		})
 	}
-	for i := 0; i < len(masked); i++ {
-		if masked[i] != ';' {
+	idx := newGemLineIndex(masked)
+	var out []string
+	start := 0
+	st := idx.statementAt(start)
+	lastWord := -1 // the end of the last non-space rune since start
+	for i := 0; i < len(masked); {
+		r, size := utf8.DecodeRuneInString(masked[i:])
+		if r != ';' {
+			if !unicode.IsSpace(r) {
+				lastWord = i + size
+			}
+			i += size
 			continue
 		}
-		head, rest := strings.TrimSpace(masked[:i]), strings.TrimSpace(masked[i+1:])
-		if head == "" || rest == "" {
-			continue
+		if i+1 >= idx.lastWord {
+			break // nothing but space follows: no rest to split off
 		}
-		if gemOneLine.MatchString(head) || gemOneLineBraces.MatchString(head) || gemPlainDeclaration.MatchString(head) {
-			return append([]string{restore(head)}, gemLogicalLines(restore(rest))...)
+		if st.kind != gemStatementOther && lastWord > st.from && idx.whole(st, lastWord) {
+			out = append(out, restore(masked[st.from:lastWord]))
+			start = i + 1
+			st = idx.statementAt(start)
+			lastWord = -1
+		} else {
+			lastWord = i + 1 // a `;` that splits nothing is part of its statement
+		}
+		i++
+	}
+	if start == 0 {
+		return []string{line}
+	}
+	return append(out, restore(strings.TrimSpace(masked[start:])))
+}
+
+// What a statement of a Gemfile line opens with decides which of the three
+// patterns can ever hold of it.
+const (
+	gemStatementOther = iota // none can: the rest of the line is one piece
+	gemStatementGem          // gemPlainDeclaration
+	gemStatementBlock        // gemOneLine or gemOneLineBraces
+)
+
+type gemStatement struct {
+	kind   int
+	from   int  // the statement's first non-space byte
+	body   int  // the first byte after its opening keyword
+	braces bool // its keyword may open a brace block (not if, unless, case)
+}
+
+// gemLineIndex holds the places in one masked line that the one-line
+// patterns look for, found once.
+type gemLineIndex struct {
+	masked   string
+	lastWord int      // the end of the line's last non-space rune
+	openers  [][2]int // each `then|do` followed by a gem: where the word starts, where its gem ends
+	closers  [][2]int // each `end` followed by a statement modifier: its leading separator, its end
+	braces   []int    // each `{`
+	braceGem map[int]int
+}
+
+var (
+	gemStatementKeyword = regexp.MustCompile(`^(?:(if|unless|case)|group|platforms?|path|git|github|gitlab|bitbucket|source|install_if|env)\b`)
+	gemStatementIsGem   = regexp.MustCompile(`^gem\b`)
+	gemOpenerWord       = regexp.MustCompile(`\b(?:then|do)[\s;]+`)
+	gemEndModifier      = regexp.MustCompile(`[\s;]end\s+(?:if|unless|while|until)\b`)
+	gemBraceBody        = regexp.MustCompile(`^\{\s*(?:\|[^|]*\|\s*)?gem\b`)
+)
+
+func newGemLineIndex(masked string) *gemLineIndex {
+	x := &gemLineIndex{masked: masked, lastWord: len(strings.TrimRightFunc(masked, unicode.IsSpace)), braceGem: map[int]int{}}
+	// `\b(?:then|do)[\s;]+(?:\|[^|]*\|\s*)?gem\b`, asked once from each
+	// opener word. A `|...|` region is crossed by the one opener in front
+	// of it.
+	for _, m := range gemOpenerWord.FindAllStringIndex(masked, -1) {
+		at := m[1]
+		if at < len(masked) && masked[at] == '|' {
+			close := strings.IndexByte(masked[at+1:], '|')
+			if close < 0 {
+				continue
+			}
+			at += close + 2
+			for at < len(masked) && isRegexpSpace(masked[at]) {
+				at++
+			}
+		}
+		if strings.HasPrefix(masked[at:], "gem") && (at+3 == len(masked) || !isRegexpWord(masked[at+3])) {
+			x.openers = append(x.openers, [2]int{m[0], at + 3})
 		}
 	}
-	return []string{line}
+	// The earliest gem of the openers from each one on: an opener inside
+	// another's `|...|` has its gem first.
+	for k := len(x.openers) - 2; k >= 0; k-- {
+		if x.openers[k+1][1] < x.openers[k][1] {
+			x.openers[k][1] = x.openers[k+1][1]
+		}
+	}
+	for _, m := range gemEndModifier.FindAllStringIndex(masked, -1) {
+		x.closers = append(x.closers, [2]int{m[0], m[1]})
+	}
+	for i := 0; i < len(masked); i++ {
+		if masked[i] == '{' {
+			x.braces = append(x.braces, i)
+		}
+	}
+	return x
+}
+
+// statementAt classifies the statement that begins at or after from.
+func (x *gemLineIndex) statementAt(from int) gemStatement {
+	rest := strings.TrimLeftFunc(x.masked[from:], unicode.IsSpace)
+	at := len(x.masked) - len(rest)
+	head := rest
+	if len(head) > 16 {
+		head = head[:16] // longer than any keyword and the byte after it
+	}
+	if gemStatementIsGem.MatchString(head) {
+		return gemStatement{kind: gemStatementGem, from: at, body: at + 3}
+	}
+	if m := gemStatementKeyword.FindStringSubmatchIndex(head); m != nil {
+		return gemStatement{kind: gemStatementBlock, from: at, body: at + m[1], braces: m[2] < 0}
+	}
+	return gemStatement{kind: gemStatementOther, from: at}
+}
+
+// whole reports whether the statement, ending at end (the end of its last
+// non-space rune), is one the three patterns accept: what
+// gemOneLine.MatchString || gemOneLineBraces.MatchString ||
+// gemPlainDeclaration.MatchString say of masked[st.from:end].
+func (x *gemLineIndex) whole(st gemStatement, end int) bool {
+	brace := -1
+	if k := sort.SearchInts(x.braces, st.from); k < len(x.braces) && x.braces[k] < end {
+		brace = x.braces[k]
+	}
+	if st.kind == gemStatementGem {
+		return brace < 0
+	}
+	// gemOneLine: the first opener after the keyword whose gem is inside,
+	// then an `end` that closes the statement: at its very end, or with a
+	// modifier after it.
+	k := sort.Search(len(x.openers), func(i int) bool { return x.openers[i][0] > st.body })
+	if k < len(x.openers) && x.openers[k][1] <= end {
+		gem := x.openers[k][1]
+		if end-4 >= gem && x.masked[end-3:end] == "end" && (x.masked[end-4] == ';' || isRegexpSpace(x.masked[end-4])) {
+			return true
+		}
+		c := sort.Search(len(x.closers), func(i int) bool { return x.closers[i][0] >= gem })
+		if c < len(x.closers) && x.closers[c][1] <= end {
+			return true
+		}
+	}
+	// gemOneLineBraces: the statement's first `{`, a gem first inside it,
+	// and `}` at the very end.
+	if st.braces && brace >= 0 && x.masked[end-1] == '}' {
+		gem, known := x.braceGem[brace]
+		if !known {
+			gem = -1
+			if m := gemBraceBody.FindStringIndex(x.masked[brace:]); m != nil {
+				gem = brace + m[1]
+			}
+			x.braceGem[brace] = gem
+		}
+		return gem >= 0 && gem <= end-1
+	}
+	return false
+}
+
+// isRegexpWord: what `\w` matches.
+func isRegexpWord(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// isRegexpSpace: what `\s` matches.
+func isRegexpSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r'
 }
 
 // gemPlainDeclaration: a gem declaration that opens no block.

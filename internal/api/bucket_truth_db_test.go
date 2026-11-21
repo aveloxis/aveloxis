@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestTruncBucketMatchesPostgresDateTruncInNonUTCSession(t *testing.T) {
@@ -28,7 +28,7 @@ func TestTruncBucketMatchesPostgresDateTruncInNonUTCSession(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set")
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := db.OpenConn(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

@@ -382,7 +382,8 @@ tr.featured td.name a:first-child { color: #1d4ed8; }
     {{- if gt .VulnUnknownVersion 0 }} {{commaInt .VulnUnknownVersion}} {{if eq .VulnUnknownVersion 1}}advisory{{else}}advisories{{end}} for dependencies with no declared version (version not determined).{{end -}}
     {{- if and .VulnSecondLine (not (and (eq .VulnTotal 0) (not .VulnClean) (eq .VulnSecondLine .VulnAbsence))) }} {{sentence .VulnSecondLine}}.{{end -}}
   </p>
-
+  {{if .VulnLockfileCaution}}<p class="note-line"><strong>Caution.</strong> {{.VulnLockfileCaution}}</p>
+  {{end}}
   {{/* v0.28.2 (item 1e): the REDACTED contributors section — real
        counts, classes, and cross-repo names; identities are dropped
        at GENERATION time (the data type cannot hold them) and the

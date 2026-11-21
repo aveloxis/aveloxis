@@ -154,6 +154,34 @@ func InventoryAttemptResults() []string {
 		InventoryAttemptReadCPULimit, InventoryAttemptReadMemoryLimit, InventoryAttemptReadTimedOut, InventoryAttemptReadFailed}
 }
 
+// LockfileReading is how one analysis's reading of a repository's lockfiles
+// ended (0.29.214): the collector makes it in one place and the store keeps
+// it on the coverage record (RecordLockfileReading). Exactly one of
+// Completed and NotCompleted is set.
+//
+//   - Completed: the lockfiles were read and the stored snapshot replaced.
+//     Lockfiles says whether the clone has any; false is a repository with
+//     no lockfile, for which there is nothing to be behind on.
+//   - NotCompleted: they were not read, and the stored rows stand. The
+//     value is one of LockfileUnreadReasons. Lockfiles is then true only
+//     when the clone is KNOWN to hold a lockfile (the reader listed them
+//     before it stopped); false means it is not known. A reading that did
+//     not finish in a clone known to hold NO lockfile is recorded as
+//     Completed with Lockfiles false: there was nothing to read.
+type LockfileReading struct {
+	Completed    bool
+	Lockfiles    bool
+	NotCompleted string
+}
+
+// LockfileUnreadReasons are the values LockfileReading.NotCompleted takes:
+// the four ways the process that reads a clone can end without a result,
+// and the clone's root being unreadable.
+func LockfileUnreadReasons() []string {
+	return []string{InventoryAttemptReadCPULimit, InventoryAttemptReadMemoryLimit, InventoryAttemptReadTimedOut,
+		InventoryAttemptReadFailed, InventoryAttemptRootUnreadable}
+}
+
 // DependencyCoverage is a repository's stored coverage record.
 type DependencyCoverage struct {
 	// AnalysedAt is when the inventory was last replaced whole; nil when it
@@ -170,6 +198,16 @@ type DependencyCoverage struct {
 	// the inventory is older than the last attempt to refresh it.
 	LastAttemptAt     *time.Time
 	LastAttemptResult string
+	// LockfilesReadAt (0.29.214) is when the repository's lockfiles were
+	// last read to the end and their stored rows replaced; nil when they
+	// never have been since the column existed, or when the last reading
+	// found the repository has none. LockfilesUnreadReason is why the last
+	// reading did NOT finish (one of LockfileUnreadReasons), and is empty
+	// when it did: then the stored lockfile rows are as old as
+	// LockfilesReadAt, or (with no date) there are none and transitive
+	// dependencies are not checked.
+	LockfilesReadAt       *time.Time
+	LockfilesUnreadReason string
 	// Scan is the scan half; ScanAttemptAt is nil when no scan has written
 	// one (a repository not scanned since 0.29.161).
 	ScanAttemptAt *time.Time

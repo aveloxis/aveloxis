@@ -4,6 +4,10 @@
 package db
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strings"
@@ -222,8 +226,12 @@ func TestUpsertContributorBatchSavepointsPerIdentity(t *testing.T) {
 			spCount++
 		}
 	}
-	if at := strings.Index(body, "identSavepointSQL("); at < 0 || at > identIdx {
-		t.Error("the identity savepoint is not taken before the identity INSERT")
+	// The ORDER, by the calls themselves (round 7: a search of the text
+	// for "identSavepointSQL(" found the builder's DEFINITION, which
+	// stands before the INSERT wherever the call is, so the savepoint
+	// moved after the INSERT passed).
+	for _, problem := range identitySavepointOrderProblems(srctest.PackageFiles(t, "internal/db", 30)) {
+		t.Error(problem)
 	}
 	if spCount < 3 {
 		t.Errorf("UpsertContributorBatch's per-identity loop must bracket each identity "+
@@ -271,5 +279,104 @@ func TestTheSavepointBuildersGiveTheStatements(t *testing.T) {
 		if got != want {
 			t.Errorf("a savepoint builder gave %q, want %q", got, want)
 		}
+	}
+}
+
+// identitySavepointOrderProblems reads the function that inserts a
+// contributor's identities and says what is wrong with the order of its
+// savepoint bracket: the savepoint must be SENT (an argument of a call of
+// Exec) before the identity INSERT is, and its rollback and its release
+// after. Positions are those of the calls in the source, found by syntax.
+func identitySavepointOrderProblems(files map[string]string) []string {
+	const fn = "upsertContributorIdentities"
+	var problems []string
+	found := false
+	for name, src := range files {
+		fset := token.NewFileSet()
+		af, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			return []string{err.Error()}
+		}
+		for _, d := range af.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Name.Name != fn || fd.Body == nil {
+				continue
+			}
+			found = true
+			// Each Exec call, with what it sends: a savepoint builder's
+			// call, or the INSERT's text.
+			sent := map[string][]token.Pos{}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Exec" || len(c.Args) < 2 {
+					return true
+				}
+				switch a := c.Args[1].(type) {
+				case *ast.CallExpr:
+					if id, ok := a.Fun.(*ast.Ident); ok {
+						sent[id.Name] = append(sent[id.Name], c.Pos())
+					}
+				case *ast.BasicLit:
+					if strings.Contains(a.Value, "INSERT INTO aveloxis_data.contributor_identities") {
+						sent["INSERT"] = append(sent["INSERT"], c.Pos())
+					}
+				}
+				return true
+			})
+			if len(sent["INSERT"]) != 1 || len(sent["identSavepointSQL"]) != 1 {
+				problems = append(problems, fmt.Sprintf("%s sends the identity INSERT %d times and its savepoint %d times: this pin reads one of each", fn, len(sent["INSERT"]), len(sent["identSavepointSQL"])))
+				continue
+			}
+			insert, savepoint := sent["INSERT"][0], sent["identSavepointSQL"][0]
+			if savepoint > insert {
+				problems = append(problems, "the identity savepoint is sent AFTER the identity INSERT: a failed INSERT then has no savepoint to roll back to, and poisons the batch's transaction")
+			}
+			for _, after := range []string{"identSavepointRollbackSQL", "identSavepointReleaseSQL"} {
+				if len(sent[after]) == 0 {
+					problems = append(problems, fmt.Sprintf("%s never sends %s", fn, after))
+				}
+				for _, at := range sent[after] {
+					if at < insert {
+						problems = append(problems, fmt.Sprintf("%s is sent before the identity INSERT", after))
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		problems = append(problems, "the function "+fn+" was not found in the store")
+	}
+	return problems
+}
+
+// The order pin can fail: the same function with its savepoint sent after
+// the INSERT, and with the release sent before it.
+func TestTheIdentitySavepointOrderPinCanFail(t *testing.T) {
+	const body = `package db
+func identSavepointSQL(n uint) string { return "" }
+func upsertContributorIdentities() {
+	%s
+	tx.Exec(ctx, ` + "`INSERT INTO aveloxis_data.contributor_identities (a) VALUES ($1)`" + `, 1)
+	%s
+	tx.Exec(ctx, identSavepointRollbackSQL(n))
+	tx.Exec(ctx, identSavepointReleaseSQL(n))
+}
+`
+	const sp = "tx.Exec(ctx, identSavepointSQL(n))"
+	if p := identitySavepointOrderProblems(map[string]string{"x.go": fmt.Sprintf(body, sp, "")}); len(p) != 0 {
+		t.Errorf("the right order: %q", p)
+	}
+	if p := identitySavepointOrderProblems(map[string]string{"x.go": fmt.Sprintf(body, "", sp)}); len(p) != 1 || !strings.Contains(p[0], "AFTER the identity INSERT") {
+		t.Errorf("the savepoint sent after the INSERT: %q", p)
+	}
+	if p := identitySavepointOrderProblems(map[string]string{"x.go": fmt.Sprintf(body, sp+"\n\ttx.Exec(ctx, identSavepointReleaseSQL(n))", "")}); len(p) != 1 || !strings.Contains(p[0], "before the identity INSERT") {
+		t.Errorf("the release sent before the INSERT: %q", p)
+	}
+	if p := identitySavepointOrderProblems(map[string]string{"x.go": "package db\n"}); len(p) != 1 {
+		t.Errorf("the function gone: %q", p)
 	}
 }

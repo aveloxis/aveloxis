@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed data_test_seed.sql
@@ -132,7 +131,7 @@ func (r *snapshotRun) buildSeedTemplate(source, rewind string, shape *seedShape)
 	if err := r.clone(source, seedTemplateDB); err != nil {
 		return seedCounts{}, err
 	}
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(seedTemplateDB))
+	pool, err := openPool(r.ctx, r.databaseDSN(seedTemplateDB))
 	if err != nil {
 		return seedCounts{}, err
 	}

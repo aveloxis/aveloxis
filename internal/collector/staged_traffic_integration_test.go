@@ -50,7 +50,7 @@ func newStagedTrafficFixture(t *testing.T, slug string, platform model.Platform,
 	if err := db.RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

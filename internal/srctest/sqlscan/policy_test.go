@@ -86,8 +86,20 @@ func TestExprConformsGreatestNonNull(t *testing.T) {
 	if ok, _ := exprConforms(plain, sameOrder, col, GreatestNonNull); ok {
 		t.Error("same-order-twice is NOT the nil-safe pair — one side loses its fallback")
 	}
-	if ok, _ := exprConforms(plain, `GREATEST($9, repos.updated_at)`, col, GreatestNonNull); ok {
-		t.Error("plain GREATEST without the COALESCE pair is not nil-safe (NULL poisons GREATEST? no — but the registered shape is the pair; unrecognized must fail closed)")
+	// Round 7: plain GREATEST(stored, incoming), in either order, IS the
+	// shape: PostgreSQL's GREATEST ignores a NULL argument and is NULL only
+	// when every argument is (confirmed on PostgreSQL 18), so the COALESCE
+	// pair adds nothing to it. A third argument, or two of one kind, is not.
+	for _, expr := range []string{`GREATEST($9, repos.updated_at)`, `GREATEST(repos.updated_at, $9)`, `GREATEST(updated_at, $9::timestamptz)`} {
+		if ok, why := exprConforms(plain, expr, col, GreatestNonNull); !ok {
+			t.Errorf("%s must conform: %s", expr, why)
+		}
+	}
+	for _, expr := range []string{`GREATEST($9, $8)`, `GREATEST(repos.updated_at, repos.updated_at)`, `GREATEST($9, repos.updated_at, NOW())`,
+		`GREATEST($9, repos.created_at)`, `LEAST($9, repos.updated_at)`, `GREATEST($9, repos.updated_at + interval '1 day')`} {
+		if ok, _ := exprConforms(plain, expr, col, GreatestNonNull); ok {
+			t.Errorf("%s must NOT conform", expr)
+		}
 	}
 }
 
@@ -122,7 +134,7 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 
 	// With the exception: suppressed, and the exception is not stale.
 	exc := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "migrate.go",
-		Fragment: "COALESCE(data_collection_date, created_at, NOW())", Reason: "one-shot backfill"}}
+		Fragment: "COALESCE(data_collection_date, created_at, NOW())", Statement: stmts[1].SQL, Reason: "one-shot backfill"}}
 	rep = fixtureCheck(stmts, reg, exc)
 	if len(rep.Violations) != 0 {
 		t.Fatalf("exception must suppress the violation, got %#v", rep.Violations)
@@ -180,7 +192,7 @@ func TestCheckFailsClosedOnAMultipleColumnAssignment(t *testing.T) {
 		if len(rep.Violations) != 1 || rep.Violations[0].File != "b.go" || !strings.Contains(rep.Violations[0].Detail, "multiple-column") {
 			t.Errorf("%v: want one multiple-column violation in b.go (c.go only reads the column), got %#v", pol, rep.Violations)
 		}
-		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "b.go", Fragment: "(NOW(), $1)", Reason: "reviewed"}}
+		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "b.go", Fragment: "(NOW(), $1)", Statement: stmts[1].SQL, Reason: "reviewed"}}
 		if rep := fixtureCheck(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
 			t.Errorf("%v: a reviewed exception must take it: %#v / stale %#v", pol, rep.Violations, rep.StaleExceptions)
 		}

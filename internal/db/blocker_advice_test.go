@@ -170,7 +170,7 @@ func TestCheckBlockersRoutesHoldersByClientAddress(t *testing.T) {
 		}
 		cfg.ConnConfig.RuntimeParams["application_name"] = app
 		cfg.MaxConns = 1
-		p, err := pgxpool.NewWithConfig(ctx, cfg)
+		p, err := OpenPoolConfig(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}

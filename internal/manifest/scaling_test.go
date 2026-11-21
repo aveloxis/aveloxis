@@ -521,6 +521,86 @@ func scalingShapes() []scalingShape {
 				}
 				return files
 			}),
+
+		// Round 7. Each of these was found by a reviewer after the
+		// allowances were gone; the search (round7_search_test.go) now looks
+		// for their like without being told.
+		//
+		// A statement that does not end is begun again at every line of it
+		// (gradleValueTokens).
+		one("gradle: a declaration by extra continued by + on every line", "build.gradle.kts",
+			func(n int) string { return strings.Repeat("val x by extra a +\n", n/19) }),
+		one("gradle: an assignment of an empty string continued by + on every line", "build.gradle",
+			func(n int) string { return strings.Repeat("x = \"\" +\n", n/9) }),
+		one("gradle: blocks that each open a list, closed once at the end", "build.gradle",
+			func(n int) string { return strings.Repeat("{def x=[", n/8) + "]" }),
+		one("gradle: blocks that each open a mapOf that is never closed", "build.gradle",
+			func(n int) string { return strings.Repeat("{def x=mapOf(", n/13) }),
+		one("gradle: mavenBom lines continued by +", "build.gradle",
+			func(n int) string {
+				return "dependencyManagement { imports {\n" + strings.Repeat("mavenBom 'g:a:1' +\n", n/19)
+			}),
+		// One line of many statements (gemLogicalLines).
+		one("gemfile: one line of gem declarations", "Gemfile",
+			func(n int) string { return strings.Repeat("gem 'a';", n/8) + "\n" }),
+		one("gemfile: one line of blocks that no pattern takes for whole", "Gemfile",
+			func(n int) string { return strings.Repeat("if do gem end q;", n/16) + "\n" }),
+		// A value that never closes (scanTOMLDepTables), a field of many
+		// lines (rDescriptionFields).
+		one("toml: an array that is never closed, and blank lines", "pyproject.toml",
+			func(n int) string { return "[tool.poetry.dependencies]\na = [\n" + strings.Repeat("\n", n) }),
+		one("cargo: a table that is never closed, and lines", "Cargo.toml",
+			func(n int) string { return "[dependencies]\na = {\n" + strings.Repeat("x\n", n/2) }),
+		one("description: a field of many continuation lines", "DESCRIPTION",
+			func(n int) string { return "Imports:\n" + strings.Repeat(" a,\n", n/4) }),
+		// Version-less dependencies against entries keyed by references in
+		// both halves, under a chain of parents (pomContext.firstRef).
+		scalingShape{name: "pom: version-less dependencies against as many entries keyed by references, under thirty parents",
+			read: "pom.xml",
+			files: func(n int) map[string]string {
+				files := map[string]string{}
+				for i := 1; i <= 30; i++ {
+					parent := ""
+					if i < 30 {
+						parent = fmt.Sprintf("<parent><groupId>t</groupId><artifactId>c%d</artifactId><version>1</version><relativePath>../c%d</relativePath></parent>", i+1, i+1)
+					}
+					files[fmt.Sprintf("c%d/pom.xml", i)] = "<project>" + parent + fmt.Sprintf("<groupId>t</groupId><artifactId>c%d</artifactId><version>1</version></project>", i)
+				}
+				entry := "<dependency><groupId>${a}${b}${c}</groupId><artifactId>${d}${e}${f}</artifactId><version>1</version></dependency>"
+				dep := "<dependency><groupId>g</groupId><artifactId>x</artifactId></dependency>"
+				files["pom.xml"] = "<project><parent><groupId>t</groupId><artifactId>c1</artifactId><version>1</version><relativePath>c1</relativePath></parent>" +
+					"<groupId>t</groupId><artifactId>app</artifactId><version>1</version><dependencyManagement><dependencies>" +
+					strings.Repeat(entry, n/2/len(entry)) + "</dependencies></dependencyManagement><dependencies>" +
+					strings.Repeat(dep, n/2/len(dep)) + "</dependencies></project>"
+				return files
+			}},
+		one("pom: version-less dependencies against as many entries keyed by one reference each half", "pom.xml",
+			func(n int) string {
+				entry := "<dependency><groupId>${a}</groupId><artifactId>${d}</artifactId><version>1</version></dependency>"
+				dep := "<dependency><groupId>g</groupId><artifactId>x</artifactId></dependency>"
+				return pomOf("<dependencyManagement><dependencies>" + strings.Repeat(entry, n/2/len(entry)) + "</dependencies></dependencyManagement><dependencies>" +
+					strings.Repeat(dep, n/2/len(dep)) + "</dependencies>")
+			}),
+		scalingShape{name: "pom: version-less dependencies that nothing manages against as many BOMs of the clone",
+			read: "pom.xml",
+			files: func(n int) map[string]string {
+				files := map[string]string{}
+				k, imports := n/3/200, ""
+				for i := 0; i < k; i++ {
+					files[fmt.Sprintf("b%d/pom.xml", i)] = fmt.Sprintf("<project><groupId>t</groupId><artifactId>b%d</artifactId><version>1</version></project>", i)
+					imports += r4import("t", fmt.Sprintf("b%d", i), "1")
+				}
+				dep := "<dependency><groupId>g</groupId><artifactId>x</artifactId></dependency>"
+				files["pom.xml"] = pomOf("<dependencyManagement><dependencies>" + imports + "</dependencies></dependencyManagement><dependencies>" + strings.Repeat(dep, n/3/len(dep)) + "</dependencies>")
+				return files
+			}},
+		one("pom: version-less dependencies against as many entries keyed by a reference under one artifact", "pom.xml",
+			func(n int) string {
+				entry := "<dependency><groupId>${a}</groupId><artifactId>x</artifactId><version>1</version></dependency>"
+				dep := "<dependency><groupId>g</groupId><artifactId>x</artifactId></dependency>"
+				return pomOf("<dependencyManagement><dependencies>" + strings.Repeat(entry, n/2/len(entry)) + "</dependencies></dependencyManagement><dependencies>" +
+					strings.Repeat(dep, n/2/len(dep)) + "</dependencies>")
+			}),
 	}
 }
 
@@ -578,6 +658,18 @@ func scalingCost(t *testing.T, s scalingShape, n int) (alloc, retained uint64, b
 	return alloc, retained, best
 }
 
+// scalingProductFloor is THE FLOOR (round 7): every entry of
+// scalingNotLinear is a product of two things the build
+// itself writes (dependencies and the platforms or BOMs each is asked of,
+// projects and what a root shares with each), and none reaches the default
+// CPU limit (180 s since 0.29.214) with less than scalingProductFloor of
+// files written for the purpose. An entry whose measured size at the limit
+// is under the floor is not a product to be listed: it is a reader to be
+// fixed, as the statement readers of round 7 were. Everything that is NOT a
+// product across what a build writes is held to linear cost, by the shapes
+// above and by the search (round7_search_test.go).
+const scalingProductFloor = 2 << 20
+
 // scalingNotLinear are the shapes this test does NOT hold to linear cost,
 // each with why. Until 0.29.212 each ended at an allowance counted in the
 // readers (units of work per byte read); the allowances are gone
@@ -588,13 +680,14 @@ func scalingCost(t *testing.T, s scalingShape, n int) (alloc, retained uint64, b
 // and reported so. They stay in the list so that making one linear is a
 // one-line change here, and so that the count of shapes found is not lost.
 var scalingNotLinear = map[string]string{
-	// Each is a product the build itself states, and needs megabytes of
-	// files written for the purpose to reach the default CPU limit (120 s).
-	// Times are of this reader on an Apple M-series core, 0.29.213.
-	"gradle: many dependencies against many platforms of the clone":                             "every dependency no platform manages is asked of every platform: 0.5 s for 358 KB (1,500 platforms), 5 s for 1.2 MB; the limit at about 6 MB. An honest build has a handful of platforms",
-	"tree: project directories under a root that shares as many repositories and platforms":     "the platforms the root shares are applied to every project: 0.4 s for 177 KB (1,900 files), 3.2 s for 609 KB; the limit at about 3.7 MB. An honest root shares one or two",
-	"tree: projects that apply one script, each with its own value for what it reads":           "the script is read again for each project that gives it another answer, projects times its size: 17 s for 972 KB (15,000 projects); the limit at about 2.6 MB. An honest publishing build of 1,000 modules and a 60 KB script takes under a second",
-	"tree: modules under a parent with as many reference-keyed BOM imports of long coordinates": "each module's imports are other coordinates, each interpolated (2,600 bytes) and asked for: 0.4 s for 155 KB, 4.9 s for 525 KB; the limit at about 2.6 MB. An honest parent has a few such imports",
+	// Times are of this reader on an Apple M-series core, 0.29.213 (the
+	// fifth, 0.29.214); the size at the limit is each one's quadratic curve
+	// carried to 180 s.
+	"gradle: many dependencies against many platforms of the clone":                             "every dependency no platform manages is asked of every platform: 0.5 s for 358 KB (1,500 platforms), 5 s for 1.2 MB; the limit at about 7 MB. An honest build has a handful of platforms",
+	"tree: project directories under a root that shares as many repositories and platforms":     "the platforms the root shares are applied to every project: 0.4 s for 177 KB (1,900 files), 3.2 s for 609 KB; the limit at about 4.5 MB. An honest root shares one or two",
+	"tree: projects that apply one script, each with its own value for what it reads":           "the script is read again for each project that gives it another answer, projects times its size: 17 s for 972 KB (15,000 projects); the limit at about 3.2 MB. An honest publishing build of 1,000 modules and a 60 KB script takes under a second",
+	"tree: modules under a parent with as many reference-keyed BOM imports of long coordinates": "each module's imports are other coordinates, each interpolated (2,600 bytes) and asked for: 0.4 s for 155 KB, 4.9 s for 525 KB; the limit at about 3.2 MB. An honest parent has a few such imports",
+	"pom: version-less dependencies that nothing manages against as many BOMs of the clone":     "every dependency no BOM manages is asked of every BOM the pom imports: 0.2 s for 214 KB (512 BOMs), 0.8 s for 429 KB, 3.3 s for 860 KB; the limit at about 6.3 MB. An honest pom imports a handful of BOMs",
 }
 
 // scalingTimeout is how long one reading of a shape may take before the
@@ -605,16 +698,24 @@ func TestBuildFileReadersScaleLinearly(t *testing.T) {
 	shapes := scalingShapes()
 	// The count is stated where a reader looks for it (the ledger once said
 	// 28 for 26): change it with the list.
-	if want := 42; len(shapes) != want {
+	if want := 56; len(shapes) != want {
 		t.Errorf("%d shapes; this test's comment and the ledger say %d", len(shapes), want)
 	}
 	known := map[string]bool{}
 	for _, s := range shapes {
 		known[s.name] = true
 	}
-	for name := range scalingNotLinear {
+	for name, why := range scalingNotLinear {
 		if !known[name] {
 			t.Errorf("scalingNotLinear names %q, which is no shape", name)
+		}
+		// Each states the size at which it reaches the limit, and that is
+		// not under the floor.
+		var at float64
+		if i := strings.Index(why, "the limit at about "); i < 0 {
+			t.Errorf("%s: its entry does not say at what size it reaches the CPU limit", name)
+		} else if _, err := fmt.Sscanf(why[i:], "the limit at about %f MB", &at); err != nil || at*(1<<20) < scalingProductFloor {
+			t.Errorf("%s reaches the limit at %.1f MB (%v), under the floor of %d bytes: it is a reader to fix, not a product to list", name, at, err, scalingProductFloor)
 		}
 	}
 	for _, s := range shapes {

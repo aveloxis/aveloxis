@@ -24,6 +24,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/pkgid"
+	"github.com/aveloxis/aveloxis/internal/textclean"
 	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
 
@@ -79,6 +80,15 @@ func walkLockfiles(workDir string, logger *slog.Logger, parsed func(parsedLockfi
 		if relErr != nil {
 			rel = base
 		}
+		rel = filepath.ToSlash(rel)
+		if !wirePathOK(rel) {
+			// A path that cannot be stored as it is (a control character,
+			// bytes that are not text) names no row: the lockfile is not
+			// read, and says so (0.29.214; until then its path went to the
+			// database as it was, and one such path failed the snapshot).
+			logger.Warn("lockfile path cannot be stored unchanged — not read", "path", textclean.Sanitize(rel))
+			return nil
+		}
 		if spec.binaryOnly {
 			// bun.lockb: binary — DETECT for the inventory (kind
 			// marker, zero entries), never parse.
@@ -88,6 +98,15 @@ func walkLockfiles(workDir string, logger *slog.Logger, parsed func(parsedLockfi
 		}
 		// Through manifest.ReadManifest (PR #212 review): a UTF-8 BOM or UTF-16 lockfile
 		// is decoded like its manifest, not failed whole (SR-17).
+		if cloneFileTooLarge(info.Size()) {
+			// Not read at all: the file alone is larger than the memory
+			// this process has left to it (0.29.214). It is one lockfile
+			// that failed, and the rest are read.
+			logger.Warn("lockfile is larger than the memory left to read it in (collection.manifest_read_memory_mb) — not read; its previous rows are kept",
+				"path", rel, "bytes", info.Size())
+			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedRead})
+			return nil
+		}
 		data, readErr := manifest.ReadManifest(path)
 		if readErr != nil {
 			logger.Warn("failed to read lockfile — its previous rows are kept", "path", rel, "error", readErr)
@@ -97,6 +116,13 @@ func walkLockfiles(workDir string, logger *slog.Logger, parsed func(parsedLockfi
 		res, parseErr := ParseLockfile(base, data)
 		if parseErr != nil {
 			logger.Warn("failed to parse lockfile — its previous rows are kept", "path", rel, "error", parseErr)
+			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedParse})
+			return nil
+		}
+		if item := lockfileItemTooLarge(res); item != "" {
+			// One entry too long to hand over (manifestItemLimit): nothing
+			// could store it. The lockfile failed, by name.
+			logger.Warn("lockfile holds an entry too long to store — its previous rows are kept", "path", rel, "entry", item)
 			failed = append(failed, model.ManifestFailure{Path: rel, Kind: base, Reason: model.ManifestFailedParse})
 			return nil
 		}
@@ -115,9 +141,63 @@ func walkLockfiles(workDir string, logger *slog.Logger, parsed func(parsedLockfi
 // ahead of the libyear phase (parsing only; nothing is stored), and handed
 // to the lockfile phase.
 type lockfileSet struct {
+	// Parsed are the lockfiles that parsed, when they are held here (a walk
+	// in this process: a test). The child's are in spool, on disk
+	// (lockfile_spool.go). Read them through each.
 	Parsed  []parsedLockfile
+	spool   *lockfileSpool
 	Failed  []model.ManifestFailure
 	WalkErr error
+	// Present are the paths of the lockfiles the clone holds, as the name
+	// pass listed them (0.29.214); PresentKnown says the list was made. It
+	// is what the stored rows are held to when the lockfiles themselves
+	// went unread: a lockfile that is gone locks nothing.
+	Present      map[string]bool
+	PresentKnown bool
+}
+
+// each hands fn every lockfile that parsed, one at a time.
+func (s lockfileSet) each(fn func(parsedLockfile) error) error {
+	for _, pl := range s.Parsed {
+		if err := fn(pl); err != nil {
+			return err
+		}
+	}
+	if s.spool != nil {
+		return s.spool.each(fn)
+	}
+	return nil
+}
+
+// parsedCount is how many lockfiles parsed.
+func (s lockfileSet) parsedCount() int {
+	n := len(s.Parsed)
+	if s.spool != nil {
+		n += len(s.spool.heads)
+	}
+	return n
+}
+
+// lockfileItemTooLarge names an entry or an edge of a parsed lockfile whose
+// text is longer than one item may be on the wire ("" when none is).
+func lockfileItemTooLarge(res *LockfileResult) string {
+	short := func(s string) string {
+		if len(s) > 80 {
+			return s[:80] + "…"
+		}
+		return s
+	}
+	for _, e := range res.Entries {
+		if len(e.Name)+len(e.Version)+len(e.Namespace)+len(e.Ecosystem)+len(e.Scope) > manifestItemLimit {
+			return short(textclean.Sanitize(e.Name))
+		}
+	}
+	for _, e := range res.Edges {
+		if len(e.ParentName)+len(e.ParentVersion)+len(e.ChildName)+len(e.Constraint) > manifestItemLimit {
+			return short(textclean.Sanitize(e.ParentName + " > " + e.ChildName))
+		}
+	}
+	return ""
 }
 
 // scanLockfiles is Phase 2b of AnalyzeRepo: walk + parse lockfiles,
@@ -146,10 +226,17 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 			ac.logger.Log(ctx, manifestFailureLevel(locks.WalkErr, slog.LevelError), "the lockfiles were not read — the stored lockfile rows are kept, and are now older than this analysis",
 				append([]any{"repo_id", repoID, "result", child.Attempt, "to_do", lockfilesUnreadAdvice(child.Attempt), "error", locks.WalkErr},
 					manifestLimits().effective().logLimits()...)...)
+			if !child.Stale {
+				ac.lockfileReadingEnded(ctx, repoID, lockfilesNotRead(child.Attempt, locks))
+			}
+			ac.dropRowsOfLockfilesThatAreGone(ctx, repoID, locks)
+		}
+		var root *errManifestRoot
+		if errors.As(locks.WalkErr, &root) {
+			ac.lockfileReadingEnded(ctx, repoID, LockfileReading{NotCompleted: model.InventoryAttemptRootUnreadable})
 		}
 		return fmt.Errorf("lockfile walk failed (snapshot NOT replaced): %w", locks.WalkErr)
 	}
-	parsed := locks.Parsed
 
 	deps, err := ac.store.GetRepoDepsForVulnScan(ctx, repoID)
 	if err != nil {
@@ -166,18 +253,13 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	// v0.29.175: entries whose "version" was not a version, over every
 	// lockfile of the repository; one line, not one per entry.
 	var aliased, notRegistry, notAVersion int
-	for _, pl := range parsed {
-		aliased += pl.Result.Aliased
-		notRegistry += pl.Result.NotRegistry
-		notAVersion += pl.Result.NotAVersion
-	}
-	if aliased+notRegistry+notAVersion > 0 {
-		ac.logger.Info("lockfile entries whose version field is not a version",
-			"repo_id", repoID, "npm_aliases_recorded_under_the_real_package", aliased,
-			"git_or_url_sources_left_out", notRegistry, "requirement_strings_left_out", notAVersion)
-	}
-	for _, pl := range parsed {
+	// One lockfile at a time (0.29.214): the child's are read back from
+	// disk, and what is kept of each is the rows it becomes.
+	if err := locks.each(func(pl parsedLockfile) error {
 		res := pl.Result
+		aliased += res.Aliased
+		notRegistry += res.NotRegistry
+		notAVersion += res.NotAVersion
 		// v0.27.133 C2: dependency edges — the attribution substrate —
 		// are stored ONLY under the same vuln_scan_transitive knob that
 		// gates transitive package rows (edges without the transitive
@@ -266,6 +348,14 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 			EntryCount:   len(res.Entries),
 			DirectCount:  directCount,
 		})
+		return nil
+	}); err != nil {
+		return fmt.Errorf("the lockfiles read could not be read back (snapshot NOT replaced): %w", err)
+	}
+	if aliased+notRegistry+notAVersion > 0 {
+		ac.logger.Info("lockfile entries whose version field is not a version",
+			"repo_id", repoID, "npm_aliases_recorded_under_the_real_package", aliased,
+			"git_or_url_sources_left_out", notRegistry, "requirement_strings_left_out", notAVersion)
 	}
 
 	// v0.27.133 C2: Go transitive closure via the toolchain — same knob,
@@ -342,6 +432,7 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 	if err := ac.store.ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges, failed); err != nil {
 		return err
 	}
+	ac.lockfileReadingEnded(ctx, repoID, LockfileReading{Completed: true, Lockfiles: len(inventory) > 0 || len(failed) > 0})
 	if len(inventory) > 0 {
 		// Round-21 (v0.27.138): with transitive scanning on by default,
 		// packages holds direct + transitive + the Go build list —
@@ -373,7 +464,14 @@ func (ac *AnalysisCollector) scanLockfiles(ctx context.Context, repoID int64, wo
 // previous rows cannot be read the failed lockfiles are simply not offered:
 // their dependencies report the declared version this cycle, and the scan's
 // targets, which come from the lockfile table, are unaffected.
-func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, locks lockfileSet) []versionuse.Lockfile {
+//
+// wanted (0.29.214) are the match keys of the dependencies the inventory
+// will ask about; nil is every key. A lockfile's other entries are not
+// kept: the map this builds lives through the libyear phase, and a
+// repository's lockfiles hold millions of packages its manifests do not
+// declare. versionuse.Nearest asks by exactly these keys, so the answers are
+// the same.
+func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, locks lockfileSet, wanted map[string]bool) []versionuse.Lockfile {
 	byPath := map[string]*versionuse.Lockfile{}
 	var order []string
 	add := func(path, ecosystem, name, version string) {
@@ -387,11 +485,14 @@ func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, l
 			return
 		}
 		key := pkgid.MatchKey(ecosystem, name)
+		if wanted != nil && !wanted[key] {
+			return
+		}
 		if !slices.Contains(lf.Versions[key], version) {
 			lf.Versions[key] = append(lf.Versions[key], version)
 		}
 	}
-	for _, pl := range locks.Parsed {
+	if err := locks.each(func(pl parsedLockfile) error {
 		add(pl.Path, pl.Result.Ecosystem, "", "")
 		for _, e := range pl.Result.Entries {
 			// An entry of another ecosystem (renv.lock's Bioconductor
@@ -402,6 +503,14 @@ func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, l
 			}
 			add(pl.Path, pl.Result.Ecosystem, e.Name, e.Version)
 		}
+		return nil
+	}); err != nil {
+		// What the child read could not be read back from this host's
+		// disk. No lockfile is offered: the dependencies report the
+		// declared version this cycle, and the lockfile phase, which reads
+		// the same result, fails and leaves the snapshot as it is.
+		ac.logger.Warn("the lockfiles read could not be read back — dependencies report the declared version this cycle", "repo_id", repoID, "error", err)
+		return nil
 	}
 	if locks.WalkErr != nil {
 		// The lockfiles were not read at all this cycle (0.29.213: the
@@ -409,8 +518,24 @@ func (ac *AnalysisCollector) lockfilesInUse(ctx context.Context, repoID int64, l
 		// row stands. The inventory, if it is replaced, goes on reporting
 		// the versions those rows lock: without this every row fell back to
 		// its declared version for as long as the lockfiles went unread.
+		//
+		// Only for the lockfiles that are still there (0.29.214): the
+		// name pass listed the clone's lockfiles, and a stored row of one
+		// that is gone locks nothing. Without the list (the name pass did
+		// not finish either) no stored row is offered: which lockfiles
+		// exist is not known, and a version locked by a file that was
+		// deleted is a wrong version (review round 7).
+		gone := 0
 		for _, p := range ac.storedLockfileRows(ctx, repoID) {
+			if !locks.PresentKnown || !locks.Present[filepath.ToSlash(p.LockfilePath)] {
+				gone++
+				continue
+			}
 			add(p.LockfilePath, p.Ecosystem, p.PackageName, p.ResolvedVersion)
+		}
+		if gone > 0 {
+			ac.logger.Info("stored lockfile rows not used for the inventory: their lockfile is not in the clone now, or the clone's lockfiles could not be listed",
+				"repo_id", repoID, "rows", gone, "lockfiles_listed", locks.PresentKnown)
 		}
 	}
 	if len(locks.Failed) > 0 {
@@ -480,9 +605,66 @@ func storedRowLocksADependency(p model.RepoLockfilePackage) bool {
 func lockfilesUnreadAdvice(attempt string) string {
 	switch attempt {
 	case model.InventoryAttemptReadMemoryLimit:
-		return "raise collection.manifest_read_memory_mb: a lockfile is read whole, and a pnpm-lock.yaml takes about fifteen times its size"
+		return "raise collection.manifest_read_memory_mb: a lockfile is read whole, and a YAML one (pnpm-lock.yaml, pubspec.lock, stack.yaml.lock) takes eleven to fourteen times its size"
 	case model.InventoryAttemptReadCPULimit, model.InventoryAttemptReadTimedOut:
 		return "raise collection.manifest_read_cpu_seconds, or look at this repository's build files and lockfiles: one of them takes this long to read"
 	}
 	return "the reader failed and did not say a limit: see the error, and the reader's own output in it"
+}
+
+// LockfileRowDeleter removes the stored rows of lockfiles at the given
+// paths, in one statement. When the analysis's store (*db.PostgresStore) has
+// this method it is used (it has: db.DeleteRepoLockfileRowsAtPaths, one
+// statement over the three lockfile tables); AnalysisCollector's
+// LockfileRows field, when set, is used instead.
+type LockfileRowDeleter interface {
+	DeleteRepoLockfileRowsAtPaths(ctx context.Context, repoID int64, paths []string) (int64, error)
+}
+
+// dropRowsOfLockfilesThatAreGone is for an analysis whose lockfiles went
+// unread (0.29.214): the snapshot is not replaced, so the rows of a lockfile
+// the repository has since deleted would stand, and go on giving the
+// vulnerability scan a version that nothing locks any more (review round 7:
+// express at 4.18.2 after its lockfile was removed and its manifest moved to
+// ^5.0.0). The name pass listed the lockfiles the clone holds; the stored
+// rows of lockfiles that are not among them are removed, which is what the
+// replace would have done to them. Nothing else of the snapshot is touched.
+// Without the list nothing is removed: which lockfiles exist is not known.
+//
+// The inventory does not wait for this: lockfilesInUse already offers it no
+// row of a lockfile that is gone.
+func (ac *AnalysisCollector) dropRowsOfLockfilesThatAreGone(ctx context.Context, repoID int64, locks lockfileSet) {
+	if !locks.PresentKnown {
+		return
+	}
+	seen := map[string]bool{}
+	var gone []string
+	for _, p := range ac.storedLockfileRows(ctx, repoID) {
+		at := filepath.ToSlash(p.LockfilePath)
+		if !locks.Present[at] && !seen[at] {
+			seen[at] = true
+			gone = append(gone, p.LockfilePath)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	del := ac.LockfileRows
+	if del == nil {
+		var ok bool
+		if del, ok = any(ac.store).(LockfileRowDeleter); !ok {
+			ac.logger.Warn("stored lockfile rows are of lockfiles that are not in the clone now, and stand until the lockfiles are next read: the scan still targets the versions they hold",
+				"repo_id", repoID, "lockfiles_gone", len(gone))
+			return
+		}
+	}
+	n, err := del.DeleteRepoLockfileRowsAtPaths(ctx, repoID, gone)
+	if errors.Is(err, context.Canceled) {
+		return // a `stop serve`
+	}
+	if err != nil {
+		ac.logger.Warn("the stored rows of lockfiles that are gone could not be removed", "repo_id", repoID, "lockfiles_gone", len(gone), "error", err)
+		return
+	}
+	ac.logger.Info("removed the stored rows of lockfiles that are not in the clone now", "repo_id", repoID, "lockfiles_gone", len(gone), "rows", n)
 }

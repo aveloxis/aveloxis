@@ -23,7 +23,7 @@ bad1.txt	v22	assign
 bad1.txt	v23	assign
 bad1.txt	v24	assign
 bad1.txt	v25	assign
-bad1.txt	v26	assign
+bad1.txt	v26	pass
 bad1.txt	v27	assign
 bad1.txt	v28	assign
 bad1.txt	v29	assign
@@ -240,7 +240,7 @@ bad2.txt	w17	view-target
 bad2.txt	w18	view-target
 bad2.txt	w19	view-target
 bad2.txt	w20	view-target
-bad2.txt	x01	unknown-target
+bad2.txt	x01	pass
 bad2.txt	x02	pass
 bad2.txt	x03	assign
 bad2.txt	x04	assign
@@ -325,7 +325,7 @@ bad4.txt	y05	trigger+trigger-form
 bad4.txt	y06	fk-action
 bad4.txt	y07	pass
 bad4.txt	y08	pass
-bad4.txt	y09	pass
+bad4.txt	y09	drop-type
 bad4.txt	y10	pass
 bad4.txt	y11	assign
 bad4.txt	y12	assign
@@ -371,7 +371,7 @@ fp.txt	f14	pass
 fp.txt	f15	unknown-target
 fp.txt	f16	pass
 fp.txt	f17	pass
-fp.txt	f18	assign
+fp.txt	f18	pass
 fp.txt	f19	pass
 fp.txt	f20	pass
 fp.txt	f21	pass

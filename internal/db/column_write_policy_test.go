@@ -362,9 +362,11 @@ func TestColumnWritePolicies(t *testing.T) {
 			t.Errorf("exception %s.%s: exceptions REQUIRE a reason", ex.Table, ex.Column)
 		}
 		// Round 6: an exception excuses ONE function's statement, not
-		// every statement of its file.
-		if ex.File == "" || ex.Decl == "" {
-			t.Errorf("exception %s.%s (%q): exceptions name the file AND the declaration the statement stands in", ex.Table, ex.Column, ex.Fragment)
+		// every statement of its file. Round 7: and that statement WHOLE
+		// (sqlscan reports one with no Statement as malformed; said here
+		// too, so that the registry's own rule is read where it is kept).
+		if ex.File == "" || ex.Decl == "" || ex.Statement == "" {
+			t.Errorf("exception %s.%s (%q): exceptions name the file AND the declaration the statement stands in, AND pin the statement whole", ex.Table, ex.Column, ex.Fragment)
 		}
 	}
 }
@@ -376,7 +378,7 @@ func TestColumnWritePolicies(t *testing.T) {
 func columnWriteFailures(stmts []sqlscan.Stmt) []string {
 	// The catalog is what these statements themselves define: the schema's
 	// tables and views are among them (schema.sql and every migrate step).
-	rep := sqlscan.CheckIn(sqlscan.CatalogOf(stmts), stmts, columnWritePolicies, columnWriteExceptions)
+	rep := sqlscan.CheckIn(sqlscan.CatalogOf(stmts).Temp(writejudge.TempTables...), stmts, columnWritePolicies, columnWriteExceptions)
 	var out []string
 	out = append(out, rep.BadExceptions...)
 	for _, u := range rep.Unparsed {
@@ -388,8 +390,8 @@ func columnWriteFailures(stmts []sqlscan.Stmt) []string {
 				v.Table, v.File, v.Kind, v.Expr, v.Detail))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s.%s in %s violates %s (%s):\n  expr: %s\n  %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason",
-			v.Table, v.Column, v.File, v.Want, v.Kind, v.Expr, v.Detail))
+		out = append(out, fmt.Sprintf("%s.%s in %s (%s) violates %s (%s):\n  expr: %s\n  %s\n  statement: %s\n  TRIAGE (never weaken a matcher): fix the SQL | correct the registered policy | add an Exception WITH a reason, which pins the WHOLE statement above (its WHERE included) as Statement and names this expression as Fragment",
+			v.Table, v.Column, v.File, v.Decl, v.Want, v.Kind, v.Expr, v.Detail, v.Statement))
 	}
 	for _, ex := range rep.StaleExceptions {
 		out = append(out, fmt.Sprintf("stale exception %s.%s (%s, %s: %q %q): it suppressed nothing this run; delete it (reason was: %s)",
@@ -666,7 +668,7 @@ func TestNoPackageOutsideTheStoreWritesAProtectedColumnUnchecked(t *testing.T) {
 		bare[r.Table[strings.LastIndex(r.Table, ".")+1:]] = r.Table
 	}
 	writeWords := map[string]bool{"update": true, "insert": true, "delete": true, "merge": true, "copy": true, "truncate": true, "alter": true}
-	catalog := sqlscan.CatalogOf(columnWriteReading(t).Statements)
+	catalog := sqlscan.CatalogOf(columnWriteReading(t).Statements).Temp(writejudge.TempTables...)
 	// A file outside the default build: no string constant in it may both
 	// write and name a registered table.
 	for rel, src := range untyped {
@@ -1391,6 +1393,19 @@ func builtByQueuePageSQL(t *testing.T) {
 // as two identifiers, where they stood in the text unquoted). The calls
 // are read from the source; a name that comes from a list is checked in
 // the list.
+// indexLists are the five lists of indexes the migrate builds in loops:
+// the names of their members are checked by the test below.
+var indexLists = map[string]bool{"cntrbIDFKIndexes": true, "emailMessageFKIndexes": true, "fkExtraIndexes": true, "repoGroupFKIndexes": true, "perfWaveIndexDDL": true}
+
+func indexListNames() []string {
+	var out []string
+	for n := range indexLists {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestEveryIndexHelperCallNamesAPlainSchemaAndIndex(t *testing.T) {
 	plain := regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 	fset := token.NewFileSet()
@@ -1400,78 +1415,105 @@ func TestEveryIndexHelperCallNamesAPlainSchemaAndIndex(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range af.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
-			}
-			// What each local of this function is given: a name used as a
-			// schema or an index must be given plain literals and nothing
-			// else (a parameter is given nothing here, and is refused).
-			given := map[string][]ast.Expr{}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == len(as.Rhs) {
-					for i, l := range as.Lhs {
-						if id, ok := l.(*ast.Ident); ok {
-							given[id.Name] = append(given[id.Name], as.Rhs[i])
-						}
+		// What each local is given, by the OBJECT the name stands for (the
+		// whole file is read, function literals at package level too:
+		// round 7, the walk had been narrowed to function declarations).
+		// The parser's own resolution of a name within one file (the
+		// identifier's Obj) is what tells two locals of one name apart; the
+		// key is that pointer, held untyped (its type is deprecated for
+		// what it cannot do ACROSS files, which is not asked of it here).
+		given := map[any][]ast.Expr{}
+		ast.Inspect(af, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == len(as.Rhs) {
+				for i, l := range as.Lhs {
+					if id, ok := l.(*ast.Ident); ok && id.Obj != nil {
+						given[id.Obj] = append(given[id.Obj], as.Rhs[i])
 					}
 				}
-				return true
-			})
-			plainLit := func(e ast.Expr) bool {
-				lit, ok := e.(*ast.BasicLit)
-				if !ok {
-					return false
-				}
-				v, err := strconv.Unquote(lit.Value)
-				return err == nil && plain.MatchString(v)
 			}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				c, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "execCreateIndexConcurrently" {
-					return true
-				}
-				calls++
-				if len(c.Args) != 7 {
-					t.Errorf("%s: execCreateIndexConcurrently called with %d arguments", fset.Position(c.Pos()), len(c.Args))
-					return true
-				}
-				for i, what := range map[int]string{4: "schema", 5: "index name"} {
-					at := fset.Position(c.Args[i].Pos())
-					switch a := c.Args[i].(type) {
-					case *ast.BasicLit:
-						if !plainLit(a) {
-							t.Errorf("%s: the %s %s is not a plain lower-case name", at, what, a.Value)
-						}
-					case *ast.SelectorExpr:
-						// The name field of a member of one of the five lists
-						// whose values are checked below (round 6: any
-						// selector or identifier was accepted).
-						if a.Sel.Name != "indexName" && a.Sel.Name != "name" {
-							t.Errorf("%s: the %s is the field %s, not a list member's index name", at, what, a.Sel.Name)
-						}
-						fromLists++
-					case *ast.Ident:
-						rhs := given[a.Name]
-						if len(rhs) == 0 {
-							t.Errorf("%s: the %s is %s, which this function is handed and does not choose: it could be a qualified or quoted string", at, what, a.Name)
-						}
-						for _, e := range rhs {
-							if !plainLit(e) {
-								t.Errorf("%s: the %s is %s, which is given something other than a plain lower-case literal at %s", at, what, a.Name, fset.Position(e.Pos()))
-							}
-						}
-					default:
-						t.Errorf("%s: the %s is neither a literal nor a list member's field: it could be a qualified or quoted string", at, what)
-					}
-				}
-				return true
-			})
+			return true
+		})
+		plainLit := func(e ast.Expr) bool {
+			lit, ok := e.(*ast.BasicLit)
+			if !ok {
+				return false
+			}
+			v, err := strconv.Unquote(lit.Value)
+			return err == nil && plain.MatchString(v)
 		}
+		// The loops a node stands in: a list member's name is the name
+		// field of the VARIABLE of a range over one of the lists.
+		var stack []ast.Node
+		memberOfAList := func(sel *ast.SelectorExpr) bool {
+			base, ok := sel.X.(*ast.Ident)
+			if !ok || base.Obj == nil || (sel.Sel.Name != "indexName" && sel.Sel.Name != "name") {
+				return false
+			}
+			for _, n := range stack {
+				r, ok := n.(*ast.RangeStmt)
+				if !ok {
+					continue
+				}
+				v, isIdent := r.Value.(*ast.Ident)
+				list, isList := r.X.(*ast.Ident)
+				if isIdent && isList && v.Obj == base.Obj && indexLists[list.Name] {
+					return true
+				}
+			}
+			return false
+		}
+		ast.Inspect(af, func(n ast.Node) bool {
+			if n == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, n)
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "execCreateIndexConcurrently" {
+				return true
+			}
+			calls++
+			if len(c.Args) != 7 {
+				t.Errorf("%s: execCreateIndexConcurrently called with %d arguments", fset.Position(c.Pos()), len(c.Args))
+				return true
+			}
+			for i, what := range map[int]string{4: "schema", 5: "index name"} {
+				at := fset.Position(c.Args[i].Pos())
+				switch a := c.Args[i].(type) {
+				case *ast.BasicLit:
+					if !plainLit(a) {
+						t.Errorf("%s: the %s %s is not a plain lower-case name", at, what, a.Value)
+					}
+				case *ast.SelectorExpr:
+					// A member of one of the five lists whose values are
+					// checked below, by the loop it stands in (round 7:
+					// any selector ending .name passed).
+					if !memberOfAList(a) {
+						t.Errorf("%s: the %s is not the name of the variable of a range over one of the index lists (%v): it could be a qualified or quoted string", at, what, indexListNames())
+					}
+					fromLists++
+				case *ast.Ident:
+					var rhs []ast.Expr
+					if a.Obj != nil {
+						rhs = given[a.Obj]
+					}
+					if len(rhs) == 0 {
+						t.Errorf("%s: the %s is %s, which this function is handed and does not choose: it could be a qualified or quoted string", at, what, a.Name)
+					}
+					for _, e := range rhs {
+						if !plainLit(e) {
+							t.Errorf("%s: the %s is %s, which is given something other than a plain lower-case literal at %s", at, what, a.Name, fset.Position(e.Pos()))
+						}
+					}
+				default:
+					t.Errorf("%s: the %s is neither a literal nor a list member's field: it could be a qualified or quoted string", at, what)
+				}
+			}
+			return true
+		})
 	}
 	if calls < 20 || fromLists == 0 {
 		t.Fatalf("%d calls of execCreateIndexConcurrently read (%d naming their index from a list): the store has more", calls, fromLists)

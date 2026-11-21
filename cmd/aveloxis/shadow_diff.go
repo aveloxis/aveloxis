@@ -59,12 +59,12 @@ not fail the exit code on their own.`,
 			ctx := context.Background()
 			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-			rest, err := pgxpool.New(ctx, restDSN)
+			rest, err := openPool(ctx, restDSN)
 			if err != nil {
 				return fmt.Errorf("connecting to REST database: %w", err)
 			}
 			defer rest.Close()
-			graphql, err := pgxpool.New(ctx, graphqlDSN)
+			graphql, err := openPool(ctx, graphqlDSN)
 			if err != nil {
 				return fmt.Errorf("connecting to GraphQL database: %w", err)
 			}

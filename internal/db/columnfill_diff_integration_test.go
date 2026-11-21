@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestColumnFillDiffSelfComparison(t *testing.T) {
@@ -41,7 +40,7 @@ func TestColumnFillDiffSelfComparison(t *testing.T) {
 		t.Fatalf("RunMigrations: %v", err)
 	}
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

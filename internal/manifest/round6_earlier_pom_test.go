@@ -87,9 +87,11 @@ func TestAVersionBehindAPomThatCouldNotBeObtainedIsNotDetermined(t *testing.T) {
 		// The next BOM's version stands, as it always did, and a dependency
 		// nothing manages says a pom was not found.
 		"the first BOM is on no repository": {src: outcomeSource{outcome: RemoteNotFound}, version: "2.0", source: SourceManaged, noneWhy: model.VersionReasonInheritedNotFound},
-		// With no source nothing outside the clone is asked, and nothing is
-		// said about what was not asked: the tree's own answer stands.
-		"no source is installed": {src: nil, version: "2.0", source: SourceManaged},
+		// With no source nothing outside the clone is asked, so what the
+		// first BOM says is not known, and the second's version is withheld
+		// (round 7: it was stored as if the first had answered). A
+		// dependency nothing manages says nothing more than it did.
+		"no source is installed": {src: nil, why: model.VersionReasonInheritedNotFound},
 	} {
 		got := r6Versions(t, files, "pom.xml", c.src)
 		if x := got["g:x"]; x.Version != c.version || x.VersionReason != c.why || x.VersionSource != c.source {
@@ -177,7 +179,9 @@ func TestAGradleVersionBehindAPlatformThatIsNotWholeIsNotDetermined(t *testing.T
 	}
 }
 
-// Gradle platforms, in the order they are applied.
+// Gradle platforms. Their recommendations are resolved together (round 7):
+// of two that manage one artifact the higher version is Gradle's answer,
+// so one whose answer is not known withholds it wherever it is written.
 func TestAGradleVersionBehindAPlatformThatCouldNotBeObtainedIsNotDetermined(t *testing.T) {
 	files := map[string]string{
 		"build.gradle":   "dependencies {\n  implementation platform('t:first:1')\n  implementation platform('t:second:1')\n  implementation 'g:x'\n  implementation 'g:none'\n}\n",
@@ -189,7 +193,7 @@ func TestAGradleVersionBehindAPlatformThatCouldNotBeObtainedIsNotDetermined(t *t
 		version, why string
 		noneWhy      string
 	}{
-		"obtained":         {outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:first:1": first}}, "1.0", "", ""},
+		"obtained":         {outcomeSource{RemoteNotFound, map[string]*RemotePom{"t:first:1": first}}, "2.0", "", ""},
 		"lookup failed":    {outcomeSource{outcome: RemoteFailed}, "", model.VersionReasonInheritedLookupFailed, model.VersionReasonInheritedLookupFailed},
 		"on no repository": {outcomeSource{outcome: RemoteNotFound}, "2.0", "", model.VersionReasonInheritedNotFound},
 	} {

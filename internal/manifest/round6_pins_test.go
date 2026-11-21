@@ -137,7 +137,9 @@ func TestACatalogueLibrarysRichVersionIsRead(t *testing.T) {
 }
 
 // B13. What a platform gives a dependency is applied only when it is one
-// version: a range is not.
+// version: a range is not. And a platform that manages the dependency at a
+// range HAS answered for it (round 7): another platform's version is not
+// the answer, which is whatever Gradle resolves the range and it to.
 func TestAPlatformsRangeIsNotAVersion(t *testing.T) {
 	files := map[string]string{
 		"build.gradle":   "dependencies {\n  implementation platform('t:first:1')\n  implementation platform('t:second:1')\n  implementation 'g:ranged'\n  implementation 'g:only'\n}\n",
@@ -145,8 +147,8 @@ func TestAPlatformsRangeIsNotAVersion(t *testing.T) {
 		"second/pom.xml": r6Bom("second", "g", "ranged", "1.5"),
 	}
 	got := r6Read(t, files, "build.gradle", nil)
-	if got["g:ranged"].Version != "1.5" || got["g:only"].Version != "" {
-		t.Errorf("g:ranged at %q and g:only at %q; want 1.5 (the next platform's version) and none", got["g:ranged"].Version, got["g:only"].Version)
+	if got["g:ranged"].Version != "" || got["g:only"].Version != "" {
+		t.Errorf("g:ranged at %q and g:only at %q; want none for both", got["g:ranged"].Version, got["g:only"].Version)
 	}
 }
 

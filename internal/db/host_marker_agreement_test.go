@@ -241,7 +241,7 @@ func TestLongHostnameTagAndReaderAgreeThroughTheRealQuery(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = appNameForHostWith(prefix, longHostname)
 	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

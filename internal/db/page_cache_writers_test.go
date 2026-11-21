@@ -103,6 +103,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"InsertVulnerabilityBatch":         {"stamps", "a vulnerability scan (the job's, heal-vulnerabilities)"},
 	"RecordScanCoverage":               {"stamps", "every vulnerability scan's outcome: the coverage state (0.29.197)"},
 	"RecordInventoryAttempt":           {"stamps", "an analysis that did not replace the inventory: the coverage object's second line (0.29.197)"},
+	"RecordLockfileReading":            {"stamps", "how an analysis's reading of the lockfiles ended: the coverage object's lockfiles_unread, which the pages' caution is drawn from (0.29.214)"},
 	"MarkStaleVulnerabilitiesResolved": {"stamps", "a vulnerability scan; stamps only when rows were resolved"},
 	"UpdateCVSSScoreForVector":         {"stamps", "heal-vulnerabilities --rescore-only"},
 	"ReplaceScorecard":                 {"stamps", "the job's scorecard phase and run-scorecard"},
@@ -112,6 +113,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"ReplaceRepoDependencies":          {"job", "analysis phase"},
 	"ReplaceRepoLibyear":               {"job", "analysis phase"},
 	"ReplaceRepoLockfileSnapshot":      {"job", "analysis phase (lockfile scan)"},
+	"DeleteRepoLockfileRowsAtPaths":    {"job", "analysis phase (lockfile scan whose lockfiles went unread: the rows of lockfiles that are gone, 0.29.214)"},
 	"migrateStage10RecentReleases":     {"migrate", "a migration step"},
 	// The staged processor reaches these outside any job too (heal-messages,
 	// heal-collection-gaps, the leftover drain), so they stamp themselves.

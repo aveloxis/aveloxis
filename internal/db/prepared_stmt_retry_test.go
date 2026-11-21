@@ -166,7 +166,7 @@ func TestSendBatchWithRetryRecoversFromAStaleStatement(t *testing.T) {
 	}
 	cfg.MaxConns = 1 // one connection: the stale entry and the retry meet on it
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

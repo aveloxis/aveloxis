@@ -100,6 +100,35 @@ func TestCycloneDXCarriesTheCoverageMarker(t *testing.T) {
 	if _, has := got["aveloxis:coverage:last_analysis_attempt_reason"]; has {
 		t.Error("an attempt reason is given where no attempt is recorded")
 	}
+	if _, has := got["aveloxis:coverage:lockfiles_unread_reason"]; has {
+		t.Error("a lockfile reason is given where the lockfiles were read")
+	}
+
+	// 0.29.214: lockfiles that went unread. The document's versions and
+	// transitive components come from the stored lockfile rows, so it says
+	// when those are behind, and since when.
+	behind := carriedManifest()
+	read := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	behind.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.InventoryAttemptReadMemoryLimit, LastReadAt: &read}
+	repo.Coverage = behind
+	raw, err = generateCycloneDX(repo, deps, scan, sbomSeedGraph())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = cdxCoverageProperties(t, raw)
+	if got["aveloxis:coverage:lockfiles_unread_reason"] != "manifest_read_memory_limit" || got["aveloxis:coverage:lockfiles_last_read_at"] != "2026-11-02T09:00:00Z" {
+		t.Errorf("lockfiles behind: %v", got)
+	}
+	assertCycloneDXSchemaConstraints(t, loadSchema(t, "bom-1.7.schema.json"), raw)
+	behind.LockfilesUnread = &vulnclass.LockfilesUnread{Reason: model.InventoryAttemptReadFailed}
+	raw, err = generateCycloneDX(repo, deps, scan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = cdxCoverageProperties(t, raw)
+	if _, has := got["aveloxis:coverage:lockfiles_last_read_at"]; has || got["aveloxis:coverage:lockfiles_unread_reason"] != "manifest_read_failed" {
+		t.Errorf("lockfiles never read: %v", got)
+	}
 
 	// With no coverage read (a unit test, a caller that has none) there is
 	// no marker, and no empty properties list.

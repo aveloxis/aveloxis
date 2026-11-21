@@ -33,7 +33,7 @@ func contentDiffDatabases(t *testing.T, relSQL, newSQL string) (*pgxpool.Pool, *
 		t.Fatal(err)
 	}
 	prefix := fmt.Sprintf("avxcd_%d_%s", os.Getpid(), hex.EncodeToString(b[:]))
-	admin, err := pgx.Connect(ctx, dsn)
+	admin, err := OpenConn(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func contentDiffDatabases(t *testing.T, relSQL, newSQL string) (*pgxpool.Pool, *
 			t.Fatal(err)
 		}
 		cfg.ConnConfig.Database = name
-		pool, err := pgxpool.NewWithConfig(ctx, cfg)
+		pool, err := OpenPoolConfig(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}

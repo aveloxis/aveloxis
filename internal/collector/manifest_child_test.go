@@ -12,12 +12,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -403,7 +405,9 @@ func TestAFrameCarriesEveryStringExactly(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := newManifestPending(manifestPassDeclarations)
-	run.add(back.Part)
+	if err := run.add(back.Part, nil); err != nil {
+		t.Fatal(err)
+	}
 	if len(run.decl.Failed) != 2 || !run.decl.Failed[0].NoCarry || run.decl.Failed[1].NoCarry {
 		t.Errorf("NoCarry did not cross the boundary: %+v", run.decl.Failed)
 	}
@@ -844,6 +848,121 @@ func runMisbehavingManifestChildIfAsked() {
 		end(manifestDone{})
 		lock(yarn, []manifestWireEntry{entry}, nil)
 		raw(9, "not json!")
+	case "r7-report-env":
+		// What this process was started with, for the test that plants a
+		// secret in its parent's environment.
+		cwd, _ := os.Getwd()
+		frame(&manifestFrame{T: frameLog, Log: &manifestLog{Level: int(slog.LevelInfo), Msg: "child-started-with",
+			Attrs: []manifestLogAttr{{Key: "env", Value: "[" + strings.Join(os.Environ(), "|") + "]"}, {Key: "cwd", Value: cwd}, {Key: "dir", Value: req.Request.Dir}}}})
+		for range req.Request.Passes {
+			end(manifestDone{LockfilesListed: true})
+		}
+	case "r7-path-dot":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{dep("a/./package.json")}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-path-double":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{dep("a//package.json")}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-path-is-dot":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{dep(".")}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-path-escape":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{dep("a\x1b[31m/package.json")}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-path-not-text":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{dep("a\xff/package.json")}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-tree-root":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{TreeHosts: []model.MavenTreeHosts{{Root: "../pom.xml"}}}})
+		end(manifestDone{})
+	case "r7-repository-kind":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Repositories: []manifest.DeclaredRepository{{ManifestPath: "pom.xml", Kind: "made-up", URL: "https://x.example"}}}})
+		end(manifestDone{})
+	case "r7-reason":
+		d := dep("package.json")
+		d.VersionReason = "made-up"
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Deps: []model.LibyearDep{d}}})
+		end(manifestDone{Found: 1, Parsed: 1})
+	case "r7-failed-carrying":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Failed: []manifestWireFailure{{ManifestFailure: model.ManifestFailure{Path: "pom.xml", Kind: "pom.xml", Reason: model.ManifestFailedParse, RowsCarried: 3}}}}})
+		end(manifestDone{Found: 1})
+	case "r7-name-count-zero":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Names: []manifestNameCount{{"Python", "requests", 0}}}})
+		end(manifestDone{})
+	case "r7-name-count-overflow":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Names: []manifestNameCount{{"Python", "requests", math.MaxInt}}}})
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Names: []manifestNameCount{{"Python", "requests", math.MaxInt}}}})
+		end(manifestDone{})
+	case "r7-counts-overflow":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Failed: []manifestWireFailure{{ManifestFailure: model.ManifestFailure{Path: "pom.xml", Kind: "pom.xml", Reason: model.ManifestFailedParse}}}}})
+		end(manifestDone{Found: math.MinInt, Parsed: math.MaxInt})
+	case "r7-present-not-a-lockfile":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Present: []manifestWirePresent{{Path: "web/yarn.lock", Kind: "package-lock.json"}}}})
+		end(manifestDone{LockfilesListed: true})
+	case "r7-present-twice":
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Present: []manifestWirePresent{{Path: "web/yarn.lock", Kind: "yarn.lock"}}}})
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Present: []manifestWirePresent{{Path: "web/yarn.lock", Kind: "yarn.lock"}}}})
+		end(manifestDone{LockfilesListed: true})
+	case "r7-edges-fewer":
+		l := yarn
+		l.Entries, l.Edges = 0, 2
+		lock(l, nil, []manifestWireEdge{{ParentName: "a", ChildName: "b"}})
+		end(manifestDone{Lockfiles: 1})
+	case "r7-entry-of-a-finished-lockfile":
+		a, b, c := yarn, yarn, yarn
+		a.Entries, b.Entries, c.Entries = 2, 0, 0
+		b.Path, c.Path = "b/yarn.lock", "c/yarn.lock"
+		lock(a, []manifestWireEntry{entry}, nil)
+		lock(b, nil, nil)
+		lock(c, nil, nil)
+		frame(&manifestFrame{T: framePart, Part: &manifestPart{Entries: []manifestWireEntry{entry}}}) // L 0: lockfile a, two lockfiles ago
+		end(manifestDone{Lockfiles: 3})
+	case "r7-lockfiles-larger-than-their-files":
+		// Each lockfile named is a mebibyte on disk (misbehaving): 32
+		// times that and a frame may be sent of it, and this sends more.
+		l := yarn
+		l.Entries = 80
+		big := entry
+		big.Name = strings.Repeat("x", 1<<20)
+		lock(l, nil, nil)
+		for i := 0; i < 80; i++ {
+			frame(&manifestFrame{T: framePart, Part: &manifestPart{Entries: []manifestWireEntry{big}}})
+		}
+		end(manifestDone{Lockfiles: 1})
+	case "r7-two-values-in-a-frame":
+		body := `{"t":"done","done":{"pass":"` + passes[0] + `"}}{"t":"done"}`
+		raw(uint32(len(body)), body)
+	case "r7-log-flood":
+		for i := 0; i < 3000; i++ {
+			frame(&manifestFrame{T: frameLog, Log: &manifestLog{Level: int(slog.LevelWarn), Msg: "flood", Attrs: []manifestLogAttr{{Key: "n", Value: strconv.Itoa(i), Kind: "i"}}}})
+		}
+		frame(&manifestFrame{T: frameLog, Log: &manifestLog{Level: int(slog.LevelWarn), Msg: strings.Repeat("y", 2<<20)}})
+		for range req.Request.Passes {
+			end(manifestDone{LockfilesListed: true})
+		}
+	case "r7-log-large":
+		for i := 0; i < 5; i++ {
+			frame(&manifestFrame{T: frameLog, Log: &manifestLog{Level: int(slog.LevelWarn), Msg: "large", Attrs: []manifestLogAttr{{Key: "text", Value: strings.Repeat("z", 400<<10)}}}})
+		}
+		for range req.Request.Passes {
+			end(manifestDone{LockfilesListed: true})
+		}
+	case "r7-many-honest-lockfiles":
+		// 200 lockfiles of 4,000 entries each: some 30 MiB on the wire,
+		// from a child that never holds more than one.
+		for i := 0; i < 200; i++ {
+			l := yarn
+			l.Path, l.Entries = fmt.Sprintf("app%d/yarn.lock", i), 4000
+			lock(l, nil, nil)
+			for sent := 0; sent < 4000; sent += 1000 {
+				es := make([]manifestWireEntry, 1000)
+				for j := range es {
+					es[j] = manifestWireEntry{L: i, Name: fmt.Sprintf("package-with-a-name-%d-%d", i, sent+j), Version: "1.2.3"}
+				}
+				frame(&manifestFrame{T: framePart, Part: &manifestPart{Entries: es}})
+			}
+		}
+		end(manifestDone{Lockfiles: 200})
 	case "crash":
 		panic("the reader fell over")
 	case "hang":
@@ -862,7 +981,11 @@ func misbehaving(t *testing.T, mode string) {
 		exe, err := os.Executable()
 		return exe, []string{misbehaveArg, mode}, err
 	}
-	t.Cleanup(func() { manifestChildCommand = saved })
+	// Such a child lies about lockfiles that are in no clone: every one it
+	// names is taken to be a mebibyte on disk.
+	savedSize := manifestLockfileSize
+	manifestLockfileSize = func(string, string) (int64, error) { return 1 << 20, nil }
+	t.Cleanup(func() { manifestChildCommand, manifestLockfileSize = saved, savedSize })
 }
 
 // Whatever a child does that the protocol does not, the analysis gets a
@@ -879,8 +1002,8 @@ func TestAChildThatMisbehavesIsANamedFailure(t *testing.T) {
 		"absolute":                     "not a path inside the clone",
 		"unknown-manager":              "package manager the roster does not have",
 		"unknown-kind":                 "not one the pass records",
-		"counts":                       "do not add up",
 		"too-much":                     "its own memory limit",
+		"counts":                       "do not add up",
 		"silent":                       "ended without a result",
 		"wrong-frame":                  "a child does not send",
 		"names-in-declarations":        "sent name counts",
@@ -1048,7 +1171,11 @@ func TestTheConfiguredLimitsStopTheRealChild(t *testing.T) {
 	})
 	// There is no child without limits, and no configuration without them.
 	for _, bad := range []string{`"manifest_read_cpu_seconds": 0`, `"manifest_read_cpu_seconds": -1`, `"manifest_read_memory_mb": 0`, `"manifest_read_memory_mb": -5`,
-		`"manifest_read_cpu_seconds": 9223372037`, `"manifest_read_memory_mb": 8796093022208`} {
+		`"manifest_read_cpu_seconds": 9223372037`, `"manifest_read_memory_mb": 8796093022208`,
+		// Past a day (0.29.214): the values from 2305843009 up were
+		// accepted and made the parent's clock allowance negative, so the
+		// reader was stopped at its first look (review round 7).
+		`"manifest_read_cpu_seconds": 86401`, `"manifest_read_cpu_seconds": 2305843009`, `"manifest_read_cpu_seconds": 9223372036`} {
 		path := filepath.Join(t.TempDir(), "aveloxis.json")
 		if err := os.WriteFile(path, []byte(`{"collection":{`+bad+`}}`), 0o600); err != nil {
 			t.Fatal(err)
@@ -1056,6 +1183,12 @@ func TestTheConfiguredLimitsStopTheRealChild(t *testing.T) {
 		if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "manifest_read_") {
 			t.Errorf("%s: loaded (%v); want it refused, naming the key", bad, err)
 		}
+	}
+	// The most a configuration may hold is held, and everything derived
+	// from it is a time that can be waited for.
+	most := limitsFromConfig(t, `"manifest_read_cpu_seconds": 86400`)
+	if most.CPU != 24*time.Hour || manifestWallAllowance(most.CPU) != 96*time.Hour+time.Minute {
+		t.Errorf("a day of CPU time: %s, clock allowance %s", most.CPU, manifestWallAllowance(most.CPU))
 	}
 	if d := (ManifestLimits{}).effective(); d.CPU != config.DefaultManifestReadCPUSeconds*time.Second || d.HeapBytes != config.DefaultManifestReadMemoryMB<<20 {
 		t.Errorf("a collector given no limits uses %+v; want the configuration's defaults", d)

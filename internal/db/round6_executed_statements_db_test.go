@@ -17,40 +17,12 @@ import (
 // accepts it. Each statement is SENT here. (The 8Knot refresh is sent by
 // TestRunMigrationsOnFreshDB, where the views exist.)
 
-// The dm_ aggregate rebuilds: every delete and insert of both lists.
-func TestTheAggregateRebuildStatementsRun(t *testing.T) {
-	store := openTestStore(t)
-	ctx := context.Background()
-	if len(repoAggQueries) == 0 || len(groupAggQueries) == 0 {
-		t.Fatal("an aggregate list is empty: nothing would be sent")
-	}
-	// A repository and a group with no rows: every statement still runs.
-	if err := store.RefreshRepoAggregates(ctx, -6001); err != nil {
-		t.Errorf("RefreshRepoAggregates: %v", err)
-	}
-	if err := store.RefreshGroupAggregates(ctx, -6001); err != nil {
-		t.Errorf("RefreshGroupAggregates: %v", err)
-	}
-}
-
-// The assignment backfill's dry-run count and the closed-by sweep's list,
-// with and without a limit.
-func TestTheBackfillCountAndTheSweepListRun(t *testing.T) {
-	store := openTestStore(t)
-	ctx := context.Background()
-	if n, err := store.BackfillAssignmentIdentities(ctx, 1000, 0, true); err != nil || n < 0 {
-		t.Errorf("BackfillAssignmentIdentities dry run = %d, %v", n, err)
-	}
-	for _, limit := range []int64{0, 3} {
-		got, err := store.IssuesNeedingClosedBySweep(ctx, limit)
-		if err != nil {
-			t.Errorf("IssuesNeedingClosedBySweep(%d): %v", limit, err)
-		}
-		if limit > 0 && int64(len(got)) > limit {
-			t.Errorf("IssuesNeedingClosedBySweep(%d) returned %d rows", limit, len(got))
-		}
-	}
-}
+// (The dm_ aggregate rebuilds, the assignment backfill's dry-run count and
+// the closed-by sweep's list are sent, and checked for what they do, by
+// TestTheAggregateTablesAreRebuiltFromTheCommits and
+// TestTheAssignmentDryRunCountsAndTheSweepLists in
+// aggregates_and_backfill_paths_db_test.go: round 7 found that the tests
+// that stood here asserted only that no error came back.)
 
 // The three foreign-key steps of the migrate act only on a key that is not
 // yet in the wanted state, which no fresh database has. Here one key of

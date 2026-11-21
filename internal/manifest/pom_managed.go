@@ -89,6 +89,44 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 	}
 	union := func(a, b string) { parent[find(a)] = find(b) }
 
+	// bomWhole: a BOM is whole when its own parent chain was followed to its
+	// end and every BOM its chain imports was obtained and is whole. Round
+	// 7: only the BOM itself was looked for, so a tree was reported whole,
+	// and its managed entries noted as unused, while a version of one of its
+	// dependencies had been withheld because a pom BEHIND the BOM (its
+	// parent, a BOM it imports) could not be obtained. The verdict now
+	// agrees with what the questions do (pomContext.managed): a tree that is
+	// whole has had nothing withheld. Decided once per BOM for the walk.
+	wholeBOM := map[*pomModel]bool{}
+	var bomWhole func(b *pomModel, depth int) bool
+	bomWhole = func(b *pomModel, depth int) bool {
+		if w, ok := wholeBOM[b]; ok {
+			return w
+		}
+		wholeBOM[b] = true // met again inside itself: a cycle is no gap of its own
+		ok := depth < pomChainLimit
+		if ok {
+			if _, _, _, whole := t.chainWhole(b); !whole {
+				ok = false
+			}
+			bc := t.context(b)
+			for _, cm := range bc.chain {
+				for _, j := range cm.index().imports {
+					bg, ba, bv := importCoordinates(bc, cm.managed[j])
+					next, ambiguous := t.byCoordinates(bg, ba, bv)
+					if next == nil && !ambiguous {
+						next, _, _ = t.remotePom(bg, ba, bv, bc.declaredFor)
+					}
+					if next == nil || !bomWhole(next, depth+1) {
+						ok = false
+					}
+				}
+			}
+		}
+		wholeBOM[b] = ok
+		return ok
+	}
+
 	gapOf := map[string]string{}     // a member pom -> why its tree is not whole
 	hostsOf := map[string][]string{} // a member pom -> the hosts its chains used
 	for _, p := range t.pomFiles {
@@ -98,7 +136,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 			gapOf[p] = "a pom could not be read or parsed"
 			continue
 		}
-		chain, _, whole := t.chainWhole(m)
+		chain, _, _, whole := t.chainWhole(m)
 		hostsOf[p] = chainHosts(chain)
 		for _, c := range chain[1:] {
 			if !strings.HasPrefix(c.path, "remote:") {
@@ -133,6 +171,12 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 				switch {
 				case ambiguous:
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
+				case bom != nil:
+					// A BOM of the clone: whole only if its own chain and
+					// its own imports are (round 7, below).
+					if !bomWhole(bom, 0) {
+						gapOf[p] = "an imported BOM could not be read whole"
+					}
 				case bom == nil:
 					// Asked through the one path (remotePom), which asks
 					// for a coordinate once per walk. An import whose
@@ -141,13 +185,16 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 					// module that sets the property otherwise does import
 					// another BOM); how many coordinates an analysis may ask
 					// for is the source's to bound.
-					remote, _ := t.remotePom(bg, ba, bv, c.declaredFor)
+					remote, _, _ := t.remotePom(bg, ba, bv, c.declaredFor)
 					if remote == nil {
 						gapOf[p] = "an imported BOM could not be obtained"
 						continue
 					}
-					bomChain, _, _ := t.chainWhole(remote)
+					bomChain, _, _, _ := t.chainWhole(remote)
 					hostsOf[p] = mergeHosts(hostsOf[p], chainHosts(bomChain))
+					if !bomWhole(remote, 0) {
+						gapOf[p] = "an imported BOM could not be read whole"
+					}
 				}
 			}
 		}

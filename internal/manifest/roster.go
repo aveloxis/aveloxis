@@ -379,6 +379,22 @@ func (w *Walk) Read(path string, o Options) Declarations {
 	return out
 }
 
+// DeclaredKind says whether Read would claim the file at path under these
+// options, and as which kind, from the PATH alone (0.29.214): nothing is
+// opened, so it answers for a file that is too large to read, or that is not
+// there. A caller that will not read a file can still record it as a
+// manifest that was not read.
+func DeclaredKind(path string, o Options) (kind string, claimed bool) {
+	_, kinds := kindsFor(path)
+	for _, k := range kinds {
+		if k.declared == nil || (k.gate != nil && !k.gate(o)) {
+			continue
+		}
+		return k.Name, true
+	}
+	return "", false
+}
+
 // Declared is Read for a caller that wants only the declarations and the
 // failure, as an error: a *ReadError when not nil.
 func (w *Walk) Declared(path string, o Options) ([]model.LibyearDep, error) {

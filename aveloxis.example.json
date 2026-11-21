@@ -42,7 +42,7 @@
     "osv_pages_per_query": 0,
     "package_key_fill_rows": 1000,
     "repository_host_check_hours": 24,
-    "manifest_read_cpu_seconds": 120,
+    "manifest_read_cpu_seconds": 180,
     "manifest_read_memory_mb": 1024,
     "repository_host_registration_check": true,
     "repository_host_threat_list_url": "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt",

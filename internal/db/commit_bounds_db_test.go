@@ -399,7 +399,7 @@ func TestRecordCommitBoundsReadsTheCommitsOncePerBound(t *testing.T) {
 	}
 	tr := &captureTracer{}
 	cfg.ConnConfig.Tracer = tr
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

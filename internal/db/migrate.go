@@ -2967,6 +2967,11 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_failed", "JSONB")
 	// v0.29.169: targets whose OSV answer was longer than the page cap.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_truncated", "INTEGER")
+	// v0.29.214: when the lockfiles were last read, and why the last
+	// reading did not finish. No backfill: NULL is "not known since this
+	// release", and the first lockfile phase after the deploy writes them.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_read_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_unread_reason", "TEXT")
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by

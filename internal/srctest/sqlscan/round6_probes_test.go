@@ -98,6 +98,8 @@ var round6StillPass = map[string]string{
 	"p44":  "control: a body that writes nothing",
 	"p64":  "CREATE SCHEMA with a view inside defines a view and writes nothing; a write through it is then of a relation the catalog does not know as a base table",
 	"p65":  "control: ALTER FUNCTION has no body",
+	"v26":  "round 7: an equality reads the same either way round: '' = COALESCE(col, '') is the guard COALESCE(col, '') = ''",
+	"x01":  "round 7: pg_temp.repos, after CREATE TEMP TABLE repos in the same text, is that session table and not the schema's",
 	"x02":  "control: a Cyrillic letter makes it another column",
 	"x06":  "control: SELECT f() names no table; what a function of the database does is not in the text",
 	"x07":  "control: CALL p(), as SELECT f()",
@@ -113,7 +115,6 @@ var round6StillPass = map[string]string{
 	"g23":  "a conforming fill: the alias `old` is the target's",
 	"y07":  "CREATE SUBSCRIPTION names no table; replication writes are not statements of the store",
 	"y08":  "ALTER TYPE ... RENAME VALUE rewrites no row",
-	"y09":  "DROP TYPE ... CASCADE names no table; that it can drop a column of the type is NOT modelled (the catalog holds no column types)",
 	"y10":  "DELETE removes rows; the policies are of the values rows hold",
 	"y15":  "control: the guarded fill in an SQL function, whose parameter is not named like the column",
 }
@@ -122,7 +123,6 @@ var round6StillPass = map[string]string{
 // each with why (the shape set is closed; the reviewer listed them as the
 // cost of denying by default).
 var round6Refused = map[string]string{
-	"f18": "the value is a FROM item's column: no policy shape names that, whatever the guard",
 	"f33": "PostgreSQL's PL/pgSQL parser, with no catalog, does not know a variable of a table's row type",
 	"f35": "EXECUTE of text made at run time",
 	"f36": "PostgreSQL 18 syntax the 17 grammar does not read",

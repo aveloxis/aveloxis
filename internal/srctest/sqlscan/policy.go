@@ -40,6 +40,7 @@ package sqlscan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -142,6 +143,16 @@ const (
 	KindDropSchema  = "drop-schema"
 	KindRule        = "rule"
 	KindTrigger     = "trigger"
+	// KindRenameSchema: ALTER SCHEMA ... RENAME of, or onto, a schema that
+	// holds the table.
+	KindRenameSchema = "rename-schema"
+	// KindOwned (Table is AnyRegisteredTable): DROP OWNED BY drops, and
+	// REASSIGN OWNED BY hands over, whatever the role owns: which tables,
+	// no reader of text can know.
+	KindOwned = "owned"
+	// KindDropType (Table is AnyRegisteredTable): DROP TYPE / DOMAIN ...
+	// CASCADE drops every column of the type.
+	KindDropType = "drop-type"
 	// The target of a write is not a base table the catalog knows.
 	KindUnqualifiedTarget = "unqualified-target"
 	KindUnknownTarget     = "unknown-target"
@@ -156,23 +167,41 @@ const (
 // function does not say which table its trigger is on.
 const TriggerFunction = "(trigger function)"
 
-// Exception carves ONE violation out, WITH a reason (0.29.213; before, a
-// needle anywhere in the argument's text excused every violation of the
-// column in that text).
+// AnyRegisteredTable is the Table of a violation that may reach any
+// registered table and names none: DROP OWNED, DROP TYPE ... CASCADE, a
+// TRUNCATE ... CASCADE whose dependents the catalog does not know.
+const AnyRegisteredTable = "(any registered table)"
+
+// Exception carves ONE violation out, WITH a reason.
 //
-// It names the table, the column ("" for a kind that is of a table), the
-// violation's Kind, the File the statement stands in ("" for any file),
-// and the offending part as PostgreSQL's parser reads it: for an
-// assignment, Fragment is the assigned EXPRESSION, whole; for any other
-// kind, Statement is the one statement, whole. Both are given as SQL and
-// compared as parse trees, so spacing, comments and the case of keywords
-// do not matter, and nothing short of the whole expression (or statement)
-// matches. An assignment's Exception may give Statement too: then the
-// statement must also be that one (its WHERE included).
+// It PINS THE STATEMENT it excuses, whole (0.29.214). It names the table,
+// the column ("" for a kind that is of a table), the violation's Kind, the
+// File and the declaration the statement stands in, and Statement: the one
+// statement that holds the violation, as SQL. Statement is compared as
+// PostgreSQL's parse tree with the places removed: the target, the SET
+// list, FROM, WHERE, ON CONFLICT, RETURNING, everything; spacing, comments
+// and the case of keywords do not matter, and nothing else is overlooked.
+// A statement whose WHERE was changed or dropped is therefore another
+// statement: its violation is reported AND the Exception is stale.
 //
-// Within one argument's text an Exception excuses one violation: two
-// violations there need two Exceptions. An exception that suppresses
-// nothing in a run is reported STALE (the allowlist-rot reverse check).
+// For an assignment, Fragment is the assigned expression, whole: it says
+// WHICH assignment of the statement is the excused one, and must be an
+// assignment of Column in Statement (an Exception whose Fragment is not is
+// malformed and excuses nothing).
+//
+// Why the whole statement (round 7): 0.29.213 matched the expression alone,
+// so an Exception whose reason rested on the statement's WHERE ("WHERE
+// added_at IS NULL makes it self-disabling") went on excusing the
+// statement after the WHERE was removed. That very edit, on the v0.27.50
+// step, is the 0.29.140 regression that un-archived 426 gone repositories.
+//
+// An Exception excuses its one statement and no other: two statements that
+// need excusing need two Exceptions, in one text or across the texts of a
+// declaration (0.29.213 counted per text, so one expression-only Exception
+// excused every statement of its declaration that assigned the
+// expression). The SAME statement met again is that statement: a builder
+// that gives it for two inputs, a text judged each time it is sent. An
+// Exception that excuses nothing in a run is reported STALE.
 type Exception struct {
 	Table  string
 	Column string
@@ -183,11 +212,35 @@ type Exception struct {
 	// another function of the file is not excused. "" excuses it anywhere
 	// in the file (the store's own registry requires a Decl).
 	Decl string
-	// Fragment: the assigned expression (KindAssign, KindTriggerAssign).
+	// Fragment: the assigned expression (KindAssign, KindTriggerAssign),
+	// which must be an assignment of Column in Statement.
 	Fragment string
-	// Statement: the one statement that holds the violation.
+	// Statement: the one statement that holds the violation, whole.
+	// REQUIRED for every kind.
 	Statement string
 	Reason    string
+}
+
+// Pins reports whether sql holds the Exception's statement: some statement
+// of it (at any depth: a statement inside a body or a WITH counts) is,
+// as a parse tree, the Exception's Statement. It is the answer to "does
+// this Exception still describe this text", for a caller that wants it
+// without a whole Check; CheckIn applies the same rule itself.
+func (ex Exception) Pins(sql string) (bool, error) {
+	t, problem := exceptionTree(ex)
+	if problem != "" {
+		return false, errors.New(problem)
+	}
+	ws, err := ParseWrites(sql)
+	if err != nil {
+		return false, err
+	}
+	for _, w := range ws {
+		if canon(w.top) == t.statement {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Violation is one non-conforming write.
@@ -200,10 +253,17 @@ type Violation struct {
 	Decl string
 	// Expr is the assigned expression, or the statement, as written (cut
 	// from the text where that could be done exactly, written out from the
-	// tree otherwise): what an Exception's Fragment or Statement would be.
-	Expr   string
-	Want   Policy
-	Detail string
+	// tree otherwise): what an Exception's Fragment would be.
+	Expr string
+	// Statement is the statement the violation stands in, as written (as
+	// Expr is): what an Exception's Statement would be. Every violation
+	// that comes from a statement carries it; KindUnknownTable, which
+	// comes from the registry, has none. SQL is the whole text the
+	// statement was read from.
+	Statement string
+	SQL       string
+	Want      Policy
+	Detail    string
 	// fragment and statement are the trees an Exception is compared with.
 	fragment, statement string
 }
@@ -240,11 +300,72 @@ type Catalog struct {
 	kind    map[string]string
 	sources map[string][]string
 	parents map[string][]string
+	// refs: the tables each table's foreign keys reference; defined: the
+	// tables whose CREATE TABLE the catalog read (so that their foreign
+	// keys are known, where a table only declared by Table is not).
+	refs    map[string][]string
+	defined map[string]bool
+	// temp: session tables a write may name as pg_temp.<name> (Temp).
+	temp map[string]bool
 }
 
 // NewCatalog is an empty catalog.
 func NewCatalog() *Catalog {
-	return &Catalog{kind: map[string]string{}, sources: map[string][]string{}, parents: map[string][]string{}}
+	return &Catalog{kind: map[string]string{}, sources: map[string][]string{}, parents: map[string][]string{},
+		refs: map[string][]string{}, defined: map[string]bool{}, temp: map[string]bool{}}
+}
+
+// Temp declares temporary tables that some text creates and ANOTHER text
+// writes (two Exec calls of one session): a write of pg_temp.<name> is then
+// accepted as a write of that session's own table. A temporary table made
+// and written in ONE text needs no declaration. The name must be written
+// with pg_temp: an unqualified name is whatever the search path makes it.
+func (c *Catalog) Temp(names ...string) *Catalog {
+	for _, n := range names {
+		c.temp[n] = true
+	}
+	return c
+}
+
+// Reference declares that the table from has a foreign key that references
+// the table to (for a catalog built from a live database, which reads no
+// DDL). Defined then says that every foreign key of from has been declared.
+func (c *Catalog) Reference(from, to string) *Catalog {
+	c.refs[from] = append(c.refs[from], to)
+	return c
+}
+
+// Defined declares that the tables' foreign keys are all known to the
+// catalog (through Reference).
+func (c *Catalog) Defined(names ...string) *Catalog {
+	for _, n := range names {
+		c.defined[n] = true
+	}
+	return c
+}
+
+// dependents are the tables that reference name through a foreign key,
+// and those that reference them: what TRUNCATE name CASCADE empties.
+func (c *Catalog) dependents(name string) []string {
+	seen := map[string]bool{name: true}
+	var out []string
+	for changed := true; changed; {
+		changed = false
+		for from, tos := range c.refs {
+			if seen[from] {
+				continue
+			}
+			for _, to := range tos {
+				if seen[to] {
+					seen[from], changed = true, true
+					out = append(out, from)
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CatalogOf is the catalog of everything the statements define. A statement
@@ -280,10 +401,12 @@ func (c *Catalog) Add(sql string) error {
 
 func (c *Catalog) add(defs []Def) {
 	for _, d := range defs {
-		if d.Temp {
+		if d.Temp || strings.HasPrefix(d.Name, "pg_temp.") {
 			continue
 		}
 		switch d.Kind {
+		case "ref":
+			c.refs[d.Name] = append(c.refs[d.Name], d.Refs...)
 		case "rename":
 			// The relation is known under its new name as what it was
 			// under the old one.
@@ -303,6 +426,15 @@ func (c *Catalog) add(defs []Def) {
 				c.kind[d.Name] = d.Kind
 			}
 			c.parents[d.Name] = append(c.parents[d.Name], d.Parents...)
+			if d.Kind == "matview" {
+				// What a materialized view was made from stands behind it
+				// as a view's sources do.
+				c.sources[d.Name] = append(c.sources[d.Name], d.Sources...)
+			}
+			if d.Kind == "table" {
+				c.defined[d.Name] = true
+				c.refs[d.Name] = append(c.refs[d.Name], d.Refs...)
+			}
 		}
 	}
 }
@@ -387,41 +519,80 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 			rep.Unparsed = append(rep.Unparsed, Unparsed{File: st.File, SQL: st.SQL, Detail: err.Error()})
 			continue
 		}
-		// The temporary tables this text makes: an unqualified name in it
-		// that is one of them is that table.
-		temps := map[string]bool{}
-		for _, d := range defs {
-			if d.Temp && d.Kind == "table" && !strings.Contains(d.Name, ".") {
-				temps[d.Name] = true
+		// tempHere: the write's target is a temporary table this text
+		// made EARLIER, at the same body level, and has not dropped since
+		// (round 7: a temporary definition anywhere in the text counted,
+		// one dropped before the write and one in a function body that is
+		// never called included).
+		tempHere := func(w *Write) bool {
+			if w.scope == nil || (w.Schema != "" && w.Schema != "pg_temp") {
+				return false
 			}
+			for _, d := range defs {
+				named := (d.Temp && d.Name == w.Table) || d.Name == "pg_temp."+w.Table
+				if !named || d.Kind != "table" || d.env != w.scope.env || d.seq >= w.seq {
+					continue
+				}
+				dropped := false
+				for j := range ws {
+					x := &ws[j]
+					if x.Kind == "drop" && (x.Schema == "" || x.Schema == "pg_temp") && x.Table == w.Table && x.scope != nil && x.scope.env == d.env && x.seq > d.seq && x.seq < w.seq {
+						dropped = true
+					}
+				}
+				if !dropped {
+					return true
+				}
+			}
+			return false
 		}
-		// Within one text an Exception excuses one violation.
-		spent := map[int]bool{}
+		var stmtText, stmtSource string
 		violate := func(v Violation) {
-			v.File, v.Decl = st.File, st.Decl
+			v.File, v.Decl, v.SQL = st.File, st.Decl, st.SQL
+			if v.Statement == "" {
+				v.Statement = stmtSource
+			}
 			for i, ex := range exceptions {
-				if spent[i] || !exs[i].ok || ex.Table != v.Table || ex.Column != v.Column || ex.Kind != v.Kind || (ex.File != "" && ex.File != st.File) || (ex.Decl != "" && ex.Decl != st.Decl) {
+				// An Exception is the violation's when it names its table,
+				// column, kind, file and declaration, and PINS ITS
+				// STATEMENT, whole (and, for an assignment, is of this
+				// assigned expression).
+				if !exs[i].ok || ex.Table != v.Table || ex.Column != v.Column || ex.Kind != v.Kind || (ex.File != "" && ex.File != st.File) || (ex.Decl != "" && ex.Decl != st.Decl) {
 					continue
 				}
-				if exs[i].fragment != "" && exs[i].fragment != v.fragment {
+				if exs[i].statement != v.statement || exs[i].fragment != v.fragment {
 					continue
 				}
-				if exs[i].statement != "" && exs[i].statement != v.statement {
-					continue
-				}
-				spent[i], used[i] = true, true
+				used[i] = true
 				return
 			}
 			rep.Violations = append(rep.Violations, v)
 		}
 		for i := range ws {
 			w := &ws[i]
-			stmtTree := canon(w.node)
-			stmtText := w.statementText(st.SQL)
+			w.cat = cat
+			// The statement an Exception pins: the whole one the write
+			// stands in (a WITH and all under it), not the innermost.
+			stmtTree := canon(w.top)
+			stmtSource = w.src
+			stmtText = strings.Join(strings.Fields(w.src), " ")
 			table := func(kind, name, detail string) {
 				violate(Violation{Table: name, Kind: kind, Expr: stmtText, Detail: detail, statement: stmtTree})
 			}
 			switch {
+			case w.Kind == "rename-schema":
+				for t := range regTables {
+					if strings.HasPrefix(t, w.Schema+".") || strings.HasPrefix(t, w.NewName+".") {
+						table(KindRenameSchema, t, "ALTER SCHEMA "+w.Schema+" RENAME TO "+w.NewName+": every write that names the table then names another relation, or none")
+					}
+				}
+				continue
+			case w.Kind == "owned":
+				table(KindOwned, AnyRegisteredTable, w.Note+" drops, or hands to another role, whatever that role owns: which tables that is, the text does not say")
+				continue
+			case w.Kind == "drop-type":
+				table(KindDropType, AnyRegisteredTable, w.Note+" drops every column of the type, in whatever table has one: which, the text does not say")
+				continue
 			case w.Kind == "trigger-form":
 				table(KindTriggerForm, TriggerFunction, "a trigger function's body does something with NEW or OLD that is not read ("+w.Note+"): the row it returns may differ from the one written in any column, and no policy can be checked on that")
 				continue
@@ -445,9 +616,13 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 					}
 				}
 				continue
-			case w.Schema == "" && temps[w.Table]:
+			case tempHere(w):
 				// A temporary table this text made: not a table of the
 				// schema, whatever it is called.
+				continue
+			case w.Schema == "pg_temp" && cat.temp[w.Table]:
+				// A session table another text of the session made, and
+				// the registry declares (Catalog.Temp).
 				continue
 			case w.Schema == "":
 				table(KindUnqualifiedTarget, w.Table, "the target of "+strings.ToUpper(w.Kind)+" names no schema: which relation that is depends on the session's search_path (a temporary relation of the name comes first), and nothing can tell. Write the schema")
@@ -467,6 +642,26 @@ func CheckIn(cat *Catalog, stmts []Stmt, registry []Registered, exceptions []Exc
 					table(KindUnknownTarget, q, "the target of "+strings.ToUpper(w.Kind)+" is not a relation the catalog knows: it may be a view, a partition or a foreign table over a registered table, and nothing can tell. Create it in the schema, or take a reviewed Exception")
 				default:
 					table(KindViewTarget, q, "the target of "+strings.ToUpper(w.Kind)+" is a "+kind+", not a base table (behind it: "+strings.Join(cat.behind(q), ", ")+"): a write through it writes those tables under the names it chooses, which no policy can be checked on")
+				}
+			}
+			if w.Kind == "truncate" && w.Cascade {
+				// CASCADE empties every table that references this one
+				// (and theirs). Which those are is known when the catalog
+				// read this table's and every registered table's CREATE
+				// TABLE; otherwise it is not, and the statement is held
+				// against them all.
+				known := cat.defined[q]
+				for t := range regTables {
+					known = known && cat.defined[t]
+				}
+				if !known {
+					table(KindTruncate, AnyRegisteredTable, "TRUNCATE "+q+" CASCADE empties every table that references it, and the catalog was not given the foreign keys to say which")
+				} else {
+					for _, dep := range cat.dependents(q) {
+						if regTables[dep] {
+							table(KindTruncate, dep, "TRUNCATE "+q+" CASCADE empties "+dep+" too (it references "+q+" through a foreign key): every stored value of its columns is destroyed")
+						}
+					}
 				}
 			}
 			if w.Kind == "create-child" {
@@ -607,30 +802,6 @@ func (w Write) writesColumn(col string) bool {
 	return false
 }
 
-// statementText is the write's statement as a person reads it: the text of
-// the top-level statement it stands in, where the write stands at the top
-// of one, and the statement written out by kind otherwise (a statement in
-// a body has no text of its own that is cut exactly).
-func (w Write) statementText(sql string) string {
-	p := parseSQL(sql)
-	if p.err == nil {
-		for _, raw := range p.stmts {
-			rs, _ := raw.(jnode)
-			if canon(rs["stmt"]) != canon(w.node) {
-				continue
-			}
-			from, n := jint(rs["stmt_location"]), jint(rs["stmt_len"])
-			text := sql[from:]
-			if n > 0 && from+n <= len(sql) {
-				text = sql[from : from+n]
-			}
-			return strings.Join(strings.Fields(text), " ")
-		}
-	}
-	kind, _ := wrapped(w.node)
-	return "(a " + kind + " inside a body, of " + w.Schema + "." + w.Table + ")"
-}
-
 // canon is a tree as text, without the places things stood at in the
 // source: two trees are the same statement or expression exactly when
 // their canons are equal.
@@ -680,10 +851,10 @@ func exceptionTree(ex Exception) (t exceptionTrees, problem string) {
 	}
 	assign := ex.Kind == KindAssign || ex.Kind == KindTriggerAssign
 	switch {
+	case ex.Statement == "":
+		return t, "an exception pins the one statement it excuses, whole, as Statement (its WHERE included): an expression alone excuses the statement with any WHERE, or none"
 	case assign && ex.Fragment == "":
 		return t, "an assignment's exception gives the assigned expression, whole, as Fragment"
-	case !assign && ex.Statement == "":
-		return t, "an exception of this kind gives the one statement, whole, as Statement"
 	case !assign && ex.Fragment != "":
 		return t, "Fragment is an assigned expression; this kind has none"
 	}
@@ -694,13 +865,28 @@ func exceptionTree(ex Exception) (t exceptionTrees, problem string) {
 		}
 		t.fragment = canon(val)
 	}
-	if ex.Statement != "" {
-		p := parseSQL(ex.Statement)
-		if p.err != nil || len(p.stmts) != 1 {
-			return t, "Statement is not one statement the parser reads"
+	p := parseSQL(ex.Statement)
+	if p.err != nil || len(p.stmts) != 1 {
+		return t, "Statement is not one statement the parser reads"
+	}
+	rs, _ := p.stmts[0].(jnode)
+	t.statement = canon(rs["stmt"])
+	if ex.Kind == KindAssign {
+		// The fragment says which assignment of the statement is excused:
+		// it must be one, of this column.
+		found := false
+		ws, err := ParseWrites(ex.Statement)
+		if err != nil {
+			return t, "Statement is not read: " + err.Error()
 		}
-		rs, _ := p.stmts[0].(jnode)
-		t.statement = canon(rs["stmt"])
+		for _, w := range ws {
+			for _, it := range w.Sets {
+				found = found || (it.Column == ex.Column && canon(it.val) == t.fragment)
+			}
+		}
+		if !found {
+			return t, "Fragment is not an assignment of " + ex.Column + " in Statement"
+		}
 	}
 	t.ok = true
 	return t, ""
@@ -791,6 +977,14 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 			// Nullable form: COALESCE(stored, incoming)
 			return operand(args[0]) == "stored" && !w.mentionsStored(args[1], col)
 		}
+		// The same fill spelled as a CASE (round 7): CASE WHEN <the column
+		// is empty> THEN incoming ELSE stored END, the condition being one
+		// of the forms a guard is read in, and nothing else in the CASE.
+		if k, c := wrapped(val); k == "CaseExpr" && c["arg"] == nil && len(jlist(c["args"])) == 1 {
+			_, when := wrapped(jlist(c["args"])[0])
+			return when != nil && w.isEmptyGuard(when["expr"], col) && when["result"] != nil &&
+				!w.mentionsStored(when["result"], col) && operand(c["defresult"]) == "stored"
+		}
 		// Guarded bare form: SET col = $N ... WHERE COALESCE(col,'')=''.
 		return operand(val) == "incoming" && w.GuardsEmpty(col)
 	case PreferNonemptyIncoming:
@@ -807,6 +1001,12 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 		if !ok || jstr(b["op"]) != "IS_GREATEST" {
 			return false
 		}
+		// GREATEST(stored, incoming), in either order (round 7):
+		// PostgreSQL's GREATEST ignores a NULL argument and is NULL only
+		// when both are, so it is the verbose shape below already.
+		if a, b := operand(args[0]), operand(args[1]); (a == "stored" && b == "incoming") || (a == "incoming" && b == "stored") {
+			return true
+		}
 		aargs, aok := w.coalescePair(args[0], col)
 		bargs, bok := w.coalescePair(args[1], col)
 		if !aok || !bok {
@@ -817,7 +1017,10 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 		return (aargs == [2]string{"incoming", "stored"} && bargs == [2]string{"stored", "incoming"}) ||
 			(aargs == [2]string{"stored", "incoming"} && bargs == [2]string{"incoming", "stored"})
 	case AlwaysRefresh:
-		return !w.mentionsStored(val, col)
+		// Nothing of the stored value, of this row or another: a column
+		// that reaches the value through a FROM item which reads the
+		// target counts (round 7).
+		return !w.storedIn(val, col, nil, true)
 	case EarliestOfStoredAndIncoming:
 		mm, args, ok := twoArgs(val, "MinMaxExpr")
 		if !ok || jstr(mm["op"]) != "IS_LEAST" {
@@ -834,6 +1037,11 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 			if isNow(r) {
 				continue
 			}
+			// COALESCE(incoming, NOW()): the value handed in, or now when
+			// none was (round 7).
+			if _, args, ok := twoArgs(r, "CoalesceExpr"); ok && operand(args[0]) == "incoming" && isNow(args[1]) {
+				continue
+			}
 			// operand allows a cast on an incoming value, and on that
 			// only: a cast of the stored value would change what is kept.
 			if k := operand(r); k != "stored" && k != "incoming" {
@@ -845,10 +1053,19 @@ func matchPolicy(w *Write, val any, col string, p Policy) bool {
 	return false
 }
 
-// isNow: v is the call NOW(), with no argument.
+// isNow: v is the time the transaction began, in one of its three
+// spellings: NOW(), transaction_timestamp() (each with no argument and
+// nothing else about the call), or CURRENT_TIMESTAMP with no precision.
+// They are one value. clock_timestamp() and statement_timestamp() are
+// other values (the wall clock; the statement's start) and are not this:
+// two columns stamped in one transaction would then disagree.
 func isNow(v any) bool {
 	k, f := wrapped(v)
-	if k != "FuncCall" || len(jlist(f["funcname"])) != 1 || len(jlist(f["args"])) != 0 {
+	if k == "SQLValueFunction" {
+		return jstr(f["op"]) == "SVFOP_CURRENT_TIMESTAMP"
+	}
+	names := jlist(f["funcname"])
+	if k != "FuncCall" || len(names) == 0 || len(names) > 2 || len(jlist(f["args"])) != 0 {
 		return false
 	}
 	for _, extra := range []string{"agg_order", "agg_filter", "over", "agg_star", "agg_distinct", "func_variadic", "agg_within_group"} {
@@ -856,8 +1073,13 @@ func isNow(v any) bool {
 			return false
 		}
 	}
-	name, _ := sval(jlist(f["funcname"])[0])
-	return name == "now"
+	if len(names) == 2 {
+		if schema, _ := sval(names[0]); schema != "pg_catalog" {
+			return false
+		}
+	}
+	name, _ := sval(names[len(names)-1])
+	return len(names) == 1 && (name == "now" || name == "transaction_timestamp")
 }
 
 // caseResults returns the result expressions of `CASE WHEN c THEN r ... ELSE
@@ -1058,11 +1280,18 @@ func (w *Write) classify(parts []string, inner [][]fromItem) refClass {
 }
 
 // operand classifies a single operand of a policy shape for col:
-//   - "incoming": a $N placeholder, or EXCLUDED.<col> (the same column) in
-//     ON CONFLICT DO UPDATE; either may carry one cast ($1::text);
+//   - "incoming": a value handed in: a $N placeholder; EXCLUDED.<col> (the
+//     same column) in ON CONFLICT DO UPDATE; a column of an INCOMING FROM
+//     item (unnest of placeholders, VALUES of placeholders: incomingQuery),
+//     qualified by that item's name. Any of them may carry one cast
+//     ($1::text), and may stand in TRIM(...) / btrim(...) of one argument
+//     (a value handed in with its outer spaces removed is still the value
+//     handed in);
 //   - "stored": a reference the resolver gives to the target's own <col>;
 //   - "other": anything else, a column of another relation, a variable and
-//     an unresolved reference included.
+//     an unresolved reference included. TRIM of the STORED value is
+//     "other": the shapes keep or compare the stored value AS IT IS, and a
+//     trimmed one written back is a new value no policy describes.
 func (w *Write) operand(v any, col string) string {
 	if k, tc := wrapped(v); k == "TypeCast" {
 		if w.operand(tc["arg"], col) == "incoming" {
@@ -1075,8 +1304,22 @@ func (w *Write) operand(v any, col string) string {
 	if k, _ := wrapped(v); k == "ParamRef" {
 		return "incoming"
 	}
+	if arg, ok := trimOf(v); ok {
+		if w.operand(arg, col) == "incoming" {
+			if ak, _ := wrapped(arg); ak != "FuncCall" {
+				return "incoming"
+			}
+		}
+		return "other"
+	}
 	parts, ok := columnRef(v)
-	if !ok || parts[len(parts)-1] != col {
+	if !ok {
+		return "other"
+	}
+	if len(parts) == 2 && w.incomingItem(parts[0]) {
+		return "incoming"
+	}
+	if parts[len(parts)-1] != col {
 		return "other"
 	}
 	switch w.classify(parts, nil) {
@@ -1088,21 +1331,257 @@ func (w *Write) operand(v any, col string) string {
 	return "other"
 }
 
-// mentionsStored reports whether the value can read the STORED value of
-// col: it holds, at any depth, a reference the resolver gives to the
-// target's column or cannot resolve; the target's whole row (r, r.*, its
-// name); or the target TABLE itself, in a sub-select (another row set of
-// the same table, under whatever names the sub-select gives its columns).
-// It denies: what cannot be told to be something else counts.
-func (w *Write) mentionsStored(v any, col string) bool {
-	return w.storedIn(v, col, nil)
+// trimOf: v is TRIM(x) or btrim(x), of one argument and nothing else, and
+// that argument.
+func trimOf(v any) (any, bool) {
+	k, f := wrapped(v)
+	names, args := jlist(f["funcname"]), jlist(f["args"])
+	if k != "FuncCall" || len(names) == 0 || len(names) > 2 || len(args) != 1 {
+		return nil, false
+	}
+	for _, extra := range []string{"agg_order", "agg_filter", "over", "agg_star", "agg_distinct", "func_variadic", "agg_within_group"} {
+		if f[extra] != nil {
+			return nil, false
+		}
+	}
+	if len(names) == 2 {
+		if schema, _ := sval(names[0]); schema != "pg_catalog" {
+			return nil, false
+		}
+	}
+	if name, _ := sval(names[len(names)-1]); name != "btrim" {
+		return nil, false
+	}
+	return args[0], true
 }
 
-func (w *Write) storedIn(v any, col string, inner [][]fromItem) bool {
+// incomingItem: the qualifier q names exactly one thing where the write
+// stands, and that is an INCOMING item of its FROM (fromItem.incoming).
+func (w *Write) incomingItem(q string) bool {
+	if w.scope == nil || q == w.targetName() || w.qualifiesVariable(q) || (w.Kind == "conflict-update" && q == "excluded") {
+		return false
+	}
+	n, incoming := 0, false
+	for _, it := range w.scope.from {
+		if it.alias == q || (it.alias == "" && it.name == q) {
+			n++
+			incoming = it.incoming
+		}
+	}
+	return n == 1 && incoming
+}
+
+// ---------------------------------------------------------------------
+// Provenance: what a FROM item reads.
+
+// itemRead is what one FROM item can hand the assignment of the target's
+// stored values.
+type itemRead struct {
+	// reads: the item reads the target table: it IS the target under
+	// another alias, or a view over it (the catalog's, transitively), or a
+	// sub-select or WITH query that reads it by any of these.
+	reads bool
+	// self: the item is the target table itself, written in place. Its
+	// columns are the table's, under their own names.
+	self bool
+	// known: the item's output columns are enumerated; tainted are those
+	// that may hold the protected column's stored value. When not known,
+	// every column of the item may.
+	known   bool
+	tainted map[string]bool
+}
+
+// may: a column of the item named c may hold the stored value of col.
+func (ir itemRead) may(c, col string) bool {
+	switch {
+	case !ir.reads:
+		return false
+	case ir.self:
+		return c == col
+	case !ir.known:
+		return true
+	}
+	return ir.tainted[c]
+}
+
+// isTarget: the relation name (schema.name, or a bare name) is the write's
+// target table, or may be (a bare name of the table's is taken for it).
+func (w *Write) isTarget(rel string) bool {
+	return rel == w.Qualified() || (!strings.Contains(rel, ".") && rel == w.Table)
+}
+
+// relReadsTarget: the relation named rel reads the target: it is it, a view
+// (or materialized view, or partition) over it by the catalog, or a WITH
+// query of the statement that reads it. seen stops a WITH that names itself.
+func (w *Write) relReadsTarget(rel string, seen map[string]bool) bool {
+	if w.scope != nil && !strings.Contains(rel, ".") {
+		if q, ok := w.scope.ctes[rel]; ok {
+			if seen[rel] {
+				return false
+			}
+			seen[rel] = true
+			for _, inner := range relsIn(q) {
+				if w.relReadsTarget(inner, seen) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	if w.isTarget(rel) {
+		return true
+	}
+	if w.cat != nil {
+		for _, b := range w.cat.behind(rel) {
+			if w.isTarget(b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// read says what a FROM item can hand over of col's stored value.
+func (w *Write) read(it fromItem, col string) itemRead {
+	var ir itemRead
+	for _, rel := range it.rels {
+		ir.reads = ir.reads || w.relReadsTarget(rel, map[string]bool{})
+	}
+	if !ir.reads {
+		return ir
+	}
+	var ctes map[string]any
+	if w.scope != nil {
+		ctes = w.scope.ctes
+	}
+	_, isCTE := ctes[it.name]
+	isCTE = isCTE && it.schema == ""
+	if it.direct && !it.colnames && !isCTE && w.isTarget(relName(jnode{"schemaname": it.schema, "relname": it.name})) {
+		ir.self = true
+		return ir
+	}
+	if it.colnames {
+		return ir
+	}
+	// A sub-select written in place, or a WITH query named: its outputs
+	// are read when it is one plain SELECT that reads the target as itself.
+	q := it.sub
+	if it.direct && isCTE {
+		q = ctes[it.name]
+	}
+	ir.tainted, ir.known = w.taintedOutputs(q, col)
+	return ir
+}
+
+// taintedOutputs enumerates the output columns of a query that reads the
+// target, and says which may hold col's stored value. known is false when
+// that cannot be told: the query is not one plain SELECT (a set operation,
+// VALUES, a WITH of its own, a data-modifying statement), one of its FROM
+// items reads the target other than as the target itself written in place
+// (through a view, a sub-select, a WITH query, a join's alias), an output
+// is `*`, or an output that may hold the value has no name of its own.
+func (w *Write) taintedOutputs(q any, col string) (tainted map[string]bool, known bool) {
+	k, sel := wrapped(q)
+	if k != "SelectStmt" || sel["larg"] != nil || sel["rarg"] != nil || sel["withClause"] != nil || sel["valuesLists"] != nil {
+		return nil, false
+	}
+	from := fromItems(sel["fromClause"])
+	names := map[string]bool{}
+	for _, it := range from {
+		reads := false
+		for _, rel := range it.rels {
+			reads = reads || w.relReadsTarget(rel, map[string]bool{})
+		}
+		if reads && !(it.direct && !it.colnames && w.isTarget(relName(jnode{"schemaname": it.schema, "relname": it.name}))) {
+			return nil, false
+		}
+		if it.alias != "" {
+			names[it.alias] = true
+		} else {
+			names[it.name] = true
+		}
+	}
+	// carries: an output's expression may hold the stored value: it names
+	// a column called col, a whole row, `*`, or holds a query of its own.
+	var carries func(v any) bool
+	carries = func(v any) bool {
+		switch t := v.(type) {
+		case []any:
+			for _, e := range t {
+				if carries(e) {
+					return true
+				}
+			}
+		case jnode:
+			kind, body := wrapped(t)
+			switch kind {
+			case "SubLink", "SelectStmt":
+				return true
+			case "ColumnRef":
+				parts, ok := columnRef(t)
+				if !ok {
+					return true // a `*`
+				}
+				return parts[len(parts)-1] == col || (len(parts) == 1 && names[parts[0]])
+			}
+			if kind != "" {
+				t = body
+			}
+			for _, key := range sortedKeys(t) {
+				if carries(t[key]) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	// Every output that may hold the value has a name here, so a column of
+	// the item holds it exactly when its name is one of those.
+	tainted = map[string]bool{}
+	for _, e := range jlist(sel["targetList"]) {
+		tk, rt := wrapped(e)
+		if tk != "ResTarget" {
+			return nil, false
+		}
+		if !carries(rt["val"]) {
+			continue
+		}
+		name := jstr(rt["name"])
+		if name == "" {
+			parts, ok := columnRef(rt["val"])
+			if !ok {
+				// A `*`, or an expression PostgreSQL names after what it
+				// is (a function's name, "?column?"): not a name to go by.
+				return nil, false
+			}
+			name = parts[len(parts)-1]
+		}
+		tainted[name] = true
+	}
+	return tainted, true
+}
+
+// mentionsStored reports whether the value can read the STORED value of
+// col OF THE ROW BEING WRITTEN: it holds, at any depth, a reference the
+// resolver gives to the target's column or cannot resolve; the target's
+// whole row (r, r.*, its name); or the target TABLE itself, in a
+// sub-select. It denies: what cannot be told to be something else counts.
+//
+// AlwaysRefresh asks more (storedIn with wide): the stored value of ANY
+// row, by any route: a column of a FROM item that reads the target (the
+// table again under another alias, a view over it, a sub-select or WITH
+// query that reads it), unless that item's outputs are enumerated and the
+// column is not one that may hold it; and a sub-select of the value that
+// reads the target through a view or a WITH query.
+func (w *Write) mentionsStored(v any, col string) bool {
+	return w.storedIn(v, col, nil, false)
+}
+
+func (w *Write) storedIn(v any, col string, inner [][]fromItem, wide bool) bool {
 	switch t := v.(type) {
 	case []any:
 		for _, e := range t {
-			if w.storedIn(e, col, inner) {
+			if w.storedIn(e, col, inner, wide) {
 				return true
 			}
 		}
@@ -1113,13 +1592,16 @@ func (w *Write) storedIn(v any, col string, inner [][]fromItem) bool {
 			if jstr(body["relname"]) == w.Table && (jstr(body["schemaname"]) == "" || jstr(body["schemaname"]) == w.Schema) {
 				return true
 			}
+			if wide && w.relReadsTarget(relName(body), map[string]bool{}) {
+				return true
+			}
 		case "SelectStmt":
 			inner = append(append([][]fromItem{}, inner...), fromItems(body["fromClause"]))
 		case "ColumnRef":
-			return w.refReadsStored(body, col, inner)
+			return w.refReadsStored(body, col, inner, wide)
 		}
 		for _, k := range sortedKeys(t) {
-			if w.storedIn(t[k], col, inner) {
+			if w.storedIn(t[k], col, inner, wide) {
 				return true
 			}
 		}
@@ -1128,7 +1610,7 @@ func (w *Write) storedIn(v any, col string, inner [][]fromItem) bool {
 }
 
 // refReadsStored: one column reference can read the stored value of col.
-func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem) bool {
+func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem, wide bool) bool {
 	fields := jlist(ref["fields"])
 	var parts []string
 	star := false
@@ -1147,6 +1629,25 @@ func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem) bool {
 		}
 		return false
 	}
+	var own []fromItem
+	if w.scope != nil {
+		own = w.scope.from
+	}
+	// reading: the own FROM items named q that read the target (wide only).
+	reading := func(q string) []itemRead {
+		var out []itemRead
+		if !wide || shadowed(q) {
+			return nil
+		}
+		for _, it := range own {
+			if it.alias == q || (it.alias == "" && it.name == q) {
+				if ir := w.read(it, col); ir.reads {
+					out = append(out, ir)
+				}
+			}
+		}
+		return out
+	}
 	// wholeRow: the qualifier parts name the target's row.
 	wholeRow := func(q []string) bool {
 		switch len(q) {
@@ -1161,9 +1662,10 @@ func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem) bool {
 			if q[0] == w.targetName() {
 				return true
 			}
-			var own []fromItem
-			if w.scope != nil {
-				own = w.scope.from
+			// The whole row of an item that reads the target holds
+			// whatever the item reads of it.
+			if len(reading(q[0])) > 0 {
+				return true
 			}
 			// A name in scope as another relation, or a variable, is that.
 			return !fromNamed(own, q[0]) && !w.qualifiesVariable(q[0]) && !(w.Kind == "conflict-update" && q[0] == "excluded")
@@ -1178,7 +1680,39 @@ func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem) bool {
 	if len(parts) == 0 {
 		return true
 	}
-	if parts[len(parts)-1] == col {
+	last := parts[len(parts)-1]
+	if wide {
+		switch len(parts) {
+		case 1:
+			// A bare name, where the assignment stands, may be a column of
+			// any FROM item: of one that reads the target, when that item
+			// may hold the stored value under this name.
+			if len(inner) == 0 {
+				for _, it := range own {
+					if ir := w.read(it, col); ir.reads && !ir.self && ir.may(last, col) {
+						return true
+					}
+				}
+			}
+		case 2:
+			for _, ir := range reading(parts[0]) {
+				if ir.may(last, col) {
+					return true
+				}
+			}
+		case 3:
+			if !shadowed(parts[1]) {
+				for _, it := range own {
+					if it.alias == "" && it.schema == parts[0] && it.name == parts[1] {
+						if ir := w.read(it, col); ir.may(last, col) {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	if last == col {
 		switch w.classify(parts, inner) {
 		case refStored, refUnresolved:
 			return true
@@ -1186,10 +1720,11 @@ func (w *Write) refReadsStored(ref jnode, col string, inner [][]fromItem) bool {
 		return false
 	}
 	// A reference that is not to a column of this name can still be the
-	// target's whole row, written as its name: to_jsonb(r), (r).col.
+	// target's whole row, written as its name: to_jsonb(r), (r).col; or,
+	// for AlwaysRefresh, the whole row of an item that reads the target.
 	switch len(parts) {
 	case 1:
-		return !shadowed(parts[0]) && parts[0] == w.targetName()
+		return !shadowed(parts[0]) && (parts[0] == w.targetName() || len(reading(parts[0])) > 0)
 	case 2:
 		return w.Alias == "" && parts[0] == w.Schema && parts[1] == w.Table
 	}

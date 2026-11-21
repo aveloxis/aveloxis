@@ -154,7 +154,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
-	otherServe, err := pgxpool.NewWithConfig(ctx, cfg)
+	otherServe, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestOtherServeConfirmationReSnapshotsOwnPIDs(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
 	cfg.MaxConns = 1
-	fake, err := pgxpool.NewWithConfig(ctx, cfg)
+	fake, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestServeStartupCanceledInsideListingIsNotARefusal(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
 	cfg.MaxConns = 1
-	fake, err := pgxpool.NewWithConfig(ctx, cfg)
+	fake, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

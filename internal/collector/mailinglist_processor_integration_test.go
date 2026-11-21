@@ -14,7 +14,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestMailingListPipelineEndToEnd runs a few hundred staged messages ALL THE
@@ -36,7 +35,7 @@ func TestMailingListPipelineEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}

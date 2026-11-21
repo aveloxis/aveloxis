@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.213 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.214 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=4fd1b8ba"></script>
+      <script src="_static/documentation_options.js?v=84582877"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -349,6 +349,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
 <li class="toctree-l2"><a class="reference internal" href="guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
@@ -5903,7 +5904,7 @@ preserved (SR-6). See the identity chapter in
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">version_reason</span></code></p></td>
 <td><p>TEXT</p></td>
 <td><p>Analysis phase</p></td>
-<td><p>Why a Maven dependency has no version, when its pom gives it none and a parent pom or BOM that might manage it could not be obtained (0.29.181): <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> (the parent or BOM is on no repository that is read, or was never asked for because it is a snapshot, a version range, or a coordinate a request cannot be built from), <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code> (it is not known whether a repository has it: one did not answer and nothing is stored, or declared repositories were left unconsulted because the analysis had waited on them as long as it may or because the build declares more than one lookup consults; the first two are retried at the next analysis, the last is the same each time), <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code> (the repository that holds it may not be fetched from). NULL when the dependency has a version, or declares none and nothing that could manage it is missing. Since 0.29.213 <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code> and <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code> are also given when the parent or BOM that would be consulted FIRST could not be obtained and a later one would have managed the dependency: the later one’s version is withheld.</p></td>
+<td><p>Why a Maven dependency has no version, when its pom gives it none and a parent pom or BOM that might manage it could not be obtained (0.29.181): <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> (the parent or BOM is on no repository that is read, or was never asked for because it is a snapshot, a version range, or a coordinate a request cannot be built from), <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code> (it is not known whether a repository has it: one did not answer and nothing is stored, or declared repositories were left unconsulted because the analysis had waited on them as long as it may or because the build declares more than one lookup consults; the first two are retried at the next analysis, the last is the same each time), <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code> (the repository that holds it may not be fetched from). NULL when the dependency has a version, or declares none and nothing that could manage it is missing. Since 0.29.213 <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code> and <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code> are also given when the parent or BOM that would be consulted FIRST could not be obtained and a later one would have managed the dependency: the later one’s version is withheld. Since 0.29.214 <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> withholds in the same way when that earlier parent or BOM was never asked for (the cases above, and also: no repository is configured, or two poms of the clone carry the same coordinates), and a parent or BOM that manages the dependency at a version it cannot itself give leaves the dependency with no version.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">version_hosts</span></code></p></td>
 <td><p>TEXT[]</p></td>
@@ -6194,6 +6195,16 @@ repository’s bad hour does not change a dependency’s version.</p>
 <td><p>TEXT</p></td>
 <td><p>Analysis phase</p></td>
 <td><p>Why: <code class="docutils literal notranslate"><span class="pre">clone_unavailable</span></code>, <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>, <code class="docutils literal notranslate"><span class="pre">replace_failed</span></code>, or (0.29.213) one of the four ways the process that reads the manifests can end without a result: <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code> and <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code> (it passed <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> or <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code>), <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code> (stopped by the clock) and <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code> (it could not be started, crashed, or sent something that was refused).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_read_at</span></code></p></td>
+<td><p>TIMESTAMPTZ</p></td>
+<td><p>Analysis phase (lockfiles)</p></td>
+<td><p>When the repository’s lockfiles were last read to the end and their stored rows replaced (0.29.214). NULL when they have not been since the column existed, and when the last reading found the repository has no lockfile. Not backfilled.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code></p></td>
+<td><p>TEXT</p></td>
+<td><p>Analysis phase (lockfiles)</p></td>
+<td><p>Why the LAST reading of the lockfiles did not finish (0.29.214): <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>, or <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>. NULL when it finished. While it is set the stored lockfile rows are as old as <code class="docutils literal notranslate"><span class="pre">lockfiles_read_at</span></code>, or, with no date, there are none: exact versions and transitive dependencies are then out of date or not checked, and the repository’s pages say so. It is written only when the clone is known to hold a lockfile or an earlier reading read some, so a repository with no lockfile never carries one.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_scan_attempt_at</span></code></p></td>
 <td><p>TIMESTAMPTZ</p></td>

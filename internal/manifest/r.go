@@ -48,22 +48,28 @@ var rEntry = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9.]*[A-Za-z0-9])\s*(?:\(\s*(
 // rDescriptionFields reads the file into its fields, each value joined
 // across its continuation lines. A '#' line is a comment.
 func rDescriptionFields(content string) map[string]string {
-	fields := map[string]string{}
+	// A field's lines are collected and joined once (round 7: appending
+	// each continuation line to the value copied the value every time).
+	parts := map[string][]string{}
 	current := ""
 	for _, line := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
 		switch {
 		case strings.HasPrefix(line, "#"):
 		case line != "" && (line[0] == ' ' || line[0] == '\t'):
 			if current != "" {
-				fields[current] += " " + strings.TrimSpace(line)
+				parts[current] = append(parts[current], strings.TrimSpace(line))
 			}
 		default:
 			current = ""
 			if m := rFieldLine.FindStringSubmatch(line); m != nil {
 				current = m[1]
-				fields[current] = strings.TrimSpace(m[2])
+				parts[current] = []string{strings.TrimSpace(m[2])}
 			}
 		}
+	}
+	fields := make(map[string]string, len(parts))
+	for name, lines := range parts {
+		fields[name] = strings.Join(lines, " ")
 	}
 	return fields
 }

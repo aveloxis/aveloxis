@@ -16,6 +16,16 @@ import (
 // the package's own helpers is not one: the helper's own call of the
 // library is.
 //
+// A call of a method of one of the module's own INTERFACES is one too,
+// when the method is a library function that takes SQL in name and
+// signature (`type rotationExecer interface{ Exec(ctx, sql string, args
+// ...any) (pgconn.CommandTag, error) }`): what stands behind such an
+// interface at run time is the library's pool, connection or transaction,
+// and the call is where the statement leaves (0.29.214, review round 7:
+// fifteen such calls of the store were not counted, among them the writes
+// that clear a gone repository, and a new function that sent a statement
+// through one, called by no test, passed the coverage requirement).
+//
 // It is what "a statement-running call site" means to the coverage
 // requirement of the store's tests (0.29.213): the run-time judge records,
 // for every statement production code sends, the line of the library call
@@ -46,6 +56,13 @@ func RunnerCalls(root string, files map[string]string) ([]RunnerCall, error) {
 	if t == nil {
 		return nil, fmt.Errorf("sqlscan.RunnerCalls: a typed reading needs the module root")
 	}
+	// Every signature a library function that takes SQL has, by name.
+	sigs := map[string][]*types.Signature{}
+	for lf := range t.lib.runners {
+		if sig, ok := lf.Type().(*types.Signature); ok {
+			sigs[lf.Name()] = append(sigs[lf.Name()], sig)
+		}
+	}
 	var out []RunnerCall
 	for _, af := range src.parsed {
 		for _, d := range af.Decls {
@@ -68,7 +85,7 @@ func RunnerCalls(root string, files map[string]string) ([]RunnerCall, error) {
 				if !ok {
 					return true
 				}
-				if _, lib := t.lib.runners[f]; !lib {
+				if _, lib := t.lib.runners[f]; !lib && !viaOwnInterface(t.pkg, f, sigs) {
 					return true
 				}
 				from, to := t.fset.Position(c.Pos()), t.fset.Position(c.End())
@@ -85,6 +102,25 @@ func RunnerCalls(root string, files map[string]string) ([]RunnerCall, error) {
 		return out[i].Line < out[j].Line
 	})
 	return out, nil
+}
+
+// viaOwnInterface: f is a method of an interface the package read
+// declares, and a library function that takes SQL has its name and its
+// signature (parameters and results; the receiver is not part of either).
+func viaOwnInterface(own *types.Package, f *types.Func, sigs map[string][]*types.Signature) bool {
+	sig, ok := f.Type().(*types.Signature)
+	if !ok || sig.Recv() == nil || f.Pkg() != own {
+		return false
+	}
+	if _, iface := sig.Recv().Type().Underlying().(*types.Interface); !iface {
+		return false
+	}
+	for _, lib := range sigs[f.Name()] {
+		if types.Identical(sig, lib) {
+			return true
+		}
+	}
+	return false
 }
 
 // TypeUse is one place the package read makes a value of a named type of

@@ -47,10 +47,16 @@ import (
 
 // AnalysisCollector runs file-content analysis on repos.
 type AnalysisCollector struct {
-	store   *db.PostgresStore
-	logger  *slog.Logger
-	bareDir string // base directory for bare clones (e.g., ~/aveloxis-repos)
-	tempDir string // base directory for temporary full clones
+	store *db.PostgresStore
+	// LockfileReadings, when set, is told how each analysis's reading of
+	// the lockfiles ended (lockfile_reading.go).
+	LockfileReadings LockfileReadingRecorder
+	// LockfileRows, when set, removes the stored rows of lockfiles that
+	// are gone (lockfile_scan.go, dropRowsOfLockfilesThatAreGone).
+	LockfileRows LockfileRowDeleter
+	logger       *slog.Logger
+	bareDir      string // base directory for bare clones (e.g., ~/aveloxis-repos)
+	tempDir      string // base directory for temporary full clones
 
 	// RetainClone skips automatic cleanup of the temporary full clone after
 	// analysis. When true, the clone path is set in AnalysisResult.ClonePath
@@ -179,6 +185,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	// writes (0.29.213, clone_read.go): the dependency names, the
 	// declarations and the lockfiles.
 	read := ac.readClone(ctx, repoID, workDir)
+	defer read.close()
 
 	// Phase 1: Dependency scanning.
 	if err := ac.scanDependencies(ctx, repoID, workDir, read, result); err != nil {
@@ -191,7 +198,7 @@ func (ac *AnalysisCollector) AnalyzeRepo(ctx context.Context, repoID int64) (*An
 	locks := read.lockfiles()
 
 	// Phase 2: Libyear (dependency age).
-	if err := ac.scanLibyear(ctx, repoID, workDir, read, ac.lockfilesInUse(ctx, repoID, locks), result); err != nil {
+	if err := ac.scanLibyear(ctx, repoID, workDir, read, ac.lockfilesInUse(ctx, repoID, locks, read.declaredKeys()), result); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("libyear: %w", err))
 	}
 
@@ -437,10 +444,10 @@ func (ac *AnalysisCollector) scanLibyear(ctx context.Context, repoID int64, work
 			"repo_id", repoID, "deps", lockedRows)
 	}
 
-	// v0.27.45 (summary/19 P2, Go C1): relabel go.mod deps whose
-	// packages are imported ONLY from _test.go files as test-scope.
-	// Ungated — relabel only, adds no rows.
-	allDeps = classifyGoModTestOnlyDeps(workDir, allDeps)
+	// v0.27.45 (summary/19 P2, Go C1): go.mod deps whose packages are
+	// imported ONLY from _test.go files are test-scope. The child that read
+	// the clone relabelled them (readManifestDeclarations; 0.29.214: this
+	// worker read every .go file itself until then).
 
 	// Resolve each dependency against its package registry. Answers are
 	// shared across the process for registryCacheTTL (resolveLibyearCached).

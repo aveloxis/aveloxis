@@ -132,7 +132,10 @@ type StrictArg struct {
 	// combination being run with what each caller passes.
 	CallerFree   []int
 	BuilderLoose []LooseUse
-	fill         func(values []string) (string, error)
+	// BuilderChoices are the conditions in the builder's own body that
+	// read one of its parameters (builderChoices).
+	BuilderChoices []Choice
+	fill           func(values []string) (string, error)
 	// rootIsParam: the hole's expression begins at a parameter of the
 	// function it stands in, so its text is its callers'.
 	rootIsParam bool
@@ -895,6 +898,7 @@ func StrictArguments(root string, files map[string]string, env Env) ([]StrictArg
 			}
 			if fn != nil {
 				a.BuilderLoose, a.BuilderAllBool = t.looseUses(fn)
+				a.BuilderChoices = t.builderChoices(fn)
 				a.BuilderParams = fn.Type().(*types.Signature).Params().Len()
 				a.CallerTuples, a.CallerWhy = t.callerTuples(bcall, 0)
 				if a.CallerTuples == nil && bcall != nil && !bcall.Ellipsis.IsValid() {
@@ -1044,6 +1048,178 @@ func (t *typedPkg) builderOf(e ast.Expr) (name string, args []string, result int
 	return name, args, 0, fn, x
 }
 
+// Choice is one condition, in a builder's own body, that reads a parameter
+// of the builder: the condition of an if, the tag or a case of a switch.
+// What the builder returns can depend on it.
+type Choice struct {
+	// Param is the parameter's name, Place its position.
+	Param string
+	Place int
+	// Expr is the condition as written.
+	Expr string
+	// Simple: the condition is the parameter compared with a compiler
+	// constant (Op, Const). Only such a condition can be shown to be
+	// exercised on both sides by a registration's inputs.
+	Simple bool
+	Op     token.Token
+	Const  constant.Value
+	// Text: the parameter is a string (its inputs are compared as text;
+	// otherwise as numbers).
+	Text bool
+}
+
+// builderChoices are the conditions in fn's own body that read one of its
+// parameters (0.29.214, review round 7).
+//
+// An OPEN builder is run for a few representative inputs, and what it
+// returns for those is what the policy check judges. A builder that
+// CHOOSES by its input (`if limit == 7 { q = "UPDATE ..." }`) can return,
+// for an input no registration gives, a statement nobody judged. So each
+// such condition must be one the registered inputs exercise on both sides,
+// and only a comparison of the parameter with a constant can be shown to
+// be (CheckSites evaluates it for each input). A condition on a loop's own
+// variable is not one (`if i > 0`: every count above one takes both
+// sides), nor is a loop's bound.
+//
+// Not followed: a condition in a function the builder CALLS on a value it
+// was handed (populatedPredicate's switch on a data type). That remains
+// the registration's word, and its sentence must say so.
+func (t *typedPkg) builderChoices(fn *types.Func) []Choice {
+	fd := t.ix.declOf[fn]
+	sig, _ := fn.Type().(*types.Signature)
+	if fd == nil || fd.Body == nil || sig == nil {
+		return nil
+	}
+	place := map[types.Object]int{}
+	for i := 0; i < sig.Params().Len(); i++ {
+		place[sig.Params().At(i)] = i
+	}
+	paramIn := func(e ast.Expr) (types.Object, bool) {
+		var found types.Object
+		ast.Inspect(e, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				if o := t.info.Uses[id]; o != nil {
+					if _, is := place[o]; is && found == nil {
+						found = o
+					}
+				}
+			}
+			return true
+		})
+		return found, found != nil
+	}
+	var out []Choice
+	add := func(cond ast.Expr) {
+		o, reads := paramIn(cond)
+		if !reads {
+			return
+		}
+		c := Choice{Param: o.Name(), Place: place[o], Expr: t.srcNode(cond)}
+		if b, ok := o.Type().Underlying().(*types.Basic); ok && b.Info()&types.IsString != 0 {
+			c.Text = true
+		}
+		if bin, ok := unparen(cond).(*ast.BinaryExpr); ok {
+			flip := map[token.Token]token.Token{token.LSS: token.GTR, token.GTR: token.LSS, token.LEQ: token.GEQ, token.GEQ: token.LEQ, token.EQL: token.EQL, token.NEQ: token.NEQ}
+			if _, cmp := flip[bin.Op]; cmp {
+				x, y, op := unparen(bin.X), unparen(bin.Y), bin.Op
+				if id, isID := y.(*ast.Ident); isID && t.info.Uses[id] == o {
+					x, y, op = y, x, flip[op]
+				}
+				if id, isID := x.(*ast.Ident); isID && t.info.Uses[id] == o {
+					if tv, ok := t.info.Types[y]; ok && tv.Value != nil {
+						c.Simple, c.Op, c.Const = true, op, tv.Value
+					}
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			return true
+		case *ast.IfStmt:
+			add(x.Cond)
+		case *ast.SwitchStmt:
+			if x.Tag != nil {
+				if o, reads := paramIn(x.Tag); reads {
+					// Each case of a switch on the parameter is the
+					// parameter compared with the case's value.
+					tagIsParam := false
+					if id, ok := unparen(x.Tag).(*ast.Ident); ok && t.info.Uses[id] == o {
+						tagIsParam = true
+					}
+					cases := 0
+					for _, st := range x.Body.List {
+						cc, _ := st.(*ast.CaseClause)
+						if cc == nil {
+							continue
+						}
+						for _, e := range cc.List {
+							cases++
+							c := Choice{Param: o.Name(), Place: place[o], Expr: "switch " + t.srcNode(x.Tag) + " case " + t.srcNode(e)}
+							if b, ok := o.Type().Underlying().(*types.Basic); ok && b.Info()&types.IsString != 0 {
+								c.Text = true
+							}
+							if tv, ok := t.info.Types[e]; ok && tv.Value != nil && tagIsParam {
+								c.Simple, c.Op, c.Const = true, token.EQL, tv.Value
+							}
+							out = append(out, c)
+						}
+					}
+					if cases == 0 {
+						out = append(out, Choice{Param: o.Name(), Place: place[o], Expr: "switch " + t.srcNode(x.Tag)})
+					}
+				}
+			} else {
+				for _, st := range x.Body.List {
+					if cc, _ := st.(*ast.CaseClause); cc != nil {
+						for _, e := range cc.List {
+							add(e)
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// exercised reports whether the inputs put the choice on both sides: at
+// least one makes its condition true and at least one false. bad says why
+// an input could not be compared.
+func (c Choice) exercised(tuples [][]string) (isTrue, isFalse bool, bad string) {
+	for _, row := range tuples {
+		if c.Place >= len(row) {
+			return false, false, fmt.Sprintf("the input %q has no value at place %d", row, c.Place)
+		}
+		var v constant.Value
+		if c.Text {
+			v = constant.MakeString(row[c.Place])
+		} else {
+			v = constant.MakeFromLiteral(row[c.Place], token.INT, 0)
+			if v.Kind() == constant.Unknown {
+				v = constant.MakeFromLiteral(row[c.Place], token.FLOAT, 0)
+			}
+			if v.Kind() == constant.Unknown && strings.HasPrefix(row[c.Place], "-") {
+				if u := constant.MakeFromLiteral(row[c.Place][1:], token.INT, 0); u.Kind() != constant.Unknown {
+					v = constant.UnaryOp(token.SUB, u, 0)
+				}
+			}
+		}
+		if v.Kind() == constant.Unknown || (c.Const.Kind() == constant.String) != (v.Kind() == constant.String) {
+			return false, false, fmt.Sprintf("the input %q cannot be compared with %s", row[c.Place], c.Const)
+		}
+		if constant.Compare(v, c.Op, c.Const) {
+			isTrue = true
+		} else {
+			isFalse = true
+		}
+	}
+	return isTrue, isFalse, ""
+}
+
 // LooseUse is one use, in a builder's body, of a parameter that can carry
 // text, which is not inside a pgx.Identifier (whose Sanitize quotes it).
 type LooseUse struct {
@@ -1090,8 +1266,8 @@ func (t *typedPkg) looseUsesOf(fn *types.Func, places []int, depth int) (loose [
 	if fd == nil || fd.Body == nil || sig == nil {
 		return []LooseUse{{Param: "?", Expr: "the declaration of " + fn.Name() + " was not found"}}
 	}
-	if depth > 4 {
-		return []LooseUse{{Param: "?", Expr: "more than four calls deep at " + fn.Name()}}
+	if depth > callerDepthLimit {
+		return []LooseUse{{Param: "?", Expr: fmt.Sprintf("more than %d calls deep at %s", callerDepthLimit, fn.Name())}}
 	}
 	tracked := map[types.Object]bool{}
 	for _, i := range places {
@@ -1894,6 +2070,22 @@ func CheckSites(args []StrictArg, sites []Site, pins map[string]Pin, tests map[s
 						bad("the quoting helper %s is registered with the test %s, which does not exist", u.Callee, test)
 					}
 				}
+				// What the builder returns may depend on a condition on
+				// its input only where the registered inputs take both
+				// sides of it (Choice).
+				for _, c := range a.BuilderChoices {
+					if !c.Simple {
+						bad("the open builder %s chooses by its parameter %s in a condition that is not a comparison with a constant (%s): the registered inputs cannot be shown to exercise it. Compare the parameter with a constant, or make the choice at the caller between two builders", s.Builder, c.Param, c.Expr)
+						continue
+					}
+					isTrue, isFalse, why := c.exercised(s.Tuples)
+					switch {
+					case why != "":
+						bad("the open builder %s chooses by %s: %s", s.Builder, c.Expr, why)
+					case !isTrue || !isFalse:
+						bad("the open builder %s chooses by %s, and the registered inputs %q take only one side of it (true: %v, false: %v): what it returns on the other side was not judged. Add an input for it", s.Builder, c.Expr, s.Tuples, isTrue, isFalse)
+					}
+				}
 				for p := range s.Raw {
 					if !rawUsed[p] {
 						bad("the parameter %s is registered as raw text, and the builder puts no such parameter into the text unquoted: delete the entry", p)
@@ -2150,13 +2342,21 @@ func (t *typedPkg) isInteger(e ast.Expr) bool {
 var writeWords = map[string]bool{"update": true, "insert": true, "delete": true, "merge": true, "copy": true, "truncate": true, "alter": true,
 	"drop": true, "create": true}
 
+// callerDepthLimit is how many functions a parameter is followed through,
+// towards the callers that write its constants (callerTuples) and into the
+// functions an open builder hands it to (looseUsesOf). It ends both searches
+// (functions can call each other in a ring) and it is on the refusing side:
+// past it the argument is a hole. Four is more than the store's deepest
+// chain needs; it is pinned by TestCallerConstantsAreFollowedToTheDepthLimitAndNoFurther.
+const callerDepthLimit = 4
+
 // callerTuples: see StrictArg.CallerTuples.
 func (t *typedPkg) callerTuples(call *ast.CallExpr, depth int) ([][]string, string) {
 	if call == nil {
 		return nil, "the argument is not a call of the builder"
 	}
-	if depth > 4 {
-		return nil, "the constants are more than four calls away"
+	if depth > callerDepthLimit {
+		return nil, fmt.Sprintf("the constants are more than %d calls away", callerDepthLimit)
 	}
 	if call.Ellipsis.IsValid() {
 		return nil, "a spread argument"

@@ -62,11 +62,14 @@ const (
 
 // manifestWatchEvery is how often the child looks at its own CPU time and
 // heap. PROVISIONAL (summary/71, section 8). It is how far past a limit the
-// child can go: at most this much CPU time on every thread, and whatever it
-// can allocate in this long, which measured about a gigabyte a second for
-// the densest reader, so a tenth of a gibibyte at the default. A look costs
-// about two microseconds (a getrusage call and one runtime metric), a
-// fifty-thousandth of the interval.
+// child can go: at most this much CPU time on every thread, and what its
+// readers allocate in this long while they parse, which measured about a
+// gigabyte a second for the densest, so a tenth of a gibibyte at the
+// default. NOT the size of a file: no file is read whose size alone is more
+// than the limit leaves (cloneFileTooLarge; until 0.29.214 a file was read
+// whole between two looks, and a 6 GiB file took the child 2 GiB past any
+// limit). A look costs about two microseconds (a getrusage call and one
+// runtime metric), a fifty-thousandth of the interval.
 const manifestWatchEvery = 100 * time.Millisecond
 
 // manifestSoftHeapShare is where the child sets the Go runtime's own soft
@@ -122,6 +125,14 @@ func ManifestChildMain(in io.Reader, out io.Writer) int {
 		return manifestExitProtocol
 	}
 	debug.SetMemoryLimit(req.HeapLimitBytes / manifestSoftHeapDen * manifestSoftHeapNum)
+	// No file is read whose size alone is more than the limit leaves
+	// (cloneFileTooLarge).
+	cloneReadHeapLimit.Store(req.HeapLimitBytes)
+	defer cloneReadHeapLimit.Store(0) // for a test that runs the child inside its own process
+	// Nor is one read past it by a reader that opens a file for itself, or
+	// whose file grew after that check (0.29.214): every read the manifest
+	// package makes is held to the room the limit leaves.
+	defer manifest.SetReadBound(cloneReadRoom)()
 	stop := make(chan struct{})
 	defer close(stop)
 	orphaned := func() bool { return req.ParentPID != 0 && os.Getppid() != req.ParentPID }
@@ -270,8 +281,22 @@ func (c *manifestChild) serveNames(req *manifestRequest, done *manifestDone, par
 	}
 	for lang, counts := range names {
 		for name, n := range counts {
+			if len(name) > manifestItemLimit {
+				continue // text nothing stores as a name (manifestItemLimit)
+			}
 			parts.add(func(p *manifestPart) { p.Names = append(p.Names, manifestNameCount{lang, name, n}) }, len(lang)+len(name))
 		}
+	}
+	// The lockfiles the clone holds, for the stored rows to be held to if
+	// the lockfile pass does not finish.
+	present, err := presentLockfiles(req.Dir)
+	if err != nil {
+		done.RootError = err.Error()
+		return
+	}
+	done.LockfilesListed = true
+	for _, l := range present {
+		parts.add(func(p *manifestPart) { p.Present = append(p.Present, l) }, len(l.Path)+len(l.Kind))
 	}
 }
 
@@ -430,9 +455,12 @@ func (s *manifestChildPomSource) RemotePom(group, artifact, version string, decl
 		}
 		a.Pom.ServedBy = a.ServedBy
 		return a.Pom, manifest.RemoteFound
-	case manifest.RemoteNotFound, manifest.RemoteRefused:
+	case manifest.RemoteNotFound, manifest.RemoteRefused, manifest.RemoteNotAsked:
+		// Each is its own answer and must arrive as itself: "not asked"
+		// withholds a later pom's version, "not found" does not.
 		return nil, out
 	}
+	// RemoteFailed, and any value this program does not know.
 	return nil, manifest.RemoteFailed
 }
 

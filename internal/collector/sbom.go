@@ -283,9 +283,19 @@ func coverageMarker(v *vulnclass.CoverageView) []cdxProperty {
 	if v.LastAnalysisAttempt != nil {
 		out = append(out, cdxProperty{Name: "last_analysis_attempt_reason", Value: v.LastAnalysisAttempt.Reason})
 	}
-	return append(out,
+	out = append(out,
 		cdxProperty{Name: "manifests_failed", Value: strconv.Itoa(v.ManifestsFailed)},
 		cdxProperty{Name: "manifests_carried", Value: strconv.Itoa(v.ManifestsCarried)})
+	// 0.29.214: the lockfiles went unread at the last analysis, so the
+	// versions and transitive components of this document are from the
+	// lockfile rows of the date given (or there are none, with no date).
+	if u := v.LockfilesUnread; u != nil {
+		out = append(out, cdxProperty{Name: "lockfiles_unread_reason", Value: u.Reason})
+		if u.LastReadAt != nil {
+			out = append(out, cdxProperty{Name: "lockfiles_last_read_at", Value: u.LastReadAt.UTC().Format(time.RFC3339)})
+		}
+	}
+	return out
 }
 
 // coverageMarkerPrefix names the marker in both formats.

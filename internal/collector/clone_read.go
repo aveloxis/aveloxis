@@ -6,6 +6,8 @@ package collector
 import (
 	"context"
 	"log/slog"
+
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // cloneRead is one analysis's reading of its clone (0.29.213): the
@@ -59,11 +61,38 @@ func (ac *AnalysisCollector) readClone(ctx context.Context, repoID int64, workDi
 // pass that did not finish is a walk that failed: nothing is known about the
 // repository's lockfiles, and the stored snapshot stands.
 func (r *cloneRead) lockfiles() lockfileSet {
+	var set lockfileSet
 	if err := r.run.passErr(manifestPassLockfiles, r.runErr); err != nil {
-		return lockfileSet{WalkErr: err}
+		set = lockfileSet{WalkErr: err}
+	} else {
+		set = *r.run.locks
 	}
-	return *r.run.locks
+	// The lockfiles the clone holds, when the name pass listed them: what
+	// the stored rows are held to if the lockfiles went unread.
+	if r.run != nil && r.run.passErr(manifestPassNames, r.runErr) == nil {
+		set.Present, set.PresentKnown = r.run.present, r.run.presentKnown
+	}
+	return set
 }
+
+// declaredKeys are the match keys of the dependencies the declarations pass
+// read: what the inventory will ask the lockfiles about (lockfilesInUse).
+// nil when that pass has no result (the inventory is then not replaced, and
+// nothing is asked).
+func (r *cloneRead) declaredKeys() map[string]bool {
+	if r.run.passErr(manifestPassDeclarations, r.runErr) != nil {
+		return map[string]bool{}
+	}
+	keys := make(map[string]bool, len(r.run.decl.Deps))
+	for _, d := range r.run.decl.Deps {
+		keys[pkgid.MatchKey(d.Manager, d.Name)] = true
+	}
+	return keys
+}
+
+// close lets go of what the reading holds outside memory (the lockfile
+// pass's result, on disk), when the phases are done with it.
+func (r *cloneRead) close() { r.run.close() }
 
 // logLimits are the limits in force, for the log line of a reading that was
 // stopped.

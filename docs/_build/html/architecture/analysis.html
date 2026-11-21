@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis &mdash; Aveloxis 0.29.213 documentation</title>
+  <title>Analysis &mdash; Aveloxis 0.29.214 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4fd1b8ba"></script>
+      <script src="../_static/documentation_options.js?v=84582877"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -350,6 +350,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
@@ -2325,11 +2326,11 @@ trees of the repository are unaffected: a broken fixture pom is its own tree.</p
 </section>
 <section id="the-clone-is-read-by-a-process-of-its-own-0-29-213">
 <h2>The clone is read by a process of its own (0.29.213)<a class="headerlink" href="#the-clone-is-read-by-a-process-of-its-own-0-29-213" title="Link to this heading"></a></h2>
-<p>Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So the readers do not run in the collection worker. Each analysis starts one child process (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code>, the same binary) and the child reads the clone.</p>
-<p><strong>What the child does.</strong> Three readings, each ending with its own completion message: the dependency names, the declarations with their versions (the walk that the sections above describe, with Maven’s and Gradle’s trees), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.</p>
+<p>Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So nothing in the collection worker reads what a repository’s files say. Each analysis starts one child process (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code>, the same program) and the child reads the clone.</p>
+<p><strong>What the child does.</strong> Three readings, each ending with its own completion message: the dependency names (with a list of the lockfile paths present, read from the directory, not from the files), the declarations with their versions (the walk the sections above describe, with Maven’s and Gradle’s trees and Go’s test-only imports), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.</p>
 <p><strong>What the child has.</strong> The clone directory and the options, and nothing else: an empty environment, no configuration file, no database connection, no network. A Maven parent or BOM that is not in the clone is asked of the analysis over the same pipe; the analysis answers from the configured repositories under the rules it always applied, and counts the coordinates asked (at most 1,000 an analysis; one more is a failed lookup).</p>
-<p><strong>What the analysis trusts.</strong> Nothing the child says. Every path must be inside the clone, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept.</p>
-<p><strong>The two limits.</strong> The child watches its own processor time and memory against <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.</p>
+<p><strong>What the analysis trusts.</strong> Nothing the child says. Every path must be inside the clone and in its plain form, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept. The lockfile results are checked as they arrive and written to a temporary file (at most sixteen times the lockfiles’ own size), so the worker does not hold them in memory.</p>
+<p><strong>The two limits.</strong> The child watches its own processor time and its Go heap against <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code>, ten times a second, and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. Before any file is read its size is compared with the memory left: a file that cannot fit is not read, and is recorded as one manifest or lockfile that could not be read while the rest of the repository is read. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.</p>
 <p><strong>What a stopped reading means.</strong> Nothing partial is ever stored.</p>
 <table class="docutils align-default">
 <thead>
@@ -2346,15 +2347,16 @@ trees of the repository are unaffected: a broken fixture pom is its own tree.</p
 <td><p><code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code> or <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>the lockfiles</p></td>
-<td><p>replaced, each dependency keeping the locked version the stored lockfile rows give it</p></td>
-<td><p>stay as they were</p></td>
-<td><p>an ERROR in the log naming the limit; <code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is untouched, because the inventory was replaced</p></td>
+<td><p>replaced; a dependency keeps the locked version its stored lockfile row gives it, if that lockfile is still in the clone</p></td>
+<td><p>rows of lockfiles still in the clone stay; rows of lockfiles that are gone are removed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> on the coverage record (0.29.214), an ERROR in the log naming the limit, and a caution on the repository’s page; <code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is untouched, because the inventory was replaced</p></td>
 </tr>
 </tbody>
 </table>
-<p>The reading is tried again at the repository’s next collection, not sooner.</p>
-<p><strong>No budgets inside the readers.</strong> 0.29.210 to 0.29.212 counted work, memory and remote requests inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file’s correctness needs: the largest build file read (8 MiB), the length of a parent chain, the size of an interpolated value.</p>
-<p><strong>An earlier pom that could not be obtained.</strong> When a parent or an imported BOM that Maven would consult first could not be obtained (the lookup failed, its repository is refused, or it was not asked), a version that a later one would give is withheld: the dependency has no version and the reason says why. A pom that every repository answered “not found” for does not withhold: that is an answer.</p>
+<p>The reading is tried again at the repository’s next collection, not sooner. The first lockfile reading that completes sets <code class="docutils literal notranslate"><span class="pre">lockfiles_read_at</span></code> and clears the reason, and the caution goes.</p>
+<p><strong>Which program the child is.</strong> On Linux the child is started from the running program’s own image (<code class="docutils literal notranslate"><span class="pre">/proc/self/exe</span></code>), which stays what it was when the file on disk is replaced. On other systems it is started from the file on disk; a child of another version refuses the request, the reading fails as <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>, and the log says once, at ERROR, that the manifest reader is another version and <code class="docutils literal notranslate"><span class="pre">serve</span></code> must be restarted.</p>
+<p><strong>No budgets inside the readers.</strong> 0.29.195 to 0.29.212 counted work, and later memory and remote requests, inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file’s correctness needs: the largest build file read (8 MiB), the length of a parent chain (32), the size of an interpolated value.</p>
+<p><strong>A pom that is not known.</strong> A managed version is taken from a parent or a BOM only if every pom Maven would consult before it is known not to manage the artifact. A pom whose content is not known withholds: its lookup failed, its repository is refused, or it was never asked for (a snapshot, a version range, a coordinate that cannot be resolved or that no request can be built from, no repository configured, two poms of the clone under the same coordinates). So does a pom that manages the artifact at a version it cannot give. The dependency then has no version and <code class="docutils literal notranslate"><span class="pre">version_reason</span></code> says why. A pom that every repository answered “not found” for does not withhold: that is an answer. A tree in which anything was withheld is reported not whole. Gradle platforms are taken together: an enforced platform’s version stands; otherwise the highest plain release version among the platforms that manage the artifact; a platform that could not be obtained leaves the version not determined.</p>
 </section>
 <section id="code-complexity-via-scc">
 <h2>Code complexity via scc<a class="headerlink" href="#code-complexity-via-scc" title="Link to this heading"></a></h2>

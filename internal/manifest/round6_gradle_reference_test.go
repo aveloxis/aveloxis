@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -374,14 +375,16 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 			continue
 		}
 		bom, ambiguous := g.poms.byCoordinates(parts[0], parts[1], parts[2])
-		reason := ""
-		if bom == nil && !ambiguous {
-			bom, reason = g.poms.remote(parts[0], parts[1], parts[2])
+		reason, unknown := "", ""
+		if ambiguous {
+			unknown = "inherited_not_found"
+		} else if bom == nil {
+			bom, reason, unknown = g.poms.remote(parts[0], parts[1], parts[2])
 		}
 		worst = oracleWorse(worst, reason)
 		if bom == nil {
-			if oracleNotKnown(reason) != "" {
-				boms = append(boms, platform{missing: reason})
+			if unknown != "" {
+				boms = append(boms, platform{missing: unknown})
 			}
 			continue
 		}
@@ -403,33 +406,45 @@ func (g *refGradle) declared(rel string) []oracleAnswer {
 			a.Version = ""
 		}
 		if a.Version == "" && !written {
-			// No version written: the platforms, in order. One whose
-			// content is not known, in front of the one that manages the
-			// dependency, withholds the answer.
-			before := ""
-			answered := false
+			// No version written: the platforms, all of them together
+			// (round 7). Gradle takes the highest version any of them
+			// recommends, so one whose answer is not known withholds the
+			// answer wherever it is written, and so does one that manages
+			// the dependency at something that is not one version.
+			unknown, notOne := "", false
+			var versions []string
+			hosts := map[string][]string{}
 			for _, p := range boms {
 				if p.ctx == nil {
-					before = oracleWorse(before, p.missing)
+					unknown = oracleWorse(unknown, p.missing)
 					continue
 				}
 				q := &oracleQuestion{searched: map[string]bool{}, gap: p.ctx.gap}
-				v, found, via := p.ctx.lookup(q, group, artifact, 0)
-				if found && !refNotOneVersion(v) {
-					answered = true
-					if before = oracleWorse(before, q.before); before != "" {
-						a.Reason = before
-						g.withheld++
-					} else {
-						a.Version, a.Source = v, "managed"
-						a.Hosts = append([]string{}, oracleHosts(p.ctx.chain, via)...)
+				v, found, via, stop := p.ctx.lookup(q, group, artifact, 0)
+				unknown = oracleWorse(unknown, q.before)
+				switch {
+				case stop, found && refNotOneVersion(v):
+					notOne = true
+				case found:
+					if _, seen := hosts[v]; !seen {
+						versions = append(versions, v)
 					}
-					break
+					hosts[v] = oracleHosts(p.ctx.chain, append(append([]string{}, via...), hosts[v]...))
 				}
-				before = oracleWorse(before, q.before)
 			}
-			if !answered {
+			switch {
+			case unknown != "" && (len(versions) > 0 || notOne):
+				a.Reason = unknown
+				g.withheld++
+			case notOne, len(versions) == 0:
 				a.Reason = worst
+			default:
+				if v, ok := refHighest(versions); ok {
+					a.Version, a.Source = v, "managed"
+					a.Hosts = append([]string{}, hosts[v]...)
+				} else {
+					a.Reason = worst
+				}
 			}
 		}
 		out = append(out, a)
@@ -544,6 +559,10 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 			if rng.Intn(4) == 0 {
 				sb.WriteString("  implementation platform('t:" + pick([]string{"bomB", "bomA", "gone2"}) + ":1')\n")
 			}
+			if rng.Intn(9) == 0 {
+				// Round 7: a platform that is never asked for.
+				sb.WriteString("  implementation platform('t:snap:1-SNAPSHOT')\n")
+			}
 			for i, n := range names {
 				switch rng.Intn(5) {
 				case 0:
@@ -649,6 +668,8 @@ func refGradleTree(rng *rand.Rand) (files map[string]string, builds []string, sr
 			src.outcomes[k] = RemoteRefused
 		case 3:
 			src.outcomes[k] = RemoteNotFound
+		case 4:
+			src.outcomes[k] = RemoteNotAsked // round 7
 		}
 	}
 	return files, builds, src
@@ -717,4 +738,44 @@ func TestTheGradleTreeAnswersAsTheIndependentReferenceDoes(t *testing.T) {
 	if versions < 5*refGradleTrees || managed < refGradleTrees/2 || fromPlatformsAbove < refGradleTrees/4 || withheld < refGradleTrees/20 {
 		t.Errorf("too little to compare: %d versions, %d from platforms, %d withheld, %d trees with a platform from above, over %d trees", versions, managed, withheld, fromPlatformsAbove, refGradleTrees)
 	}
+}
+
+// refHighest is the highest of several versions when each is digits in
+// groups separated by dots, compared as numbers group by group; a version
+// the longer one begins with is the lower. Anything else is not ordered.
+func refHighest(versions []string) (string, bool) {
+	if len(versions) == 1 {
+		return versions[0], true
+	}
+	num := func(v string) ([]int, bool) {
+		var out []int
+		for _, part := range strings.Split(v, ".") {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 0 || strings.TrimLeft(part, "0123456789") != "" {
+				return nil, false
+			}
+			out = append(out, n)
+		}
+		return out, true
+	}
+	best := -1
+	var bestN []int
+	for i, v := range versions {
+		n, ok := num(v)
+		if !ok {
+			return "", false
+		}
+		less := func(a, b []int) bool {
+			for k := 0; k < len(a) && k < len(b); k++ {
+				if a[k] != b[k] {
+					return a[k] < b[k]
+				}
+			}
+			return len(a) < len(b)
+		}
+		if best < 0 || less(bestN, n) {
+			best, bestN = i, n
+		}
+	}
+	return versions[best], true
 }

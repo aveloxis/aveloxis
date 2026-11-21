@@ -70,16 +70,27 @@ func TestLibyearManifestReadersDecodeTheFileEncoding(t *testing.T) {
 }
 
 // TestAnalysisReadsManifestsThroughOneReader pins the shape that let the
-// two paths disagree: the package has exactly one raw os.ReadFile, inside
-// ReadManifest.
+// two paths disagree: the package has exactly one place that reads a
+// manifest raw, ReadManifestWithin (one os.ReadFile for a caller with no
+// bound, one os.Open for a caller with one: round 7), and ReadManifest is
+// that with no bound.
 func TestAnalysisReadsManifestsThroughOneReader(t *testing.T) {
 	code := srctest.StripGoComments(srctest.PackageSource(t, "internal/manifest", 5))
 	if n := strings.Count(code, "os.ReadFile("); n != 1 {
 		t.Errorf("internal/manifest has %d raw os.ReadFile calls; manifests must be read through ReadManifest (one decoder for UTF-16 and a UTF-8 BOM)", n)
 	}
+	// io.ReadAll reads a file that was opened: the bounded read's, and no
+	// other reader's.
+	if n := strings.Count(code, "io.ReadAll("); n != 1 {
+		t.Errorf("internal/manifest has %d io.ReadAll calls; the one is ReadManifestWithin's", n)
+	}
+	within := srctest.StripGoComments(srctest.PackageFunc(t, "internal/manifest", "func ReadManifestWithin("))
+	if !strings.Contains(within, "os.ReadFile(") || !strings.Contains(within, "os.Open(") || !strings.Contains(within, "decodeIfUTF16(") {
+		t.Error("ReadManifestWithin must be the one raw read and must decode the encoding")
+	}
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/manifest", "func ReadManifest("))
-	if !strings.Contains(body, "os.ReadFile(") || !strings.Contains(body, "decodeIfUTF16(") {
-		t.Error("ReadManifest must be the one raw read and must decode the encoding")
+	if !strings.Contains(body, "ReadManifestWithin(path, 0)") {
+		t.Error("ReadManifest must be ReadManifestWithin with no bound")
 	}
 }
 

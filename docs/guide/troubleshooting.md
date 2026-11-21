@@ -2018,24 +2018,26 @@ explicit `aveloxis migrate` with no ledger surgery needed.
 
 Since 0.29.213 a repository's manifests and lockfiles are read by a child process with a processor-time limit and a memory limit ([how it works](../architecture/analysis.md)). When the reading passes one, the analysis logs it with the repository and the limit's value, and nothing partial is stored.
 
-**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"). In the database, `aveloxis_data.repo_dependency_coverage.last_attempt_result` holds `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out` or `manifest_read_failed`.
+**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, either the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"), or, when only the lockfiles could not be read, a caution: "Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date." (or "Lockfiles could not be read (...). Transitive dependencies are not checked." when none has ever been read).
 
 **Which repositories.**
 
 ```sql
-SELECT repo_id, last_attempt_result, last_attempt_at
+SELECT repo_id, last_attempt_result, last_attempt_at, lockfiles_unread_reason, lockfiles_read_at
   FROM aveloxis_data.repo_dependency_coverage
  WHERE last_attempt_result LIKE 'manifest_read_%'
- ORDER BY last_attempt_at DESC;
+    OR lockfiles_unread_reason IS NOT NULL
+ ORDER BY last_attempt_at DESC NULLS LAST;
 ```
 
 **What to do.**
 
-- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A `pnpm-lock.yaml` needs about fifteen times its size. Raise `collection.manifest_read_memory_mb` and restart `serve`; with `--workers N` the readers together can hold N times the value. When only the lockfiles could not be read, the log line is an ERROR that names this setting, the inventory is still replaced, and the previous lockfile rows are kept.
-- *Processor time.* The largest honest builds measured use under a second of the 120. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
-- *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. The commonest cause is a binary replaced on disk while `serve` was running: the child is started from the file on disk, refuses a request from another version, and the log says once, at ERROR, "the aveloxis binary on disk (path) is version X, this process is version Y: restart serve". No manifests or lockfiles are read until the restart, so stop `serve` before replacing the binary, as the deploy ladder does.
+- *Memory, and the repository has a very large lockfile.* This is the ordinary case. [The configuration page](../getting-started/configuration.md) lists the largest lockfile of each format the default reads; `pnpm-lock.yaml` and `pubspec.lock` need the most for their size (about thirteen times it). Raise `collection.manifest_read_memory_mb` and restart `serve`. The setting limits the child's Go heap; its resident memory has been measured at up to about 1.3 times the setting, so with `--workers N` allow about 1.3 x N times it. Until the lockfiles are read, the inventory is still replaced, the previous lockfile rows are kept for lockfiles still in the repository, and the caution stays on the page.
+- *One file larger than the memory left.* That file alone is not read; the log names it, and it shows as one manifest or lockfile that could not be read. The rest of the repository is read.
+- *Processor time.* The largest honest builds measured use about a second of the 180, and the largest lockfiles tested about 34 seconds. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
+- *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. On a system other than Linux, the commonest cause is an `aveloxis` file replaced on disk while `serve` was running: the child is started from the file on disk and refuses a request from another version. The log then says once, at ERROR: "the manifest reader is another version of aveloxis — no repository's manifests or lockfiles are read until serve is restarted". Restart `serve`. On Linux the child is started from the running program itself, and replacing the file has no effect until the restart.
 
-The reading is tried again at the repository's next collection. A repository that is stopped every time costs at most the two limits once per collection.
+The reading is tried again at the repository's next collection. A repository that is stopped every time holds one worker for at most the clock allowance (one minute plus four times the processor limit: 13 minutes at the default, plus the time spent answering its requests for remote poms) once per collection.
 
 ## Next steps
 

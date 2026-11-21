@@ -146,6 +146,20 @@ type CoverageView struct {
 	// only; the statistics answers leave them out.
 	ManifestPathsFailed  []string `json:"manifest_paths_failed,omitempty"`
 	ManifestPathsCarried []string `json:"manifest_paths_carried,omitempty"`
+	// LockfilesUnread (0.29.214) is set when the repository's lockfiles
+	// went unread at the last analysis, and null otherwise (they were read,
+	// the repository has none, or nothing is known). It is a caution beside
+	// the state, not a state: the state says what the scan did, and this
+	// says the versions and transitive dependencies it worked from are out
+	// of date or missing. CoverageLockfileCaution is its sentence.
+	LockfilesUnread *LockfilesUnread `json:"lockfiles_unread"`
+}
+
+// LockfilesUnread is why the last reading of a repository's lockfiles did
+// not finish, and when they were last read to the end (null when never).
+type LockfilesUnread struct {
+	Reason     string     `json:"reason"`
+	LastReadAt *time.Time `json:"last_read_at"`
 }
 
 // Coverage decides. The first row of the plan's table that applies wins.
@@ -214,6 +228,9 @@ func Coverage(in CoverageInputs) CoverageView {
 		for kind, n := range cov.Inventory.DependenciesWithoutRow {
 			v.DependenciesWithoutRow[kind] = n
 		}
+		if cov.LockfilesUnreadReason != "" {
+			v.LockfilesUnread = &LockfilesUnread{Reason: cov.LockfilesUnreadReason, LastReadAt: cov.LockfilesReadAt}
+		}
 	}
 
 	// The stored key is stale between an analysis that completes and the
@@ -271,6 +288,48 @@ func AnalysisAttemptReasonWording(reason string) string {
 		return w
 	}
 	return reason
+}
+
+// lockfileUnreadReasonWordings are the reasons a reading of the lockfiles
+// did not finish, in words about lockfiles ("them": the sentence's subject).
+// The inventory's attempt wordings say "the manifests", which a lockfile is
+// not.
+var lockfileUnreadReasonWordings = map[string]string{
+	model.InventoryAttemptReadCPULimit:    "reading them took more processor time than allowed",
+	model.InventoryAttemptReadMemoryLimit: "reading them took more memory than allowed",
+	model.InventoryAttemptReadTimedOut:    "reading them took too long",
+	model.InventoryAttemptReadFailed:      "they could not be read",
+	model.InventoryAttemptRootUnreadable:  "the clone could not be read",
+}
+
+// LockfileUnreadReasonWording is the wording of why the lockfiles went
+// unread. A reason this release does not know is shown as written.
+func LockfileUnreadReasonWording(reason string) string {
+	if w, ok := lockfileUnreadReasonWordings[reason]; ok {
+		return w
+	}
+	return reason
+}
+
+// CoverageLockfileCaution is the caution a surface shows when a
+// repository's lockfiles went unread at the last analysis, and "" when
+// there is nothing to caution about (operator, 2026-11-20: a caution in
+// these two cases and nothing otherwise). The two sentences:
+//
+//   - an earlier reading exists, so the stored lockfile rows are that old;
+//   - none ever finished, so there are no lockfile rows at all.
+//
+// One function, so that every surface says the same thing; the web client
+// builds the same sentences from the API's lockfiles_unread object.
+func CoverageLockfileCaution(v *CoverageView) string {
+	if v == nil || v.LockfilesUnread == nil {
+		return ""
+	}
+	reason := LockfileUnreadReasonWording(v.LockfilesUnread.Reason)
+	if at := v.LockfilesUnread.LastReadAt; at != nil {
+		return "Lockfiles last read " + at.UTC().Format(coverageDate) + "; the latest read did not finish (" + reason + "). Versions and transitive dependencies may be out of date."
+	}
+	return "Lockfiles could not be read (" + reason + "). Transitive dependencies are not checked."
 }
 
 const coverageDate = "2006-01-02"

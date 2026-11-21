@@ -55,8 +55,22 @@ func yamlLockRoot(data []byte) ([]yamlPair, error) {
 	return yamlPairs(doc.Content[0])
 }
 
+// yamlIsNull: a node the decoder reads as null. A scalar tagged !!null is
+// one only when its text is a null's ("", ~, null): `!!null x` is not, and
+// the decoder refuses it, as yamlString then does (round 7: it was read as
+// a null).
 func yamlIsNull(n *yaml.Node) bool {
-	return n == nil || n.Kind == 0 || (n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null")
+	if n == nil || n.Kind == 0 {
+		return true
+	}
+	if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!null" {
+		return false
+	}
+	switch n.Value {
+	case "", "~", "null", "Null", "NULL":
+		return true
+	}
+	return false
 }
 
 // yamlPairs is a mapping's keys and values, in the document's order. A nil
@@ -72,16 +86,20 @@ func yamlPairs(n *yaml.Node) ([]yamlPair, error) {
 	default:
 		return nil, errYAMLLockKind
 	}
-	// By its text alone, where the decoder compared kind and text: a key
-	// that is not a scalar is refused below whatever it repeats.
+	// A key written twice (the same kind and text) is an error, as the
+	// decoder's own check has it. Two keys written differently that DECODE
+	// to one string (`a` and `!!binary YQ==`) are one key of the map the
+	// decoder filled, holding the later value: so here (round 7: they were
+	// two rows). Its place is the first one's.
 	seen := make(map[string]int, len(n.Content)/2)
+	at := make(map[string]int, len(n.Content)/2)
 	out := make([]yamlPair, 0, len(n.Content)/2)
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
 		if k.Kind == yaml.AliasNode || (k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.ShortTag() == "!!merge")) {
 			return nil, errYAMLLockAlias
 		}
-		id := k.Value
+		id := string(rune('0'+k.Kind)) + k.Value
 		if line, dup := seen[id]; dup {
 			return nil, fmt.Errorf("line %d: mapping key %q already defined at line %d", k.Line, k.Value, line)
 		}
@@ -93,6 +111,11 @@ func yamlPairs(n *yaml.Node) ([]yamlPair, error) {
 		if err != nil {
 			return nil, err
 		}
+		if first, again := at[key]; again {
+			out[first].val = v
+			continue
+		}
+		at[key] = len(out)
 		out = append(out, yamlPair{key, v})
 	}
 	return out, nil

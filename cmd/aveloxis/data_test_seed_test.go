@@ -13,7 +13,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestLoadSeedShape(t *testing.T) {
@@ -55,7 +54,7 @@ func TestTheSeedShapesTheFleetAndLeavesTheRepairItsWork(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +194,7 @@ func TestTheSeedRefusesASeededSource(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +223,7 @@ func TestTheSeedRefusesAShortAdoption(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +250,7 @@ func TestCheckNoNewerLedgerSteps(t *testing.T) {
 	if err := checkNoNewerLedgerSteps(ctx, dsn); err != nil {
 		t.Fatalf("a database migrated by this binary has no newer step: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +277,7 @@ func TestCheckNoNewerLedgerStepsReadsTheRecordedVersion(t *testing.T) {
 		t.Skip("AVELOXIS_TEST_DB not set — skipping integration test")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +308,7 @@ func TestTheShippedRewindLeavesTheReleasedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

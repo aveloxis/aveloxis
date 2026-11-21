@@ -18,7 +18,6 @@ import (
 
 	"filippo.io/age"
 	"github.com/aveloxis/aveloxis/internal/capacity"
-	"github.com/aveloxis/aveloxis/internal/db/stmttrace"
 	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 	"github.com/jackc/pgx/v5"
@@ -206,12 +205,6 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	// See utf8_tracer.go for the full rationale + production-
 	// incident history.
 	cfg.ConnConfig.Tracer = utf8ScrubTracer{}
-	// The one test seam on what the store sends (stmttrace): nil in every
-	// binary; the DB-tier test harness sets it, to hand each statement to
-	// the write-policy judge.
-	if stmttrace.Wrap != nil {
-		cfg.ConnConfig.Tracer = stmttrace.Wrap(cfg.ConnConfig.Tracer)
-	}
 
 	store := &PostgresStore{logger: logger}
 	cfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
@@ -221,7 +214,9 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	cfg.BeforeClose = func(conn *pgx.Conn) {
 		store.trackBackend(conn.PgConn().PID(), false)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	// OpenPoolConfig: the one place a pool is opened, which gives the tracer
+	// above to the statement seam (nil in every binary).
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}

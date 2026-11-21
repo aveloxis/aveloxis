@@ -62,7 +62,7 @@ func TestContributorBatchFailureLeavesStagedRowsForReplay(t *testing.T) {
 
 	// Independent raw connection: staged-row state is asserted without
 	// trusting the store under test.
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

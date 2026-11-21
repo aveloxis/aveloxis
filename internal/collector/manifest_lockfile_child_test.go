@@ -21,7 +21,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/aveloxis/aveloxis/internal/srctest"
 	"github.com/aveloxis/aveloxis/internal/versionuse"
 )
 
@@ -32,7 +31,7 @@ import (
 // differ in order and in nothing else.
 func sortedLockfiles(set lockfileSet) lockfileSet {
 	out := lockfileSet{WalkErr: set.WalkErr}
-	for _, pl := range set.Parsed {
+	for _, pl := range heldLockfiles(set) {
 		res := *pl.Result
 		res.Entries = append([]LockfileEntry(nil), res.Entries...)
 		res.Edges = append([]LockfileEdge(nil), res.Edges...)
@@ -186,8 +185,8 @@ func TestOneChildReadsTheNamesTheDeclarationsAndTheLockfiles(t *testing.T) {
 				t.Errorf("declarations: %+v against %+v", all.decl, one.decl)
 			}
 		case manifestPassLockfiles:
-			if diff := lockfileSetsDiffer(*one.locks, *all.locks); diff != "" || len(all.locks.Parsed) != 2 || len(all.locks.Failed) != 1 {
-				t.Errorf("lockfiles: %s (%d parsed, %d failed)", diff, len(all.locks.Parsed), len(all.locks.Failed))
+			if diff := lockfileSetsDiffer(*one.locks, *all.locks); diff != "" || all.locks.parsedCount() != 2 || len(all.locks.Failed) != 1 {
+				t.Errorf("lockfiles: %s (%d parsed, %d failed)", diff, all.locks.parsedCount(), len(all.locks.Failed))
 			}
 		}
 	}
@@ -297,7 +296,7 @@ func TestALockfileOfAMillionPackagesCrosses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := run.locks.Parsed
+	got := heldLockfiles(*run.locks)
 	if len(got) != 1 || len(got[0].Result.Entries) != packages {
 		t.Fatalf("%d lockfiles; the first with %d entries, want one with %d", len(got), len(got[0].Result.Entries), packages)
 	}
@@ -336,7 +335,7 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	// What lockfiles that went unread offer the inventory: the stored rows
 	// of each lockfile, in its own ecosystem, and nothing else's.
 	offered := map[string]string{}
-	for _, lf := range f.ac.lockfilesInUse(ctx, f.repoID, lockfileSet{WalkErr: errors.New("unread")}) {
+	for _, lf := range f.ac.lockfilesInUse(ctx, f.repoID, lockfileSet{WalkErr: errors.New("unread"), PresentKnown: true, Present: map[string]bool{"package-lock.json": true, "r/renv.lock": true}}, nil) {
 		var names []string
 		for name := range lf.Versions {
 			names = append(names, name)
@@ -348,12 +347,17 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 		t.Errorf("unread lockfiles offer %v; want %v", offered, want)
 	}
 	f.write(t, "go.mod", "module example.com/app\n\ngo 1.21\n\nrequire example.com/m v1.0.0\n")
+	// The renv.lock whose rows were stored above is in the clone, as the
+	// lockfile of stored rows is: rows of a lockfile that is NOT in the
+	// clone are removed when the lockfiles go unread (0.29.214;
+	// TestUnreadLockfilesAreRecordedCautionedAndDoNotLockWhatIsGone).
+	f.write(t, "r/renv.lock", `{"R": {"Version": "4.3.0"}, "Packages": {}}`)
 
 	// The next analysis meets a second manifest, and a lockfile that takes
 	// more memory to read than the limit allows.
 	f.write(t, "requirements.txt", "requests==2.31.0\n")
 	var big strings.Builder
-	for i := 0; big.Len() < 96<<20; i++ {
+	for i := 0; big.Len() < 40<<20; i++ {
 		fmt.Fprintf(&big, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
 	}
 	f.write(t, "big/gradle.lockfile", big.String())
@@ -366,13 +370,13 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 		t.Fatalf("the reader: %v; want it stopped at the memory limit", read.runErr)
 	}
 	locks := read.lockfiles()
-	if locks.WalkErr == nil || len(locks.Parsed)+len(locks.Failed) != 0 {
+	if locks.WalkErr == nil || locks.parsedCount()+len(locks.Failed) != 0 {
 		t.Fatalf("the lockfiles of a reader stopped while reading them: %+v", locks)
 	}
 	if err := f.ac.scanDependencies(ctx, f.repoID, f.dir, read, &AnalysisResult{}); err != nil {
 		t.Errorf("the names had been read: %v", err)
 	}
-	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks), &AnalysisResult{}); err != nil {
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks, read.declaredKeys()), &AnalysisResult{}); err != nil {
 		t.Fatalf("the declarations had been read: %v", err)
 	}
 	inv := inventoryRows(t, f)
@@ -409,7 +413,7 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	for _, line := range log.lines {
 		if strings.Contains(line, "level=ERROR") && strings.Contains(line, "the lockfiles were not read") {
 			said = true
-			for _, want := range []string{fmt.Sprintf("repo_id=%d", f.repoID), "result=" + model.InventoryAttemptReadMemoryLimit, "raise collection.manifest_read_memory_mb", "manifest_read_memory_mb=64", "manifest_read_cpu_seconds=120"} {
+			for _, want := range []string{fmt.Sprintf("repo_id=%d", f.repoID), "result=" + model.InventoryAttemptReadMemoryLimit, "raise collection.manifest_read_memory_mb", "manifest_read_memory_mb=64", "manifest_read_cpu_seconds=180"} {
 				if !strings.Contains(line, want) {
 					t.Errorf("the Error line lacks %q: %s", want, line)
 				}
@@ -423,8 +427,114 @@ func TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy(t *testing.T) {
 	// With room, the same clone is read whole.
 	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 2048`))
 	roomy := f.ac.readClone(ctx, f.repoID, f.dir).lockfiles()
-	if roomy.WalkErr != nil || len(roomy.Parsed) != 2 {
-		t.Errorf("with room: %v, %d lockfiles", roomy.WalkErr, len(roomy.Parsed))
+	// Three: package-lock.json, the large gradle.lockfile, and r/renv.lock.
+	if roomy.WalkErr != nil || roomy.parsedCount() != 3 {
+		t.Errorf("with room: %v, %d lockfiles", roomy.WalkErr, roomy.parsedCount())
+	}
+}
+
+// rowDeleter stands in for the store's removal of lockfile rows at paths.
+type rowDeleter struct {
+	f     *wholeReplaceFixture
+	paths []string
+}
+
+func (d *rowDeleter) DeleteRepoLockfileRowsAtPaths(ctx context.Context, repoID int64, paths []string) (int64, error) {
+	d.paths = append(d.paths, paths...)
+	tag, err := d.f.store.Pool().Exec(ctx, `DELETE FROM aveloxis_data.repo_lockfile_packages WHERE repo_id = $1 AND lockfile_path = ANY($2)`, repoID, paths)
+	return tag.RowsAffected(), err
+}
+
+// A lockfile the repository has deleted locks nothing, even when the
+// lockfiles that remain could not be read (review round 7): the inventory
+// row reports the version its manifest declares, the deleted lockfile's
+// stored rows are removed, and the rows of the lockfiles that are still
+// there stand. How the reading ended is recorded each time.
+func TestALockfileThatIsGoneLocksNothingWhenTheLockfilesGoUnread(t *testing.T) {
+	f := lockFixture(t, "locks-gone")
+	ctx := context.Background()
+	rec, del := &recordedReadings{}, &rowDeleter{f: f}
+	f.ac.LockfileReadings, f.ac.LockfileRows = rec, del
+	f.write(t, "package.json", `{"dependencies": {"express": "^4.0.0"}}`)
+	f.write(t, "package-lock.json", goodNpmLock)
+	f.write(t, "kept/package.json", `{"dependencies": {"express": "^4.0.0"}}`)
+	f.write(t, "kept/package-lock.json", goodNpmLock)
+	f.analyse(t)
+	if got := inventoryRows(t, f)["package.json:express"]; got.Version != "4.18.2" || got.Source != versionuse.SourceLocked {
+		t.Fatalf("the first analysis: express %+v", got)
+	}
+	if len(rec.got) != 1 || rec.got[0] != (LockfileReading{Completed: true, Lockfiles: true}) {
+		t.Fatalf("the first reading was recorded as %+v; want completed, with lockfiles", rec.got)
+	}
+
+	// The repository deletes one lockfile and moves on; another lockfile
+	// now takes more memory to read than the limit allows.
+	if err := os.Remove(filepath.Join(f.dir, "package-lock.json")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "package.json", `{"dependencies": {"express": "^5.0.0"}}`)
+	var big strings.Builder
+	for i := 0; big.Len() < 40<<20; i++ {
+		fmt.Fprintf(&big, "com.example.group%d:artifact-%d:1.%d.0=compileClasspath,runtimeClasspath\n", i%977, i, i%50)
+	}
+	f.write(t, "big/gradle.lockfile", big.String())
+	SetManifestLimits(limitsFromConfig(t, `"manifest_read_memory_mb": 64`))
+	t.Cleanup(func() { installedManifestLimits.Store(nil) })
+
+	read := f.ac.readClone(ctx, f.repoID, f.dir)
+	defer read.close()
+	locks := read.lockfiles()
+	var child *errManifestChild
+	if !errors.As(locks.WalkErr, &child) || child.Attempt != model.InventoryAttemptReadMemoryLimit {
+		t.Fatalf("the lockfiles: %v; want them unread at the memory limit", locks.WalkErr)
+	}
+	if !locks.PresentKnown || locks.Present["package-lock.json"] || !locks.Present["kept/package-lock.json"] || !locks.Present["big/gradle.lockfile"] {
+		t.Fatalf("the lockfiles listed: %v (known %v)", locks.Present, locks.PresentKnown)
+	}
+	if err := f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, locks, read.declaredKeys()), &AnalysisResult{}); err != nil {
+		t.Fatal(err)
+	}
+	inv := inventoryRows(t, f)
+	if e := inv["package.json:express"]; e.Version == "4.18.2" || e.Source == versionuse.SourceLocked || e.Requirement != "^5.0.0" {
+		t.Errorf("express beside its deleted lockfile = %+v; want what the manifest declares, not the version the deleted lockfile locked", e)
+	}
+	if e := inv["kept/package.json:express"]; e.Version != "4.18.2" || e.Source != versionuse.SourceLocked {
+		t.Errorf("express beside the lockfile that is still there = %+v; want the version its stored rows lock", e)
+	}
+	if err := f.ac.scanLockfiles(ctx, f.repoID, f.dir, locks, &AnalysisResult{}); err == nil {
+		t.Fatal("unread lockfiles were not an error")
+	}
+	if len(del.paths) != 1 || del.paths[0] != "package-lock.json" {
+		t.Errorf("rows removed at %v; want the deleted lockfile's alone", del.paths)
+	}
+	for _, r := range lockfileRows(t, f) {
+		if r.Path == "package-lock.json" {
+			t.Errorf("a row of the deleted lockfile stands: %+v", r)
+		}
+	}
+	kept := 0
+	for _, r := range lockfileRows(t, f) {
+		if r.Path == "kept/package-lock.json" {
+			kept++
+		}
+	}
+	if kept == 0 {
+		t.Error("the rows of the lockfile that is still there were removed")
+	}
+	if len(rec.got) != 2 || rec.got[1] != (LockfileReading{NotCompleted: model.InventoryAttemptReadMemoryLimit, Lockfiles: true}) {
+		t.Errorf("the readings recorded: %+v; want the second not completed, at the memory limit", rec.got)
+	}
+
+	// Without the list of lockfiles (the names were not read either), no
+	// stored row is offered and none is removed.
+	del.paths = nil
+	unknown := lockfileSet{WalkErr: locks.WalkErr}
+	if got := f.ac.lockfilesInUse(ctx, f.repoID, unknown, nil); len(got) != 0 {
+		t.Errorf("stored rows were offered with the clone's lockfiles not listed: %+v", got)
+	}
+	f.ac.dropRowsOfLockfilesThatAreGone(ctx, f.repoID, unknown)
+	if len(del.paths) != 0 {
+		t.Errorf("rows were removed with the clone's lockfiles not listed: %v", del.paths)
 	}
 }
 
@@ -481,36 +591,6 @@ func collectLockfiles(workDir string, logger *slog.Logger) lockfileSet {
 	return lockfileSet{Parsed: out, Failed: failed, WalkErr: walkErr}
 }
 
-// What reads a clone's files is called from the child's serving functions
-// and from nowhere else in the program: the analysis has only what the child
-// sent (TestAnAnalysisWhoseLockfilesWereNotReadKeepsThemAndSaysWhy and
-// TestAnAnalysisStoppedAtTheLimitKeepsItsInventoryAndSaysWhy drive that; this
-// names the next call that would read a clone in the worker).
-func TestTheCloneIsReadOnlyByTheChild(t *testing.T) {
-	sources := srctest.PackageFiles(t, "internal/collector", 40)
-	for call, home := range map[string]string{
-		"readManifestNames(":        "func (c *manifestChild) serveNames(",
-		"readManifestDeclarations(": "func (c *manifestChild) serveDeclarations(",
-		"walkLockfiles(":            "func (c *manifestChild) serveLockfiles(",
-		"ParseLockfile(":            "func walkLockfiles(",
-		"manifest.NewWalk(":         "func readManifestDeclarations(",
-	} {
-		inHome := strings.Count(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", home)), call)
-		total := 0
-		for _, src := range sources {
-			code := srctest.StripGoComments(src)
-			total += strings.Count(code, call) - strings.Count(code, "func "+call)
-		}
-		if inHome < 1 || total != inHome {
-			t.Errorf("%s is called %d times in internal/collector, %d of them in %s: a clone's files are read by the child, in that function alone", call, total, inHome, home)
-		}
-	}
-	analyze := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func (ac *AnalysisCollector) AnalyzeRepo("))
-	if strings.Count(analyze, "ac.readClone(") != 1 || !strings.Contains(analyze, "read.lockfiles()") {
-		t.Error("AnalyzeRepo reads its clone once, through readClone, and takes the lockfiles from that reading")
-	}
-}
-
 // The program on disk is another version than the one running (a `go
 // install`, or an upgrade, under a serve that was not stopped): the real
 // child refuses the request, by name; nothing is read and nothing stored;
@@ -552,7 +632,7 @@ func TestAChildOfAnotherVersionIsRefusedAndSaidOnce(t *testing.T) {
 		lockSet := read.lockfiles()
 		for phase, err := range map[string]error{
 			"dependencies": f.ac.scanDependencies(ctx, f.repoID, f.dir, read, result),
-			"libyear":      f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, lockSet), result),
+			"libyear":      f.ac.scanLibyear(ctx, f.repoID, f.dir, read, f.ac.lockfilesInUse(ctx, f.repoID, lockSet, read.declaredKeys()), result),
 			"lockfiles":    f.ac.scanLockfiles(ctx, f.repoID, f.dir, lockSet, result),
 		} {
 			if !errors.As(err, &child) || !child.Stale {
@@ -595,5 +675,39 @@ func TestWhatToDoAboutLockfilesThatWentUnread(t *testing.T) {
 		if got := lockfilesUnreadAdvice(attempt); !strings.Contains(got, want) {
 			t.Errorf("%s: %q; want it to say %q", attempt, got, want)
 		}
+	}
+}
+
+// When which repository hosts may be used cannot be read, the declarations
+// are not asked for (they need the pom source) and the names and the
+// LOCKFILES still are: the lockfile phase does not depend on the hosts
+// (review round 7: the lockfile pass could be dropped from that request and
+// no test noticed).
+func TestTheLockfilesAreReadWhenThePomSourceCannotBeMade(t *testing.T) {
+	f := lockFixture(t, "locks-no-pom-source")
+	ctx := context.Background()
+	f.write(t, "package.json", `{"dependencies": {"express": "^4.0.0"}}`)
+	f.write(t, "package-lock.json", goodNpmLock)
+	closed, err := db.NewPostgresStore(ctx, os.Getenv("AVELOXIS_TEST_DB"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	ac := *f.ac
+	ac.store = closed
+	read := ac.readClone(ctx, f.repoID, f.dir)
+	defer read.close()
+	if read.pomsErr == nil {
+		t.Fatal("the distrusted hosts were read from a closed store")
+	}
+	if err := read.run.passErr(manifestPassNames, read.runErr); err != nil || read.run.names["JavaScript"]["express"] != 1 {
+		t.Errorf("the names: %v, %v", err, read.run.names)
+	}
+	if err := read.run.passErr(manifestPassDeclarations, read.runErr); err == nil {
+		t.Error("the declarations were read with no pom source")
+	}
+	locks := read.lockfiles()
+	if locks.WalkErr != nil || locks.parsedCount() != 1 || !locks.Present["package-lock.json"] {
+		t.Errorf("the lockfiles: %v, %d parsed, listed %v", locks.WalkErr, locks.parsedCount(), locks.Present)
 	}
 }

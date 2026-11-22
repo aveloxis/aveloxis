@@ -17,8 +17,10 @@ import (
 )
 
 func TestNoCloneSkipsAnalysisAndScorecard(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"),
-		"func (s *Scheduler) runFacadeAndAnalysis(")
+	// Comments are taken out first (0.29.223, Copilot on PR #263): the call
+	// commented out still stood in the text, and every index below was found.
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"),
+		"func (s *Scheduler) runFacadeAndAnalysis("))
 	guard := strings.Index(body, "collector.HasBareClone(")
 	analyze := strings.Index(body, "ac.AnalyzeRepo(")
 	scorecard := strings.Index(body, "s.runScorecardPhase(")

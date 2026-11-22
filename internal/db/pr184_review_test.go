@@ -1317,7 +1317,7 @@ func TestGapHealCandidatesResolveLatestSnapshot(t *testing.T) {
 	// unchanged, and read where the text now stands: the reader runs that
 	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	if fn := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates("); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+	if fn := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
 		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
 	}
 	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {
@@ -1610,7 +1610,7 @@ func TestGapHealCandidatesIncludeSnapshotlessInAll(t *testing.T) {
 	// unchanged, and read where the text now stands: the reader runs that
 	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	if fn := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates("); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+	if fn := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
 		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
 	}
 	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {

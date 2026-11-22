@@ -164,6 +164,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.223 corrects one logged number on Linux. No schema change and no configuration change.** `rss_peak_mb` on the DEBUG line `manifest reader finished` is now the reading process's own resident high-water mark. Before, on Linux, it was at least `serve`'s own resident memory: Linux carries that figure into a process started from another. The number was logged and never acted on, so no reading was stopped or allowed by it. macOS was not affected.
+
 **0.29.222 schedules four live checks. No schema change, no configuration change and no change in behaviour.** Four tests against live services (nuget.org, two GitHub endpoints, and a real clone through the commit pipeline) existed and ran in no workflow; they are in the weekly network workflow now. One sentence of the vulnerability page is corrected: the API has sent `closed_reason` since 0.29.196.
 
 **0.29.221 is the last corrections of the review. No schema change, no configuration change and no change in behaviour.** Tests, comments and documentation only. Deploy the backend before the web GUI. The README now lists contributor profile enrichment among the GitHub and GitLab differences, and the contributor-resolution page gives a fourth reason for an empty `cntrb_canonical`: a contributor known only from GitLab.

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,12 @@ import (
 func TestTheManifestChildIsThisProgram(t *testing.T) {
 	exe, args, err := manifestChildCommand()
 	self, _ := os.Executable()
+	if runtime.GOOS == "linux" {
+		// 0.29.214: on Linux the running program is started, by the link
+		// the kernel keeps to it. This test went on asking for the path and
+		// failed on every Linux run from then (CI; 0.29.223).
+		self = procSelfExe
+	}
 	if err != nil || exe != self || !reflect.DeepEqual(args, []string{ManifestChildArg}) {
 		t.Errorf("the child's command is %q %v (%v); want this program (%q) with %q", exe, args, err, self, ManifestChildArg)
 	}

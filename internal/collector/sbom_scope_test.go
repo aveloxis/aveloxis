@@ -180,7 +180,7 @@ func TestOSVBatchChunking(t *testing.T) {
 	// query type), so they could not fail for a production change and went
 	// with it.
 	// The scan's miss path must actually use the cap.
-	if !strings.Contains(srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers("), "start += osvBatchMaxQueries" /* behaviour: TestNoBatchExceedsOSVsLimit */) {
+	if !strings.Contains(srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers(")), "start += osvBatchMaxQueries" /* behaviour: TestNoBatchExceedsOSVsLimit */) {
 		t.Error("ScanVulnerabilities' miss path must chunk at osvBatchMaxQueries — OSV 400s beyond 1000 queries per batch")
 	}
 }

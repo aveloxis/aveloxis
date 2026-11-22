@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.222 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.223 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=46f94c6f"></script>
+      <script src="../_static/documentation_options.js?v=e281c876"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2007,6 +2007,7 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.223 corrects one logged number on Linux. No schema change and no configuration change.</strong> <code class="docutils literal notranslate"><span class="pre">rss_peak_mb</span></code> on the DEBUG line <code class="docutils literal notranslate"><span class="pre">manifest</span> <span class="pre">reader</span> <span class="pre">finished</span></code> is now the reading process’s own resident high-water mark. Before, on Linux, it was at least <code class="docutils literal notranslate"><span class="pre">serve</span></code>’s own resident memory: Linux carries that figure into a process started from another. The number was logged and never acted on, so no reading was stopped or allowed by it. macOS was not affected.</p>
 <p><strong>0.29.222 schedules four live checks. No schema change, no configuration change and no change in behaviour.</strong> Four tests against live services (nuget.org, two GitHub endpoints, and a real clone through the commit pipeline) existed and ran in no workflow; they are in the weekly network workflow now. One sentence of the vulnerability page is corrected: the API has sent <code class="docutils literal notranslate"><span class="pre">closed_reason</span></code> since 0.29.196.</p>
 <p><strong>0.29.221 is the last corrections of the review. No schema change, no configuration change and no change in behaviour.</strong> Tests, comments and documentation only. Deploy the backend before the web GUI. The README now lists contributor profile enrichment among the GitHub and GitLab differences, and the contributor-resolution page gives a fourth reason for an empty <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>: a contributor known only from GitLab.</p>
 <p><strong>0.29.220 is the fixes from the thirteenth review. No schema change, no configuration change and no change in behaviour.</strong> Deploy the backend before the web GUI. The review found prose and test gaps only. Corrected in the documentation:</p>

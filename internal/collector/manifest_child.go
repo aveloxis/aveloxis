@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"runtime/metrics"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -211,12 +212,28 @@ func processCPUTime() time.Duration {
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
-// processMaxRSS is the most memory this process has had resident:
-// getrusage's ru_maxrss, which macOS counts in bytes and Linux in kibibytes.
-// It is reported, never judged: the limit is on the heap, which the child
-// can read at any moment, and this is the system's own high-water mark of
-// what that heap cost.
+// processMaxRSS is the most memory this process has had resident. It is
+// reported, never judged: the limit is on the heap, which the child can read
+// at any moment, and this is the system's own high-water mark of what that
+// heap cost.
+//
+// On Linux it is the VmHWM line of /proc/self/status (0.29.223), the mark of
+// the memory image this program has run in since it was started. getrusage's
+// ru_maxrss is NOT that there: at an exec the kernel folds the mark of the
+// image being replaced into the new process's figure, and that image is the
+// starting process's, so a child of serve reported serve's memory (CI: 823
+// MiB "resident" in a child whose heap never passed 1 MiB; 1,442 MiB in each
+// of two children reading different files). Elsewhere, and on a Linux whose
+// status file cannot be read, it is ru_maxrss, which macOS counts in bytes
+// and Linux in kibibytes.
 func processMaxRSS() int64 {
+	if runtime.GOOS == "linux" {
+		if status, err := os.ReadFile("/proc/self/status"); err == nil {
+			if n, ok := statusHighWaterBytes(string(status)); ok {
+				return n
+			}
+		}
+	}
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
 		return 0
@@ -225,6 +242,29 @@ func processMaxRSS() int64 {
 		return int64(ru.Maxrss)
 	}
 	return int64(ru.Maxrss) << 10
+}
+
+// statusHighWaterBytes reads the VmHWM line of a Linux /proc/<pid>/status
+// ("VmHWM:\t   51234 kB"): the most this memory image has had resident, in
+// bytes. The second result is false when the line is absent or is not a
+// positive number of kB, and the caller then uses another source.
+func statusHighWaterBytes(status string) (int64, bool) {
+	for _, line := range strings.Split(status, "\n") {
+		rest, found := strings.CutPrefix(line, "VmHWM:")
+		if !found {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) != 2 || f[1] != "kB" {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(f[0], 10, 64)
+		if err != nil || n <= 0 || n > (1<<62)>>10 {
+			return 0, false
+		}
+		return n << 10, true
+	}
+	return 0, false
 }
 
 // processHeapBytes is the memory the Go heap's objects occupy, live or not

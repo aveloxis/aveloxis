@@ -204,7 +204,7 @@ func TestExposurePredicateHasOneSpelling(t *testing.T) {
 // The upsert spells its three class expressions as text (the write-policy
 // analyzer cannot read a concatenated statement); each is the builder's.
 func TestTheUpsertSpellsTheExposureClassesAsTheBuilderDoes(t *testing.T) {
-	body := srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) InsertVulnerabilityBatch("))
 	for name, expr := range map[string]string{
 		"the class an inserted row has":      enteredNewClassInsertSQL,
 		"the class an updated row will have": enteredNewClassUpdateSQL,

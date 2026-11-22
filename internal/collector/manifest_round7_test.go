@@ -672,6 +672,35 @@ func TestCPUTimeCountsTimeInTheKernel(t *testing.T) {
 	}
 }
 
+// On Linux the child's own high-water mark is the VmHWM line of
+// /proc/self/status, in kibibytes (0.29.223). getrusage's ru_maxrss is not
+// the child's there: the kernel carries the mark of the process image that
+// existed before the exec into it, so every child reported the memory of
+// the process that started it. CI showed it: under a 64 MiB limit a child
+// with a 1 MiB heap "had" 823 MiB resident, and two children reading a
+// 1 MB and a 3 MB lockfile both "had" exactly 1,442 MiB. Those tests are
+// the Linux proof; this one holds the reading of the line on every system.
+func TestTheHighWaterMarkIsReadFromTheStatusFile(t *testing.T) {
+	const status = "Name:\taveloxis\nVmPeak:\t 1234567 kB\nVmHWM:\t   51234 kB\nVmRSS:\t   40000 kB\n"
+	if got, ok := statusHighWaterBytes(status); !ok || got != 51234<<10 {
+		t.Errorf("VmHWM of 51234 kB read as %d bytes (found %v); want %d", got, ok, 51234<<10)
+	}
+	for name, s := range map[string]string{
+		"no such line":          "Name:\taveloxis\nVmRSS:\t 40000 kB\n",
+		"another unit":          "VmHWM:\t 51234 MB\n",
+		"no number":             "VmHWM:\t kB\n",
+		"a negative number":     "VmHWM:\t -5 kB\n",
+		"zero":                  "VmHWM:\t 0 kB\n",
+		"a longer key":          "VmHWMX:\t 51234 kB\n",
+		"the key inside a line": "XVmHWM:\t 51234 kB\n",
+		"empty":                 "",
+	} {
+		if got, ok := statusHighWaterBytes(s); ok {
+			t.Errorf("%s: read as %d bytes; want not found, so that the caller falls back", name, got)
+		}
+	}
+}
+
 // The most memory the process has had resident is in bytes on every
 // platform (the system reports kibibytes on Linux and bytes on macOS).
 func TestMaxRSSIsInBytes(t *testing.T) {

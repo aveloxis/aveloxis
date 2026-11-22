@@ -119,7 +119,7 @@ func TestScanRoutesThroughCache(t *testing.T) {
 	s := string(src)
 	// 0.29.168: the query half moved into the fetcher, which reads the
 	// cache through lookupQuery (GetQuery plus a cached rejection).
-	fetch := srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers(")
+	fetch := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers("))
 	for _, needle := range []string{"cache.lookupQuery(", "cache.putAnswer(", "cache.putRejectedQuery("} {
 		if !strings.Contains(fetch, needle) {
 			t.Errorf("fetchOSVQueryAnswers must route OSV queries through the C0 cache — missing %s", needle)

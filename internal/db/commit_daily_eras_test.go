@@ -431,7 +431,7 @@ func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
 // planner served from idx_commits_author_email, filtering repo_id afterwards,
 // so every boundary-day row walked that author's commits in EVERY repository —
 // 58,497 probes and 82 million buffer hits, 88 s, on a 2-million-row copy;
-// The production table has 1.47 billion. All of a boundary-day author's rows are one
+// the production table has 1.47 billion. All of a boundary-day author's rows are one
 // group, so the condition is a HAVING bool_or over the group, read from the
 // rows the arm already has (0.3 s, the same rows). The count of commits scan
 // nodes is cost-independent: a correlated read adds a node whatever the plan.

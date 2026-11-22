@@ -287,7 +287,7 @@ const (
 	// returns "Bad credentials" for valid tokens during incidents; requiring
 	// several in a row (any success resets the count) prevents a transient
 	// 401 wave from permanently killing the whole pool — the failure mode that
-	// took the larger production database down repeatedly starting 2026-06-17.
+	// took a production deployment down repeatedly starting 2026-06-17.
 	maxAuthStrikes = 3
 
 	// authQuarantineBase and authQuarantineMax bound the exponential cooldown a

@@ -1572,7 +1572,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// DOUBLING. On 2026-09-15 repo 144636
 	// (opendatahub-io/odh-build-metadata, a 73 GB store of generated build
 	// metadata) drove that buffer to 1 GiB; the doubling to 2 GiB asked the
-	// kernel for one contiguous 2 GiB mapping, the production fleet runs
+	// kernel for one contiguous 2 GiB mapping, the production host runs
 	// vm.overcommit_memory=2 so the mmap was refused, and the process died
 	// with "fatal error: runtime: out of memory" — taking all 70 collection
 	// workers and every background subsystem with it.

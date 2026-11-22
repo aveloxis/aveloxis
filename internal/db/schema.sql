@@ -3467,8 +3467,8 @@ CREATE INDEX IF NOT EXISTS idx_repo_dependencies_repo_id ON aveloxis_data.repo_d
 -- the BEHAVIOR — ON UPDATE CASCADE; these indexes make the
 -- behavior tractable. Without them, an UPDATE on
 -- contributors.cntrb_id (run by `aveloxis migrate-cntrb-ids`)
--- seq-scans every child table for every row in the batch. The
--- a large production DB observed a 17-hour stall on batch 1
+-- seq-scans every child table for every row in the batch. A
+-- large production DB observed a 17-hour stall on batch 1
 -- of that migration on 2026-05-17 because 15 of 16 child FKs were
 -- unindexed. idx_contributor_identities_cntrb (declared above)
 -- covers the 16th column; the 15 indexes below close the gap.

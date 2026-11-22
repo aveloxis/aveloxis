@@ -187,6 +187,11 @@ func TestAFileLargerThanTheMemoryLeftIsOneFailedReadAndTheRestIsRead(t *testing.
 	}
 	// What the child had resident at most: its limit and what the runtime
 	// keeps, never the files. (Go's own floor is some tens of mebibytes.)
+	// 0 is "not known" (0.29.225), and then this half judged nothing: that
+	// is a failure of the test, not a pass (review round 16, C-1).
+	if run.maxRSS == 0 {
+		t.Errorf("the child reported no resident figure, so whether it held the files was not judged")
+	}
 	if run.maxRSS > 4*limit {
 		t.Errorf("the child had %d MiB resident under a %d MiB limit beside three 4 GiB files", run.maxRSS>>20, limit>>20)
 	}

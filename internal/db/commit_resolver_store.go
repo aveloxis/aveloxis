@@ -455,7 +455,7 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 // the display case ("NitishT") while the contributors row was inserted
 // under a lowercased login from a different endpoint ("nitisht"), or
 // vice versa. A case-sensitive equality silently drops those commits
-// into a perpetual NULL-author state. Production diagnostic on the
+// into a perpetual NULL-author state. A diagnostic on the
 // live larger production database showed 1,919 additional commits recoverable
 // under the case-insensitive comparison.
 //

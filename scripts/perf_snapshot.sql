@@ -8,7 +8,8 @@
 -- READ-ONLY. Run per release (or monthly) and diff against the previous
 -- snapshot — reviews become diffs, not archaeology:
 --
---   psql -h <host> -p <port> -U aveloxis -d <database> \
+--   DBHOST=db.example.org; DBPORT=5432; DBNAME=aveloxis   # yours
+--   psql -h "$DBHOST" -p "$DBPORT" -U aveloxis -d "$DBNAME" \
 --        -f scripts/perf_snapshot.sql > perf-$(date +%Y%m%d).txt
 --
 -- Prerequisites (summary/20 Phase 0):

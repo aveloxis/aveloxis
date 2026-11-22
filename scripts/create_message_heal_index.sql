@@ -19,7 +19,8 @@
 -- CONCURRENTLY doesn't block writes; expect minutes on the 41 GB
 -- table):
 --
---   psql -h <host> -p <port> -U aveloxis -d <database> \
+--   DBHOST=db.example.org; DBPORT=5432; DBNAME=aveloxis   # yours
+--   psql -h "$DBHOST" -p "$DBPORT" -U aveloxis -d "$DBNAME" \
 --        -f scripts/create_message_heal_index.sql
 --
 -- If a previous attempt was interrupted, drop the INVALID leftover

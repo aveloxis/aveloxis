@@ -235,7 +235,8 @@ type manifestDone struct {
 	HeapPeakBytes int64 `json:"heap_peak_bytes"`
 	// MaxRSSBytes is the most memory the child process has had resident, as
 	// the system counted it: exact, where the heap peak is the largest of
-	// the watchdog's samples.
+	// the watchdog's samples. 0 is "not known" (0.29.225: a Linux child
+	// that could not read its own high-water mark), never a measurement.
 	MaxRSSBytes int64 `json:"max_rss_bytes"`
 }
 

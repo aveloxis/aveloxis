@@ -96,7 +96,8 @@ func TestGemLogicalLinesAnswersAsThePatternsDo(t *testing.T) {
 // the test gives up on it.
 //
 // Without the detector it is 20 s, as it has always been: a megabyte reads
-// in tens of milliseconds, and the judgement of the test (a megabyte in at
+// in a few hundred milliseconds at most (93 to 318 ms over the eleven
+// units here), and the judgement of the test (a megabyte in at
 // most eight times a quarter of one) is made there.
 //
 // Under the detector NOTHING about speed is judged (the test reads 64 KB

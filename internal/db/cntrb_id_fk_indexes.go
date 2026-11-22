@@ -78,8 +78,8 @@ func cntrbIDFKIndexSQL(i int) string {
 // fail-closed contract — serve startup refuses to proceed if any
 // index build fails.
 //
-// Build durations vary widely by table size. On the production
-// fleet's larger production database, the messages and pull_request_commits
+// Build durations vary widely by table size. On the larger
+// production database, the messages and pull_request_commits
 // indexes are the long pole (each table holds tens of millions of
 // rows). Operators can run `aveloxis migrate` and let it run; the
 // CONCURRENTLY flag prevents the build from blocking writes.

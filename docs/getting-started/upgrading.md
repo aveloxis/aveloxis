@@ -164,12 +164,14 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.227 corrects wording. No schema change, no configuration change and no change in behaviour.** Review found a handful of sentences that 0.29.226's rewording had damaged, in comments and in one docs example (the `psql` example in the scaling guide now takes its port from a variable too). Two tests are tightened.
+
 **0.29.226 changes comments, documentation and one test. No schema change, no configuration change and no change in behaviour.** The documentation and the source comments no longer name the fleet a figure was measured on, or its databases, and the examples in the guides use placeholders (`aveloxis-serve@myhost`, `-d "$DBNAME"`). `schema.sql` changed in comments only. `matviews.sql` is untouched, so no view needs a rebuild.
 
 **0.29.225 is the fixes from one more review. No schema change and no configuration change.** Nothing differs from 0.29.146 that an operator must act on.
 
 - **The deploy checklist's wording changed in older steps.** Fourteen places in what `aveloxis deploy-checklist --pending` prints named the fleet a figure was measured on, or its databases. They are generic now. No command, count or instruction changed. A step that said to run something on two named databases says "on each database the deployment serves".
-- **On Linux, `rss_peak_mb` is `0` when it is not known.** The figure on the DEBUG line `manifest reader finished` comes from `/proc/self/status`; where that file cannot be read the line says `0`, never the figure of another process.
+- **On Linux, `rss_peak_mb` is `0` when it is not known.** The figure on the DEBUG line `manifest reader finished` comes from `/proc/self/status`; where that file cannot be read, or has no `VmHWM` line, the line says `0`, never the figure of another process.
 
 **0.29.224 keeps a failed go command's error text. No schema change and no configuration change.** Nothing differs from 0.29.146. In the unreleased builds 0.29.215 to 0.29.223, when the go command that lists a repository's Go modules failed, the WARN `go toolchain invocation failed` sometimes carried an empty `stderr`: the text was read before the command had been waited for. It carries the first 2,048 bytes of what the command wrote, as 0.29.146 did. The rest of the release is tests and one CI setting.
 

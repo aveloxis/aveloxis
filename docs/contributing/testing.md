@@ -323,9 +323,11 @@ instead of ad-hoc regexes:
     `AVELOXIS_WRITE_JUDGE_CHILD_DIR`, and the ancestor's verdict includes them.
     A child that calls `os.Exit` or is killed has already handed over what it
     sent. Do not clear that variable from a child's environment: a child
-    that sends a production statement without it fails at exit and says so
-    (a child that opens no pool, such as a subprocess under test started with
-    an environment the test built, is unaffected).
+    that sends a production statement without it fails and says so when its
+    tests return (a child that opens no pool, such as a subprocess under test
+    started with an environment the test built, is unaffected). A child that
+    calls `os.Exit` itself is not caught by that check: without the variable
+    nothing judges what it sent.
   - A statement sent with a `pgx.QueryRewriter` among its arguments
     (`pgx.NamedArgs` included; nothing in the module uses one) is held against
     production, because the tracer sees the text before the rewriter runs.
@@ -337,8 +339,8 @@ instead of ad-hoc regexes:
   `scripts/skip-census.sh` (the closing suite) over the union of what every
   DB-tier package recorded (`AVELOXIS_STATEMENT_SITES_DIR`, set by the script).
   **An ordinary `go test ./internal/db/` judges what it sends but does not run
-  this check**: one package cannot know what the others reach, so a new store
-  function with no test passes every ordinary command and fails only
+  this check**: one package cannot know what the others reach, so a new
+  library call with no test passes every ordinary command and fails only
   `scripts/skip-census.sh`. Run that script (with `AVELOXIS_TEST_DB` exported)
   before calling a change to the store done.
   - Every call in `internal/db` of a library function that takes SQL
@@ -355,12 +357,45 @@ instead of ad-hoc regexes:
     not take (an error arm, a retry, a conflict): drive that branch.
   - A site is reached by ANY one statement sent through it. A place that sends
     many texts (a builder, a list of migration steps, a loop) is covered when
-    a test sends one of them; the judge does not say each of them ran. The
+    a test sends one of them; the judge does not say each of them ran.
+    **What the count therefore does not see:** a new statement whose text is
+    handed to an existing wrapper inside the package (`execMigrationStep`,
+    `execCreateIndexConcurrently`, `runKeysetWindows`, the time-series
+    helpers) adds no library call of its own, so it is covered as soon as any
+    test reaches the wrapper's call, whether or not a test sends the new
+    text. The same holds for `rowBatch.queue`, the one `Queue` call of the
+    streaming lockfile replace, which stands for three statements
+    (`openQueueSites` in `internal/db/statement_sites_test.go` is the
+    reviewed list of such `Queue` calls). A new statement of that kind needs
+    its own test by review, not by this count. The
     three listings whose text depends on a sort key and filters are covered
     variant by variant by their own tests instead
     (`internal/db/listing_orders_db_test.go`: every key of each allowlist, both
-    directions, the tie-breaker, every filter), and a new listing built from an
-    allowlist needs a test of that shape.
+    directions, and every filter; the leaderboard's search folds case and
+    finds a term inside a name, a key outside its allowlist is the order by
+    repositories, and a member of a group with no queue row is listed). A
+    test that demands an order between two rows must seed them unequal on
+    some key the statement orders by, or the plan decides and not the
+    statement. What those tests hold of the later keys of an order, found by
+    removing or redirecting each one (review round 12):
+
+    - The queue page's last key, the repository id: pinned.
+    - The package leaderboard's last key, the package's name, for the keys
+      `repos`, `unresolved`, `cvss`, `transitive`, `versions` and `days`:
+      pinned, by three seeded packages equal on every other key. For `repos`
+      this holds only while the plan does not hand the three back in name
+      order of itself; under a sorted aggregate the missing key is not seen.
+    - The leaderboard's `name` key, whose last key is the ecosystem: its
+      direction is pinned, its presence is not.
+    - The second key of `days` and of `transitive`: held against being
+      dropped or reversed, not against being pointed at another column that
+      orders the fixture's rows the same way.
+    - The repository listing's last key, the repository id: not pinned. Its
+      rows come by id from the plan whether or not the statement orders by
+      it.
+
+    A new listing built from
+    an allowlist needs a test of that shape.
   - The closing suite prints `statement sites: N library calls that take SQL in
     internal/db; 0 not reached by any DB-tier package`. To see what a run did
     not reach, point `AVELOXIS_STATEMENT_SITES_CHECK` at the folder of records

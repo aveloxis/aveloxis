@@ -15,6 +15,13 @@ package db
 // that reads another key's column returns that key's order and fails.
 // Each test iterates the real allowlist, so a key added to it is tested
 // without an edit here, and fails until this file says what it orders by.
+//
+// What is NOT pinned (review round 10, mutant P06): the repository
+// listing's last key, the repository id. Rows equal on the key asked for
+// come by id with or without it here, because the member set is an IN
+// sub-select the planner makes unique by id before the join; storing the
+// rows out of id order does not change that. The queue page's id key is
+// pinned (its rows are stored out of id order and come by id).
 
 import (
 	"context"
@@ -32,7 +39,10 @@ import (
 // rows each. Rows 0-3 hold, for every attribute, a different arrangement
 // of the ranks 1-4; rows 4 and 5 are row 0 again in every attribute (a tie
 // on every key), one with a smaller repository id than row 0 and one with
-// a larger, and their queue rows are stored out of id order.
+// a larger, and their queue rows are stored out of id order. The three
+// that tie have repository NAMES in the reverse of their id order (the
+// other rows share one name), so the name, the second column of the order
+// by owner, is seen: without it those three come by id.
 type listingRows struct {
 	tag  string
 	ids  []int64          // by row
@@ -45,6 +55,10 @@ type listingRows struct {
 // listingAttrs are the seeded attributes, in the order their arrangements
 // are dealt.
 var listingAttrs = []string{"owner", "status", "priority", "due", "last_run", "issues", "prs", "commits", "meta_issues", "meta_prs", "meta_commits", "activity"}
+
+// listingRepoNames are the repositories' names by row. Rows 4, 0 and 5
+// (ascending id) have one owner; their names descend.
+var listingRepoNames = []string{"rb", "r", "r", "r", "rc", "ra"}
 
 // listingNullAt is the rank at which a nullable attribute is NULL.
 const listingNullAt = 4
@@ -104,10 +118,10 @@ func seedListingRows(t *testing.T, store *PostgresStore) *listingRows {
 			cleanupExecRetry(c, store, `DELETE FROM `+table+` WHERE repo_id = ANY($1)`, all)
 		}
 	})
-	repo := func(owner, git string) int64 {
+	repo := func(owner, git, name string) int64 {
 		var id int64
-		if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id) VALUES ($1, $2, 'r', 1) RETURNING repo_id`,
-			"https://github.com/"+git+"/r", owner).Scan(&id); err != nil {
+		if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id) VALUES ($1, $2, $3, 1) RETURNING repo_id`,
+			"https://github.com/"+git+"/"+name, owner, name).Scan(&id); err != nil {
 			t.Fatalf("seed repository: %v", err)
 		}
 		all = append(all, id)
@@ -117,9 +131,9 @@ func seedListingRows(t *testing.T, store *PostgresStore) *listingRows {
 	// Ids ascend in this order: a twin, rows 0-3, the other twin.
 	f.ids = make([]int64, 6)
 	for _, row := range []int{4, 0, 1, 2, 3, 5} {
-		f.ids[row] = repo(owner(row), fmt.Sprintf("%sgit%d", f.tag, row))
+		f.ids[row] = repo(owner(row), fmt.Sprintf("%sgit%d", f.tag, row), listingRepoNames[row])
 	}
-	f.outside = repo("zzoutside"+f.tag[len(f.tag)-6:]+"other", "zzoutside"+f.tag)
+	f.outside = repo("zzoutside"+f.tag[len(f.tag)-6:]+"other", "zzoutside"+f.tag, "r")
 	status := []string{"", "collecting", "queued", "failed", "failed"}
 	for _, row := range []int{3, 5, 2, 0, 1, 4} {
 		r := func(attr string) int { return f.rank[attr][row] }
@@ -147,7 +161,8 @@ func seedListingRows(t *testing.T, store *PostgresStore) *listingRows {
 
 // order is the fixture's ids as a statement that orders by attr must return
 // them: by the attribute's rank (status by its three classes), descending
-// when asked, a NULL last in either direction, and equal rows by id.
+// when asked, a NULL last in either direction, and equal rows by id. The
+// owner is followed by the repository's name, in the same direction.
 func (f *listingRows) order(attr string, desc bool) []int64 {
 	ranks, ok := f.rank[attr]
 	if !ok {
@@ -169,6 +184,9 @@ func (f *listingRows) order(attr string, desc bool) []int64 {
 			return bNull
 		case !aNull && a != b:
 			return (a < b) != desc
+		}
+		if x, y := listingRepoNames[rows[i]], listingRepoNames[rows[k]]; attr == "owner" && x != y {
+			return (x < y) != desc
 		}
 		return f.ids[rows[i]] < f.ids[rows[k]]
 	})
@@ -296,6 +314,13 @@ func TestTheQueuePageIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 		due_at = CASE WHEN repo_id = $1 THEN TIMESTAMPTZ '2026-02-02' ELSE TIMESTAMPTZ '2026-02-01' END WHERE repo_id IN ($1, $2)`, f.ids[1], f.ids[2])
 	if ids, _ := page(100000, 0, search, "", ""); slices.Index(ids, f.ids[2]) != slices.Index(ids, f.ids[1])-1 {
 		t.Errorf("the default order with two rows of one status and priority: %v; want %d (due first) just before %d", ids, f.ids[2], f.ids[1])
+	}
+	// The search reads "owner/name": a term that spans the slash finds the
+	// one repository of that owner and that name, and not its two
+	// neighbours of the same owner.
+	spanning := fmt.Sprintf("%sowner%d/%s", f.tag, f.rank["owner"][0], listingRepoNames[0])
+	if ids, total := page(100, 0, spanning, "", ""); !reflect.DeepEqual(ids, []int64{f.ids[0]}) || total != 1 {
+		t.Errorf("a search for %q: %v of %d; want the one repository %d", spanning, ids, total, f.ids[0])
 	}
 	// The search is for the text as typed: its wildcard characters stand
 	// for themselves.
@@ -426,6 +451,33 @@ func TestTheRepositoryListingIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 			t.Errorf("row %d is listed as %+v; want issues %d, prs %d, commits %d, an activity time %v", row, r, f.rank["issues"][row]*3, f.rank["prs"][row]*5, f.rank["commits"][row]*7, wantActivity)
 		}
 	}
+	// A member that has no queue row (and no repo_info row) is listed all
+	// the same, with counts of 0 and no times.
+	var bare int64
+	if err := store.pool.QueryRow(ctx, `INSERT INTO aveloxis_data.repos (repo_git, repo_owner, repo_name, platform_id) VALUES ($1, $2, 'bare', 1) RETURNING repo_id`,
+		"https://github.com/"+f.tag+"bare/bare", f.tag+"bare").Scan(&bare); err != nil {
+		t.Fatalf("seed a repository with no queue row: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_ops.user_repos WHERE repo_id = $1`, bare)
+		cleanupExecRetry(c, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, bare)
+	})
+	mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_ops.user_repos (group_id, repo_id) VALUES ($1, $2)`, group, bare)
+	for name, list := range listings {
+		rows, total, err := list(1, 50, "issues", "asc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(rows, func(r PortalGroupRepo) bool { return r.RepoID == bare })
+		if total != 7 || i < 0 {
+			t.Errorf("%s with a member that has no queue row: %d rows of a total %d, that member listed: %v; want it listed, 7 in all", name, len(rows), total, i >= 0)
+			continue
+		}
+		if r := rows[i]; r.Issues != 0 || r.PRs != 0 || r.Commits != 0 || r.LastActivity != nil {
+			t.Errorf("%s: the member with no queue row is listed as %+v; want counts of 0 and no activity time", name, r)
+		}
+	}
 }
 
 // exposureLess is the documented order of each key of PackageExposureSorts,
@@ -498,8 +550,11 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 	}
 	cohort, outside := repos[:4], repos[4]
 	// One finding. cvss 0 stores NULL; days is how long ago it was first
-	// detected; version "" is a purl with no version.
+	// detected, counted back from ONE moment, so that two findings of the
+	// same number of days are exactly as old as each other (a tie on the
+	// median days open); version "" is a purl with no version.
 	n := 0
+	seededAt := time.Now()
 	finding := func(repo int64, eco, pkg, kind, version string, cvss float64, days int, resolved bool) {
 		n++
 		purl := "pkg:" + eco + "/" + pkg
@@ -515,13 +570,18 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 		}
 		mustExecRetry(ctx, t, store, `INSERT INTO aveloxis_data.repo_deps_vulnerabilities
 			(repo_id, vuln_id, package_name, package_purl, ecosystem, severity, cvss_score, dependency_kind, first_detected_at, last_seen_at, resolved_at, tool_source, data_source)
-			VALUES ($1, $2, $3, $4, $5, 'HIGH', $6, $7, NOW() - make_interval(days => $8), NOW(), $9, 'aveloxis', 'test')`,
-			repo, fmt.Sprintf("GHSA-%s-%d", tag, n), pkg, purl, eco, score, kind, days, at)
+			VALUES ($1, $2, $3, $4, $5, 'HIGH', $6, $7, $10::timestamptz - make_interval(days => $8), NOW(), $9, 'aveloxis', 'test')`,
+			repo, fmt.Sprintf("GHSA-%s-%d", tag, n), pkg, purl, eco, score, kind, days, at, seededAt)
 	}
 	a, b, c, d, e := tag+"-a", tag+"-b", tag+"-c", tag+"-d", tag+"-e"
-	// a: in four repositories, one unresolved; never transitive; one version.
-	finding(cohort[0], "npm", a, "direct", "1.0.0", 3.0, 1, false)
-	for _, r := range cohort[1:] {
+	// a: in four repositories, two unresolved; never transitive; one
+	// version. (Two, not one: a in the other ecosystem has one, and the two
+	// have one package name, so with one each nothing in "unresolved"'s
+	// order would say which comes first. Review round 11.)
+	for _, r := range cohort[:2] {
+		finding(r, "npm", a, "direct", "1.0.0", 3.0, 1, false)
+	}
+	for _, r := range cohort[2:] {
 		finding(r, "npm", a, "direct", "1.0.0", 3.0, 1, true)
 	}
 	// b: in three, all unresolved, all transitive, three versions.
@@ -531,13 +591,34 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 	// c: in two, both unresolved, half transitive, one version, the worst score.
 	finding(cohort[0], "npm", c, "transitive", "3.0.0", 9.0, 30, false)
 	finding(cohort[1], "npm", c, "direct", "3.0.0", 9.0, 30, false)
+	// Three more unresolved findings of c in ONE of its repositories: c has
+	// five unresolved findings in two repositories, b three in three. The
+	// "unresolved" key counts repositories (b first), not findings.
+	for i := 0; i < 3; i++ {
+		finding(cohort[0], "npm", c, "transitive", "3.0.0", 9.0, 30, false)
+	}
 	// d: in one, unresolved, transitive, no version, no score, the oldest.
 	finding(cohort[3], "npm", d, "transitive", "", 0, 50, false)
-	// e: in two, both resolved (no days open), c's score and c's count.
+	// cz and dX: d again in every respect, each in another repository:
+	// the three tie on every key and on the repositories of the cohort, so
+	// only the last key of each order, the package's name, says they come
+	// cz, d, dX (three, and named on both sides of d, so that the order
+	// they happen to come in without that key is unlikely to be this one).
+	// dX's name has a capital (the search folds case on both sides) and is
+	// found by a term from its middle (the search is for a substring).
+	cz, dX := tag+"-cz", tag+"-dX"
+	finding(cohort[2], "npm", dX, "transitive", "", 0, 50, false)
+	finding(cohort[1], "npm", cz, "transitive", "", 0, 50, false)
+	// e: in three, all resolved (no days open), c's score in more
+	// repositories than c: the score's second key, the repositories of the
+	// cohort, puts e before c, where the name alone would put c first.
+	finding(cohort[1], "npm", e, "direct", "", 9.0, 7, true)
 	finding(cohort[2], "npm", e, "direct", "", 9.0, 7, true)
 	finding(cohort[3], "npm", e, "direct", "", 9.0, 7, true)
 	// a again in another ecosystem: the name's order ends on the ecosystem.
-	finding(cohort[0], "pypi", a, "direct", "0.1.0", 1.0, 5, false)
+	// It is open exactly as long as b, in fewer repositories: the days'
+	// second key puts b first, where the name alone would put a first.
+	finding(cohort[0], "pypi", a, "direct", "0.1.0", 1.0, 10, false)
 	// A repository outside the cohort has a too: the fleet counts it, the
 	// cohort does not.
 	finding(outside, "npm", a, "direct", "1.0.0", 3.0, 1, true)
@@ -558,13 +639,13 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 	// with no filter: what the comparison functions above must agree with,
 	// and each different from every other.
 	byHand := map[string][]string{
-		"repos":      {"a/npm", "b/npm", "c/npm", "e/npm", "a/pypi", "d/npm"},
-		"unresolved": {"b/npm", "c/npm", "a/npm", "a/pypi", "d/npm", "e/npm"},
-		"cvss":       {"c/npm", "e/npm", "b/npm", "a/npm", "a/pypi", "d/npm"},
-		"transitive": {"b/npm", "d/npm", "c/npm", "a/npm", "e/npm", "a/pypi"},
-		"versions":   {"b/npm", "a/npm", "c/npm", "a/pypi", "e/npm", "d/npm"},
-		"days":       {"d/npm", "c/npm", "b/npm", "a/pypi", "a/npm", "e/npm"},
-		"name":       {"a/npm", "a/pypi", "b/npm", "c/npm", "d/npm", "e/npm"},
+		"repos":      {"a/npm", "b/npm", "e/npm", "c/npm", "a/pypi", "cz/npm", "d/npm", "dX/npm"},
+		"unresolved": {"b/npm", "a/npm", "c/npm", "a/pypi", "cz/npm", "d/npm", "dX/npm", "e/npm"},
+		"cvss":       {"e/npm", "c/npm", "b/npm", "a/npm", "a/pypi", "cz/npm", "d/npm", "dX/npm"},
+		"transitive": {"b/npm", "cz/npm", "d/npm", "dX/npm", "c/npm", "a/npm", "e/npm", "a/pypi"},
+		"versions":   {"b/npm", "a/npm", "c/npm", "a/pypi", "e/npm", "cz/npm", "d/npm", "dX/npm"},
+		"days":       {"cz/npm", "d/npm", "dX/npm", "c/npm", "b/npm", "a/pypi", "a/npm", "e/npm"},
+		"name":       {"a/npm", "a/pypi", "b/npm", "c/npm", "cz/npm", "d/npm", "dX/npm", "e/npm"},
 	}
 	seen := map[string]string{}
 	for key, order := range byHand {
@@ -621,8 +702,8 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 			}
 		}
 	}
-	all := map[string]bool{"a/npm": true, "a/pypi": true, "b/npm": true, "c/npm": true, "d/npm": true, "e/npm": true}
-	npm := map[string]bool{"a/npm": true, "b/npm": true, "c/npm": true, "d/npm": true, "e/npm": true}
+	all := map[string]bool{"a/npm": true, "a/pypi": true, "b/npm": true, "c/npm": true, "cz/npm": true, "d/npm": true, "dX/npm": true, "e/npm": true}
+	npm := map[string]bool{"a/npm": true, "b/npm": true, "c/npm": true, "cz/npm": true, "d/npm": true, "dX/npm": true, "e/npm": true}
 	variants := func(source string, repoIDs []int64, live bool, aRepos int) {
 		t.Helper()
 		check(source, PackageExposureQuery{RepoIDs: repoIDs}, live, all, aRepos)
@@ -630,14 +711,21 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 		check(source+", a search", PackageExposureQuery{RepoIDs: repoIDs, Search: strings.ToUpper(tag)}, live, all, aRepos)
 		check(source+", a search for one package", PackageExposureQuery{RepoIDs: repoIDs, Search: tag + "-B"}, live, map[string]bool{"b/npm": true}, aRepos)
 		check(source+", one ecosystem and a search", PackageExposureQuery{RepoIDs: repoIDs, Ecosystem: "pypi", Search: tag + "-A"}, live, map[string]bool{"a/pypi": true}, aRepos)
+		// A term from the MIDDLE of one name, in the other case: the search
+		// is for a substring, with the case folded on both sides.
+		check(source+", a search inside a name", PackageExposureQuery{RepoIDs: repoIDs, Search: strings.ToUpper(tag[3:]) + "-Dx"}, live, map[string]bool{"dX/npm": true}, aRepos)
 	}
 	variants("the cohort", cohort, true, 4)
+	// A key outside the allowlist is the order by repositories.
+	if page, err := store.ListPackageExposure(ctx, PackageExposureQuery{RepoIDs: cohort, Sort: "no such key", Limit: packageExposureMaxLimit}); err != nil || !reflect.DeepEqual(names(page.Rows), byHand["repos"]) {
+		t.Errorf("a sort outside the allowlist: %v (%v); want the order by repositories %v", names(page.Rows), err, byHand["repos"])
+	}
 
 	// A page of the cohort's list, and a page past its end (which counts
 	// the set once more).
 	page, err := store.ListPackageExposure(ctx, PackageExposureQuery{RepoIDs: cohort, Sort: "name", Limit: 2, Offset: 1})
-	if err != nil || !reflect.DeepEqual(names(page.Rows), byHand["name"][1:3]) || page.Total != 6 {
-		t.Errorf("two after the first by name: %v of %d (%v); want %v of 6", names(page.Rows), page.Total, err, byHand["name"][1:3])
+	if err != nil || !reflect.DeepEqual(names(page.Rows), byHand["name"][1:3]) || page.Total != 8 {
+		t.Errorf("two after the first by name: %v of %d (%v); want %v of 8", names(page.Rows), page.Total, err, byHand["name"][1:3])
 	}
 	// A page past the end counts the set once more, with the same filters:
 	// exactly this fixture's packages for the cohort or a search for its
@@ -646,9 +734,9 @@ func TestThePackageLeaderboardIsOrderedByEveryKeyOfItsAllowlist(t *testing.T) {
 		t.Helper()
 		for _, q := range []PackageExposureQuery{{}, {Ecosystem: "npm"}, {Search: tag}, {Ecosystem: "npm", Search: tag}} {
 			q.RepoIDs, q.Sort, q.Limit, q.Offset = repoIDs, "repos", 2, 1_000_000
-			want := 6
+			want := 8
 			if q.Ecosystem != "" {
-				want = 5
+				want = 7
 			}
 			exact := repoIDs != nil || q.Search != ""
 			page, err := store.ListPackageExposure(ctx, q)

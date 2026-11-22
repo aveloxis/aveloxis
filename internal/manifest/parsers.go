@@ -2547,6 +2547,11 @@ func pomPropertiesOf(content string) *pomProps {
 	out.own = make([]map[string]string, len(out.profiles))
 	out.active = make([]bool, len(out.profiles))
 	props := out.base
+	// What a <build> or <reporting> element holds is no direct child of a
+	// profile: a <properties> element in a plugin's configuration is the
+	// plugin's, and an <activation> there is not the profile's.
+	nested := append(pomElementSpans(content, "build"), pomElementSpans(content, "reporting")...)
+	sort.Slice(nested, func(i, j int) bool { return nested[i][0] < nested[j][0] })
 	rest, at := content, 0
 	for {
 		start := strings.Index(rest, "<properties>")
@@ -2558,7 +2563,31 @@ func pomPropertiesOf(content string) *pomProps {
 			break
 		}
 		into := props
+		// A profile's own <properties> only (0.29.217, review round 10: one
+		// nested in a default profile's plugin configuration was taken for
+		// the profile's and put over the pom's own). One nested in a
+		// profile's <build> or <reporting> is a plugin's and is not read
+		// at all (0.29.218, review round 11: 0.29.217 read it into the
+		// pom's own properties, the first to set a name winning, so it
+		// stood over the pom's own <properties> written after <profiles>
+		// and gave a value to a name the pom never sets, whether or not
+		// the profile is active; the tree's reader takes neither).
+		//
+		// Up to the first closing tag only: pomElementSpans ends a profile,
+		// a <build> and a <reporting> at the FIRST </profile>, </build> or
+		// </reporting> after it opens. A plugin configuration that itself
+		// holds a <build> element (fabric8 docker-maven-plugin:
+		// <images><image><build>) or a <profile> element
+		// (spring-boot-maven-plugin: <configuration><profiles><profile>)
+		// ends the span early, and a plugin-configuration <properties>
+		// written after it is still read: as the profile's own, or, past an
+		// inner </profile>, as the pom's. Same in 0.29.216 and 0.29.217; a
+		// known difference (review round 12), not changed here.
 		if i := out.profiles.at(at + start); i >= 0 {
+			if nested.at(at+start) >= 0 {
+				rest, at = rest[start+end:], at+start+end
+				continue
+			}
 			if out.own[i] == nil {
 				out.own[i] = map[string]string{}
 			}
@@ -2574,15 +2603,17 @@ func pomPropertiesOf(content string) *pomProps {
 		rest, at = rest[start+end:], at+start+end
 	}
 	for i, span := range out.profiles {
-		// The activation is the profile's own, written before whatever the
-		// profile holds that could have one of its own.
-		head := content[span[0]:span[1]]
-		for _, block := range []string{"<build>", "<dependencies>", "<dependencyManagement>", "<properties>", "<reporting>"} {
-			if cut := strings.Index(head, block); cut >= 0 {
-				head = head[:cut]
+		// The activation is the profile's own, wherever in the profile it
+		// is written (0.29.217: the text was cut at the first <properties>
+		// or <build>, so an activation written after one was not seen):
+		// the first <activation> element outside a <build> or <reporting>.
+		out.active[i] = false
+		for _, act := range pomElementSpans(content[span[0]:span[1]], "activation") {
+			if nested.at(span[0]+act[0]) < 0 {
+				out.active[i] = pomActiveByDefault(extractXMLValue(content[span[0]+act[0]:span[0]+act[1]]+"</activation>", "activeByDefault"))
+				break
 			}
 		}
-		out.active[i] = strings.TrimSpace(extractXMLValue(head, "activeByDefault")) == "true"
 		if out.active[i] {
 			for k, v := range out.own[i] {
 				props[k] = v

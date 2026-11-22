@@ -268,11 +268,15 @@ const (
 	// VersionReasonInheritedRepositoryRefused: the repository that holds it
 	// may not be fetched from.
 	VersionReasonInheritedRepositoryRefused = "inherited_repository_refused"
-	// VersionReasonProfileManaged (0.29.215): a Maven profile of the build
-	// manages the dependency (or imports a BOM, or declares it with a
-	// version), and this reader does not know which profiles a build
-	// activates. A version that the pom, its parents or its BOMs would give
-	// when no profile is active is withheld.
+	// VersionReasonProfileManaged (0.29.215): Maven. A profile that is
+	// active by default, in the pom being read, declares the dependency
+	// with a version: that declaration is the one the default build takes,
+	// so the pom's own declaration with no version is not given a managed
+	// version. (0.29.215 gave it behind any profile that managed the
+	// dependency, imported a BOM or declared it; 0.29.216 narrowed it to a
+	// default-active profile's own declaration, and 0.29.217 to the pom
+	// that holds the profile: a parent's profile says nothing of a child's
+	// declaration.)
 	VersionReasonProfileManaged = "profile_managed"
 	// VersionReasonPlatformsDisagree (0.29.215): Gradle. More than one thing
 	// gives the dependency a version and they do not agree in a way this
@@ -282,9 +286,18 @@ const (
 	// different versions.
 	VersionReasonPlatformsDisagree = "platforms_disagree"
 	// VersionReasonValueNotRead (0.29.215): Gradle. The version is written
-	// as a value this reader does not read whole: one expression of more
-	// tokens than it follows (a map or list of thousands of entries, a
-	// string built from thousands of parts).
+	// with, or managed through, a value this reader does not read. One
+	// expression of more tokens than it follows (a map or list of thousands
+	// of entries, a string built from thousands of parts); or (0.29.217) a
+	// variable or property the build sets in a way that is not read (a
+	// computed value, under a condition, more than once), including a
+	// property through which a BOM imported by Spring's
+	// dependency-management plugin manages the dependency (0.29.216 gave no
+	// reason there), and (0.29.218) a property that is the version of a BOM
+	// that BOM imports. The same reason is given to what a BOM imported
+	// after that one would manage, and to a dependency that nothing manages,
+	// because which BOM answers for a dependency is not known while one of
+	// them is not read.
 	VersionReasonValueNotRead = "value_not_read"
 )
 

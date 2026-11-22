@@ -715,6 +715,23 @@ func TestWhatToDoAboutLockfilesThatWentUnread(t *testing.T) {
 			t.Errorf("%s: %q; want it to say %q", attempt, got, want)
 		}
 	}
+	// The multiples the memory advice names are the table's own least and
+	// most over the lockfile roster (review round 10: it said "up to 14"
+	// beside factors of 19 and 20).
+	low, high := int64(0), int64(0)
+	for kind := range lockfileKinds {
+		f := readCostFactor(kind)
+		if low == 0 || f < low {
+			low = f
+		}
+		high = max(high, f)
+	}
+	if low != 6 || high != 52 {
+		t.Errorf("the lockfile factors run from %d to %d; this test and the configuration page's table say 6 to 52: change all three together", low, high)
+	}
+	if got, want := lockfilesUnreadAdvice(model.InventoryAttemptReadMemoryLimit), fmt.Sprintf("priced at %d to %d times its size", low, high); !strings.Contains(got, want) {
+		t.Errorf("the memory advice is %q; want it to say %q", got, want)
+	}
 }
 
 // When which repository hosts may be used cannot be read, the declarations

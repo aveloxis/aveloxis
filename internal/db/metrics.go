@@ -848,7 +848,7 @@ type DepRow struct {
 	// dep_type stays, as stored.
 	Scope string `json:"scope"`
 	// VersionSource is how the version was worked out when it was not
-	// simply declared (locked, locked_several, managed); VersionReason why
+	// simply declared (locked, locked-several, managed); VersionReason why
 	// there is none when a pom or BOM that might have given it could not be
 	// obtained.
 	VersionSource string `json:"version_source,omitempty"`

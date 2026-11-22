@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API reference &mdash; Aveloxis 0.29.215 documentation</title>
+  <title>API reference &mdash; Aveloxis 0.29.219 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
+      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -350,6 +351,9 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
@@ -2060,10 +2064,15 @@ and null when none is. Absent on an older server: show nothing.
 With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
 did replace the stored rows: every lockfile but the ones too
 large was read then, and those keep their previous rows. No one
-date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
-holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
-(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
+date is true of the rows, so show none when <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is
+set. With <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null no lockfile row is stored: show
+the “could not be read” sentence, as for any other reason
+(0.29.217). The same reason is given when the repository’s lockfiles
+would store more rows than are kept for one repository
+(4,000,000): that reading is refused whole and every stored row
+is the previous reading’s. While the object is set,
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false (0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed (the others were read), or the repository’s lockfiles would store more rows than are kept for one repository. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -2207,10 +2216,15 @@ and null when none is. Absent on an older server: show nothing.
 With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
 did replace the stored rows: every lockfile but the ones too
 large was read then, and those keep their previous rows. No one
-date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
-holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
-(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
+date is true of the rows, so show none when <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is
+set. With <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null no lockfile row is stored: show
+the “could not be read” sentence, as for any other reason
+(0.29.217). The same reason is given when the repository’s lockfiles
+would store more rows than are kept for one repository
+(4,000,000): that reading is refused whole and every stored row
+is the previous reading’s. While the object is set,
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false (0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>{repo_id}.coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed (the others were read), or the repository’s lockfiles would store more rows than are kept for one repository. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>{repo_id}.coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>{repo_id}.archived</strong> (<em>boolean</em>) – Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (<code class="docutils literal notranslate"><span class="pre">/repos/stats</span></code>) does not read it and always says <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
 <li><p><strong>{repo_id}.last_activity_at</strong> (<em>string:date-time</em>) – Single-repository answer only. The latest observed activity; absent when unknown (and always absent in the batch answer).</p></li>
@@ -3230,10 +3244,15 @@ and null when none is. Absent on an older server: show nothing.
 With the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) the analysis
 did replace the stored rows: every lockfile but the ones too
 large was read then, and those keep their previous rows. No one
-date is true of the rows, so show none, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
-holds. While the object is set, <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false
-(0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
-<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.</p></li>
+date is true of the rows, so show none when <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> is
+set. With <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null no lockfile row is stored: show
+the “could not be read” sentence, as for any other reason
+(0.29.217). The same reason is given when the repository’s lockfiles
+would store more rows than are kept for one repository
+(4,000,000): that reading is refused whole and every stored row
+is the previous reading’s. While the object is set,
+<code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false (0.29.216). Or <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p></li>
+<li><p><strong>coverage.lockfiles_unread.reason</strong> (<em>string:enum, required</em>) – Why the latest reading did not finish. <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215) means the reader was stopped before it reached the lockfiles. <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216) means some lockfiles would have taken more memory to read than allowed (the others were read), or the repository’s lockfiles would store more rows than are kept for one repository. A value a client does not know should be shown as written.</p></li>
 <li><p><strong>coverage.lockfiles_unread.last_read_at</strong> (<em>['string', 'null']:date-time, required</em>)</p></li>
 <li><p><strong>counts</strong> (<em>object, required</em>)</p></li>
 <li><p><strong>counts.current</strong> (<em>integer, required</em>)</p></li>
@@ -8814,23 +8833,44 @@ package. <code class="docutils literal notranslate"><span class="pre">cannot_be_
 written before 0.29.162. A row is an unknown when <code class="docutils literal notranslate"><span class="pre">libyear</span></code> is
 null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
 <li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
-<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked-several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
 <li><p><strong>version_reason</strong> (<em>string:enum</em>) – Why there is no version, when the build file names none that can
 be relied on. Absent otherwise. A value a client does not know
 should be shown as written.
 <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>,
 <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: a parent pom or BOM that might
 have supplied it could not be obtained.
-<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): a Maven profile of the build
-manages the dependency, and which profiles a build activates is
-not known, so the version the pom would give with no profile
-active is withheld.
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>: the parent or BOM is on no repository
+that is read, or was never asked for (a snapshot, a version
+range, a coordinate a request cannot be built from).
+<code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>: it is not known whether a repository
+has it (one did not answer, or declared repositories were left
+unconsulted).
+<code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: the repository that holds it may
+not be fetched from.
+<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): Maven; a profile that is active by
+default in the pom itself declares the dependency with a
+version, so the pom’s own declaration with no version is not
+given a managed version. (0.29.215 gave this reason behind any
+profile that managed the dependency; since 0.29.216 only a
+default-active profile’s own declaration does, and since
+0.29.217 only in the pom that holds the profile.)
 <code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code> (0.29.215): Gradle; more than one platform
 (or a platform and Spring’s dependency-management plugin) gives
 the dependency a version, and they do not agree in a way that
 can be settled.
-<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written as
-an expression too large to be read whole.</p></li>
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written
+with, or managed through, a value that is not read: an
+expression too long to be read whole; or (0.29.217) a variable
+or property the build sets in a way that is not read (a computed
+value, under a condition, more than once), including a property
+through which a BOM imported by Spring’s dependency-management
+plugin manages the dependency (0.29.216 sent no reason there),
+and (0.29.218) a property that is the version of a BOM that BOM
+imports. The same reason is given to what a BOM imported after
+that one would manage, and to a dependency that nothing manages,
+because which BOM answers for a dependency is not known while
+one of them is not read.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>
@@ -8918,23 +8958,44 @@ package. <code class="docutils literal notranslate"><span class="pre">cannot_be_
 written before 0.29.162. A row is an unknown when <code class="docutils literal notranslate"><span class="pre">libyear</span></code> is
 null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
 <li><p><strong>scope</strong> (<em>string:enum, required</em>) – The dependency’s scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored <code class="docutils literal notranslate"><span class="pre">dep_type</span></code> is <code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
-<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked_several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
+<li><p><strong>version_source</strong> (<em>string</em>) – How the version was worked out when it was not simply declared (<code class="docutils literal notranslate"><span class="pre">locked</span></code>, <code class="docutils literal notranslate"><span class="pre">locked-several</span></code>, <code class="docutils literal notranslate"><span class="pre">managed</span></code>). Absent otherwise.</p></li>
 <li><p><strong>version_reason</strong> (<em>string:enum</em>) – Why there is no version, when the build file names none that can
 be relied on. Absent otherwise. A value a client does not know
 should be shown as written.
 <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>, <code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>,
 <code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: a parent pom or BOM that might
 have supplied it could not be obtained.
-<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): a Maven profile of the build
-manages the dependency, and which profiles a build activates is
-not known, so the version the pom would give with no profile
-active is withheld.
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>: the parent or BOM is on no repository
+that is read, or was never asked for (a snapshot, a version
+range, a coordinate a request cannot be built from).
+<code class="docutils literal notranslate"><span class="pre">inherited_lookup_failed</span></code>: it is not known whether a repository
+has it (one did not answer, or declared repositories were left
+unconsulted).
+<code class="docutils literal notranslate"><span class="pre">inherited_repository_refused</span></code>: the repository that holds it may
+not be fetched from.
+<code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> (0.29.215): Maven; a profile that is active by
+default in the pom itself declares the dependency with a
+version, so the pom’s own declaration with no version is not
+given a managed version. (0.29.215 gave this reason behind any
+profile that managed the dependency; since 0.29.216 only a
+default-active profile’s own declaration does, and since
+0.29.217 only in the pom that holds the profile.)
 <code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code> (0.29.215): Gradle; more than one platform
 (or a platform and Spring’s dependency-management plugin) gives
 the dependency a version, and they do not agree in a way that
 can be settled.
-<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written as
-an expression too large to be read whole.</p></li>
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> (0.29.215): Gradle; the version is written
+with, or managed through, a value that is not read: an
+expression too long to be read whole; or (0.29.217) a variable
+or property the build sets in a way that is not read (a computed
+value, under a condition, more than once), including a property
+through which a BOM imported by Spring’s dependency-management
+plugin manages the dependency (0.29.216 sent no reason there),
+and (0.29.218) a property that is the version of a BOM that BOM
+imports. The same reason is given to what a BOM imported after
+that one would manage, and to a dependency that nothing manages,
+because which BOM answers for a dependency is not known while
+one of them is not read.</p></li>
 <li><p><strong>license</strong> (<em>string</em>) – The license as the registry reported it (not normalized). Absent when unknown.</p></li>
 <li><p><strong>purl</strong> (<em>string</em>) – The package URL. Absent when none was minted.</p></li>
 </ul>

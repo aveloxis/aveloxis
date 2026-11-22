@@ -58,9 +58,9 @@ var Policies = []sqlscan.Registered{
 	// wrote it `COALESCE(col, $n)`, and the column had no policy: a test
 	// mutant that overwrote an established ID passed every check.
 	{Table: "aveloxis_data.contributors", Column: "gh_user_id", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (the writers send NULL; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (UpsertContributorFull sends NULL for an id that is not positive, the search link and the breadth rename refuse one, the batch and the resolver write it only when it is positive; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
 	{Table: "aveloxis_data.contributors", Column: "gl_id", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (the writers send NULL; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
+		Reason: "the forge's numeric user ID is identity: once established it is never replaced by another (SR-6; 0.29.215). Empty is NULL and nothing else: 0 is never written to mean unknown (UpsertContributorFull sends NULL for an id that is not positive, the search link and the breadth rename refuse one, the batch and the resolver write it only when it is positive; no row of either production database held 0 on 2026-11-21), so a guard or a fill that treats 0 as empty is refused"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_login", Policy: sqlscan.FillEmptyOnly,
 		Reason: "R2 audit trail — the login as FIRST observed, so an established value never changes. " +
 			"Tightened from PreferNonemptyIncoming on 2026-09-11 (F4): the commit-resolver branch that " +
@@ -73,9 +73,9 @@ var Policies = []sqlscan.Registered{
 	// is docs/architecture/contributor-resolution.md, R2 to R5 and "Three
 	// tables, three rename behaviors").
 	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Policy: sqlscan.FillEmptyOnly,
-		Reason: "which of a person's addresses the row holds is the first one observed (non-deterministic by design): a later address never replaces it, and is kept as a contributors_aliases row instead (R5; operator 2026-11-21). A merge keeps the winner's and fills an empty one from the loser"},
+		Reason: "which of a person's addresses the row holds is the first one observed (non-deterministic by design): a later address never replaces it (operator 2026-11-21; keeping the later one as an alias on the forge paths is chunk 2 work: the step 0.29.216 added for it was taken out in 0.29.217). A merge keeps the winner's and fills an empty one from the loser"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Policy: sqlscan.FillEmptyOnly,
-		Reason: "the canonical address is filled once and kept; a merge keeps the winner's (operator 2026-11-21)"},
+		Reason: "the commit resolver, the search link, the canonical setter and the backfill fill the canonical address only when it is empty, and a merge keeps the winner's; the ONE writer that replaces a stored one is the batch upsert (its Exception below), which is how the profile enrichment's address takes the place of a commit address. Not an operator rule: the operator's fill-only rule of 2026-11-21 names cntrb_email (0.29.216 and 0.29.217 applied it to this column too and blocked the enrichment; review round 11)"},
 	{Table: "aveloxis_data.contributors", Column: "gh_node_id", Policy: sqlscan.FillEmptyOnly,
 		Reason: "the forge's node ID never changes for a user: filled once from the identity row and kept (R4; operator 2026-11-21)"},
 	{Table: "aveloxis_data.contributors", Column: "gh_login", Policy: sqlscan.AlwaysRefresh,
@@ -219,6 +219,27 @@ var Exceptions = append(append([]sqlscan.Exception{
 	// columns each); three writers of gh_login do not refresh it; two fills
 	// of cntrb_canonical are guarded in a form that is not read; the alias
 	// repair rewrites canonical_email with the alias it re-points.
+	// cntrb_canonical in the batch upsert: incoming first, as in every
+	// release to 0.29.215 (0.29.218, review round 11, C11-1).
+	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/postgres.go", Decl: "PostgresStore.upsertOneContributor",
+		Fragment: `COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical)`,
+		Statement: `INSERT INTO aveloxis_data.contributors
+			(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name,
+			 cntrb_company, cntrb_location, cntrb_canonical, cntrb_created_at,
+			 tool_source, tool_version, data_source)
+		VALUES (COALESCE($1::uuid, gen_random_uuid()),
+		        $2,$3,$4,$5,$6,$7,$8,'aveloxis',$9,'GitHub API')
+		ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO UPDATE SET
+			cntrb_email = COALESCE(NULLIF(contributors.cntrb_email, ''), EXCLUDED.cntrb_email),
+			cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name, ''), contributors.cntrb_full_name),
+			cntrb_company = COALESCE(NULLIF(EXCLUDED.cntrb_company, ''), contributors.cntrb_company),
+			cntrb_location = COALESCE(NULLIF(EXCLUDED.cntrb_location, ''), contributors.cntrb_location),
+			cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical),
+			cntrb_created_at = COALESCE(contributors.cntrb_created_at, EXCLUDED.cntrb_created_at),
+			tool_version = EXCLUDED.tool_version,
+			data_collection_date = NOW()
+		RETURNING cntrb_id`,
+		Reason: "the profile enrichment's address replaces a stored one: it comes through this upsert as Canonical and is the one writer that leaves noreply addresses out, while the commit resolver fills the column first with whatever address the commit carries and itself never overwrites (commit_resolver.go: a real canonical is never overwritten with a commit author address). Stored-first here made the commit address permanent and the affiliation lookups, which go by this column's domain, lost the organisation. An empty incoming value never clears a stored one"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_email", Kind: sqlscan.KindAssign, File: "internal/db/cntrb_id_merge.go", Decl: "mergeOnePair",
 		Fragment: `COALESCE(NULLIF(w.cntrb_email, ''), l.cntrb_email)`,
 		Statement: `UPDATE aveloxis_data.contributors w
@@ -255,7 +276,7 @@ var Exceptions = append(append([]sqlscan.Exception{
 					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
 					gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)`,
 		Reason: "the commit resolver's insert, in the arm that lost a race to the same deterministic cntrb_id: the login it resolved replaces the stored one, and an empty one never clears the mirror (the latest observed login wins; an empty value is no observation)"},
-	{Table: "aveloxis_data.contributors_aliases", Column: "canonical_email", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "ensureAliasOn",
+	{Table: "aveloxis_data.contributors_aliases", Column: "canonical_email", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "PostgresStore.EnsureContributorAlias",
 		Fragment: `COALESCE(NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''), $2)`,
 		Statement: `UPDATE aveloxis_data.contributors_aliases a
 		SET cntrb_id = $1::uuid,
@@ -269,7 +290,22 @@ var Exceptions = append(append([]sqlscan.Exception{
 		WHERE a.alias_email = $2
 		  AND dead.cntrb_id = a.cntrb_id
 		  AND COALESCE(dead.cntrb_deleted, 0) <> 0`,
-		Reason: "the alias repair: an alias whose owner is soft-deleted (a merge's loser; the WHERE, pinned here) is given to the active contributor with that contributor's canonical address. An active owner's alias is never touched. One declaration sends it for the pool and the transaction callers since 0.29.216 (EnsureContributorAlias, ensureAliasTx, keepObservedAddress)"},
+		Reason: "the alias repair: an alias whose owner is soft-deleted (a merge's loser; the WHERE, pinned here) is given to the active contributor with that contributor's canonical address. An active owner's alias is never touched. Two declarations send the one statement, as in 0.29.215: this one on the pool, ensureAliasTx in its caller's transaction"},
+	{Table: "aveloxis_data.contributors_aliases", Column: "canonical_email", Kind: sqlscan.KindAssign, File: "internal/db/mailinglist_sender_resolve_store.go", Decl: "ensureAliasTx",
+		Fragment: `COALESCE(NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''), $2)`,
+		Statement: `UPDATE aveloxis_data.contributors_aliases a
+		SET cntrb_id = $1::uuid,
+		    canonical_email = COALESCE(
+		        NULLIF((SELECT cntrb_canonical FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid), ''),
+		        $2),
+		    tool_source = $3,
+		    data_source = $4,
+		    data_collection_date = NOW()
+		FROM aveloxis_data.contributors dead
+		WHERE a.alias_email = $2
+		  AND dead.cntrb_id = a.cntrb_id
+		  AND COALESCE(dead.cntrb_deleted, 0) <> 0`,
+		Reason: "the alias repair, as PostgresStore.EnsureContributorAlias sends it on the pool: here in the caller's transaction (CreateEmailOnlyContributor)"},
 	{Table: "aveloxis_data.contributors", Column: "cntrb_canonical", Kind: sqlscan.KindAssign, File: "internal/db/commit_resolver_store.go", Decl: "PostgresStore.SetContributorCanonical",
 		Fragment: `$2`,
 		Statement: `UPDATE aveloxis_data.contributors

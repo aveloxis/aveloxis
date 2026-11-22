@@ -7,8 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-
 	"github.com/jackc/pgx/v5"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -125,27 +123,20 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 		// than a bare 1 so the row-exists branch below can REPORT a
 		// rename without a second read — same one-row index lookup,
 		// zero extra cost.
-		//
-		// gh_login rides along for the same price (0.29.216): it is the
-		// login the UPDATE below replaces, and the one that goes to
-		// contributor_login_history when it is another.
-		var storedLogin, storedGhLogin string
+		var storedLogin string
 		err := s.pool.QueryRow(ctx,
-			`SELECT cntrb_login, COALESCE(gh_login, '') FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrbID,
-		).Scan(&storedLogin, &storedGhLogin)
+			`SELECT cntrb_login FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrbID,
+		).Scan(&storedLogin)
 
 		if err != nil {
 			// Not found by ID. Check if login already exists (different cntrb_id).
 			var existingID string
 			loginErr := s.pool.QueryRow(ctx,
-				`SELECT cntrb_id, COALESCE(gh_login, '') FROM aveloxis_data.contributors WHERE cntrb_login = $1`,
-				login).Scan(&existingID, &storedGhLogin)
+				`SELECT cntrb_id FROM aveloxis_data.contributors WHERE cntrb_login = $1`,
+				login).Scan(&existingID)
 			if loginErr == nil {
 				// Login exists under a different cntrb_id — update that row instead.
 				actualID = existingID
-				if storedGhLogin != "" && storedGhLogin != login {
-					s.keepReplacedGhLogin(ctx, existingID, login)
-				}
 				_, err = s.pool.Exec(ctx, `
 					UPDATE aveloxis_data.contributors
 					SET gh_user_id = COALESCE(gh_user_id, $2),
@@ -258,9 +249,6 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 		// here is GONE rather than kept for a case it can no longer
 		// reach; a 23505 from this statement would be a genuine new
 		// defect and must surface instead of being silently absorbed.
-		if storedGhLogin != "" && storedGhLogin != login {
-			s.keepReplacedGhLogin(ctx, cntrbID, login)
-		}
 		_, err = s.pool.Exec(ctx, `
 			UPDATE aveloxis_data.contributors
 			SET gh_login = $2,
@@ -287,41 +275,8 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 	// Backfill gh_* columns from contributor_identities if not already set.
 	if err == nil && actualID != "" {
 		s.backfillGHColumns(ctx, actualID)
-		// The login every arm above wrote to gh_login is one this
-		// contributor was observed under (0.29.216: this function recorded
-		// none, so a login only the commit resolver ever saw was in no
-		// history row, and was lost at the next rename). GitHub is the
-		// platform of gh_login. Not in a transaction with the write, as
-		// nothing here is: a failure is logged, and the row is written the
-		// next time the login is observed.
-		if hErr := recordLoginObservation(ctx, s.pool, actualID, ghLoginPlatformID, login, LoginSourceObservation); hErr != nil {
-			if !errors.Is(hErr, context.Canceled) {
-				s.logger.Warn("login history not recorded", "cntrb_id", actualID, "login", login, "error", hErr)
-			}
-		}
 	}
 	return created, actualID, err
-}
-
-// ghLoginPlatformID is the platform of contributors.gh_login in
-// contributor_login_history: GitHub (model.PlatformGitHub), as the two
-// rename paths of contributor_search_resolve.go write it.
-const ghLoginPlatformID int16 = 1
-
-// keepReplacedGhLogin puts the gh_login a contributor's row holds into
-// contributor_login_history just before UpsertContributorFull overwrites it
-// with login (replacedLoginsToHistorySQL: the one statement for it). Called
-// only when the caller's read found another login there. A failure is
-// logged and does not stop the rename: the history is a record of it, not a
-// condition of it.
-func (s *PostgresStore) keepReplacedGhLogin(ctx context.Context, cntrbID, login string) {
-	var r replacedLogins
-	r.add(cntrbID, ghLoginPlatformID, 0, login)
-	if err := recordReplacedLogins(ctx, s.pool, &r); err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.Warn("replaced login not recorded in history", "cntrb_id", cntrbID, "new_gh_login", login, "error", err)
-		}
-	}
 }
 
 // backfillGHColumns copies GitHub identity data to the denormalized gh_* columns
@@ -456,85 +411,18 @@ const contributorAliasRepairSQL = `
 // REASSIGNED to the caller's contributor via the separate repair
 // statement; an active owner's alias is never touched.
 func (s *PostgresStore) EnsureContributorAlias(ctx context.Context, cntrbID, aliasEmail, toolSource, dataSource string) error {
-	_, err := ensureAliasOn(ctx, s.pool, cntrbID, aliasEmail, toolSource, dataSource)
-	return err
-}
-
-// ensureAliasOn is the one place the two alias statements are sent from
-// (SR-17): EnsureContributorAlias on the pool, ensureAliasTx and
-// keepObservedAddress on a transaction. It reports whether the alias was
-// written for cntrbID by this call: inserted, or taken over from an owner
-// that is soft-deleted. False means an alias row was already there and
-// stays as it was (the caller's own, or an active owner's).
-func ensureAliasOn(ctx context.Context, q rotationExecer, cntrbID, aliasEmail, toolSource, dataSource string) (bool, error) {
-	tag, err := q.Exec(ctx, contributorAliasInsertSQL,
+	tag, err := s.pool.Exec(ctx, contributorAliasInsertSQL,
 		cntrbID, aliasEmail, toolSource, dataSource)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if tag.RowsAffected() > 0 {
-		return true, nil // inserted fresh — nothing to repair
+		return nil // inserted fresh — nothing to repair
 	}
 	// Conflicted: repair iff the existing owner is soft-deleted.
-	tag, err = q.Exec(ctx, contributorAliasRepairSQL,
+	_, err = s.pool.Exec(ctx, contributorAliasRepairSQL,
 		cntrbID, aliasEmail, toolSource, dataSource)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-// Provenance of an alias made from an address a forge reported for a
-// contributor who already has another one (keepObservedAddress).
-const (
-	ObservedAddressToolSource = "aveloxis-contributor-observation"
-	ObservedAddressDataSource = "Platform API"
-)
-
-// keepObservedAddress keeps an address observed for a contributor whose row
-// holds another one, as a contributors_aliases row (R5; operator rule,
-// 2026-11-21: cntrb_email is the first address observed and is never
-// replaced, and every address observed is kept as an alias). stored is the
-// row's cntrb_email after the caller's write.
-//
-// Nothing is written when there is no observed address, or when it is the
-// stored one (compared without case: the row's own address is not its
-// alias). Otherwise it is the one alias spelling of this package
-// (ensureAliasOn: an alias whose owner is a merge's deleted loser moves to
-// this contributor, an active owner's never does).
-//
-// An address that stays another contributor's alias is two rows for one
-// person or one address used by two (R5), which nothing here can tell
-// apart: it is reported, with both ids, and left (SR-7). q is the caller's
-// transaction where it has one.
-func (s *PostgresStore) keepObservedAddress(ctx context.Context, q pgSession, cntrbID, stored, observed string) error {
-	if cntrbID == "" || observed == "" || strings.EqualFold(stored, observed) {
-		return nil
-	}
-	wrote, err := ensureAliasOn(ctx, q, cntrbID, observed, ObservedAddressToolSource, ObservedAddressDataSource)
-	if err != nil {
-		return fmt.Errorf("keep observed address as an alias: %w", err)
-	}
-	if wrote {
-		return nil
-	}
-	// An alias row was there and stays: this contributor's own (the usual
-	// case, an address observed again), or another active contributor's.
-	var owner string
-	if err := q.QueryRow(ctx, `
-		SELECT cntrb_id::text FROM aveloxis_data.contributors_aliases
-		WHERE alias_email = $1`, observed).Scan(&owner); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil // removed between the two statements: the next observation writes it
-		}
-		return fmt.Errorf("read the owner of an observed address: %w", err)
-	}
-	if owner != cntrbID {
-		s.logger.Warn("an address observed for one contributor is another contributor's alias; left with its owner",
-			"cntrb_id", cntrbID, "alias_owner_cntrb_id", owner,
-			"note", "two rows for one person, or one address used by two (R5): see the diagnostic queries in docs/architecture/contributor-resolution.md")
-	}
-	return nil
+	return err
 }
 
 // FindContributorIDByLogin returns the cntrb_id for a given gh_login, or "" if not found.

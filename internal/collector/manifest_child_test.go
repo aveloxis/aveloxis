@@ -1173,6 +1173,37 @@ func TestTheConfiguredLimitsStopTheRealChild(t *testing.T) {
 			t.Fatalf("the same clone under 2 GiB: %v; want the reader finished and the file one that failed to parse", err)
 		}
 	})
+	// The DEFAULT, from a configuration that does not set the value to the
+	// child that reads under it (0.29.217: 2,048 MiB, the operator's
+	// number; 1,024 before). The file is priced between the two (its size
+	// times its format's factor is 1,536 MiB), so the child of a
+	// configuration with no value reads it, finding text that is no
+	// lockfile, and the child of one that says 1024 refuses it for its
+	// size before reading it.
+	t.Run("the default memory limit", func(t *testing.T) {
+		unset := limitsFromConfig(t, ``)
+		if unset.HeapBytes != 2048<<20 {
+			t.Fatalf("a configuration that sets no memory limit gives %d MiB; the default is 2048 (operator, 2026-11-21)", unset.HeapBytes>>20)
+		}
+		size := int((1536 << 20) / readCostFactor("package-lock.json"))
+		dir := writeClone(t, map[string]string{"package-lock.json": "not a lockfile\n" + strings.Repeat(" ", size)})
+		for _, c := range []struct {
+			name     string
+			limits   ManifestLimits
+			tooLarge bool
+		}{
+			{"no value in the file", unset, false},
+			{"1024 in the file", limitsFromConfig(t, `"manifest_read_memory_mb": 1024`), true},
+		} {
+			run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassLockfiles}, Dir: dir, RemotePomLimit: 5}, c.limits, nil, quiet)
+			if err != nil || run.locks == nil || len(run.locks.Failed) != 1 {
+				t.Fatalf("%s: %v; want the reading finished with the one file failed", c.name, err)
+			}
+			if f := run.locks.Failed[0]; f.TooLarge != c.tooLarge {
+				t.Errorf("%s: the %d MiB file was refused for its size: %v (reason %s); want %v", c.name, size>>20, f.TooLarge, f.Reason, c.tooLarge)
+			}
+		}
+	})
 	// There is no child without limits, and no configuration without them.
 	for _, bad := range []string{`"manifest_read_cpu_seconds": 0`, `"manifest_read_cpu_seconds": -1`, `"manifest_read_memory_mb": 0`, `"manifest_read_memory_mb": -5`,
 		`"manifest_read_cpu_seconds": 9223372037`, `"manifest_read_memory_mb": 8796093022208`,

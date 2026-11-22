@@ -11,9 +11,8 @@ import (
 
 // Statements that one call site sends for each member of a list, of which
 // the tests sent only the first member's (0.29.215: the site was "reached",
-// and the other members' statements had been judged from their text alone;
-// see unsentTextsBaseline). Each member is sent here, and what it did is
-// checked.
+// and the other members' statements had been judged from their text alone).
+// Each member is sent here, and what it did is checked.
 
 // The assignment backfill fills the contributor on ALL THREE assignment
 // tables: where an identity carries the row's platform id for the

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.215 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.219 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
+      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -350,6 +351,9 @@
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
@@ -1858,6 +1862,51 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-219">
+<h2>Changes for API clients in 0.29.219<a class="headerlink" href="#changes-for-api-clients-in-0-29-219" title="Link to this heading"></a></h2>
+<p>No field or value changes. One Gradle answer differs from 0.29.218: a write through a
+dotted name into a map (<code class="docutils literal notranslate"><span class="pre">ext.log4j2.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code> after <code class="docutils literal notranslate"><span class="pre">ext.log4j2</span> <span class="pre">=</span> <span class="pre">[...]</span></code>) is no
+longer taken for the Spring property <code class="docutils literal notranslate"><span class="pre">log4j2.version</span></code>, so a dependency managed through
+that property has the BOM’s own version again, as in 0.29.217. When such a write is
+not a literal, the BOM’s version is stored too, where 0.29.217 and 0.29.218 sent no
+version and <code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code>.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-218">
+<h2>Changes for API clients in 0.29.218<a class="headerlink" href="#changes-for-api-clients-in-0-29-218" title="Link to this heading"></a></h2>
+<p><strong><code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code></strong> is also given for a Gradle dependency managed by a
+BOM that a Spring-imported BOM itself imports, when the property that holds that BOM’s
+version is set by the build in a way that is not read. 0.29.217 sent
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> there. The same reason is given to what a BOM imported after
+that one would manage, and to a dependency that nothing manages, because which BOM
+answers for a dependency is not known while one of them is not read. No field or
+value is added.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-217">
+<h2>Changes for API clients in 0.29.217<a class="headerlink" href="#changes-for-api-clients-in-0-29-217" title="Link to this heading"></a></h2>
+<p>No field is added and no enum gains a value. Two <code class="docutils literal notranslate"><span class="pre">version_reason</span></code> values mean more, or
+less, than their first descriptions said:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code></strong> (Gradle) is now also given when the version is written with, or
+managed through, a variable or property the build sets in a way that is not read: a
+computed value, an assignment under a condition, or more than one assignment. That
+includes a property through which a BOM imported by Spring’s dependency-management
+plugin manages the dependency (<code class="docutils literal notranslate"><span class="pre">ext['log4j2.version']</span> <span class="pre">=</span> <span class="pre">someCall()</span></code>): 0.29.216 sent no
+<code class="docutils literal notranslate"><span class="pre">version_reason</span></code> for those rows, and before 0.29.216 they carried the BOM’s default
+version. The first meaning stands too: an expression too long to be read whole.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code></strong> (Maven) means only this: a profile that is active by default, in
+the pom that declares the dependency, declares it with a version, so the pom’s own
+declaration with no version is not given a managed version. A profile that is not
+active by default gives no reason, and neither does a parent pom’s profile. 0.29.215
+gave the reason behind any profile that managed the dependency; most of those rows have
+their version again.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread</span></code> with the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> and <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null
+(no lockfile row is stored) takes the “Lockfiles could not be read (…). Transitive
+dependencies are not checked.” sentence, as every other reason does. The sentence with
+no date is for <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set.</p>
+<p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> defaults to 2048 (was 1024), so fewer repositories
+carry <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code>.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-216">
 <h2>Changes for API clients in 0.29.216<a class="headerlink" href="#changes-for-api-clients-in-0-29-216" title="Link to this heading"></a></h2>
 <p><strong><code class="docutils literal notranslate"><span class="pre">coverage.clean_result</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> while <code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread</span></code> is set</strong>, on the
@@ -1873,10 +1922,13 @@ the sentence from <code class="docutils literal notranslate"><span class="pre">s
 have taken more memory to read than <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> allows, and
 every other lockfile was read at that analysis. The lockfiles left unread keep the rows
 of their last reading. No one date is true of the stored rows in this case, so show no
-date, whatever <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> holds: “Some lockfiles could not be read (reading them
+date when lockfile rows are stored: “Some lockfiles could not be read (reading them
 would take more memory than allowed). Their versions and transitive dependencies may be
-out of date.” 0.29.215 reported this case as <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, with the date
-of an earlier reading.</p>
+out of date.” With none stored (<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null), show the “Lockfiles could not be
+read (…). Transitive dependencies are not checked.” sentence instead (0.29.217). 0.29.215 reported this case as <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, with the date
+of an earlier reading. The same reason is given when a repository’s lockfiles would store more rows than
+are kept for one repository (4,000,000): that reading is refused whole and every stored
+row is the previous reading’s.</p>
 </section>
 <section id="changes-for-api-clients-in-0-29-215">
 <h2>Changes for API clients in 0.29.215<a class="headerlink" href="#changes-for-api-clients-in-0-29-215" title="Link to this heading"></a></h2>
@@ -1884,12 +1936,16 @@ of an earlier reading.</p>
 more values. Each means the row has no version because the build file names none that can
 be relied on:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code>: a Maven profile of the build manages the dependency, and which
-profiles a build activates is not known.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code>: Gradle; more than one platform gives the dependency a version and
-they do not agree in a way that can be settled.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>: Gradle; the version is written as an expression too large to be read
-whole.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code>: Maven. In 0.29.215, a profile of the build manages the dependency,
+and which profiles a build activates is not known. Since 0.29.216 it means one thing
+only: a profile that is active by default in the pom itself declares the dependency with
+a version (see the 0.29.217 entry above).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code>: Gradle; more than one platform (or a platform and Spring’s
+dependency-management plugin) gives the dependency a version and they do not agree in a
+way that can be settled.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>: Gradle; the version is written with a value that is not read. In
+0.29.215 that is an expression too long to be read whole; 0.29.217 adds more cases (see
+its entry above).</p></li>
 </ul>
 <p>Show a value you do not know as written. A dependency that had a version before 0.29.215
 can have none after it, with one of these reasons, and the count of findings at a known

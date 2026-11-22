@@ -79,10 +79,18 @@ func TestTheLockfileCautionWithdrawsTheCleanClaimAndKeepsTheCount(t *testing.T) 
 func TestSomeLockfilesTooLargeIsItsOwnSentenceWithNoDate(t *testing.T) {
 	read := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
 	const want = "Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date."
+	// With no lockfile row stored there is nothing to be out of date: the
+	// "could not be read" sentence, with this reason's words (0.29.217,
+	// review round 10).
+	const wantNever = "Lockfiles could not be read (reading them would take more memory than allowed). Transitive dependencies are not checked."
 	for _, at := range []*time.Time{&read, nil} {
 		in := covCase{outcome: model.ScanSent, stamp: true, analysed: true}.inputs()
 		in.Coverage.LockfilesUnreadReason, in.Coverage.LockfilesLastRead = model.LockfileUnreadTooLarge, at
 		v := Coverage(in)
+		want := want
+		if at == nil {
+			want = wantNever
+		}
 		if got := CoverageLockfileCaution(&v); got != want {
 			t.Errorf("stored rows dated %v:\n got %q\nwant %q", at, got, want)
 		}

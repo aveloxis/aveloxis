@@ -296,6 +296,29 @@ func TestLinkMailingListSenderNeverWritesZeroAsTheForgeID(t *testing.T) {
 	if got := stored(freshID); got != "NULL" {
 		t.Fatalf("a row inserted with no forge id has gh_user_id = %s, want NULL", got)
 	}
+	// A NEGATIVE id is no id either (review round 11, C11-4): every arm
+	// again, on the rows above, none of which has an id yet.
+	if _, id, err := store.UpsertContributorFull(ctx, rowID, login, -5, email); err != nil || id != rowID {
+		t.Fatalf("UpsertContributorFull with a negative id, found by id = (%q, %v)", id, err)
+	}
+	if _, id, err := store.UpsertContributorFull(ctx, otherID, login, -5, email); err != nil || id != rowID {
+		t.Fatalf("UpsertContributorFull with a negative id, found by login = (%q, %v)", id, err)
+	}
+	if got := stored(rowID); got != "NULL" {
+		t.Fatalf("after upserts with a negative forge id, gh_user_id = %s, want NULL", got)
+	}
+	const negLogin, negID = "_av_srzero_neg", "0a000000-0000-4000-8000-00000000f004"
+	cleanNeg := func() {
+		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid OR cntrb_login = $2`, negID, negLogin)
+	}
+	cleanNeg()
+	t.Cleanup(cleanNeg)
+	if created, id, err := store.UpsertContributorFull(ctx, negID, negLogin, -5, ""); err != nil || !created || id != negID {
+		t.Fatalf("UpsertContributorFull of a new row with a negative id = (%v, %q, %v)", created, id, err)
+	}
+	if got := stored(negID); got != "NULL" {
+		t.Fatalf("a row inserted with a negative forge id has gh_user_id = %s, want NULL", got)
+	}
 	// The id, once the forge gives it, fills the row: it was left empty.
 	if id, err := store.LinkMailingListSender(ctx, email, login, ghID); err != nil || id != rowID {
 		t.Fatalf("LinkMailingListSender with the id = (%q, %v), want the login's row", id, err)

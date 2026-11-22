@@ -2224,15 +2224,27 @@ func validateMavenRepositoryURL(raw string) error {
 // (internal/collector) reads both under the defaults and holds them to a
 // fiftieth of this.
 //
-// DefaultManifestReadMemoryMB. The same two builds held 31 and 19 MiB at
-// most; a gibibyte is thirty times the larger (the test holds them to a
-// tenth). It is also what a worker's child may take from the host at worst:
-// with forty workers all reading hostile repositories at the same moment,
-// forty gibibytes.
+// DefaultManifestReadMemoryMB. 2,048 since 0.29.217 (operator, 2026-11-21:
+// "Raise the default memory setting to 2048 MiB. That doubles the largest
+// file read for every format, and doubles the worst case one reading can
+// use."); 1,024 before. The same two builds held 31 and 19 MiB at most, so
+// the default is some sixty times the larger (the test holds them to a
+// tenth). It is also what a worker's CHILD may take from the host at worst:
+// the limit is on the Go heap, resident memory has been measured at up to
+// about one and a half times it (1.47, the largest ratio a reviewer saw,
+// round 9; the table below, of honest files at 1,024 MiB, saw 1.3), so
+// with forty workers all reading hostile
+// repositories at the same moment, eighty gibibytes of heap and up to
+// about a hundred and twenty resident in the children. The worker itself
+// also holds what the child returns of names and declarations, up to this
+// same setting (collector: runManifestChild's held), so in that worst case
+// up to about eighty gibibytes more inside serve; nothing was measured for
+// that holding at 2,048.
 //
 // The lockfiles are read by the same child and are the larger demand: a
 // lockfile is read whole and has no largest size. Measured THROUGH THE CHILD
-// at this default, on an Apple M-series machine (0.29.214, review round 7:
+// AT 1,024 MiB, the default then and half the default now (the table is as
+// measured, not rescaled), on an Apple M-series machine (0.29.214, review round 7:
 // honest generated files, sizes stepped; "read" is the largest step read
 // and "stopped" the next, at which the child ended itself at the limit):
 //
@@ -2248,14 +2260,17 @@ func validateMavenRepositoryURL(raw string) error {
 //	pnpm-lock.yaml (v6)           64 MB    80 MB   13.0 x         832 MiB heap, 1,065 resident
 //	pubspec.lock                  64 MB    80 MB   13.6 x       1,076 MiB
 //
-// So the default reads a YAML lockfile (pnpm, pubspec, stack) of some 64 MB
-// and the JSON and yarn formats past 300 MB. Two things these numbers are
+// So a limit of 1,024 MiB could hold a YAML lockfile (pnpm, pubspec, stack)
+// of some 64 MB and the JSON and yarn formats past 300 MB; what is READ
+// since 0.29.215 is decided before the read, by the file's size times its
+// format's cost (collector.readCostMeasured). Two things these numbers are
 // not. The heap peak is the largest the child's watchdog SAW, ten times a
 // second, with Go's collector pressed to nine tenths of the limit; a
 // reading that is near the limit is stopped on some runs and not others.
 // And the limit is on the Go heap's objects: what the system counted
-// resident was up to 1.3 times the setting, which is what a worker's child
-// can take from the host. Each reading took under 35 s of CPU time (the
+// resident was up to 1.3 times the setting in THESE runs (a later review
+// saw 1.47, as above), which is what a worker's child can take from the
+// host. Each reading took under 35 s of CPU time (the
 // YAML formats, most of it the collector's), and the others under 13 s. The
 // largest lockfile among the 50,000 of the fleet this was sized against
 // holds 6,749 packages, under a megabyte.
@@ -2273,7 +2288,7 @@ func validateMavenRepositoryURL(raw string) error {
 // derived from the memory limit but a share of it.
 const (
 	DefaultManifestReadCPUSeconds = 180
-	DefaultManifestReadMemoryMB   = 1024
+	DefaultManifestReadMemoryMB   = 2048
 	MaxManifestReadCPUSeconds     = 24 * 60 * 60
 	MaxManifestReadMemoryMB       = int(math.MaxInt64 >> 20)
 )

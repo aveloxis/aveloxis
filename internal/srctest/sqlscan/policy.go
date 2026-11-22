@@ -1120,7 +1120,7 @@ var WaysOut = map[Policy]string{
 
 // inBodyWayOut is said for the two policies whose values are walked leaf by
 // leaf.
-const inBodyWayOut = "In a function or DO body a variable, a parameter and a placeholder ($1 there is the function's parameter or an EXECUTE ... USING argument) are not incoming: send the statement from Go with placeholders, or take a reviewed Exception"
+const inBodyWayOut = "In a function or DO body a variable, a parameter and a placeholder ($1 there is the function's parameter or an EXECUTE ... USING argument) are not incoming, and neither is a FROM item made of placeholders (unnest($1), VALUES ($1)): send the statement from Go with placeholders, or take a reviewed Exception"
 
 // twoArgs: v is a node of the given kind with exactly two arguments.
 func twoArgs(v any, kind string) (jnode, [2]any, bool) {
@@ -1540,7 +1540,9 @@ func trimOf(v any) (any, bool) {
 // incomingItem: the qualifier q names exactly one thing where the write
 // stands, and that is an INCOMING item of its FROM (fromItem.incoming).
 func (w *Write) incomingItem(q string) bool {
-	if w.scope == nil || q == w.targetName() || w.qualifiesVariable(q) || (w.Kind == "conflict-update" && q == "excluded") {
+	// In a body no item is incoming: a batch item there is made of the
+	// body's parameters (round 10; see incomingWalk.item).
+	if w.scope == nil || w.scope.env != nil || q == w.targetName() || w.qualifiesVariable(q) || (w.Kind == "conflict-update" && q == "excluded") {
 		return false
 	}
 	n, incoming := 0, false
@@ -1823,15 +1825,33 @@ func (iw *incomingWalk) selectBody(sel jnode, env incomingEnv) {
 	iw.value(sel["valuesLists"], in)
 }
 
+// itemName is what a FROM item is called in a message: its alias, or its
+// name when it has none.
+func itemName(it fromItem) string {
+	if it.alias != "" {
+		return it.alias
+	}
+	return it.name
+}
+
 // item judges one FROM item: it is clean, or the walk fails.
 func (iw *incomingWalk) item(it fromItem, env incomingEnv) {
-	if iw.why != "" || it.incoming {
+	if iw.why != "" {
 		return
 	}
-	name := it.alias
-	if name == "" {
-		name = it.name
+	if it.incoming {
+		// A batch item is incoming because it is made of placeholders.
+		// In a body a placeholder is the function's parameter or an
+		// EXECUTE ... USING argument (the ParamRef leaf below refuses
+		// it bare), so the item made of it is not incoming either
+		// (round 10: unnest($1), VALUES ($1) and SELECT $1 in a body
+		// were taken).
+		if w := iw.w; w.scope != nil && w.scope.env != nil {
+			iw.fail("the FROM item %s is made of placeholders and stands in a body: they are parameters of the function or arguments of EXECUTE ... USING, and what they hold is not known", itemName(it))
+		}
+		return
 	}
+	name := itemName(it)
 	switch {
 	case it.fn:
 		iw.fail("the FROM item %s is a function that is not unnest of placeholders: what it reads is not known", name)

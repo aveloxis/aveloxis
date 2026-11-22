@@ -6,7 +6,6 @@ package db
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,13 +83,6 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		).Scan(&cntrbID, &haveNodeID, &haveType)
 
 		if err == nil {
-			// An address that came with this observation is kept (R5).
-			// Only when there is one: the references of issues, pull
-			// requests and comments carry none, so this path pays nothing
-			// for them.
-			if !r.keepAddressOfKnownContributor(ctx, cntrbID, email) {
-				return cntrbID, nil // not cached: the next observation retries
-			}
 			if (haveNodeID == "" && nodeID != "") || (haveType == "" && userType != "") {
 				if _, herr := r.store.pool.Exec(ctx, `
 					UPDATE aveloxis_data.contributor_identities
@@ -202,23 +194,6 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					return existingID, nil
 				}
 			}
-			// The row's address is never rewritten on this path; one that
-			// came with the observation is kept as an alias (R5). The
-			// login written to the identity row above is recorded as
-			// observed: the row was not found by its platform id, so no
-			// login is replaced here.
-			if userID > 0 {
-				if herr := recordLoginObservation(ctx, r.store.pool, existingID, platformID, login, LoginSourceObservation); herr != nil {
-					if !errors.Is(herr, context.Canceled) {
-						r.store.logger.Warn("login history not recorded; leaving resolver cache cold so the next observation retries",
-							"cntrb_id", existingID, "login", login, "error", herr)
-					}
-					return existingID, nil
-				}
-			}
-			if !r.keepAddressOfKnownContributor(ctx, existingID, email) {
-				return existingID, nil
-			}
 			r.cache[key] = existingID
 			return existingID, nil
 		}
@@ -291,15 +266,11 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		// normally identical anyway; when they are not, the stored one
 		// wins (2026-09-11, F4).
 		//
-		// cntrb_email is STORED first too, in both arms, since 0.29.216
-		// (operator, 2026-11-21; SR-11 fill-only): the address on the row
+		// cntrb_email is STORED first too, in both arms (0.29.216;
+		// operator, 2026-11-21; SR-11 fill-only): the address on the row
 		// is the first one observed, and a later one never replaces it.
-		// Both arms preferred the incoming one before. Each returns the
-		// address the row holds after the write, and an incoming one that
-		// is not it is kept as an alias below (R5), unless the row is a
-		// merge's deleted loser (an alias owned by one resolves nothing).
-		var storedEmail string
-		var deleted int
+		// Both arms preferred the incoming one before. The incoming one is
+		// not kept elsewhere by this path (0.29.217; chunk 2 work).
 		if userID > 0 {
 			err = tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
@@ -310,9 +281,9 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					cntrb_email = COALESCE(NULLIF(contributors.cntrb_email,''), EXCLUDED.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
 					data_collection_date = NOW()
-				RETURNING cntrb_id::text, COALESCE(cntrb_email, ''), COALESCE(cntrb_deleted, 0)`,
+				RETURNING cntrb_id::text`,
 				newID, login, email, name, time.Now(),
-			).Scan(&cntrbID, &storedEmail, &deleted)
+			).Scan(&cntrbID)
 		} else {
 			err = tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
@@ -323,9 +294,9 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 					cntrb_email = COALESCE(NULLIF(contributors.cntrb_email,''), EXCLUDED.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
 					data_collection_date = NOW()
-				RETURNING cntrb_id::text, COALESCE(cntrb_email, ''), COALESCE(cntrb_deleted, 0)`,
+				RETURNING cntrb_id::text`,
 				newID, login, email, name, time.Now(),
-			).Scan(&cntrbID, &storedEmail, &deleted)
+			).Scan(&cntrbID)
 		}
 		if err != nil {
 			return err
@@ -360,17 +331,6 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 			if err != nil {
 				return err
 			}
-			// The login this identity row now holds is one this
-			// contributor was observed under. No login is replaced here:
-			// the identity row was not found by its platform id above.
-			if err = recordLoginObservation(ctx, tx, cntrbID, platformID, login, LoginSourceObservation); err != nil {
-				return fmt.Errorf("record login history: %w", err)
-			}
-		}
-		if deleted == 0 {
-			if err = r.store.keepObservedAddress(ctx, tx, cntrbID, storedEmail, email); err != nil {
-				return err
-			}
 		}
 
 		return tx.Commit(ctx)
@@ -381,35 +341,6 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 
 	r.cache[key] = cntrbID
 	return cntrbID, nil
-}
-
-// keepAddressOfKnownContributor is keepObservedAddress for the two lookups
-// of Resolve that find a row and write nothing to it: it reads the row's
-// address (one indexed read, only when an address came with the
-// observation) and keeps the observed one when it is another. It reports
-// false when it could not, having logged why: resolution has succeeded
-// either way, and the caller leaves its cache cold so that the next
-// observation tries again (the v0.27.117 rule for a failed heal).
-func (r *ContributorResolver) keepAddressOfKnownContributor(ctx context.Context, cntrbID, email string) bool {
-	if email == "" {
-		return true
-	}
-	var stored string
-	var deleted int
-	err := r.store.pool.QueryRow(ctx, `
-		SELECT COALESCE(cntrb_email, ''), COALESCE(cntrb_deleted, 0)
-		FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, cntrbID).Scan(&stored, &deleted)
-	if err == nil && deleted == 0 {
-		err = r.store.keepObservedAddress(ctx, r.store.pool, cntrbID, stored, email)
-	}
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			r.store.logger.Warn("observed address not kept as an alias; leaving resolver cache cold so the next observation retries",
-				"cntrb_id", cntrbID, "error", err)
-		}
-		return false
-	}
-	return true
 }
 
 // EnrichmentCooldown is the minimum interval between enrichment attempts for

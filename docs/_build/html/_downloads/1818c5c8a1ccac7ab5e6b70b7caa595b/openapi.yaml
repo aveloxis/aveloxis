@@ -8298,14 +8298,19 @@ components:
             With the reason `lockfiles_too_large` (0.29.216) the analysis
             did replace the stored rows: every lockfile but the ones too
             large was read then, and those keep their previous rows. No one
-            date is true of the rows, so show none, whatever `last_read_at`
-            holds. While the object is set, `clean_result` is false
-            (0.29.216).
+            date is true of the rows, so show none when `last_read_at` is
+            set. With `last_read_at` null no lockfile row is stored: show
+            the "could not be read" sentence, as for any other reason
+            (0.29.217). The same reason is given when the repository's lockfiles
+            would store more rows than are kept for one repository
+            (4,000,000): that reading is refused whole and every stored row
+            is the previous reading's. While the object is set,
+            `clean_result` is false (0.29.216).
           required: [reason, last_read_at]
           properties:
             reason:
               type: string
-              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. `lockfiles_too_large` (0.29.216) means some lockfiles would have taken more memory to read than allowed, and the others were read. A value a client does not know should be shown as written.
+              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. `lockfiles_too_large` (0.29.216) means some lockfiles would have taken more memory to read than allowed (the others were read), or the repository's lockfiles would store more rows than are kept for one repository. A value a client does not know should be shown as written.
               enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable, lockfiles_not_reached, lockfiles_too_large]
             last_read_at:
               type: [string, "null"]
@@ -9102,7 +9107,7 @@ components:
           description: The dependency's scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored `dep_type` is `runtime`.
         version_source:
           type: string
-          description: How the version was worked out when it was not simply declared (`locked`, `locked_several`, `managed`). Absent otherwise.
+          description: How the version was worked out when it was not simply declared (`locked`, `locked-several`, `managed`). Absent otherwise.
         version_reason:
           type: string
           enum: [inherited_not_found, inherited_lookup_failed, inherited_repository_refused, profile_managed, platforms_disagree, value_not_read]
@@ -9113,16 +9118,37 @@ components:
             `inherited_not_found`, `inherited_lookup_failed`,
             `inherited_repository_refused`: a parent pom or BOM that might
             have supplied it could not be obtained.
-            `profile_managed` (0.29.215): a Maven profile of the build
-            manages the dependency, and which profiles a build activates is
-            not known, so the version the pom would give with no profile
-            active is withheld.
+            `inherited_not_found`: the parent or BOM is on no repository
+            that is read, or was never asked for (a snapshot, a version
+            range, a coordinate a request cannot be built from).
+            `inherited_lookup_failed`: it is not known whether a repository
+            has it (one did not answer, or declared repositories were left
+            unconsulted).
+            `inherited_repository_refused`: the repository that holds it may
+            not be fetched from.
+            `profile_managed` (0.29.215): Maven; a profile that is active by
+            default in the pom itself declares the dependency with a
+            version, so the pom's own declaration with no version is not
+            given a managed version. (0.29.215 gave this reason behind any
+            profile that managed the dependency; since 0.29.216 only a
+            default-active profile's own declaration does, and since
+            0.29.217 only in the pom that holds the profile.)
             `platforms_disagree` (0.29.215): Gradle; more than one platform
             (or a platform and Spring's dependency-management plugin) gives
             the dependency a version, and they do not agree in a way that
             can be settled.
-            `value_not_read` (0.29.215): Gradle; the version is written as
-            an expression too large to be read whole.
+            `value_not_read` (0.29.215): Gradle; the version is written
+            with, or managed through, a value that is not read: an
+            expression too long to be read whole; or (0.29.217) a variable
+            or property the build sets in a way that is not read (a computed
+            value, under a condition, more than once), including a property
+            through which a BOM imported by Spring's dependency-management
+            plugin manages the dependency (0.29.216 sent no reason there),
+            and (0.29.218) a property that is the version of a BOM that BOM
+            imports. The same reason is given to what a BOM imported after
+            that one would manage, and to a dependency that nothing manages,
+            because which BOM answers for a dependency is not known while
+            one of them is not read.
         license:
           type: string
           description: The license as the registry reported it (not normalized). Absent when unknown.

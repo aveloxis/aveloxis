@@ -99,6 +99,13 @@ import (
 //	   dependency-management plugin's reference names it with the command
 //	   line, as recalled); that the property reaches the BOMs a BOM
 //	   imports (taken here not to: only the BOM named is read with it).
+//	   Round 10: the READER takes a property the file itself sets only
+//	   from an assignment at the file's top, made once, with a literal;
+//	   set in any other way it gives the rows managed through it no
+//	   version (value_not_read). The trees generated here set such a
+//	   property only at the top, once, with a literal, so the reference
+//	   and the reader agree on them; the other shapes are held by
+//	   TestASpringPropertyIsTakenOnlyWhereTheFileSurelySetsIt alone.
 //	G10 VERIFIED-BY-DOCS-FROM-MEMORY. What a subprojects { } block of a
 //	   build file declares is for the projects below, not for the file's
 //	   own project: a platform declared there does not manage the file's

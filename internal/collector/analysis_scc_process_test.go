@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -558,7 +559,12 @@ func TestScanSCCStopsAtMoreFilesThanAreKept(t *testing.T) {
 		t.Fatalf("a report of exactly the limit: %v, want the store reached", err)
 	}
 
-	// One more is not, and scc (which would go on for 30 s) is stopped.
+	// One more is not, and scc (which would go on for 30 s) is stopped. The
+	// rows HELD when it stops are the limit and not one more (review round
+	// 10: `>=` read as `>` held a fourth and passed).
+	var held atomic.Int64
+	sccRowStreamed = func() { held.Add(1) }
+	t.Cleanup(func() { sccRowStreamed = nil })
 	fakeSCC(t, `printf '[{"Name":"Go","Files":[`+file(1)+`,`+file(2)+`,`+file(3)+`,`+file(4)+`,`+file(5)+`'
 sleep 30
 printf ']}]'`)
@@ -572,5 +578,8 @@ printf ']}]'`)
 	}
 	if took := time.Since(began); took > 10*time.Second {
 		t.Errorf("the scan took %s: scc was not stopped at the limit", took)
+	}
+	if got := held.Load(); got != int64(sccLaborRowsLimit) {
+		t.Errorf("%d rows were held when scc was stopped, want the limit (%d)", got, sccLaborRowsLimit)
 	}
 }

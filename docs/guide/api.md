@@ -8,6 +8,52 @@ aveloxis api            # listens on api.addr, 127.0.0.1:8383 by default; --addr
 
 The API runs as a separate process alongside `aveloxis serve` (collection) and `aveloxis web` (GUI). All three share the same PostgreSQL database. It refuses to start until `aveloxis migrate` has brought the schema to its own version.
 
+## Changes for API clients in 0.29.219
+
+No field or value changes. One Gradle answer differs from 0.29.218: a write through a
+dotted name into a map (`ext.log4j2.version = '...'` after `ext.log4j2 = [...]`) is no
+longer taken for the Spring property `log4j2.version`, so a dependency managed through
+that property has the BOM's own version again, as in 0.29.217. When such a write is
+not a literal, the BOM's version is stored too, where 0.29.217 and 0.29.218 sent no
+version and `version_reason: value_not_read`.
+
+## Changes for API clients in 0.29.218
+
+**`version_reason: value_not_read`** is also given for a Gradle dependency managed by a
+BOM that a Spring-imported BOM itself imports, when the property that holds that BOM's
+version is set by the build in a way that is not read. 0.29.217 sent
+`inherited_not_found` there. The same reason is given to what a BOM imported after
+that one would manage, and to a dependency that nothing manages, because which BOM
+answers for a dependency is not known while one of them is not read. No field or
+value is added.
+
+## Changes for API clients in 0.29.217
+
+No field is added and no enum gains a value. Two `version_reason` values mean more, or
+less, than their first descriptions said:
+
+- **`value_not_read`** (Gradle) is now also given when the version is written with, or
+  managed through, a variable or property the build sets in a way that is not read: a
+  computed value, an assignment under a condition, or more than one assignment. That
+  includes a property through which a BOM imported by Spring's dependency-management
+  plugin manages the dependency (`ext['log4j2.version'] = someCall()`): 0.29.216 sent no
+  `version_reason` for those rows, and before 0.29.216 they carried the BOM's default
+  version. The first meaning stands too: an expression too long to be read whole.
+- **`profile_managed`** (Maven) means only this: a profile that is active by default, in
+  the pom that declares the dependency, declares it with a version, so the pom's own
+  declaration with no version is not given a managed version. A profile that is not
+  active by default gives no reason, and neither does a parent pom's profile. 0.29.215
+  gave the reason behind any profile that managed the dependency; most of those rows have
+  their version again.
+
+`coverage.lockfiles_unread` with the reason `lockfiles_too_large` and `last_read_at` null
+(no lockfile row is stored) takes the "Lockfiles could not be read (...). Transitive
+dependencies are not checked." sentence, as every other reason does. The sentence with
+no date is for `last_read_at` set.
+
+`collection.manifest_read_memory_mb` defaults to 2048 (was 1024), so fewer repositories
+carry `lockfiles_too_large`.
+
 ## Changes for API clients in 0.29.216
 
 **`coverage.clean_result` is `false` while `coverage.lockfiles_unread` is set**, on the
@@ -24,10 +70,13 @@ the sentence from `state` alone should also require `lockfiles_unread` to be `nu
 have taken more memory to read than `collection.manifest_read_memory_mb` allows, and
 every other lockfile was read at that analysis. The lockfiles left unread keep the rows
 of their last reading. No one date is true of the stored rows in this case, so show no
-date, whatever `last_read_at` holds: "Some lockfiles could not be read (reading them
+date when lockfile rows are stored: "Some lockfiles could not be read (reading them
 would take more memory than allowed). Their versions and transitive dependencies may be
-out of date." 0.29.215 reported this case as `manifest_read_memory_limit`, with the date
-of an earlier reading.
+out of date." With none stored (`last_read_at` null), show the "Lockfiles could not be
+read (...). Transitive dependencies are not checked." sentence instead (0.29.217). 0.29.215 reported this case as `manifest_read_memory_limit`, with the date
+of an earlier reading. The same reason is given when a repository's lockfiles would store more rows than
+are kept for one repository (4,000,000): that reading is refused whole and every stored
+row is the previous reading's.
 
 ## Changes for API clients in 0.29.215
 
@@ -35,12 +84,16 @@ A dependency's **`version_reason`** (the libyear and dependency answers) can tak
 more values. Each means the row has no version because the build file names none that can
 be relied on:
 
-- `profile_managed`: a Maven profile of the build manages the dependency, and which
-  profiles a build activates is not known.
-- `platforms_disagree`: Gradle; more than one platform gives the dependency a version and
-  they do not agree in a way that can be settled.
-- `value_not_read`: Gradle; the version is written as an expression too large to be read
-  whole.
+- `profile_managed`: Maven. In 0.29.215, a profile of the build manages the dependency,
+  and which profiles a build activates is not known. Since 0.29.216 it means one thing
+  only: a profile that is active by default in the pom itself declares the dependency with
+  a version (see the 0.29.217 entry above).
+- `platforms_disagree`: Gradle; more than one platform (or a platform and Spring's
+  dependency-management plugin) gives the dependency a version and they do not agree in a
+  way that can be settled.
+- `value_not_read`: Gradle; the version is written with a value that is not read. In
+  0.29.215 that is an expression too long to be read whole; 0.29.217 adds more cases (see
+  its entry above).
 
 Show a value you do not know as written. A dependency that had a version before 0.29.215
 can have none after it, with one of these reasons, and the count of findings at a known

@@ -342,8 +342,11 @@ func CoverageLockfileCaution(v *CoverageView) string {
 	reason := LockfileUnreadReasonWording(v.LockfilesUnread.Reason)
 	p := lockfileCautionParts
 	// Some lockfiles too large, the rest read at this analysis: no date is
-	// said, because no one date is true of the rows (0.29.216).
-	if v.LockfilesUnread.Reason == model.LockfileUnreadTooLarge {
+	// said, because no one date is true of the rows (0.29.216). Only when
+	// rows are stored: with none there is nothing to be out of date, and
+	// the "could not be read" sentence below is the true one (0.29.217,
+	// review round 10).
+	if v.LockfilesUnread.Reason == model.LockfileUnreadTooLarge && v.LockfilesUnread.LastReadAt != nil {
 		return p["some_before_reason"] + reason + p["some_after_reason"]
 	}
 	if at := v.LockfilesUnread.LastReadAt; at != nil {

@@ -340,10 +340,11 @@ This was added in v0.19.5 specifically for the "iterate on a v0.19.4 schema-erro
    v0.27.126 registry, read by the static check
    (`internal/db/column_write_policy_test.go`) and by the run-time judge.
    A migration step that writes a table with a registered column also
-   needs a DB-tier test that makes the migration send it: the closing
-   suite fails on such a statement that no test sent
-   (`TestTheSuiteSendsEveryStatementText`; see testing.md, "The coverage
-   requirement").
+   needs a DB-tier test that makes the migration send it and asserts what
+   it wrote. The closing suite checks that every call site was reached
+   (see testing.md, "The coverage requirement"); a step that sends several
+   statements through one call is covered there when one of them is sent,
+   so the test of the step is what says the others are right.
    The founding incident: two writers shipped CONFLICTING policies on
    `platform_repo_id` and silently destroyed a detection signal
    (v0.27.117). A column registered at introduction can never acquire a

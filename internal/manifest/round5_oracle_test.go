@@ -60,7 +60,11 @@ package manifest
 //	    looks a pom up by its coordinates among those ONLY: a pom of the
 //	    clone that no <modules> entry joins to the asker (a test fixture,
 //	    an example, an archetype's template) is in no build with it,
-//	    whatever coordinates it gives itself. UNSURE: a pom FETCHED from a
+//	    whatever coordinates it gives itself. Round 10: the asker's build
+//	    is the build of the pom that names the coordinates AND the build of
+//	    the pom being built (a parent used by relativePath that no pom
+//	    lists as a module names a BOM of its child's reactor: Maven is run
+//	    on the reactor). UNSURE: a pom FETCHED from a
 //	    repository is taken to find nothing in the clone (Maven's reactor
 //	    would in fact serve a fetched pom's parent that is a project of
 //	    the build; DISAGREEMENT D1, below).
@@ -98,9 +102,12 @@ package manifest
 //	    of a profile's imports among the pom's (after them, here). A
 //	    profile with any other activation, or none, is taken to be
 //	    inactive (DISAGREEMENT D2). What an active profile DECLARES as a
-//	    dependency with a version is the version of the pom's own
-//	    declaration of that dependency: no managed version is given to it
-//	    (profile_managed), whichever pom manages it.
+//	    dependency with a version is the version of the declaration of
+//	    that dependency by the pom that HOLDS the profile: no managed
+//	    version is given to it there (profile_managed). A child's own
+//	    declaration replaces the inherited one whole (dependencies are
+//	    merged by their key, the child dominant), so it takes the managed
+//	    version as with no profile (round 10; until then "whichever pom").
 //	M9  VERIFIED-BY-DOCS-FROM-MEMORY. A repository whose address is http is
 //	    refused by Maven 3.8.1 and later unless mirrored; one that needs
 //	    credentials, or is a file path, is not reachable from here. While
@@ -290,7 +297,11 @@ func (o *oraclePoms) obtain(g, a, v string, chain []*oraclePom, from *oraclePom)
 	if o.pathOnly {
 		return o.remote(g, a, v) // no source: not known
 	}
-	in, ambiguous := o.byCoordinates(g, a, v, from)
+	var reading *oraclePom
+	if len(chain) > 0 {
+		reading = chain[0]
+	}
+	in, ambiguous := o.byCoordinates(g, a, v, from, reading)
 	if ambiguous {
 		return nil, notFound, notFound
 	}
@@ -450,13 +461,29 @@ func (o *oraclePoms) allPoms() []string {
 
 // byCoordinates scans the poms of from's build (M3) for the ones with these
 // coordinates, as the clone alone gives them (no source asked).
-func (o *oraclePoms) byCoordinates(g, a, v string, from *oraclePom) (m *oraclePom, ambiguous bool) {
+//
+// Round 10: also the poms of the build of the pom being built (reading),
+// when the pom that names the coordinates is a pom of the clone: Maven
+// resolves from the build it is run on, and a parent reached by
+// relativePath that nothing lists as a module is no build of its own there.
+func (o *oraclePoms) byCoordinates(g, a, v string, from, reading *oraclePom) (m *oraclePom, ambiguous bool) {
 	// No pom asks for a Gradle platform (from is nil): Gradle takes it from
 	// its repositories and never from a pom.xml of the checkout.
 	if from == nil || g == "" || a == "" || v == "" || strings.Contains(g+a+v, "${") || strings.HasPrefix(from.path, "remote:") {
 		return nil, false
 	}
 	among := o.buildOf(from.path)
+	if reading != nil && reading != from && !strings.HasPrefix(reading.path, "remote:") {
+		have := map[string]bool{}
+		for _, p := range among {
+			have[p] = true
+		}
+		for _, p := range o.buildOf(reading.path) {
+			if !have[p] {
+				among = append(among, p)
+			}
+		}
+	}
 	var found []*oraclePom
 	for _, p := range among {
 		cand := o.model(p)
@@ -565,14 +592,9 @@ type oracleQuestion struct {
 func (c *oracleCtx) lookup(q *oracleQuestion, group, artifact string, depth int) (version string, found bool, hosts []string, stop bool) {
 	// An explicit entry anywhere in the chain: the nearest pom, and in a pom
 	// the first entry written that means this coordinate here.
-	// M8: a default profile of a pom of the chain declares the dependency
-	// with a version: no managed version is the build's, whoever manages.
-	profiled := false
-	for _, m := range c.chain {
-		if m.profileDeclares[group+":"+artifact] {
-			profiled = true
-		}
-	}
+	// M8: a default profile of the pom being built declares the dependency
+	// with a version: no managed version is given to its declaration.
+	profiled := c.chain[0].profileDeclares[group+":"+artifact]
 	doubt := func() {
 		if profiled {
 			q.gap = oracleWorse(q.gap, "profile_managed")
@@ -1100,7 +1122,7 @@ func (o *oraclePoms) managedVerdict(deps []model.LibyearDep) MavenManaged {
 					continue
 				}
 				bg, ba, bv := c.interp(e.group), c.interp(e.artifact), c.interp(e.version)
-				bom, ambiguous := o.byCoordinates(bg, ba, bv, cm)
+				bom, ambiguous := o.byCoordinates(bg, ba, bv, cm, c.chain[0])
 				switch {
 				case ambiguous:
 					gapOf[p] = "a BOM import matches more than one pom of the repository"

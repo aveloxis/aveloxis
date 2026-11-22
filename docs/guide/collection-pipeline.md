@@ -231,7 +231,7 @@ After facade completes, git commit author emails are resolved to GitHub user acc
 
 ## Periodic: Contributor enrichment and canonical emails
 
-On a periodic scheduler ticker (default 30 minutes, `enrich_interval_minutes` — moved out of the per-job path in v0.18.29), `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses).
+On a periodic scheduler ticker (default 30 minutes, `enrich_interval_minutes` — moved out of the per-job path in v0.18.29), `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This sets company, location and name from the profile when the profile has them, fills `cntrb_email` with the public email only when the column is empty (the first address observed stays, 0.29.216), fills an empty created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses; the profile's address replaces a stored canonical, an empty one clears nothing). It asks GitHub only; GitLab profiles are not enriched.
 
 **Token efficiency (v0.14.4+)**: Contributors are tracked via `cntrb_last_enriched_at` to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. (The separate `ResolveEmailsToCanonical` pass that older docs describe had not run since v0.19.7 and was removed in v0.29.68.)
 

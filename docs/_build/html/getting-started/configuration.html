@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.215 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.219 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
+      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -350,6 +351,9 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
@@ -1945,7 +1949,7 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;package_key_fill_rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;repository_host_check_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;manifest_read_cpu_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;manifest_read_memory_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1024</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;manifest_read_memory_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2048</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;repository_host_registration_check&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;repository_host_threat_list_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;maven_repositories&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;https://repo1.maven.org/maven2&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;https://repo.jenkins-ci.org/public&quot;</span><span class="p">],</span>
@@ -2295,8 +2299,8 @@ a half against its own reference table below:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code></p></td>
 <td><p>integer</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1024</span></code></p></td>
-<td><p>0.29.213: the memory, in mebibytes, that the process reading one repository’s manifests and lockfiles may hold (its Go heap, checked ten times a second). Since 0.29.215 a manifest or lockfile is read only when its size times its format’s cost fits in the memory left; a larger one is recorded as one file that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution on the repository’s page. The costs, and so the largest file the default reads: <code class="docutils literal notranslate"><span class="pre">composer.lock</span></code> 2 (about 512 MB), <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> 2.6 (394 MB), <code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code> 3 (341 MB), <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code> 10 (102 MB), <code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code> 12.5 (82 MB), <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> 14 (73 MB), <code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code> 15 (68 MB), other lockfiles 8 (128 MB), manifests 3. The largest honest builds measured hold about 30 MiB. With <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code>, allow somewhat more than N times the setting on the host: for honest files the process’s resident memory has been measured at up to about a quarter above its heap. <code class="docutils literal notranslate"><span class="pre">0</span></code> or a negative number is refused at load.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2048</span></code></p></td>
+<td><p>0.29.213 (default 2048 since 0.29.217; 1024 before): the memory, in mebibytes, that the process reading one repository’s manifests and lockfiles may hold (its Go heap, checked ten times a second). Since 0.29.215 a manifest or lockfile is read only when its size times its format’s cost fits in the memory left; a larger one is recorded as one file that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution on the repository’s page. The costs, and the largest file of each format the default reads, are in the table under <a class="reference internal" href="#what-reading-each-file-format-costs-0-29-216">What reading each file format costs</a>; 0.29.216 raised every cost, which made the largest file read smaller than in 0.29.215, and 0.29.217 doubled the default, which doubles each largest size and doubles the most one reading can use. Raising this setting raises every largest size in proportion. The largest honest builds measured hold about 30 MiB, so an ordinary reading uses a small part of the limit. The limit is what the reading process (the child) may use at worst: 2048 MiB of Go heap, and its resident memory has been measured at up to about one and a half times the setting, about 3 GiB. The worker that started it also holds what the child returns for the declarations pass, the names and declarations of the repository’s manifests, up to the same setting (2048 MiB; it is one of the holdings the <a class="reference internal" href="../architecture/analysis.html"><span class="std std-doc">analysis page’s table</span></a> lists as not bounded by a number of its own, and nothing was measured for it at 2048). With <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> the worst case is N readings at their limit at once: for 40 workers, 80 GiB of heap and up to about 120 GiB resident in the children, and up to about 80 GiB more inside <code class="docutils literal notranslate"><span class="pre">serve</span></code> if every one of those repositories also returns that much, so about 200 GiB in all. That needs 40 repositories with very large or hostile files being read at the same moment; allow for it on the host, or set the value lower. An operator who has set the value keeps it. <code class="docutils literal notranslate"><span class="pre">0</span></code> or a negative number is refused at load.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repository_host_registration_check</span></code></p></td>
 <td><p>boolean</p></td>
@@ -2423,6 +2427,193 @@ a half against its own reference table below:</p>
 </tr>
 </tbody>
 </table>
+<section id="what-reading-each-file-format-costs-0-29-216">
+<h4>What reading each file format costs (0.29.216)<a class="headerlink" href="#what-reading-each-file-format-costs-0-29-216" title="Link to this heading"></a></h4>
+<p>Before the reader opens a manifest or a lockfile, it multiplies the file’s size by a factor for its format and compares the result with the memory left under <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code>. A file that does not fit is not read. It is recorded as one manifest or lockfile that could not be read, and the rest of the repository is read. A lockfile left unread keeps its previous rows, and the repository’s page shows the caution with the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code>.</p>
+<p>Each factor is the highest cost measured for that format, plus a margin of one half (so one and a half times it), rounded up. The cost was measured through the real reader on a set of shapes: the plain file, the shapes real tools write, and files built to cost more per byte by making entries and keys as short as the format allows. It is the highest over the shapes measured, not over every file a reader accepts; the paragraph under the tables says what was found to cost more. The numbers are provisional: they were measured on one machine.</p>
+<p>“Largest file read” is for a file read first, with the whole limit free, and is the limit divided by the factor: the reader itself holds about 2 MiB before the first file, so the largest file actually read is a little under the size shown (measured at the default: a 44.3 MiB <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> and a 145.6 MiB <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> are read, 44.7 and 147.0 MiB are refused). What decides is the room left when the file is reached, so a file somewhat smaller can be refused late in a large repository. Raising the setting raises every size in proportion: at <code class="docutils literal notranslate"><span class="pre">4096</span></code> each is twice the size shown, and at <code class="docutils literal notranslate"><span class="pre">1024</span></code> (the default before 0.29.217) half.</p>
+<p>Lockfiles:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Measured cost (times its length)</p></th>
+<th class="head"><p>Factor used</p></th>
+<th class="head"><p>Largest file read at 2048 MiB</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code></p></td>
+<td><p>34.21</p></td>
+<td><p>52</p></td>
+<td><p>39.4 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code></p></td>
+<td><p>30.41</p></td>
+<td><p>46</p></td>
+<td><p>44.5 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">packages.lock.json</span></code></p></td>
+<td><p>12.87</p></td>
+<td><p>20</p></td>
+<td><p>102.4 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mix.lock</span></code></p></td>
+<td><p>12.21</p></td>
+<td><p>19</p></td>
+<td><p>107.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code></p></td>
+<td><p>8.82</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code></p></td>
+<td><p>9.14</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code></p></td>
+<td><p>8.80</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composer.lock</span></code></p></td>
+<td><p>8.96</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code></p></td>
+<td><p>6.87</p></td>
+<td><p>11</p></td>
+<td><p>186.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Pipfile.lock</span></code></p></td>
+<td><p>6.65</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pdm.lock</span></code></p></td>
+<td><p>6.36</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">renv.lock</span></code></p></td>
+<td><p>6.36</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">poetry.lock</span></code></p></td>
+<td><p>5.72</p></td>
+<td><p>9</p></td>
+<td><p>227.6 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uv.lock</span></code></p></td>
+<td><p>5.52</p></td>
+<td><p>9</p></td>
+<td><p>227.6 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bun.lock</span></code></p></td>
+<td><p>4.96</p></td>
+<td><p>8</p></td>
+<td><p>256.0 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gradle.lockfile</span></code></p></td>
+<td><p>5.27</p></td>
+<td><p>8</p></td>
+<td><p>256.0 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Package.resolved</span></code></p></td>
+<td><p>3.40</p></td>
+<td><p>6</p></td>
+<td><p>341.3 MiB</p></td>
+</tr>
+</tbody>
+</table>
+<p>Manifests:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Measured cost (times its length)</p></th>
+<th class="head"><p>Factor used</p></th>
+<th class="head"><p>Largest file read at 2048 MiB</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code></p></td>
+<td><p>66.20</p></td>
+<td><p>100</p></td>
+<td><p>20.5 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile</span></code></p></td>
+<td><p>40.62</p></td>
+<td><p>61</p></td>
+<td><p>33.6 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Pipfile</span></code></p></td>
+<td><p>36.13</p></td>
+<td><p>55</p></td>
+<td><p>37.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package.json</span></code></p></td>
+<td><p>35.40</p></td>
+<td><p>54</p></td>
+<td><p>37.9 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composer.json</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pubspec.yaml</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code></p></td>
+<td><p>32.49</p></td>
+<td><p>49</p></td>
+<td><p>41.8 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">go.mod</span></code></p></td>
+<td><p>26.74</p></td>
+<td><p>41</p></td>
+<td><p>50.0 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code></p></td>
+<td><p>24.44</p></td>
+<td><p>37</p></td>
+<td><p>8 MiB (the build-file limit; 55.4 MiB by the factor)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mix.exs</span></code></p></td>
+<td><p>17.05</p></td>
+<td><p>26</p></td>
+<td><p>78.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pom.xml</span></code></p></td>
+<td><p>9.58</p></td>
+<td><p>15</p></td>
+<td><p>8 MiB (the build-file limit; 136.5 MiB by the factor)</p></td>
+</tr>
+<tr class="row-even"><td><p>any other manifest (for example <code class="docutils literal notranslate"><span class="pre">build.gradle.kts</span></code>)</p></td>
+<td><p>not measured: the costliest manifest’s is taken</p></td>
+<td><p>100</p></td>
+<td><p>20.5 MiB; 8 MiB for a Maven or Gradle build file (the build-file limit)</p></td>
+</tr>
+</tbody>
+</table>
+<p>A Maven or Gradle build file larger than 8 MiB is not read whatever the setting.</p>
+<p>A file can cost more than its factor. Two kinds were found. The first is a file its reader accepts, of a shape that was not among those measured: a lockfile whose entries are almost all dependency edges with one-letter names cost about one and a half to three and a half times the factor in review (<code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">pdm.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">poetry.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">renv.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">gradle.lockfile</span></code>), and a <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> of one-letter lines twice its factor. The second is text that is not a file of its kind, which can cost more before the reader rejects it (measured: a <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> of collections nested nine thousand deep, 97 times its length, against 30 for the costliest measured that parses). Either passes the check when it is small. If it then takes the reader past its memory limit, the reader is stopped: that repository’s reading ends with the memory-limit reason and no other repository is affected.</p>
+</section>
 <section id="scancode-worker-v0-21-0">
 <h4>Scancode worker (v0.21.0)<a class="headerlink" href="#scancode-worker-v0-21-0" title="Link to this heading"></a></h4>
 <p>The scancode per-file license + copyright + package scan is run by a dedicated <code class="docutils literal notranslate"><span class="pre">ScancodeWorker</span></code> pool, decoupled from the per-repo collection pipeline. Pre-v0.21.0 scancode ran inline in <code class="docutils literal notranslate"><span class="pre">AnalysisCollector.AnalyzeRepo</span></code> gated by a 2-slot package-level semaphore; the 2026-05-14 production incident showed that shape doesn’t survive fleet-scale operation (177 of 180 collection workers parked behind the semaphore for 7+ hours). The decoupled pool fixes the structural problem and adds operator-tunable cadence + concurrency. See <code class="docutils literal notranslate"><span class="pre">docs/architecture/scancode.md</span></code> for the full architecture write-up.</p>

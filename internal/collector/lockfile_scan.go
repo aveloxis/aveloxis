@@ -721,11 +721,28 @@ func storedRowLocksADependency(p model.RepoLockfilePackage) bool {
 func lockfilesUnreadAdvice(attempt string) string {
 	switch attempt {
 	case model.InventoryAttemptReadMemoryLimit:
-		return "raise collection.manifest_read_memory_mb: a lockfile is read whole and is priced at up to 14 times its size, a YAML one (pnpm-lock.yaml, pubspec.lock, stack.yaml.lock) at 46 to 52 times"
+		low, high := lockfileReadCostRange()
+		return fmt.Sprintf("raise collection.manifest_read_memory_mb: a lockfile is read whole and is priced at %d to %d times its size by its format (the configuration page has each format's)", low, high)
 	case model.InventoryAttemptReadCPULimit, model.InventoryAttemptReadTimedOut:
 		return "raise collection.manifest_read_cpu_seconds, or look at this repository's build files and lockfiles: one of them takes this long to read"
 	}
 	return "the reader failed and did not say a limit: see the error, and the reader's own output in it"
+}
+
+// lockfileReadCostRange is the least and the most a lockfile of the roster
+// is priced at, in times its length (readCostFactor), so that the advice
+// above says the table's numbers and not a copy of them.
+func lockfileReadCostRange() (low, high int64) {
+	for kind := range lockfileKinds {
+		f := readCostFactor(kind)
+		if low == 0 || f < low {
+			low = f
+		}
+		if f > high {
+			high = f
+		}
+	}
+	return low, high
 }
 
 // lockfileFeedCounts is what ONE handing-over of a snapshot's rows held: the

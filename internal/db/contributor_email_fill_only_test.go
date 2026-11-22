@@ -9,10 +9,13 @@ import (
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
-// TestAnObservedAddressNeverReplacesAContributorsStoredOne: cntrb_email and
-// cntrb_canonical are fill-only (operator, 2026-11-21; SR-11): which of a
+// TestAnObservedAddressNeverReplacesAContributorsStoredOne: cntrb_email is
+// fill-only (operator, 2026-11-21; SR-11; cntrb_canonical is not: the batch
+// takes an incoming canonical, 0.29.218, see
+// TestTheProfilesAddressReplacesACommitAddressAsTheCanonical): which of a
 // person's addresses the row holds is the one first observed, and a later
-// one is kept as an alias, never written over it. Before 0.29.216 three
+// one is never written over it (nor kept elsewhere by these paths: the
+// alias step 0.29.216 added for it was taken out in 0.29.217). Before 0.29.216 three
 // conflict arms preferred the INCOMING address (the EXCLUDED value first in
 // the COALESCE, the stored one second): the two of ContributorResolver.Resolve and the one
 // of the batch upsert. Each is driven here, with a neighbour row that must
@@ -86,8 +89,8 @@ func TestAnObservedAddressNeverReplacesAContributorsStoredOne(t *testing.T) {
 		}
 	}
 	batch(batLogin)
-	if email, canonical := row(batID); email != stored || canonical != stored {
-		t.Errorf("the batch upsert: (cntrb_email, cntrb_canonical) = (%q, %q), want the stored %q in both", email, canonical, stored)
+	if email, canonical := row(batID); email != stored || canonical != incoming {
+		t.Errorf("the batch upsert: (cntrb_email, cntrb_canonical) = (%q, %q), want the stored email %q and the incoming canonical %q", email, canonical, stored, incoming)
 	}
 	// An empty one is filled.
 	batch(emptyLog)

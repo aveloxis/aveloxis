@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.215 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.219 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
+      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -350,6 +351,9 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
@@ -2079,7 +2083,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</sp
 <hr class="docutils" />
 <section id="periodic-contributor-enrichment-and-canonical-emails">
 <h2>Periodic: Contributor enrichment and canonical emails<a class="headerlink" href="#periodic-contributor-enrichment-and-canonical-emails" title="Link to this heading"></a></h2>
-<p>On a periodic scheduler ticker (default 30 minutes, <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> — moved out of the per-job path in v0.18.29), <code class="docutils literal notranslate"><span class="pre">EnrichThinContributors</span></code> calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code> for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> from the public email (filtering noreply addresses).</p>
+<p>On a periodic scheduler ticker (default 30 minutes, <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> — moved out of the per-job path in v0.18.29), <code class="docutils literal notranslate"><span class="pre">EnrichThinContributors</span></code> calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code> for contributors with missing profile data (empty company and location). This sets company, location and name from the profile when the profile has them, fills <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> with the public email only when the column is empty (the first address observed stays, 0.29.216), fills an empty created_at, and sets <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> from the public email (filtering noreply addresses; the profile’s address replaces a stored canonical, an empty one clears nothing). It asks GitHub only; GitLab profiles are not enriched.</p>
 <p><strong>Token efficiency (v0.14.4+)</strong>: Contributors are tracked via <code class="docutils literal notranslate"><span class="pre">cntrb_last_enriched_at</span></code> to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. (The separate <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> pass that older docs describe had not run since v0.19.7 and was removed in v0.29.68.)</p>
 </section>
 <hr class="docutils" />

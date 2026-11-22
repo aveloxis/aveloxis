@@ -176,7 +176,8 @@ Versions and transitive dependencies may be out of date." When none is stored:
 dependencies are not checked." When some lockfiles were too large to read and the
 others were read at that analysis (0.29.216): "Some lockfiles could not be read (reading
 them would take more memory than allowed). Their versions and transitive dependencies may
-be out of date.", with no date. A repository whose lockfiles were read, or that has none,
+be out of date.", with no date; when no lockfile row is stored at all, the "Lockfiles
+could not be read" sentence above is shown for this reason too (0.29.217). A repository whose lockfiles were read, or that has none,
 shows nothing.
 
 While the caution is up, no page says the repository has no vulnerabilities (0.29.216).

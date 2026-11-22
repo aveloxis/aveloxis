@@ -35,7 +35,10 @@ func TestAParentThatIsNotAskedForWithholdsWhatALaterBOMWouldGive(t *testing.T) {
 	}
 	read := func(parentVersion string) (version, reason string) {
 		t.Helper()
-		dir := writeClone(t, map[string]string{"bom/pom.xml": bom, "app/pom.xml": app(parentVersion)})
+		// The BOM is a module of the build the app is in: a pom of the clone
+		// is found by its coordinates only there (0.29.216).
+		const build = `<project><groupId>t</groupId><artifactId>build</artifactId><version>1</version><packaging>pom</packaging><modules><module>bom</module><module>app</module></modules></project>`
+		dir := writeClone(t, map[string]string{"pom.xml": build, "bom/pom.xml": bom, "app/pom.xml": app(parentVersion)})
 		run, err := runManifestChild(context.Background(), manifestRequest{Passes: []string{manifestPassDeclarations}, Dir: dir, RemotePomLimit: maxRemotePomCoordinates},
 			testLimits(), src, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if err != nil {

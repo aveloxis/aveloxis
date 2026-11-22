@@ -1473,6 +1473,11 @@ func (t *gradleTree) applyPlatforms(b *gradleBuild, own, inherited []gradleDecl,
 					// Inside this BOM a pom consulted before its answer (or,
 					// with no answer, any of its poms) is not known.
 					byPlugin = answer{kind: saysNotKnown, reason: passed}
+				case found && strings.Contains(v, gradleUnreadProperty):
+					// Managed through a property the build sets in a way
+					// that is not read (projectProperty): no version, and
+					// why (0.29.217: the reason was empty).
+					byPlugin = answer{kind: saysNotKnown, reason: model.VersionReasonValueNotRead}
 				case stop, found && !gradleIsVersion(v):
 					byPlugin = answer{kind: saysNoVersion}
 				case found:

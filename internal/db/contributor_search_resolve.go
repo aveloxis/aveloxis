@@ -110,6 +110,15 @@ func (s *PostgresStore) GetContributorsNeedingSearch(ctx context.Context, limit 
 // nothing (ON CONFLICT DO NOTHING) — that's a sign of a
 // pre-existing duplicate the caller can't safely merge from here.
 func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID, login string, ghUserID int64) error {
+	// A GitHub user id that is not positive names nobody (0.29.217, review
+	// round 10, S10-3). Bound as it came, 0 would be written over a NULL
+	// gh_user_id, which fill-only then keeps, and would make the identity
+	// row (1, 0) that every login-only reference collapses onto
+	// (v0.27.108). The callers stop it; the store is where it cannot pass
+	// (SR-18).
+	if ghUserID <= 0 {
+		return fmt.Errorf("link contributor: GitHub user id %d names no user", ghUserID)
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -231,14 +240,6 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 			return fmt.Errorf("backfill identity row: %w", err)
 		}
 
-		// The login this link gives the contributor is recorded as one it
-		// is known under (0.29.216). Nothing is replaced on this path: it
-		// fills an empty gh_login and leaves an identity row that exists
-		// (R11).
-		if err = recordLoginObservation(ctx, tx, winner.cntrbID, 1, login, LoginSourceObservation); err != nil {
-			return fmt.Errorf("record login history: %w", err)
-		}
-
 		return tx.Commit(ctx)
 	})
 }
@@ -275,6 +276,15 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 // original observation; the application log captures the
 // transition.)
 func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, newLogin string, ghUserID int64) error {
+	// A GitHub user id that is not positive names nobody (0.29.217, review
+	// round 10, S10-3). Bound as it came, 0 would be written over a NULL
+	// gh_user_id, which fill-only then keeps, and would make the identity
+	// row (1, 0) that every login-only reference collapses onto
+	// (v0.27.108). The callers stop it; the store is where it cannot pass
+	// (SR-18).
+	if ghUserID <= 0 {
+		return fmt.Errorf("rename contributor login: GitHub user id %d names no user", ghUserID)
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -368,17 +378,6 @@ func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, n
 		// gh_user_id retains its COALESCE because the caller has
 		// the same value the row already holds (we resolved /user/id
 		// using it).
-		// The logins the two writes below replace (the winner's gh_login,
-		// and the login on this GitHub user's identity row) go to the
-		// history first, when they are another (0.29.216: only the new
-		// login was recorded, so the old one was in history only if some
-		// other path had recorded it).
-		var replaced replacedLogins
-		replaced.add(winner.cntrbID, 1, ghUserID, newLogin)
-		if err = recordReplacedLogins(ctx, tx, &replaced); err != nil {
-			return fmt.Errorf("record replaced login: %w", err)
-		}
-
 		if _, err = tx.Exec(ctx, `
 			UPDATE aveloxis_data.contributors
 			SET gh_login = $3,

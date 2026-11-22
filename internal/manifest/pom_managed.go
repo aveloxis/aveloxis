@@ -190,7 +190,7 @@ func (w *Walk) SettleMavenManaged(deps []model.LibyearDep) MavenManaged {
 			// makes the tree not whole.
 			for _, j := range cm.index().imports {
 				bg, ba, bv := importCoordinates(c, cm.managed[j])
-				if _, ambiguous := t.byCoordinates(bg, ba, bv, cm.path); ambiguous {
+				if _, ambiguous := t.byCoordinates(bg, ba, bv, cm.path, c.chain[0].path); ambiguous {
 					gapOf[p] = "a BOM import matches more than one pom of the repository"
 					continue
 				}

@@ -207,10 +207,11 @@ func siteIDs(calls []sqlscan.RunnerCall) []string {
 // (compared with white space folded); where ANOTHER Queue call queues the
 // same text, only when that batch was sent under the declaration this call
 // stands in (0.29.214: three calls queue one stamp, and a batch from any
-// of them reached all three). Only where the static reading's text for the
-// call is a SAMPLE (an open builder's, whose text depends on its input:
-// openQueueSites) is it reached when a batch was sent from the declaration
-// the call stands in; byDecl lists those.
+// of them reached all three). Only a call listed in openQueueSites (the
+// static reading has no text for it, or only a sample) is reached when a
+// batch was sent from the declaration the call stands in; byDecl lists
+// those. A Queue call with no text that is NOT listed is not reached
+// (0.29.217: it was counted by its declaration without a reviewed line).
 func statementSitesNotExecuted(calls []sqlscan.RunnerCall, static []sqlscan.Stmt, reached *writejudge.Sites, openQueueSites map[string]bool) (not, byDecl []string) {
 	ids := siteIDs(calls)
 	// How many Queue calls queue each text.
@@ -238,16 +239,14 @@ func statementSitesNotExecuted(calls []sqlscan.RunnerCall, static []sqlscan.Stmt
 	for i, c := range calls {
 		ran := false
 		if c.Queues {
-			texts := 0
 			for _, text := range textsOf(c) {
-				texts++
 				if queuedAt[text] > 1 {
 					ran = ran || reached.BatchTextDecls[text+"\x00"+c.File+"\x00"+c.Decl]
 				} else {
 					ran = ran || reached.BatchTexts[text]
 				}
 			}
-			if !ran && (texts == 0 || openQueueSites[ids[i]]) && reached.BatchDecls[c.File+"\x00"+c.Decl] {
+			if !ran && openQueueSites[ids[i]] && reached.BatchDecls[c.File+"\x00"+c.Decl] {
 				ran = true
 				byDecl = append(byDecl, ids[i])
 			}
@@ -263,12 +262,23 @@ func statementSitesNotExecuted(calls []sqlscan.RunnerCall, static []sqlscan.Stmt
 	return not, byDecl
 }
 
-// openQueueSites are the Queue calls whose statement's text depends on its
-// input, so that the static reading holds only samples of it and a sent
-// batch's text cannot be compared with them. Each says what varies. (None:
-// every statement the store queues is fixed text. The entry point is kept
-// so that the first one is a reviewed line here, not a silent fallback.)
-var openQueueSites = map[string]bool{}
+// openQueueSites are the Queue calls a sent batch's text cannot be compared
+// with at the call: the statement's text depends on its input, or the call
+// stands in a wrapper that is handed the text. Each is a reviewed line that
+// says what it stands for and what the check therefore does NOT see.
+var openQueueSites = map[string]bool{
+	// rowBatch.queue (lockfile_store.go, 0.29.216) is the one Queue call
+	// of the streaming lockfile replace; ReplaceRepoLockfileSnapshotFrom
+	// hands it THREE fixed statements: the inserts of repo_lockfiles,
+	// repo_lockfile_packages and repo_lockfile_edges. Counted as reached
+	// when any batch was sent under rowBatch.queue. All three are sent by
+	// TestASnapshotHandedOverInPiecesIsTheSnapshotHandedOverWhole
+	// (lockfile_store_stream_db_test.go), which reads the three tables
+	// back. LIMIT: a FOURTH statement queued through it by code no
+	// test calls would not be seen here (docs/contributing/testing.md,
+	// what the count does not see).
+	"internal/db/lockfile_store.go rowBatch.queue b.queued.Queue #1": true,
+}
 
 // unexecutedSitesBaseline is the reviewed list of the store's library
 // calls that no DB-tier test of the whole suite sends a statement through.
@@ -365,7 +375,7 @@ func TestTheSuiteReachesEveryStatementSite(t *testing.T) {
 	for _, f := range siteCoverageFailures(not, baseline) {
 		t.Error(f)
 	}
-	t.Logf("%d library calls that take SQL in internal/db; %d not reached by any DB-tier package (all on the baseline when this passes); %d Queue calls counted by their declaration: %v",
+	t.Logf("%d library calls that take SQL in internal/db; %d not reached by any DB-tier package (all on the baseline when this passes); %d Queue calls counted by their declaration (each a reviewed line of openQueueSites, which says how many statements it stands for): %v",
 		len(calls), len(not), len(byDecl), byDecl)
 }
 
@@ -451,20 +461,23 @@ func TestStatementSitesNotExecutedAndTheBaseline(t *testing.T) {
 	})
 	// C has static text that no batch held: its declaration having sent a
 	// batch does not reach it. E likewise, unless it is registered as an
-	// open site. F has no static text at all: its declaration is all there
-	// is to go by. D's declaration sent no batch.
-	not, byDecl := statementSitesNotExecuted(calls, static, reached, map[string]bool{"internal/db/a.go E batch.Queue #1": true})
-	want := []string{"internal/db/a.go A s.pool.Exec #2", "internal/db/a.go C batch.Queue #1", "internal/db/a.go D batch.Queue #1"}
+	// open site. F has no static text at all and is not registered: it is
+	// not reached, though its declaration sent a batch. D's declaration
+	// sent no batch: it is not reached although it IS registered as an
+	// open site (review round 11: a registered site is reached only when a
+	// batch was sent under its declaration, and nothing held that half).
+	not, byDecl := statementSitesNotExecuted(calls, static, reached, map[string]bool{"internal/db/a.go E batch.Queue #1": true, "internal/db/a.go D batch.Queue #1": true})
+	want := []string{"internal/db/a.go A s.pool.Exec #2", "internal/db/a.go C batch.Queue #1", "internal/db/a.go D batch.Queue #1", "internal/db/a.go F batch.Queue #1"}
 	if strings.Join(not, "|") != strings.Join(want, "|") {
 		t.Fatalf("not executed = %q, want %q", not, want)
 	}
-	if got := strings.Join(byDecl, "|"); got != "internal/db/a.go E batch.Queue #1|internal/db/a.go F batch.Queue #1" {
+	if got := strings.Join(byDecl, "|"); got != "internal/db/a.go E batch.Queue #1" {
 		t.Errorf("counted by declaration = %q", got)
 	}
-	if f := siteCoverageFailures(not, map[string]bool{want[0]: true, want[1]: true, want[2]: true}); len(f) != 0 {
+	if f := siteCoverageFailures(not, map[string]bool{want[0]: true, want[1]: true, want[2]: true, want[3]: true}); len(f) != 0 {
 		t.Errorf("the baseline lists exactly what was not executed, and yet: %q", f)
 	}
-	if f := siteCoverageFailures(not, map[string]bool{want[0]: true, want[1]: true}); len(f) != 1 || !strings.Contains(f[0], "sends a statement through "+want[2]) {
+	if f := siteCoverageFailures(not, map[string]bool{want[0]: true, want[1]: true, want[3]: true}); len(f) != 1 || !strings.Contains(f[0], "sends a statement through "+want[2]) {
 		t.Errorf("a call not executed and not on the baseline: %q", f)
 	}
 	if f := siteCoverageFailures(not[:2], map[string]bool{want[0]: true, want[1]: true, want[2]: true}); len(f) != 1 || !strings.Contains(f[0], "delete its line") {

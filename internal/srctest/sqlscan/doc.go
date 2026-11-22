@@ -303,7 +303,9 @@ package sqlscan
 //    every form it takes (a PL/pgSQL variable, an SQL function's parameter
 //    by name, and a placeholder: $1 in a body is the function's parameter
 //    or what EXECUTE ... USING gives it; 0.29.216, the last two were
-//    taken); a function of another schema (what it reads is not known); a
+//    taken; and a FROM item made of such placeholders, unnest($1) or
+//    VALUES ($1) in a body, 0.29.217, which was taken as a batch); a
+//    function of another schema (what it reads is not known); a
 //    bare name where no item can give it; and an expression of any KIND
 //    that is not on the list of kinds whose parts are walked
 //    (policy.go, valueKinds: the SQL/JSON constructors and queries,
@@ -489,8 +491,12 @@ package sqlscan
 //     of concatenated terms or nested sub-selects) overflows its stack:
 //     that statement is reported unread, and so is EVERY statement after
 //     it in the process, since the parser does not work again (pgread.go,
-//     parserCall). The check then fails for all of them; it does not
-//     panic and does not pass them.
+//     parserCall). For some shapes the parser does not come back at all
+//     instead: nothing is reported and the run ends at the test timeout
+//     (observed with arms of UNION ALL: 6,000 are read; 12,000 come back
+//     from the parser and are reported unread, the tree being too deep,
+//     with the parser still usable; 20,000 do not come back). Either way
+//     the check fails; in neither does a statement pass.
 //   - A trigger function's assignment to NEW.col is reported for every
 //     registered column of that name, since the function does not say
 //     which table its trigger is on.

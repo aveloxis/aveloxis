@@ -322,7 +322,12 @@ instead of ad-hoc regexes:
     statement, to a file in a directory its ancestor named in
     `AVELOXIS_WRITE_JUDGE_CHILD_DIR`, and the ancestor's verdict includes them.
     A child that calls `os.Exit` or is killed has already handed over what it
-    sent. Do not clear that variable from a child's environment.
+    sent. Do not clear that variable from a child's environment: a child
+    that sends a production statement without it fails and says so when its
+    tests return (a child that opens no pool, such as a subprocess under test
+    started with an environment the test built, is unaffected). A child that
+    calls `os.Exit` itself is not caught by that check: without the variable
+    nothing judges what it sent.
   - A statement sent with a `pgx.QueryRewriter` among its arguments
     (`pgx.NamedArgs` included; nothing in the module uses one) is held against
     production, because the tracer sees the text before the rewriter runs.
@@ -330,34 +335,71 @@ instead of ad-hoc regexes:
     `writejudge.Policies`, `writejudge.Exceptions`, and `writejudge.TempTables`
     (the temporary tables production declares). The judge and the store's
     static check read the same one.
-- **The coverage requirement** has two halves, both checked by
+- **The coverage requirement** is per call site, and it is checked by
   `scripts/skip-census.sh` (the closing suite) over the union of what every
   DB-tier package recorded (`AVELOXIS_STATEMENT_SITES_DIR`, set by the script).
-  An ordinary `go test ./internal/db/` judges but checks neither: one package
-  cannot know what the others reach.
-  - **Per call site.** Every call in `internal/db` of a library function that
-    takes SQL (`sqlscan.RunnerCalls`) must have had a statement sent through
-    it, or stand on `internal/db/testdata/unexecuted_statement_sites.txt`
+  **An ordinary `go test ./internal/db/` judges what it sends but does not run
+  this check**: one package cannot know what the others reach, so a new
+  library call with no test passes every ordinary command and fails only
+  `scripts/skip-census.sh`. Run that script (with `AVELOXIS_TEST_DB` exported)
+  before calling a change to the store done.
+  - Every call in `internal/db` of a library function that takes SQL
+    (`sqlscan.RunnerCalls`) must have had a statement sent through it, or stand
+    on `internal/db/testdata/unexecuted_statement_sites.txt`
     (`TestTheSuiteReachesEveryStatementSite`). That list is empty and only
-    shrinks. A new store function that runs SQL therefore needs a DB-tier
-    test, in any package, that reaches it and asserts what the statement did.
-  - **Per statement text.** A site is reached by ANY one statement sent
-    through it; a site that a builder, a list of migration steps or a loop
-    feeds can send many. So every text the static reader reads in the store
-    must have been sent, or stand on
-    `internal/db/testdata/unsent_statement_texts.txt`
-    (`TestTheSuiteSendsEveryStatementText`). That list only shrinks, a line is
-    `file<TAB>declaration<TAB>key` (`writejudge.TextKey`: no line number, so an
-    edit above a statement does not move it), and it NEVER excuses a text that
-    writes a table with a registered column: such a statement must be sent by
-    a test. A statement on the list was judged from its text alone.
-  - The closing suite prints both: `statement sites: N library calls that take
-    SQL in internal/db; 0 not reached by any DB-tier package` and `statement
-    texts: N statement texts read in internal/db; M not sent by any DB-tier
-    package`, with M by kind. To see what a run did not reach or send, point
-    `AVELOXIS_STATEMENT_SITES_CHECK` at the folder of records and set
-    `AVELOXIS_STATEMENT_SITES_OUT=file` or `AVELOXIS_STATEMENT_TEXTS_OUT=file`
-    (the second writes lines in the list's own form).
+    shrinks.
+  - **When the closing suite says a new call site is unreached**, do not add
+    the site to the list. Write a DB-tier test, in any package, that reaches
+    the call on the store's pool (or one opened through `db.OpenPool` /
+    `db.OpenPoolConfig`) and asserts what the statement did: seed what it
+    reads, call the function, check the rows. If a test does call the function
+    and the site is still unreached, the call sits on a branch the test does
+    not take (an error arm, a retry, a conflict): drive that branch.
+  - A site is reached by ANY one statement sent through it. A place that sends
+    many texts (a builder, a list of migration steps, a loop) is covered when
+    a test sends one of them; the judge does not say each of them ran.
+    **What the count therefore does not see:** a new statement whose text is
+    handed to an existing wrapper inside the package (`execMigrationStep`,
+    `execCreateIndexConcurrently`, `runKeysetWindows`, the time-series
+    helpers) adds no library call of its own, so it is covered as soon as any
+    test reaches the wrapper's call, whether or not a test sends the new
+    text. The same holds for `rowBatch.queue`, the one `Queue` call of the
+    streaming lockfile replace, which stands for three statements
+    (`openQueueSites` in `internal/db/statement_sites_test.go` is the
+    reviewed list of such `Queue` calls). A new statement of that kind needs
+    its own test by review, not by this count. The
+    three listings whose text depends on a sort key and filters are covered
+    variant by variant by their own tests instead
+    (`internal/db/listing_orders_db_test.go`: every key of each allowlist, both
+    directions, and every filter; the leaderboard's search folds case and
+    finds a term inside a name, a key outside its allowlist is the order by
+    repositories, and a member of a group with no queue row is listed). A
+    test that demands an order between two rows must seed them unequal on
+    some key the statement orders by, or the plan decides and not the
+    statement. What those tests hold of the later keys of an order, found by
+    removing or redirecting each one (review round 12):
+
+    - The queue page's last key, the repository id: pinned.
+    - The package leaderboard's last key, the package's name, for the keys
+      `repos`, `unresolved`, `cvss`, `transitive`, `versions` and `days`:
+      pinned, by three seeded packages equal on every other key. For `repos`
+      this holds only while the plan does not hand the three back in name
+      order of itself; under a sorted aggregate the missing key is not seen.
+    - The leaderboard's `name` key, whose last key is the ecosystem: its
+      direction is pinned, its presence is not.
+    - The second key of `days` and of `transitive`: held against being
+      dropped or reversed, not against being pointed at another column that
+      orders the fixture's rows the same way.
+    - The repository listing's last key, the repository id: not pinned. Its
+      rows come by id from the plan whether or not the statement orders by
+      it.
+
+    A new listing built from
+    an allowlist needs a test of that shape.
+  - The closing suite prints `statement sites: N library calls that take SQL in
+    internal/db; 0 not reached by any DB-tier package`. To see what a run did
+    not reach, point `AVELOXIS_STATEMENT_SITES_CHECK` at the folder of records
+    and set `AVELOXIS_STATEMENT_SITES_OUT=file`.
 - `sqlscan.ParseWrites(sql)` — the writes of a statement, read from the
   parse tree PostgreSQL's own parser gives (`pgread.go`; the parser is
   `github.com/wasilibs/go-pgquery`, the server's grammar compiled to
@@ -624,6 +666,7 @@ Patterns to follow:
 
 - **Negative repo IDs** (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table's sequence will reach collides with the next row the code creates (see "Each package gets a database of its own").
 - **`t.Cleanup`** to delete fixtures even if the test fails mid-run, registered right after the fixture's first write.
+- **A neighbour row.** A statement with a `WHERE` is tested against at least one row it must leave alone, asserted unchanged (or, for a read, not returned). Seed the neighbour where a statement without its predicate would prefer it: before the row under test, with the newer date, with the same number in another repository. A test whose table holds only the rows it names cannot tell `WHERE repo_id = $1` from no `WHERE` at all.
 - **Pre-cleanup** at the top of tests that reuse fixed fixture ids: the package's database persists across its own tests and across `-count` repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).
 - **Materialized views**: the package's database is prepared without them, and a store's zero-value `MatviewMode` is `MatviewsOff`, so a test that migrates again builds none unless it asks (v0.29.57 — the views are optional; `serve` and `migrate` set the mode from `collection.materialized_views`). A test of view behavior calls `store.SetMatviewMode(MatviewsRebuild)` (`db.MatviewsRebuild` from another package; `MatviewsIfMissing` to test serve's startup behaviour) before `RunMigrations`. `TestRunMigrationsOnFreshDB` checks that every view builds on an empty database.
 

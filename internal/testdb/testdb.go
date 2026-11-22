@@ -105,6 +105,10 @@ func start(runTests func() int, base, prefix string, prepare, verify func(ctx co
 // A child that sent none is as it was: most re-executed binaries are a
 // subprocess under test that opens no pool, started with an environment
 // of the test's own making.
+//
+// It is asked when the child's tests RETURN. A child that calls os.Exit
+// itself never comes here, so one that does and has no directory is not
+// caught: nothing judges what it sent.
 func unjudgedChild(child *writejudge.Judge, dir string, code int) int {
 	if dir != "" {
 		return code

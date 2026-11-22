@@ -67,12 +67,17 @@ const goModGraphTimeout = 5 * time.Minute
 // edge holds its line once in the row and once more in the key that
 // removes duplicates within its module, and about 110 bytes of structure,
 // so at the bound a worker holds about twice this plus 110 bytes a line:
-// some 480 MiB at both bounds together, 150 MiB for the largest honest
-// shape measured (280 modules, 650,440 lines).
+// some 480 MiB at both bounds together. Measured (0.29.217) for a build of
+// 280 modules: 607,803 edges of lines about 100 bytes long (some 60 MiB of
+// text) are held in 127 MiB, and the same edges with lines about 160
+// bytes long (some 92 MiB) in 155 MiB.
 // goModGraphLines is the count of those lines. It was 500,000, derived
 // from one kubernetes-class repository, and abandoned an honest monorepo
 // of 280 modules every cycle; with the bytes bounded it need only bound
-// the per-line structure, and is three times that monorepo.
+// the per-line structure, and is three times that monorepo's lines. In
+// BYTES the room is less: the 128 MiB of text is about twice that
+// monorepo's at 100 bytes a line and about one and a half times at 160,
+// and it is the bound such a build meets first.
 // goModLineBytes is the longest line taken: a graph line is two
 // `module@version` pairs, and a module path with its version must be a
 // path in the module cache, which PATH_MAX (4,096) bounds; twice that.

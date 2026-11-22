@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/config"
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -147,6 +150,60 @@ func TestEveryLockfileKindHasAMeasuredCost(t *testing.T) {
 	for kind, cost := range readCostMeasured {
 		if cost <= 100 {
 			t.Errorf("%s is measured at %d hundredths: reading a file costs at least its length", kind, cost)
+		}
+	}
+}
+
+// The configuration page's cost tables are the code's table (review round
+// 10: nothing held them together): every measured kind has a row, and the
+// row's measured cost, factor and largest file at the default limit
+// (config.DefaultManifestReadMemoryMB, read here and not copied) are
+// what readCostMeasured and readCostFactor give.
+func TestTheConfigurationPagesCostTableIsTheCodes(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "getting-started", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A Maven or Gradle build file is never read past the build-file
+	// limit, whatever its factor allows: its cell says so, whole.
+	buildFiles := map[string]bool{"build.gradle": true, "pom.xml": true}
+	seen := map[string]int{}
+	for _, line := range strings.Split(string(doc), "\n") {
+		cells := strings.Split(line, "|")
+		if len(cells) != 6 || !strings.HasPrefix(strings.TrimSpace(cells[1]), "`") {
+			continue
+		}
+		kind := strings.Trim(strings.TrimSpace(cells[1]), "`")
+		measured, ok := readCostMeasured[kind]
+		if !ok {
+			continue
+		}
+		seen[kind]++
+		factor := readCostFactor(kind)
+		largest := fmt.Sprintf("%.1f MiB", float64(config.DefaultManifestReadMemoryMB)/float64(factor))
+		if buildFiles[kind] {
+			largest = fmt.Sprintf("%d MiB (the build-file limit; %s by the factor)", manifest.MaxBuildFileBytes>>20, largest)
+		}
+		want := []string{fmt.Sprintf("%.2f", float64(measured)/100), fmt.Sprint(factor), largest}
+		for i, w := range want {
+			if got := strings.TrimSpace(cells[2+i]); got != w {
+				t.Errorf("configuration.md, row %s, column %d: %q, the code gives %q", kind, 2+i, got, w)
+			}
+		}
+	}
+	if head := fmt.Sprintf("Largest file read at %d MiB", config.DefaultManifestReadMemoryMB); strings.Count(string(doc), head) != 2 {
+		t.Errorf("configuration.md's two cost tables are not headed %q", head)
+	}
+	// Each kind once (review round 11: a count of rows let a row written
+	// twice stand in for a kind with none).
+	for kind := range readCostMeasured {
+		if seen[kind] != 1 {
+			t.Errorf("configuration.md has %d rows for %s; want exactly one", seen[kind], kind)
+		}
+	}
+	for kind := range buildFiles {
+		if _, measured := readCostMeasured[kind]; !measured {
+			t.Errorf("%s is named here as a build file and has no measured cost", kind)
 		}
 	}
 }

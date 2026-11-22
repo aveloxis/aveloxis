@@ -203,6 +203,24 @@ type gradleBuild struct {
 	// read (gradleValueTokens, gradleMapTokens): a version written with one
 	// is not read, and says so (model.VersionReasonValueNotRead).
 	unread map[string]bool
+	// mapEntry are the names that are an entry of a map this file assigns
+	// (ext.slf4j = [version: '1']  gives slf4j.version): a way of writing a
+	// variable's part, and no property of the project (projectProperty).
+	mapEntry map[string]bool
+	// direct are the names with a "." or "-" that this file ALSO assigns
+	// directly (ext['x.version'] = ..., set("x.version", ...)), with what
+	// those assignments alone say: projectProperty asks it for a name that
+	// is a map's entry too, where own and its marks hold the map's value
+	// mixed in.
+	direct map[string]gradleDirect
+	// quoted is set while an assignment that NAMES its property by a quoted
+	// key is read (ext['x.version'] = ..., set("x.version", ...),
+	// extra["x.version"] = ...): the only forms direct counts. A dotted
+	// write (ext.x.version = ...) names none: where x is a map it puts an
+	// entry into the map (0.29.219, review round 12: 0.29.218 counted it,
+	// and a map with a dotted write of its own entry was stored as an
+	// override of a BOM's value).
+	quoted bool
 	// seq counts the statements the assignments pass has looked at; setAt is
 	// where each variable was last assigned, for the names the file assigns
 	// ONLY as a property of the project at its top (assigning: this
@@ -1679,18 +1697,18 @@ func (b *gradleBuild) assignment(toks []gradleTok, i int, block, qual string) {
 			// Two parts and no more: a third is looked for, and no further.
 			parts, more := b.parts(b.unparen(stmt[1:]), 2)
 			if !more && len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 's' {
-				b.assigning = b.atTop
+				b.assigning, b.quoted = b.atTop, true
 				b.assign(parts[0][0].text, parts[1])
-				b.assigning = false
+				b.assigning, b.quoted = false, false
 			}
 		}
 		return
 	}
 	// ext["name"] = "value"; extra["name"] = "value".
 	if len(stmt) >= 6 && stmt[1].kind == 'p' && stmt[1].text == "[" && stmt[2].kind == 's' && stmt[3].text == "]" && stmt[4].text == "=" && gradleVarName(head+".") == "" {
-		b.assigning = b.atTop
+		b.assigning, b.quoted = b.atTop, true
 		b.assign(stmt[2].text, stmt[5:])
-		b.assigning = false
+		b.assigning, b.quoted = false, false
 		return
 	}
 	// [modifiers] name [: Type] = value   |   val name by extra("value")
@@ -1786,9 +1804,19 @@ func (b *gradleBuild) assign(name string, toks []gradleTok) {
 		}
 	}
 	if !isMap {
-		if v, _, ok := b.value(toks); ok {
+		v, _, ok := b.value(toks)
+		if b.quoted && strings.ContainsAny(name, ".-") {
+			b.assignedDirectly(name, v, ok)
+		}
+		if ok {
 			b.set(name, v)
-		} else if len(toks) > gradleValueTokens {
+		} else if len(toks) > gradleValueTokens || strings.ContainsAny(name, ".-") {
+			// Too long to be read; or a name only a property of the project
+			// can have (projectProperty), given something that is not a
+			// value read here (a call, a condition): the build sets it, and
+			// to what is not known (0.29.217, review round 10: nothing was
+			// noted, and a BOM's own value was stored as if the build set
+			// none).
 			b.notRead(name)
 		}
 		return
@@ -1803,6 +1831,10 @@ func (b *gradleBuild) assign(name string, toks []gradleTok) {
 		}
 		if v, _, ok := b.value(entry[2:]); ok {
 			b.set(name+"."+entry[0].text, v)
+			if b.mapEntry == nil {
+				b.mapEntry = map[string]bool{}
+			}
+			b.mapEntry[name+"."+entry[0].text] = true
 		}
 	}
 }
@@ -1845,6 +1877,30 @@ func (b *gradleBuild) encloses(toks []gradleTok, open int) bool {
 		}
 	}
 	return false
+}
+
+// gradleDirect is what the direct assignments of one name say, by the rule
+// set and notRead keep for every name: sure while each of them is a
+// property of the project assigned at the top of the file to a value that
+// is read, and all to the same value.
+type gradleDirect struct {
+	value string
+	sure  bool
+}
+
+// assignedDirectly notes one direct assignment of name: to value when read.
+func (b *gradleBuild) assignedDirectly(name, value string, read bool) {
+	d, seen := b.direct[name]
+	switch {
+	case !seen:
+		d = gradleDirect{value: value, sure: read && b.assigning}
+	default:
+		d.sure = d.sure && read && b.assigning && d.value == value
+	}
+	if b.direct == nil {
+		b.direct = map[string]gradleDirect{}
+	}
+	b.direct[name] = d
 }
 
 // notRead records a variable whose value is longer than is read.
@@ -1958,26 +2014,66 @@ func (b *gradleBuild) bomProperty(toks []gradleTok, i int) {
 	}
 }
 
+// gradleUnreadProperty stands for the value of a project property the build
+// assigns in a way that is not read (projectProperty). No coordinate has a
+// NUL in it, so one made with it is never asked of a repository
+// (remotePom); what a BOM manages through it has no version, and the reason
+// says so (model.VersionReasonValueNotRead: gradle_tree.go).
+const gradleUnreadProperty = "\x00value-not-read"
+
 // projectProperty is the value the build gives a property that a BOM of
 // Spring's dependency-management plugin sets: the plugin reads a BOM with
 // the project's properties over the BOM's own (ext['slf4j.version'] =
-// '1.7.20' is how a Spring Boot build changes a managed version). The
-// project's properties are the variables known here: what the file, the
-// files above it and the scripts they apply assign, and gradle.properties.
+// '1.7.20' is how a Spring Boot build changes a managed version).
 //
 // Only for a name that no local variable can have (it holds a "." or a
 // "-"): a "def" or "val" of the file is not a property of the project, and
-// is not told apart from one here. known is true with no value when the
-// build assigns the name and what it assigns was not read.
+// is not told apart from one here. And, in the file itself, only from the
+// assignments that are SURE to be a property of this project with a value
+// that is read (sure, the set the apply-order rule uses: a property
+// assigned at the top of the file, once, to a literal). Narrowed in
+// 0.29.217 (review round 10): any variable of the file with a dotted name
+// was taken, so one assigned inside subprojects { } changed the root
+// project's own versions, one assigned under a condition was taken as
+// unconditional, and the entry of a map (ext.slf4j = [version: '1']) was
+// read as the property slf4j.version.
+//
+//   - assigned surely: its value;
+//   - an entry of a map, and assigned in no other way: no property, the
+//     BOM's own value stands (as until 0.29.215). A name that is a map's
+//     entry and is assigned directly too is judged by its direct
+//     assignments alone (0.29.218, review round 11: the map was asked
+//     first, and hid a property the file surely sets). "Directly" is by a
+//     quoted key (gradleBuild.quoted); a dotted write of the entry
+//     (ext.x.version = ...) is a write into the map and counts for
+//     nothing here (0.29.219). Such a name is not looked for in the files
+//     above or in gradle.properties: a known difference;
+//   - assigned in any other way (in a block, under a condition, twice with
+//     different values, to something that is not a literal): the build
+//     sets it and to what is not known: gradleUnreadProperty;
+//   - not assigned by the file: what the files above it, the scripts they
+//     apply and gradle.properties give it.
 func (b *gradleBuild) projectProperty(name string) (value string, known bool) {
 	if !strings.ContainsAny(name, ".-") {
 		return "", false
 	}
-	if b.conflicted[name] || b.unread[name] {
-		return "", true
+	if b.mapEntry[name] {
+		d, direct := b.direct[name]
+		switch {
+		case !direct:
+			return "", false
+		case d.sure:
+			return d.value, true
+		}
+		return gradleUnreadProperty, true
 	}
-	if v, ok := b.own[name]; ok {
-		return v, true
+	if _, sure := b.setAt[name]; sure && !b.conflicted[name] && !b.unread[name] {
+		if v, ok := b.own[name]; ok {
+			return v, true
+		}
+	}
+	if _, assigned := b.own[name]; assigned || b.conflicted[name] || b.unread[name] || b.otherwise[name] {
+		return gradleUnreadProperty, true
 	}
 	v, ok, _ := b.outer.get(name)
 	return v, ok

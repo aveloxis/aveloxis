@@ -414,6 +414,11 @@ func parseSQL(sql string) parsed {
 // allocation loops). So after one failure the parser is not called again
 // in this process, and every later statement is not read either: the
 // check fails for all of them, saying which statement did it.
+//
+// Not every statement the parser cannot hold panics: for some shapes the
+// first call itself does not return (round 10: 20,000 arms of UNION ALL),
+// and then nothing here runs again; the run ends at the test timeout,
+// which is a failure too and never a pass.
 func parserCall(call func() (string, error)) (out string, err error) {
 	if dead, _ := parserDead.Load().(string); dead != "" {
 		return "", errors.New(dead)

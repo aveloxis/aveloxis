@@ -224,7 +224,7 @@ func (b *rowBatch) flush() error {
 // vulnerability program's chunk 3.
 const LockfileSnapshotRows = 4_000_000
 
-// ErrLockfileSnapshotTooLarge: the snapshot handed to a replace has more
+// ErrLockfileSnapshotTooLarge is returned when the snapshot handed to a replace has more
 // than LockfileSnapshotRows rows. Nothing of it was kept.
 var ErrLockfileSnapshotTooLarge = errors.New("the lockfile snapshot has more rows than are kept for one repository")
 

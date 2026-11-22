@@ -325,7 +325,21 @@ var cloneReadHeapLimit atomic.Int64
 // nothing measured behind it), and a file of short entries was let by and
 // stopped the child.
 //
-// What it is NOT: a bound for a file its reader rejects. Text that is not a
+// What it is NOT, first: a bound over every file a reader ACCEPTS. It is the
+// highest over the shapes measured, and review round 10 found accepted
+// shapes that cost more: a lockfile whose entries are almost all dependency
+// edges with one-letter names (Cargo.lock 23.6 times its length against a
+// factor of 11, uv.lock 21.0 against 9, pdm.lock 29.4 against 10,
+// poetry.lock 24.5 against 9, Gemfile.lock 20.6 against 14, renv.lock 35.2
+// against 10, gradle.lockfile 19.4 against 8) and a requirements.txt of
+// one-letter lines (200 against 100). The numbers were NOT raised for them
+// (0.29.217): raising them refuses honest files that fit (a 24.7 MiB
+// pnpm-lock.yaml and a 74 MiB package-lock.json were refused at 1,024 MiB,
+// the default until 0.29.217, where 0.29.215 read them; the default was
+// doubled for that), and what such a file costs is the
+// same as the next case costs.
+//
+// Nor is it a bound for a file its reader rejects. Text that is not a
 // lockfile of its kind can cost more before the reader gives up than any
 // file the reader accepts (measured: a pnpm-lock.yaml of flow collections
 // nested nine thousand deep, 97 times its length, against 30 for the

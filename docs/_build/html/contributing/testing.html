@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing &mdash; Aveloxis 0.29.215 documentation</title>
+  <title>Testing &mdash; Aveloxis 0.29.219 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2020ac6e"></script>
+      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -350,6 +351,9 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
@@ -2085,7 +2089,7 @@ literal, or a <code class="docutils literal notranslate"><span class="pre">filep
 <h3>SQL write scanning: <code class="docutils literal notranslate"><span class="pre">internal/srctest/sqlscan</span></code> (v0.27.124)<a class="headerlink" href="#sql-write-scanning-internal-srctest-sqlscan-v0-27-124" title="Link to this heading"></a></h3>
 <p>Tests that reason about SQL WRITE statements use the Phase 2 engine
 instead of ad-hoc regexes:</p>
-<ul class="simple">
+<ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.Statements(srctest.PackageFiles(t,</span> <span class="pre">&quot;internal/db&quot;,</span> <span class="pre">30))</span></code> — every
 backtick SQL literal in a package, comment-stripped (literal-aware), SPLIT at
 quote-/<code class="docutils literal notranslate"><span class="pre">$$</span></code>-aware top-level semicolons, and attributed to its source file.
@@ -2132,7 +2136,7 @@ DB-tier package, with no code in the package. Every statement PRODUCTION code
 sends is parsed and judged by the same <code class="docutils literal notranslate"><span class="pre">CheckIn</span></code>, policies and Exceptions, in
 the test database’s own catalog, and a violation fails the package after its
 tests.</p>
-<ul>
+<ul class="simple">
 <li><p><strong>One file opens every pool and connection</strong>: <code class="docutils literal notranslate"><span class="pre">internal/db/open.go</span></code>
 (<code class="docutils literal notranslate"><span class="pre">db.OpenPool</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenPoolConfig</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenConn</span></code>, <code class="docutils literal notranslate"><span class="pre">db.OpenConnConfig</span></code>).
 Each hands its configuration to the seam <code class="docutils literal notranslate"><span class="pre">internal/db/stmttrace.Wrap</span></code>
@@ -2163,7 +2167,12 @@ again as a child (a subprocess under test) needs nothing extra: the child’s
 statement, to a file in a directory its ancestor named in
 <code class="docutils literal notranslate"><span class="pre">AVELOXIS_WRITE_JUDGE_CHILD_DIR</span></code>, and the ancestor’s verdict includes them.
 A child that calls <code class="docutils literal notranslate"><span class="pre">os.Exit</span></code> or is killed has already handed over what it
-sent. Do not clear that variable from a child’s environment.</p></li>
+sent. Do not clear that variable from a child’s environment: a child
+that sends a production statement without it fails and says so when its
+tests return (a child that opens no pool, such as a subprocess under test
+started with an environment the test built, is unaffected). A child that
+calls <code class="docutils literal notranslate"><span class="pre">os.Exit</span></code> itself is not caught by that check: without the variable
+nothing judges what it sent.</p></li>
 <li><p>A statement sent with a <code class="docutils literal notranslate"><span class="pre">pgx.QueryRewriter</span></code> among its arguments
 (<code class="docutils literal notranslate"><span class="pre">pgx.NamedArgs</span></code> included; nothing in the module uses one) is held against
 production, because the tracer sees the text before the rewriter runs.</p></li>
@@ -2173,32 +2182,72 @@ production, because the tracer sees the text before the rewriter runs.</p></li>
 static check read the same one.</p></li>
 </ul>
 </li>
-<li><p><strong>The coverage requirement</strong> has two halves, both checked by
+<li><p><strong>The coverage requirement</strong> is per call site, and it is checked by
 <code class="docutils literal notranslate"><span class="pre">scripts/skip-census.sh</span></code> (the closing suite) over the union of what every
 DB-tier package recorded (<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_DIR</span></code>, set by the script).
-An ordinary <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./internal/db/</span></code> judges but checks neither: one package
-cannot know what the others reach.</p>
+<strong>An ordinary <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">test</span> <span class="pre">./internal/db/</span></code> judges what it sends but does not run
+this check</strong>: one package cannot know what the others reach, so a new
+library call with no test passes every ordinary command and fails only
+<code class="docutils literal notranslate"><span class="pre">scripts/skip-census.sh</span></code>. Run that script (with <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_DB</span></code> exported)
+before calling a change to the store done.</p>
 <ul>
-<li><p><strong>Per call site.</strong> Every call in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code> of a library function that
-takes SQL (<code class="docutils literal notranslate"><span class="pre">sqlscan.RunnerCalls</span></code>) must have had a statement sent through
-it, or stand on <code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unexecuted_statement_sites.txt</span></code>
+<li><p>Every call in <code class="docutils literal notranslate"><span class="pre">internal/db</span></code> of a library function that takes SQL
+(<code class="docutils literal notranslate"><span class="pre">sqlscan.RunnerCalls</span></code>) must have had a statement sent through it, or stand
+on <code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unexecuted_statement_sites.txt</span></code>
 (<code class="docutils literal notranslate"><span class="pre">TestTheSuiteReachesEveryStatementSite</span></code>). That list is empty and only
-shrinks. A new store function that runs SQL therefore needs a DB-tier
-test, in any package, that reaches it and asserts what the statement did.</p></li>
-<li><p><strong>Per statement text.</strong> A site is reached by ANY one statement sent
-through it; a site that a builder, a list of migration steps or a loop
-feeds can send many. So every text the static reader reads in the store
-must have been sent, or stand on
-<code class="docutils literal notranslate"><span class="pre">internal/db/testdata/unsent_statement_texts.txt</span></code>
-(<code class="docutils literal notranslate"><span class="pre">TestTheSuiteSendsEveryStatementText</span></code>). That list only shrinks, a line is
-<code class="docutils literal notranslate"><span class="pre">file&lt;TAB&gt;declaration&lt;TAB&gt;key</span></code> (<code class="docutils literal notranslate"><span class="pre">writejudge.TextKey</span></code>: no line number, so an
-edit above a statement does not move it), and it NEVER excuses a text that
-writes a table with a registered column: such a statement must be sent by
-a test. A statement on the list was judged from its text alone.</p></li>
-<li><p>The closing suite prints both: <code class="docutils literal notranslate"><span class="pre">statement</span> <span class="pre">sites:</span> <span class="pre">N</span> <span class="pre">library</span> <span class="pre">calls</span> <span class="pre">that</span> <span class="pre">take</span> <span class="pre">SQL</span> <span class="pre">in</span> <span class="pre">internal/db;</span> <span class="pre">0</span> <span class="pre">not</span> <span class="pre">reached</span> <span class="pre">by</span> <span class="pre">any</span> <span class="pre">DB-tier</span> <span class="pre">package</span></code> and <code class="docutils literal notranslate"><span class="pre">statement</span> <span class="pre">texts:</span> <span class="pre">N</span> <span class="pre">statement</span> <span class="pre">texts</span> <span class="pre">read</span> <span class="pre">in</span> <span class="pre">internal/db;</span> <span class="pre">M</span> <span class="pre">not</span> <span class="pre">sent</span> <span class="pre">by</span> <span class="pre">any</span> <span class="pre">DB-tier</span> <span class="pre">package</span></code>, with M by kind. To see what a run did not reach or send, point
-<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_CHECK</span></code> at the folder of records and set
-<code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_OUT=file</span></code> or <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_TEXTS_OUT=file</span></code>
-(the second writes lines in the list’s own form).</p></li>
+shrinks.</p></li>
+<li><p><strong>When the closing suite says a new call site is unreached</strong>, do not add
+the site to the list. Write a DB-tier test, in any package, that reaches
+the call on the store’s pool (or one opened through <code class="docutils literal notranslate"><span class="pre">db.OpenPool</span></code> /
+<code class="docutils literal notranslate"><span class="pre">db.OpenPoolConfig</span></code>) and asserts what the statement did: seed what it
+reads, call the function, check the rows. If a test does call the function
+and the site is still unreached, the call sits on a branch the test does
+not take (an error arm, a retry, a conflict): drive that branch.</p></li>
+<li><p>A site is reached by ANY one statement sent through it. A place that sends
+many texts (a builder, a list of migration steps, a loop) is covered when
+a test sends one of them; the judge does not say each of them ran.
+<strong>What the count therefore does not see:</strong> a new statement whose text is
+handed to an existing wrapper inside the package (<code class="docutils literal notranslate"><span class="pre">execMigrationStep</span></code>,
+<code class="docutils literal notranslate"><span class="pre">execCreateIndexConcurrently</span></code>, <code class="docutils literal notranslate"><span class="pre">runKeysetWindows</span></code>, the time-series
+helpers) adds no library call of its own, so it is covered as soon as any
+test reaches the wrapper’s call, whether or not a test sends the new
+text. The same holds for <code class="docutils literal notranslate"><span class="pre">rowBatch.queue</span></code>, the one <code class="docutils literal notranslate"><span class="pre">Queue</span></code> call of the
+streaming lockfile replace, which stands for three statements
+(<code class="docutils literal notranslate"><span class="pre">openQueueSites</span></code> in <code class="docutils literal notranslate"><span class="pre">internal/db/statement_sites_test.go</span></code> is the
+reviewed list of such <code class="docutils literal notranslate"><span class="pre">Queue</span></code> calls). A new statement of that kind needs
+its own test by review, not by this count. The
+three listings whose text depends on a sort key and filters are covered
+variant by variant by their own tests instead
+(<code class="docutils literal notranslate"><span class="pre">internal/db/listing_orders_db_test.go</span></code>: every key of each allowlist, both
+directions, and every filter; the leaderboard’s search folds case and
+finds a term inside a name, a key outside its allowlist is the order by
+repositories, and a member of a group with no queue row is listed). A
+test that demands an order between two rows must seed them unequal on
+some key the statement orders by, or the plan decides and not the
+statement. What those tests hold of the later keys of an order, found by
+removing or redirecting each one (review round 12):</p>
+<ul class="simple">
+<li><p>The queue page’s last key, the repository id: pinned.</p></li>
+<li><p>The package leaderboard’s last key, the package’s name, for the keys
+<code class="docutils literal notranslate"><span class="pre">repos</span></code>, <code class="docutils literal notranslate"><span class="pre">unresolved</span></code>, <code class="docutils literal notranslate"><span class="pre">cvss</span></code>, <code class="docutils literal notranslate"><span class="pre">transitive</span></code>, <code class="docutils literal notranslate"><span class="pre">versions</span></code> and <code class="docutils literal notranslate"><span class="pre">days</span></code>:
+pinned, by three seeded packages equal on every other key. For <code class="docutils literal notranslate"><span class="pre">repos</span></code>
+this holds only while the plan does not hand the three back in name
+order of itself; under a sorted aggregate the missing key is not seen.</p></li>
+<li><p>The leaderboard’s <code class="docutils literal notranslate"><span class="pre">name</span></code> key, whose last key is the ecosystem: its
+direction is pinned, its presence is not.</p></li>
+<li><p>The second key of <code class="docutils literal notranslate"><span class="pre">days</span></code> and of <code class="docutils literal notranslate"><span class="pre">transitive</span></code>: held against being
+dropped or reversed, not against being pointed at another column that
+orders the fixture’s rows the same way.</p></li>
+<li><p>The repository listing’s last key, the repository id: not pinned. Its
+rows come by id from the plan whether or not the statement orders by
+it.</p></li>
+</ul>
+<p>A new listing built from
+an allowlist needs a test of that shape.</p>
+</li>
+<li><p>The closing suite prints <code class="docutils literal notranslate"><span class="pre">statement</span> <span class="pre">sites:</span> <span class="pre">N</span> <span class="pre">library</span> <span class="pre">calls</span> <span class="pre">that</span> <span class="pre">take</span> <span class="pre">SQL</span> <span class="pre">in</span> <span class="pre">internal/db;</span> <span class="pre">0</span> <span class="pre">not</span> <span class="pre">reached</span> <span class="pre">by</span> <span class="pre">any</span> <span class="pre">DB-tier</span> <span class="pre">package</span></code>. To see what a run did
+not reach, point <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_CHECK</span></code> at the folder of records
+and set <code class="docutils literal notranslate"><span class="pre">AVELOXIS_STATEMENT_SITES_OUT=file</span></code>.</p></li>
 </ul>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sqlscan.ParseWrites(sql)</span></code> — the writes of a statement, read from the
@@ -2458,6 +2507,7 @@ that decision.</p>
 <ul class="simple">
 <li><p><strong>Negative repo IDs</strong> (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table’s sequence will reach collides with the next row the code creates (see “Each package gets a database of its own”).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">t.Cleanup</span></code></strong> to delete fixtures even if the test fails mid-run, registered right after the fixture’s first write.</p></li>
+<li><p><strong>A neighbour row.</strong> A statement with a <code class="docutils literal notranslate"><span class="pre">WHERE</span></code> is tested against at least one row it must leave alone, asserted unchanged (or, for a read, not returned). Seed the neighbour where a statement without its predicate would prefer it: before the row under test, with the newer date, with the same number in another repository. A test whose table holds only the rows it names cannot tell <code class="docutils literal notranslate"><span class="pre">WHERE</span> <span class="pre">repo_id</span> <span class="pre">=</span> <span class="pre">$1</span></code> from no <code class="docutils literal notranslate"><span class="pre">WHERE</span></code> at all.</p></li>
 <li><p><strong>Pre-cleanup</strong> at the top of tests that reuse fixed fixture ids: the package’s database persists across its own tests and across <code class="docutils literal notranslate"><span class="pre">-count</span></code> repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).</p></li>
 <li><p><strong>Materialized views</strong>: the package’s database is prepared without them, and a store’s zero-value <code class="docutils literal notranslate"><span class="pre">MatviewMode</span></code> is <code class="docutils literal notranslate"><span class="pre">MatviewsOff</span></code>, so a test that migrates again builds none unless it asks (v0.29.57 — the views are optional; <code class="docutils literal notranslate"><span class="pre">serve</span></code> and <code class="docutils literal notranslate"><span class="pre">migrate</span></code> set the mode from <code class="docutils literal notranslate"><span class="pre">collection.materialized_views</span></code>). A test of view behavior calls <code class="docutils literal notranslate"><span class="pre">store.SetMatviewMode(MatviewsRebuild)</span></code> (<code class="docutils literal notranslate"><span class="pre">db.MatviewsRebuild</span></code> from another package; <code class="docutils literal notranslate"><span class="pre">MatviewsIfMissing</span></code> to test serve’s startup behaviour) before <code class="docutils literal notranslate"><span class="pre">RunMigrations</span></code>. <code class="docutils literal notranslate"><span class="pre">TestRunMigrationsOnFreshDB</span></code> checks that every view builds on an empty database.</p></li>
 </ul>

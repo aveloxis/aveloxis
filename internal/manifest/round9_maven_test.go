@@ -189,10 +189,13 @@ func TestTheDefaultBuildsProfilesAreApplied(t *testing.T) {
 }
 
 // A profile, active by default, that DECLARES the dependency with a version:
-// that declaration is a row of its own, and the pom's own declaration, with
-// no version, is the same dependency in the build; it is given no managed
-// version, whichever pom manages it. A profile that is not active leaves
-// the pom's own declaration to its management.
+// that declaration is a row of its own, and the declaration with no version
+// of the pom that HOLDS the profile is the same dependency in the build; it
+// is given no managed version. A module below declares the dependency
+// itself, which replaces what it inherits, the profile's with it: it takes
+// the managed version, as with no profile (0.29.217, review round 10: the
+// module's was withheld too, which 0.29.214 stored). A profile that is not
+// active leaves the pom's own declaration to its management.
 func TestADefaultProfilesDeclarationWithholdsTheManagedVersion(t *testing.T) {
 	rows := func(activation, ownManagement string) []string {
 		root := writeTree(t, oneBuild(map[string]string{
@@ -218,13 +221,32 @@ func TestADefaultProfilesDeclarationWithholdsTheManagedVersion(t *testing.T) {
 		activation, own string
 		want            []string
 	}{
-		"active by default":                        {byDefault, "", []string{"pom.xml g:x@9()", "m/pom.xml g:x@(profile_managed)", "m/pom.xml g:z@3.0()"}},
-		"active by default, the module manages it": {byDefault, r4dep("g", "x", "4.0"), []string{"pom.xml g:x@9()", "m/pom.xml g:x@(profile_managed)", "m/pom.xml g:z@3.0()"}},
+		"active by default":                        {byDefault, "", []string{"pom.xml g:x@9()", "m/pom.xml g:x@2.0()", "m/pom.xml g:z@3.0()"}},
+		"active by default, the module manages it": {byDefault, r4dep("g", "x", "4.0"), []string{"pom.xml g:x@9()", "m/pom.xml g:x@4.0()", "m/pom.xml g:z@3.0()"}},
 		"not active":                               {"", "", []string{"pom.xml g:x@9()", "m/pom.xml g:x@2.0()", "m/pom.xml g:z@3.0()"}},
 	} {
 		if got := rows(c.activation, c.own); strings.Join(got, ", ") != strings.Join(c.want, ", ") {
 			t.Errorf("a profile %s: rows %v, want %v", name, got, c.want)
 		}
+	}
+	// The pom that holds the profile: its own declaration with no version.
+	held := oneBuild(map[string]string{
+		"pom.xml": "<project><groupId>t</groupId><artifactId>root</artifactId><version>1</version><dependencyManagement><dependencies>" + r4dep("g", "x", "2.0") +
+			"</dependencies></dependencyManagement></project>",
+		"m/pom.xml": "<project><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>m</artifactId><dependencies>" + r4dep("g", "x", "") +
+			"</dependencies><profiles><profile><id>p</id>" + byDefault + "<dependencies>" + r4dep("g", "x", "9") + "</dependencies></profile></profiles></project>",
+	})
+	heldRoot := writeTree(t, held)
+	w := NewWalk(heldRoot, nil)
+	w.SetPomSource(&r8Counting{})
+	withheld := false
+	for _, d := range w.Read(filepath.Join(heldRoot, "m/pom.xml"), Options{}).Deps {
+		if d.Name == "g:x" && d.Version == "" {
+			withheld = d.VersionReason == model.VersionReasonProfileManaged
+		}
+	}
+	if !withheld {
+		t.Error("a pom whose own default profile declares g:x at 9 and that declares g:x with no version: want that declaration with no version and profile_managed")
 	}
 }
 

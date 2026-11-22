@@ -348,6 +348,13 @@ func (t *pomTree) remotePom(group, artifact, version string, declared func() []s
 	// A snapshot is whatever was built last, a range (or LATEST, RELEASE:
 	// Maven's names for "whichever is newest") is not one pom, and an
 	// unresolved reference is not a coordinate: none is asked for.
+	// A coordinate written with a property of a Gradle build whose value is
+	// not read (projectProperty) is not asked for either, and what it
+	// would manage is withheld for THAT reason (0.29.218, review round 11:
+	// it said "not found", as if a repository had been asked).
+	if strings.Contains(group+artifact+version, gradleUnreadProperty) {
+		return nil, model.VersionReasonValueNotRead, model.VersionReasonValueNotRead
+	}
 	if group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") ||
 		strings.Contains(strings.ToUpper(version), "SNAPSHOT") || strings.ContainsAny(version, "[](),") ||
 		version == "LATEST" || version == "RELEASE" {
@@ -407,13 +414,16 @@ func (ans remoteAnswer) reason() (m *pomModel, reason, unknown string) {
 // worseReason orders the reasons a chain can have: a failed lookup may yet
 // succeed and outranks the rest; a refusal is the operator's and outranks
 // "not found"; a pom that could not be had outranks a profile that was not
-// applied.
+// applied. A coordinate written with a value that was not read (remotePom,
+// 0.29.218) is said before "not found": it is why nothing was asked for.
 func worseReason(a, b string) string {
 	rank := func(r string) int {
 		switch r {
 		case model.VersionReasonInheritedLookupFailed:
-			return 4
+			return 5
 		case model.VersionReasonInheritedRepositoryRefused:
+			return 4
+		case model.VersionReasonValueNotRead:
 			return 3
 		case model.VersionReasonInheritedNotFound:
 			return 2
@@ -1001,7 +1011,7 @@ func decodePom(content, path string) (*pomModel, error) {
 		if len(pr.Managed) > 0 {
 			m.profileManagement = true
 		}
-		if strings.TrimSpace(pr.ActiveByDefault) != "true" {
+		if !pomActiveByDefault(pr.ActiveByDefault) {
 			continue
 		}
 		for _, e := range pr.Properties.Entries {
@@ -1146,7 +1156,7 @@ func (t *pomTree) chainWhole(m *pomModel) (chain []*pomModel, gap, unknown strin
 //     declares a repository that is never asked (repositoryUnasked).
 func (t *pomTree) obtain(group, artifact, version string, from pomAsker) (m *pomModel, reason, unknown string) {
 	if !t.pathOnly {
-		in, ambiguous := t.byCoordinates(group, artifact, version, from.from)
+		in, ambiguous := t.byCoordinates(group, artifact, version, from.from, from.reading)
 		if ambiguous {
 			return nil, model.VersionReasonInheritedNotFound, model.VersionReasonInheritedNotFound
 		}
@@ -1535,12 +1545,14 @@ func (c *pomContext) lookup(lk *pomLookup, group, artifact string, depth int) (v
 	// managed version from that pom, a farther one or an import is not
 	// given: it is withheld. An answer from a NEARER pom stands. (What such
 	// a profile MANAGES is in the pom's model already: decodePom.)
-	profiled := false
-	for _, m := range c.chain {
-		// Whichever pom would answer: the declaration is merged into the
-		// row's own before any management is applied.
-		profiled = profiled || m.profileDeclared[key]
-	}
+	// Only the pom being read: a profile's declaration is merged into the
+	// declarations of the pom that HOLDS the profile. A child's own
+	// declaration of the artifact replaces what it inherits, the profile's
+	// with it, and takes the managed version as it would with no profile
+	// (0.29.217, review round 10: every pom of the chain was consulted, so
+	// a parent's default profile withheld its children's versions, which
+	// 0.29.214 stored).
+	profiled := c.chain[0].profileDeclared[key]
 	doubt := func() {
 		if profiled {
 			lk.gap = worseReason(lk.gap, model.VersionReasonProfileManaged)
@@ -1657,18 +1669,26 @@ func (c *pomContext) lookupImports(lk *pomLookup, m *pomModel, group, artifact s
 			}
 			bg, ba, bv = at.group, at.artifact, at.version
 		}
-		// The one pom of the declaring pom's build with the coordinates,
-		// else a repository's (obtain). Which build is m's, the pom that
-		// declares the import, and so the same for every pom that inherits
-		// it: what is remembered of the import holds for all of them.
-		bom, reason, unknown := c.tree.obtain(bg, ba, bv, pomAsker{from: m.path, declared: c.declaredFor})
+		// The one pom with the coordinates in the build of m, the pom that
+		// declares the import, or in the build of the pom being read
+		// (byCoordinates), else a repository's (obtain). The second build
+		// is the reader's and not the same for every pom that inherits the
+		// import, so a miss is remembered for all of them only when no pom
+		// of the clone has the coordinates at all (below).
+		bom, reason, unknown := c.tree.obtain(bg, ba, bv, pomAsker{from: m.path, reading: c.chain[0].path, declared: c.declaredFor})
 		if bom == nil {
 			// It leads nowhere: for every question of this walk when its
 			// coordinates are written out, for this file's when they depend
 			// on the model. Not looked for again.
 			pass(reason, unknown)
-			if plain {
+			if plain && !c.tree.inClone(bg, ba, bv) {
 				idx.dead[n], idx.deadReason[n], idx.deadUnknown[n], idx.stale = true, reason, unknown, true
+			} else if plain {
+				// A pom of the clone has these coordinates, in some build:
+				// whether it is a candidate depends on the pom being read
+				// (byCoordinates), so nothing is remembered for the poms
+				// that inherit the import (0.29.217: remembered, the answer
+				// was the first reader's).
 			} else {
 				at.dead, at.reason, at.unknown = true, reason, unknown
 			}
@@ -1729,15 +1749,31 @@ func (lk *pomLookup) pass(reason, unknown string) {
 // checkout for them, so there is no build of the clone to look in and
 // nothing of the clone is taken (until 0.29.216 any one pom of the clone
 // with the coordinates was: a fixture's, like a parent's before rule A).
-func (t *pomTree) byCoordinates(group, artifact, version, from string) (m *pomModel, ambiguous bool) {
+//
+// reading is the pom whose model is being built (the first of the chain the
+// naming pom is in), "" when there is none. When the naming pom is a pom of
+// the clone, the build of the pom being read is looked in too (0.29.217,
+// review round 10): a parent reached by relativePath that no pom lists as a
+// module is a build of its own by the rule above, and the BOM it imports
+// from the reactor its child is built in was not found (0.29.214 and
+// 0.29.215 found it). A fetched pom still finds nothing in the clone.
+func (t *pomTree) byCoordinates(group, artifact, version, from, reading string) (m *pomModel, ambiguous bool) {
 	if from == "" || group == "" || artifact == "" || version == "" || strings.Contains(group+artifact+version, "${") {
 		return nil, false
 	}
 	t.indexTree()
+	own, isOwn := t.buildOf[filepath.Clean(from)]
+	if !isOwn {
+		return nil, false
+	}
+	read, isRead := "", false
+	if reading != "" {
+		read, isRead = t.buildOf[filepath.Clean(reading)]
+	}
 	var one string
 	n := 0
 	for _, path := range t.byCoord[group+":"+artifact+":"+version] {
-		if t.buildOf[path] == t.buildOf[filepath.Clean(from)] {
+		if b := t.buildOf[path]; b == own || (isRead && b == read) {
 			one = path
 			n++
 		}
@@ -1746,6 +1782,18 @@ func (t *pomTree) byCoordinates(group, artifact, version, from string) (m *pomMo
 		return nil, n > 1
 	}
 	return t.model(one), false
+}
+
+// pomActiveByDefault reads an <activeByDefault> value as Maven does a
+// boolean: "true" in any case, with space around it (0.29.217: both of the
+// pom readers ask here; "TRUE" was read as not active).
+func pomActiveByDefault(v string) bool { return strings.EqualFold(strings.TrimSpace(v), "true") }
+
+// inClone reports whether any pom of the clone gives itself these
+// coordinates, in whatever build.
+func (t *pomTree) inClone(group, artifact, version string) bool {
+	t.indexTree()
+	return len(t.byCoord[group+":"+artifact+":"+version]) > 0
 }
 
 // modulePom is the pom a <module> entry of the pom at path names: the file
@@ -2018,7 +2066,10 @@ func repositoryUnasked(d DeclaredRepository) bool {
 type pomAsker struct {
 	// from is the path of the pom that names the coordinates ("remote:..."
 	// for a fetched one); "" when no pom does (a Gradle platform).
-	from     string
+	from string
+	// reading is the path of the pom whose model is being built (the first
+	// pom of the chain): byCoordinates.
+	reading  string
 	declared func() []string
 	unasked  func() bool
 }
@@ -2027,6 +2078,7 @@ type pomAsker struct {
 func chainAsker(chain []*pomModel) pomAsker {
 	return pomAsker{
 		from:     chain[len(chain)-1].path,
+		reading:  chain[0].path,
 		declared: func() []string { return fetchableDeclared(chain) },
 		unasked: func() bool {
 			for _, m := range chain {
@@ -2042,7 +2094,7 @@ func chainAsker(chain []*pomModel) pomAsker {
 // asker is the asker for this effective model, for coordinates that m, a
 // pom of its chain, names.
 func (c *pomContext) asker(m *pomModel) pomAsker {
-	return pomAsker{from: m.path, declared: c.declaredFor, unasked: c.unasked}
+	return pomAsker{from: m.path, reading: c.chain[0].path, declared: c.declaredFor, unasked: c.unasked}
 }
 
 // fetchableDeclared are the repositories the tree poms of a chain declare

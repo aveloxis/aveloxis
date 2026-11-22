@@ -55,15 +55,6 @@ var fixedRegistryHosts = []string{
 	"crandb.r-pkg.org",
 }
 
-// shippedRegistryBases are the base URLs the resolvers ship with, read at
-// package initialisation, before any test points one at a local server.
-var shippedRegistryBases = map[string]string{
-	"npm": npmRegistryBase, "pypi": pypiRegistryBase, "go": goProxyBase, "cargo": cratesRegistryBase,
-	"rubygems": rubygemsRegistryBase, "maven": mavenRepositoryBase, "packagist": packagistRegistryBase,
-	"hex": hexRegistryBase, "nuget": nugetRegistryBase, "pub": pubDevRegistryBase, "hackage": hackageRegistryBase,
-	"cran": cranRegistryBase,
-}
-
 // registryPolicyFrom is the process's outbound-address rule with the fixed
 // registries added to the names it trusts.
 func registryPolicyFrom(base *platform.OutboundPolicy) *platform.OutboundPolicy {
@@ -335,11 +326,6 @@ func registryBreakerFor(host string) *hostguard.Breaker {
 	}
 	b, _ := registryBreakers.LoadOrStore(host, hostguard.NewBreaker(registryBreakerThreshold, registryBreakerRest, time.Now))
 	return b.(*hostguard.Breaker)
-}
-
-// resetRegistryBreakers forgets every host's state (tests).
-func resetRegistryBreakers() {
-	registryBreakers.Range(func(k, _ any) bool { registryBreakers.Delete(k); return true })
 }
 
 // isRegistryHostFailure reports whether a request's outcome is a failure OF

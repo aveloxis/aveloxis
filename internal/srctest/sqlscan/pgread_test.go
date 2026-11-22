@@ -240,3 +240,7 @@ func TestBodiesNestedTooDeepAreNotRead(t *testing.T) {
 		t.Errorf("a body two deep: %+v %v", ws, err)
 	}
 }
+
+// parserGrammar is the PostgreSQL major version whose grammar stmtKinds and
+// alterKinds were classified for.
+const parserGrammar = 17

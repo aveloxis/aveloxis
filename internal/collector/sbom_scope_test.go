@@ -10,7 +10,6 @@ package collector
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -176,28 +175,10 @@ func TestModelScopeMappings(t *testing.T) {
 // closure exceeded it and the whole scan 400'd ("too many queries").
 // The miss path must chunk at osvBatchMaxQueries.
 func TestOSVBatchChunking(t *testing.T) {
-	if got := chunkStrings(nil, 1000); got != nil {
-		t.Errorf("empty list must produce no chunks, got %v", got)
-	}
-	small := []string{"a", "b", "c"}
-	if got := chunkStrings(small, 1000); len(got) != 1 || len(got[0]) != 3 {
-		t.Errorf("under-cap list must be one chunk, got %v", got)
-	}
-	big := make([]string, 2500)
-	for i := range big {
-		big[i] = fmt.Sprintf("pkg:npm/p%d@1", i)
-	}
-	chunks := chunkStrings(big, 1000)
-	if len(chunks) != 3 {
-		t.Fatalf("2500 purls at cap 1000 must be 3 chunks, got %d", len(chunks))
-	}
-	if len(chunks[0]) != 1000 || len(chunks[1]) != 1000 || len(chunks[2]) != 500 {
-		t.Errorf("chunk sizes wrong: %d/%d/%d", len(chunks[0]), len(chunks[1]), len(chunks[2]))
-	}
-	// Order preserved end-to-end (results map back positionally).
-	if chunks[2][499] != "pkg:npm/p2499@1" {
-		t.Errorf("chunking must preserve order, last = %s", chunks[2][499])
-	}
+	// 0.29.221: six assertions on a string-chunking helper stood here. No
+	// production code called the helper (the miss path chunks its own
+	// query type), so they could not fail for a production change and went
+	// with it.
 	// The scan's miss path must actually use the cap.
 	if !strings.Contains(srctest.PackageFunc(t, "internal/collector", "func fetchOSVQueryAnswers("), "start += osvBatchMaxQueries" /* behaviour: TestNoBatchExceedsOSVsLimit */) {
 		t.Error("ScanVulnerabilities' miss path must chunk at osvBatchMaxQueries — OSV 400s beyond 1000 queries per batch")

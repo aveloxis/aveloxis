@@ -34,16 +34,6 @@ const (
 	exposurePredicateSQLv = ` AND COALESCE(v.dependency_kind, '') <> 'self' AND NOT (COALESCE(v.version_resolution, '') = 'unpinned' AND COALESCE(v.ecosystem, '') <> 'githubactions')`
 )
 
-// exposureExprSQL is the predicate itself, over the three operands it reads.
-// The two constants above stay constants (other constants are built from
-// them); TestExposurePredicateHasOneSpelling holds them equal to this.
-// The upsert builds the class a row HAD and the class it is ABOUT TO HAVE
-// from it (entered_exposure_at, 0.29.166), so those cannot drift from the
-// reads.
-func exposureExprSQL(kind, resolution, ecosystem string) string {
-	return `COALESCE(` + kind + `, '') <> 'self' AND NOT (COALESCE(` + resolution + `, '') = 'unpinned' AND COALESCE(` + ecosystem + `, '') <> 'githubactions')`
-}
-
 // criticalSQL is the one "critical" rule the counts share
 // (vulnclass.IsCritical, in SQL).
 const criticalSQL = `(severity = 'CRITICAL' OR cvss_score >= 9.0)`

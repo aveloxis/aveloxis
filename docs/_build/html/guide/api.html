@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.219 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.222 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=ffc285c6"></script>
+      <script src="../_static/documentation_options.js?v=46f94c6f"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1865,11 +1865,14 @@
 <section id="changes-for-api-clients-in-0-29-219">
 <h2>Changes for API clients in 0.29.219<a class="headerlink" href="#changes-for-api-clients-in-0-29-219" title="Link to this heading"></a></h2>
 <p>No field or value changes. One Gradle answer differs from 0.29.218: a write through a
-dotted name into a map (<code class="docutils literal notranslate"><span class="pre">ext.log4j2.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code> after <code class="docutils literal notranslate"><span class="pre">ext.log4j2</span> <span class="pre">=</span> <span class="pre">[...]</span></code>) is no
+dotted name into a map (<code class="docutils literal notranslate"><span class="pre">ext.log4j2.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code> after <code class="docutils literal notranslate"><span class="pre">ext.log4j2</span> <span class="pre">=</span> <span class="pre">[version:</span> <span class="pre">'...']</span></code>) is no
 longer taken for the Spring property <code class="docutils literal notranslate"><span class="pre">log4j2.version</span></code>, so a dependency managed through
 that property has the BOM’s own version again, as in 0.29.217. When such a write is
 not a literal, the BOM’s version is stored too, where 0.29.217 and 0.29.218 sent no
-version and <code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code>.</p>
+version and <code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code>. When the file also sets the property once,
+at the top level, by a quoted key with a literal value (<code class="docutils literal notranslate"><span class="pre">ext['log4j2.version']</span> <span class="pre">=</span> <span class="pre">'...'</span></code>),
+that value is sent; 0.29.218, when the two values differed, sent no version and
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> there, and 0.29.217 the BOM’s version or none.</p>
 </section>
 <section id="changes-for-api-clients-in-0-29-218">
 <h2>Changes for API clients in 0.29.218<a class="headerlink" href="#changes-for-api-clients-in-0-29-218" title="Link to this heading"></a></h2>

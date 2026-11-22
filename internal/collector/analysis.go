@@ -1317,7 +1317,8 @@ func storableLibyearRow(row *model.LibyearRow) bool {
 // Whether the registry HAS the declared version is a separate fact
 // (LibyearRow.VersionFound) and does not change the reason: four resolvers
 // cannot tell a version they lack from a version with no date
-// (resolverCanProveVersionMiss), so no reason may depend on it.
+// (resolverCanProveVersionMiss, the table libyear_status_test.go holds the
+// resolvers to), so no reason may depend on it.
 func libyearStatus(dep model.LibyearDep, row *model.LibyearRow, err error) string {
 	if dep.Manager == "githubactions" {
 		return model.LibyearNoTimeline
@@ -1388,28 +1389,6 @@ func stampVersionSource(dep model.LibyearDep, row *model.LibyearRow) {
 	if dep.VersionSource == versionuse.SourceLocked && row.Purl != "" {
 		row.Purl = pkgid.WithVersion(row.Purl, dep.Version)
 	}
-}
-
-// resolverCanProveVersionMiss states, per package manager, whether its
-// resolver can establish that the registry does NOT have the declared
-// version (as opposed to having it with no date). Seven read a list or map
-// of the package's versions and can. Five cannot:
-//
-//   - go: the proxy's 404 for a version is also what it answers for a private
-//     module, so it proves nothing about the version;
-//   - rubygems: the versions list omits yanked gems;
-//   - maven: the metadata's version list is not authoritative, and the date
-//     comes from a separate request for the pom;
-//   - hackage and swiftpm: one lookup answers for both the version and its
-//     date.
-//
-// A resolver that cannot prove a miss never sets VersionNotOnRegistry; it may
-// still set VersionOnRegistry when it found a date for the version.
-var resolverCanProveVersionMiss = map[string]bool{
-	"npm": true, "pypi": true, "cargo": true, "packagist": true, "hex": true, "nuget": true, "pub": true,
-	// crandb's timeline lists every version CRAN published.
-	"cran": true,
-	"go":   false, "rubygems": false, "maven": false, "hackage": false, "swiftpm": false,
 }
 
 // versionFound is the answer a resolver that CAN prove a miss gives for a

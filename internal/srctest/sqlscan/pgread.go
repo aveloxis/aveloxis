@@ -263,7 +263,7 @@ func (w Write) Qualified() string {
 // Statement kinds. Every node of the parse tree whose kind ends in "Stmt"
 // is looked up here, at any depth; one that is not listed fails the
 // reading. The list is the parser's whole set for the grammar version
-// parserGrammar names (TestEveryStatementKindOfTheParserIsClassified holds
+// parserGrammar names (pgread_test.go; TestEveryStatementKindOfTheParserIsClassified holds
 // the version and the list together: a parser of another version fails it
 // until each kind has been looked at again).
 const (
@@ -277,10 +277,6 @@ const (
 	// tree that holds one is not what this file takes it for.
 	kindRefused
 )
-
-// parserGrammar is the PostgreSQL major version whose grammar stmtKinds and
-// alterKinds were classified for.
-const parserGrammar = 17
 
 var stmtKinds = map[string]int{
 	"UpdateStmt": kindReads, "InsertStmt": kindReads, "DeleteStmt": kindReads, "MergeStmt": kindReads,

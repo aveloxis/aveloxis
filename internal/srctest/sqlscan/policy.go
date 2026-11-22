@@ -1036,25 +1036,6 @@ func holdsUnknown(v any) bool {
 	return false
 }
 
-// exprConforms reports whether one SET RHS, given as text, conforms to the
-// policy for col, as the value assigned by an INSERT ... ON CONFLICT DO
-// UPDATE of the table stmt's first write names (so that both the stored
-// value and EXCLUDED's can be named), under that write's WHERE. Text
-// PostgreSQL's parser does not read as one expression does not conform.
-func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
-	val, err := exprTree(expr)
-	if err != nil {
-		return false, "the value is not read as one expression: " + err.Error()
-	}
-	ws, err := ParseWrites(stmt.SQL)
-	if err != nil || len(ws) == 0 {
-		return false, "the statement the value stands in is not read"
-	}
-	w := ws[0]
-	w.Kind = "conflict-update"
-	return valueConforms(&w, val, col, want)
-}
-
 // valueConforms reports whether a value's tree, assigned by the write w,
 // conforms to the policy for col. On failure the detail classifies what the
 // expression ACTUALLY matches so the mismatch reads at a glance (the
@@ -1761,7 +1742,7 @@ func (iw *incomingWalk) value(v any, env incomingEnv) {
 // are refused or read in their own way, are cases of value above.) A kind
 // that is not here is refused, and so is a kind of FROM item fromItems does
 // not name: neither list needs revising for a new grammar as stmtKinds does
-// (parserGrammar), since what a later parser adds is refused until it is
+// (parserGrammar, in pgread_test.go), since what a later parser adds is refused until it is
 // listed.
 var valueKinds = map[string]bool{
 	"A_Expr": true, "BoolExpr": true, "NullTest": true, "BooleanTest": true,

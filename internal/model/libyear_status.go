@@ -57,7 +57,8 @@ func LibyearIsUnknown(hasLibyear bool, status string) bool {
 // VersionFound is what a registry lookup established about the version a
 // dependency declares, kept apart from whether that version has a date. The
 // zero value is "not established": the dependency declares no version, or
-// the resolver cannot tell (see collector's resolverCanProveVersionMiss).
+// the resolver cannot tell (see resolverCanProveVersionMiss in collector's
+// libyear_status_test.go).
 type VersionFound int
 
 // The three answers.

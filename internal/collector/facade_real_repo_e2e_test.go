@@ -27,7 +27,8 @@ import (
 //
 // Gated on BOTH AVELOXIS_TEST_DB (live scratch Postgres) and
 // AVELOXIS_TEST_NETWORK=1 (real clone from GitHub). Rides the weekly
-// network-canary workflow tier.
+// network-canary workflow, in its own job `facade` since 0.29.222 (until
+// then no job set both, and it ran nowhere).
 func TestFacadeRealRepoEndToEnd(t *testing.T) {
 	if os.Getenv("AVELOXIS_TEST_NETWORK") != "1" {
 		t.Skip("network canary: set AVELOXIS_TEST_NETWORK=1 to run")

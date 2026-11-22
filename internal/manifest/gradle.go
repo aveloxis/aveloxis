@@ -2169,12 +2169,6 @@ func parseBuildGradle(content string) []string {
 	return names
 }
 
-// parseBuildGradleVersions extracts the declarations of a build.gradle or
-// build.gradle.kts, with the versions the file itself settles.
-func parseBuildGradleVersions(content string) []model.LibyearDep {
-	return readGradleBuild(content, nil).libyearDeps()
-}
-
 // The addresses Gradle's repository shorthands stand for. mavenCentral() is
 // given as the address Aveloxis's own default configuration uses for Maven
 // Central, so the shorthand and the configured repository are one host.

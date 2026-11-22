@@ -4,6 +4,7 @@
 package manifest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,4 +209,17 @@ func TestComposerPathRepositoriesStayInTheClone(t *testing.T) {
 	if got := composerOwnRepositoryPackages(root2, filepath.Join(root2, "app"), []byte(`[{"type":"path","url":"../pk/*"}]`)); len(got) > composerPathMatchLimit {
 		t.Errorf("%d packages read from one pattern; the bound is %d", len(got), composerPathMatchLimit)
 	}
+}
+
+// parseComposerJSONVersions is parseComposerJSONVersionsIn for a manifest
+// read on its own: its directory is the tree it may look into.
+func parseComposerJSONVersions(path string) ([]model.LibyearDep, error) {
+	return parseComposerJSONVersionsIn(filepath.Dir(path), path)
+}
+
+// composerOwnRepositoryPackages is composerRepositoryPackages (parsers.go)
+// without its second answer, for the tests that read only the names.
+func composerOwnRepositoryPackages(root, dir string, raw json.RawMessage) map[string]bool {
+	out, _ := composerRepositoryPackages(root, dir, raw)
+	return out
 }

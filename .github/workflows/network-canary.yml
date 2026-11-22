@@ -64,6 +64,12 @@ jobs:
           # GitHub's actual schema).
           go test ./internal/collector/ -run TestLivePyPIForFlask -count=1 -v
           go test ./internal/collector/ -run TestLiveGoProxyForCobra -count=1 -v
+          # 0.29.220 (Copilot on PR #263): three canaries that existed
+          # and were never scheduled. No other workflow sets the network
+          # flag they need, so they ran nowhere.
+          go test ./internal/collector/ -run TestLiveGoProxyForUppercaseModulePath -count=1 -v
+          go test ./internal/collector/ -run TestLiveCrandbForCommonmark -count=1 -v
+          go test ./internal/collector/ -run TestLiveOSVMatchesAVersionSentWithAName -count=1 -v
           go test ./internal/collector/ -run TestLiveMavenForCommonsLang -count=1 -v
           go test ./internal/platform/ecosystems/ -run TestLiveEcosystemsLookupForSeaborn -count=1 -v
           go test ./internal/platform/gitlab/ -run TestLiveGitLabRepoInfoForGitLabRunner -count=1 -v
@@ -87,6 +93,48 @@ jobs:
           # scheduled: the unit test serves a body we wrote, so only
           # this sees GitHub rename or drop the field.
           go test ./internal/platform/github/ -run TestLiveRESTRepoInfoReadsSubscribers -count=1 -v
+          # 0.29.222: three more that existed and ran nowhere (review
+          # round 14 read every test that needs the network flag, not
+          # only the TestLive names). The two GitHub ones need the
+          # token above and skip, visibly, without it.
+          go test ./internal/collector/ -run TestNuGetResolverLiveCanary -count=1 -v
+          go test ./internal/platform/github/ -run TestLiveRootTreeAcceptsHEAD -count=1 -v
+          go test ./internal/platform/github/ -run TestLiveFetchContributorActivity -count=1 -v
+
+  # 0.29.222: the real-clone facade canary (v0.27.97) needs the network
+  # flag AND a database, and no job gave it both: its own comment said
+  # it rode this workflow, and it never had. A job of its own, so the
+  # service container is not started for the canaries above. The
+  # database is a base: the package's test main creates, migrates and
+  # drops one of its own from it (internal/testdb), as in
+  # integration.yml.
+  facade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aveloxis_test
+          POSTGRES_PASSWORD: aveloxis_test
+          POSTGRES_DB: aveloxis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the real-clone facade canary
+        env:
+          AVELOXIS_TEST_NETWORK: "1"
+          AVELOXIS_TEST_DB: postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable
+        run: go test ./internal/collector/ -run TestFacadeRealRepoEndToEnd -count=1 -v -timeout 15m
 
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade

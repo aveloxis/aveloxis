@@ -137,7 +137,7 @@ func TestEveryExposureReadUsesThePredicate(t *testing.T) {
 		examined += n
 		allowed := 0
 		if strings.HasSuffix(name, "vuln_exposure.go") {
-			allowed = 4 // the two predicate spellings, their builder (exposureExprSQL, held equal to them) and unknownVersionSQL
+			allowed = 3 // the two predicate spellings and unknownVersionSQL (their builder, exposureExprSQL, is in entered_exposure_db_test.go since 0.29.220)
 		}
 		if strings.HasSuffix(upsertFile, name) || strings.HasSuffix(name, upsertFile) {
 			// 0.29.166: the finding upsert's old and new class, as text held

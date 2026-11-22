@@ -218,3 +218,28 @@ func TestTheUpsertSpellsTheExposureClassesAsTheBuilderDoes(t *testing.T) {
 		t.Errorf("the upsert spells the predicate %d times; the three above are all it may", n)
 	}
 }
+
+// exposureExprSQL is the predicate itself, over the three operands it reads.
+// The two constants in vuln_exposure.go stay constants (other constants are
+// built from them); TestExposurePredicateHasOneSpelling holds them equal to
+// this. The upsert spells the class a row HAD and the class it is ABOUT TO
+// HAVE as text (entered_exposure_at, 0.29.166), and
+// TestTheUpsertSpellsTheExposureClassesAsTheBuilderDoes holds that text
+// equal to this, so those cannot drift from the reads.
+func exposureExprSQL(kind, resolution, ecosystem string) string {
+	return `COALESCE(` + kind + `, '') <> 'self' AND NOT (COALESCE(` + resolution + `, '') = 'unpinned' AND COALESCE(` + ecosystem + `, '') <> 'githubactions')`
+}
+
+// The three classes the upsert compares to decide entered_exposure_at, all
+// from exposureExprSQL. The statement spells them out as text, because the
+// write-policy analyzer reads SQL literals and cannot see through a Go
+// concatenation (a concatenated statement is not judged at all);
+// TestTheUpsertSpellsTheExposureClassesAsTheBuilderDoes holds the text equal
+// to these. The class a row is about to have reads the incoming
+// kind and resolution; the ecosystem is never updated, so on a conflict it is
+// the stored one.
+var (
+	enteredNewClassInsertSQL = exposureExprSQL("$19::text", "$18::text", "$6::text")
+	enteredNewClassUpdateSQL = exposureExprSQL("EXCLUDED.dependency_kind", "EXCLUDED.version_resolution", "repo_deps_vulnerabilities.ecosystem")
+	enteredOldClassSQL       = exposureExprSQL("repo_deps_vulnerabilities.dependency_kind", "repo_deps_vulnerabilities.version_resolution", "repo_deps_vulnerabilities.ecosystem")
+)

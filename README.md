@@ -1079,7 +1079,7 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | PR/MR Fork Repos | `head.repo` / `base.repo` in PR response | `/projects/{id}` per source/target | `pull_request_repo` |
 | Contributor Affiliations | Auto-populated from email domains + `cntrb_company` | Same | `contributor_affiliations` |
 | Contributor Breadth | `GET /users/{login}/events` (15-min cycles, 7-day cooldown) | — | `contributor_repo` |
-| Canonical Email Enrichment | `GET /users/{login}` for profile email | Same | `contributors.cntrb_canonical` |
+| Canonical Email Enrichment | `GET /users/{login}` for profile email | Not run for GitLab (planned) | `contributors.cntrb_canonical` |
 
 ### GitHub vs GitLab — Known Data Gaps
 
@@ -1087,6 +1087,7 @@ The following fields differ between the two forges — most are available from G
 
 | Field | GitHub | GitLab | Notes |
 |---|---|---|---|
+| Contributor profile enrichment (`cntrb_company`, `cntrb_location`, the profile's address in `cntrb_canonical`) | Periodic `GET /users/{login}` for thin contributors | Not run | Not an API limitation: GitLab's `/users` has the data and nothing asks for it yet (planned) |
 | Community profile files (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) | GraphQL file detection | `/repository/tree` file detection (v0.12.2) | Full parity |
 | `repo_info.commit_count` | REST `/repos/{o}/{r}` — accurate | `GET /projects/:id?statistics=true` → often 0 for mirrored or private-low-scope projects | v0.16.9+ backfills from facade's `git log` count after a successful clone so the monitor/web "Metadata commits" column matches reality |
 | Contributor login rename (`contributors.gh_login` / `gl_username`) | A rename updates `gh_login` and records the new login in `contributor_login_history`; the replaced login is there only if it was observed earlier (recording it at replacement is planned work) | `gl_username` is filled once and is not updated when a GitLab user renames | Planned work, not a GitLab API limitation. `contributor_identities.login` and the login history follow a rename on both forges |
@@ -1124,7 +1125,7 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Monitoring | Flower (separate service) | Built-in dashboard with gathered vs metadata count columns |
 | Testing | Lags development due to long history. | Test first programming from birth. | 
 | REST API | Flask/Gunicorn with Beaker cache | Separate `aveloxis api` with repo stats, batch stats, SBOM download |
-| GitLab support | Partial (missing releases, repo info, review comments, contributor enrichment) | Full parity with GitHub — all features work on both platforms |
+| GitLab support | Partial (missing releases, repo info, review comments, contributor enrichment) | Near parity with GitHub; the known gaps (contributor profile enrichment among them) are listed under "GitHub vs GitLab — Known Data Gaps" above |
 | Repo info | GitHub Only | GitHub: GraphQL for all counts + community profile files. GitLab: REST + `/issues_statistics` + MR counts via `X-Total`. Historical snapshots in `repo_info_history`. |
 | Contributor model | `gh_*`/`gl_*` columns mixed on one table | Separate `contributor_identities` table |
 | DB write pattern | Individual upserts during collection | JSONB staging → bulk batch processing (`pgx.Batch` for deps, libyear, labor, breadth). Significantly lower database contention for the contributors table. |

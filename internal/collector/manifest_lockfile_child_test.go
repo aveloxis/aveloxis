@@ -767,3 +767,12 @@ func TestTheLockfilesAreReadWhenThePomSourceCannotBeMade(t *testing.T) {
 		t.Errorf("the lockfiles: %v, %d parsed, listed %v", locks.WalkErr, locks.parsedCount(), locks.Present)
 	}
 }
+
+// parsedCount is how many lockfiles parsed.
+func (s lockfileSet) parsedCount() int {
+	n := len(s.Parsed)
+	if s.spool != nil {
+		n += len(s.spool.heads)
+	}
+	return n
+}

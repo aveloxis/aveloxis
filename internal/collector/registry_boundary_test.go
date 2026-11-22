@@ -283,3 +283,17 @@ func TestTheRegistryRuleHoldsAtEachLayerAlone(t *testing.T) {
 		t.Errorf("the dial, the metadata address: %v", err)
 	}
 }
+
+// shippedRegistryBases are the base URLs the resolvers ship with, read at
+// package initialisation, before any test points one at a local server.
+var shippedRegistryBases = map[string]string{
+	"npm": npmRegistryBase, "pypi": pypiRegistryBase, "go": goProxyBase, "cargo": cratesRegistryBase,
+	"rubygems": rubygemsRegistryBase, "maven": mavenRepositoryBase, "packagist": packagistRegistryBase,
+	"hex": hexRegistryBase, "nuget": nugetRegistryBase, "pub": pubDevRegistryBase, "hackage": hackageRegistryBase,
+	"cran": cranRegistryBase,
+}
+
+// resetRegistryBreakers forgets every host's state (tests).
+func resetRegistryBreakers() {
+	registryBreakers.Range(func(k, _ any) bool { registryBreakers.Delete(k); return true })
+}

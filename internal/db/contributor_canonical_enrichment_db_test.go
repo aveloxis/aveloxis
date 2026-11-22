@@ -36,7 +36,10 @@ func TestTheProfilesAddressReplacesACommitAddressAsTheCanonical(t *testing.T) {
 		nbrStored = "_av_canon_neighbour@other.example"
 	)
 	id, nbrID := GithubUUID(uid).String(), GithubUUID(nbrUID).String()
-	ids := []string{id, nbrID}
+	// An id no row has: UpsertContributorFull asked under it, with the
+	// stored login, takes its login-exists-under-another-id arm.
+	otherID := GithubUUID(99887783).String()
+	ids := []string{id, nbrID, otherID}
 	clean := func() {
 		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributor_login_history WHERE cntrb_id = ANY($1::uuid[])`, ids)
 		store.pool.Exec(ctx, `DELETE FROM aveloxis_data.contributor_identities WHERE cntrb_id = ANY($1::uuid[])`, ids)
@@ -113,6 +116,24 @@ func TestTheProfilesAddressReplacesACommitAddressAsTheCanonical(t *testing.T) {
 	}
 	if e, c := row(id); e != profile || c != profile {
 		t.Errorf("after SetContributorCanonical with a later commit address the row reads (%q, %q), want the profile's %q in both", e, c, profile)
+	}
+	// UpsertContributorFull's other arm that meets a stored row (review
+	// round 13, C13-3): asked under an id no row has, with a login a row
+	// holds, it updates that row, and its canonical expression is its own
+	// text. Made incoming-first it passed everything above.
+	const loginArmCommit = "_av_canon_person@login-arm.example"
+	if created, got, err := store.UpsertContributorFull(ctx, otherID, login, uid, loginArmCommit); err != nil || created || got != id {
+		t.Fatalf("UpsertContributorFull under another id with the stored login = (%v, %q, %v), want the stored row %q found by its login", created, got, err, id)
+	}
+	if e, c := row(id); e != profile || c != profile {
+		t.Errorf("after a later commit through UpsertContributorFull's by-login arm the row reads (%q, %q), want the profile's %q in both", e, c, profile)
+	}
+	var underOther int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM aveloxis_data.contributors WHERE cntrb_id = $1::uuid`, otherID).Scan(&underOther); err != nil {
+		t.Fatal(err)
+	}
+	if underOther != 0 {
+		t.Errorf("%d row(s) under the asked id: the by-login arm did not run, so the assertion above did not test it", underOther)
 	}
 	// The same through the batch's rename recovery (the forge user under a
 	// new login): its update fills an empty address and an empty canonical

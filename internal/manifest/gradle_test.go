@@ -369,3 +369,9 @@ func TestGradleMalformedInput(t *testing.T) {
 		t.Errorf("an unclosed block lost its declaration: %q", got)
 	}
 }
+
+// parseBuildGradleVersions extracts the declarations of a build.gradle or
+// build.gradle.kts, with the versions the file itself settles.
+func parseBuildGradleVersions(content string) []model.LibyearDep {
+	return readGradleBuild(content, nil).libyearDeps()
+}

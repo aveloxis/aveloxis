@@ -188,3 +188,6 @@ func TestAnOversizedPomIsAReadFailure(t *testing.T) {
 		t.Errorf("an oversized pom: %d dependencies, failure %v; want none and a failure", len(got.Deps), got.Failure)
 	}
 }
+
+// pomProperties are the properties of the pom's default build (pomProps.base).
+func pomProperties(content string) map[string]string { return pomPropertiesOf(content).base }

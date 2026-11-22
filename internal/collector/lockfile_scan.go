@@ -213,15 +213,6 @@ func (s lockfileSet) each(fn func(parsedLockfile) error) error {
 	return nil
 }
 
-// parsedCount is how many lockfiles parsed.
-func (s lockfileSet) parsedCount() int {
-	n := len(s.Parsed)
-	if s.spool != nil {
-		n += len(s.spool.heads)
-	}
-	return n
-}
-
 // lockfileItemTooLarge names an entry or an edge of a parsed lockfile whose
 // text is longer than one item may be on the wire ("" when none is).
 func lockfileItemTooLarge(res *LockfileResult) string {

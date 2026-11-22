@@ -27,6 +27,15 @@ func TestADottedWriteIntoAMapIsNoPropertyOfTheProject(t *testing.T) {
 		"a dotted write of a value not read":    "ext.x = [version: '9']\next.x.version = computeIt()\n",
 		"a dotted write under a condition":      "ext.x = [version: '9']\nif (c) {\n ext.x.version = '2.20.0'\n}\n",
 		"the neighbour: the map and nothing on": "ext.x = [version: '9']\n",
+		// Round 13 (RD13-1). What marks a quoted key ends with its own
+		// statement: a quoted-key assignment of ANOTHER name, standing
+		// between the map and the dotted write, lends the dotted write
+		// nothing. No case above has a quoted-key assignment, and the
+		// neighbours below put it after the dotted write, so a mark left
+		// set after either quoted form passed them all.
+		"another name by a quoted key, then the dotted write": "ext.x = [version: '9']\next['other.y'] = '1'\next.x.version = '2.20.0'\n",
+		"another name by set(), then the dotted write":        "ext.x = [version: '9']\next.set('other.y', '1')\next.x.version = '2.20.0'\n",
+		"another name by set() in the block, then the dotted": "ext {\n x = [version: '9']\n set('other.y', '1')\n x.version = '2.20.0'\n}\n",
 	} {
 		got := r8Gradle(t, r9Boot(), r8Build(r9Plugins+c+r9Deps), "build.gradle")
 		if x, plain := got["g:x"], got["g:plain"]; x.Version != "2.14.1" || x.VersionReason != "" || plain.Version != "1.0" {
@@ -51,7 +60,11 @@ func TestADottedWriteIntoAMapIsNoPropertyOfTheProject(t *testing.T) {
 // Round 12 (RD12-5). "The value was not read" stands over "not found" and
 // under a refusal and a failed lookup: beside a BOM whose version is not
 // read, a second import the repository refuses, or fails on, is what the
-// row says. Only its place over "not found" was held.
+// row says. Until round 12 neither place was held; round 13 (RD13-2) found
+// the neighbour below could not fail for the place over "not found" either
+// (an import that is merely absent from the repositories gives the row no
+// reason of its own to compare), so it now names an import that is never
+// asked for.
 func TestAnUnreadBOMVersionDoesNotHideARefusalOrAFailure(t *testing.T) {
 	for name, c := range map[string]struct {
 		outcome RemoteOutcome
@@ -69,12 +82,17 @@ func TestAnUnreadBOMVersionDoesNotHideARefusalOrAFailure(t *testing.T) {
 			t.Errorf("%s: g:j at %q (%q); want no version and %q", name, j.Version, j.VersionReason, c.reason)
 		}
 	}
-	// The neighbour: with the second import merely absent, the unread value
-	// is what is said.
-	src := r9Boot()
-	boot := src.poms["org.springframework.boot:spring-boot-dependencies:3.3.0"]
-	boot.Managed = append(boot.Managed, RemoteManaged{Group: "k", Artifact: "k-bom", Version: "1", Import: true})
-	if j := r8Gradle(t, src, r8Build(r9Plugins+"ext['j-bom.version'] = computeIt()\n"+r9Deps), "build.gradle")["g:j"]; j.VersionReason != model.VersionReasonValueNotRead {
-		t.Errorf("beside an import that is not found, g:j says %q; want %q", j.VersionReason, model.VersionReasonValueNotRead)
+	// The neighbours: beside a second import that is "not found", the
+	// unread value is what is said. A snapshot is never asked for, and that
+	// is "not found" with a reason of its own, which is the one that must
+	// rank under the unread value; the import merely absent is kept beside
+	// it.
+	for name, version := range map[string]string{"never asked for (a snapshot)": "1-SNAPSHOT", "absent from the repositories": "1"} {
+		src := r9Boot()
+		boot := src.poms["org.springframework.boot:spring-boot-dependencies:3.3.0"]
+		boot.Managed = append(boot.Managed, RemoteManaged{Group: "k", Artifact: "k-bom", Version: version, Import: true})
+		if j := r8Gradle(t, src, r8Build(r9Plugins+"ext['j-bom.version'] = computeIt()\n"+r9Deps), "build.gradle")["g:j"]; j.Version != "" || j.VersionReason != model.VersionReasonValueNotRead {
+			t.Errorf("beside an import %s, g:j is at %q and says %q; want no version and %q", name, j.Version, j.VersionReason, model.VersionReasonValueNotRead)
+		}
 	}
 }

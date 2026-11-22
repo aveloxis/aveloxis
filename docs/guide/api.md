@@ -11,11 +11,14 @@ The API runs as a separate process alongside `aveloxis serve` (collection) and `
 ## Changes for API clients in 0.29.219
 
 No field or value changes. One Gradle answer differs from 0.29.218: a write through a
-dotted name into a map (`ext.log4j2.version = '...'` after `ext.log4j2 = [...]`) is no
+dotted name into a map (`ext.log4j2.version = '...'` after `ext.log4j2 = [version: '...']`) is no
 longer taken for the Spring property `log4j2.version`, so a dependency managed through
 that property has the BOM's own version again, as in 0.29.217. When such a write is
 not a literal, the BOM's version is stored too, where 0.29.217 and 0.29.218 sent no
-version and `version_reason: value_not_read`.
+version and `version_reason: value_not_read`. When the file also sets the property once,
+at the top level, by a quoted key with a literal value (`ext['log4j2.version'] = '...'`),
+that value is sent; 0.29.218, when the two values differed, sent no version and
+`value_not_read` there, and 0.29.217 the BOM's version or none.
 
 ## Changes for API clients in 0.29.218
 

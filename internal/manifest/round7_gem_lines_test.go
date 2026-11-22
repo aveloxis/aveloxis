@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -146,3 +147,6 @@ func TestTwoGemsOnOneLineAreTwoRows(t *testing.T) {
 		t.Errorf("read %v, want %v", got, want)
 	}
 }
+
+// gemPlainDeclaration: a gem declaration that opens no block.
+var gemPlainDeclaration = regexp.MustCompile(`^gem\b[^{]*$`)

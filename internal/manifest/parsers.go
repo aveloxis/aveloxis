@@ -1739,7 +1739,7 @@ func gemLogicalLines(line string) []string {
 // patterns can ever hold of it.
 const (
 	gemStatementOther = iota // none can: the rest of the line is one piece
-	gemStatementGem          // gemPlainDeclaration
+	gemStatementGem          // gemPlainDeclaration (round7_gem_lines_test.go)
 	gemStatementBlock        // gemOneLine or gemOneLineBraces
 )
 
@@ -1828,7 +1828,9 @@ func (x *gemLineIndex) statementAt(from int) gemStatement {
 // whole reports whether the statement, ending at end (the end of its last
 // non-space rune), is one the three patterns accept: what
 // gemOneLine.MatchString || gemOneLineBraces.MatchString ||
-// gemPlainDeclaration.MatchString say of masked[st.from:end].
+// gemPlainDeclaration.MatchString say of masked[st.from:end]
+// (gemPlainDeclaration, the third pattern, is in round7_gem_lines_test.go,
+// which holds this function to the three).
 func (x *gemLineIndex) whole(st gemStatement, end int) bool {
 	brace := -1
 	if k := sort.SearchInts(x.braces, st.from); k < len(x.braces) && x.braces[k] < end {
@@ -1876,9 +1878,6 @@ func isRegexpWord(b byte) bool {
 func isRegexpSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r'
 }
-
-// gemPlainDeclaration: a gem declaration that opens no block.
-var gemPlainDeclaration = regexp.MustCompile(`^gem\b[^{]*$`)
 
 // gemSourceValue reads the address a `source` block or option names.
 var gemSourceValue = regexp.MustCompile(`(?:^|[\s,(])(?::source\s*=>|source:?)\s*\(?\s*(?:["']([^"']*)["']|:(\w+))`)
@@ -2535,9 +2534,6 @@ func (p *pomProps) resolve(v string, offset int) string {
 	})
 }
 
-// pomProperties are the properties of the pom's default build (pomProps.base).
-func pomProperties(content string) map[string]string { return pomPropertiesOf(content).base }
-
 // pomPropertiesOf collects a pom's own property values: every
 // <properties> element, plus project.groupId/artifactId/version (the
 // project's own coordinates, falling back to <parent>'s groupId and
@@ -2686,12 +2682,6 @@ func extractXMLValue(line, tag string) string {
 	return strings.TrimSpace(line[start+len(tag)+2 : end])
 }
 
-// parseComposerJSONVersions is parseComposerJSONVersionsIn for a manifest
-// read on its own: its directory is the tree it may look into.
-func parseComposerJSONVersions(path string) ([]model.LibyearDep, error) {
-	return parseComposerJSONVersionsIn(filepath.Dir(path), path)
-}
-
 // parseComposerJSONVersionsIn extracts deps with versions from
 // composer.json. root is the clone's root: a package the manifest's own
 // `repositories` supply from a directory of the clone, or declare inline,
@@ -2732,7 +2722,11 @@ func parseComposerJSONVersionsIn(root, path string) ([]model.LibyearDep, error) 
 	return deps, nil
 }
 
-// composerOwnRepositoryPackages are the package names (lower case; Composer
+// errComposerPartUnread: a composer.json of one of the manifest's path
+// repositories is there and could not be read.
+var errComposerPartUnread = errors.New("a composer.json of one of this file's path repositories could not be read, so which of its requirements the repository itself supplies is not known; nothing was taken from the file")
+
+// composerRepositoryPackages are the package names (lower case; Composer
 // compares names without case) that a composer.json's `repositories` supply
 // from somewhere this reader can see: a `package` repository, which states
 // its package inline, and a `path` repository whose directory is in the
@@ -2743,17 +2737,8 @@ func parseComposerJSONVersionsIn(root, path string) ([]model.LibyearDep, error) 
 // A `vcs` or `git` repository's package is named in that repository, which
 // is not read: its requirement stays a Packagist one (declined in review
 // round 1 with this reason: knowing the name would take a fetch).
-func composerOwnRepositoryPackages(root, dir string, raw json.RawMessage) map[string]bool {
-	out, _ := composerRepositoryPackages(root, dir, raw)
-	return out
-}
-
-// errComposerPartUnread: a composer.json of one of the manifest's path
-// repositories is there and could not be read.
-var errComposerPartUnread = errors.New("a composer.json of one of this file's path repositories could not be read, so which of its requirements the repository itself supplies is not known; nothing was taken from the file")
-
-// composerRepositoryPackages is composerOwnRepositoryPackages that also
-// says when a path repository's composer.json EXISTS and was not read (it
+//
+// It also says when a path repository's composer.json EXISTS and was not read (it
 // is over MaxBuildFileBytes, the process's read bound refused it, or the
 // read failed): unread is then errComposerPartUnread naming the first such
 // file, wrapping why. A directory with no composer.json names no package,

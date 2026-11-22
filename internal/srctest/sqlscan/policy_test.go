@@ -296,3 +296,22 @@ func TestExprConformsKeepCarryOrNow(t *testing.T) {
 		}
 	}
 }
+
+// exprConforms reports whether one SET RHS, given as text, conforms to the
+// policy for col, as the value assigned by an INSERT ... ON CONFLICT DO
+// UPDATE of the table stmt's first write names (so that both the stored
+// value and EXCLUDED's can be named), under that write's WHERE. Text
+// PostgreSQL's parser does not read as one expression does not conform.
+func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
+	val, err := exprTree(expr)
+	if err != nil {
+		return false, "the value is not read as one expression: " + err.Error()
+	}
+	ws, err := ParseWrites(stmt.SQL)
+	if err != nil || len(ws) == 0 {
+		return false, "the statement the value stands in is not read"
+	}
+	w := ws[0]
+	w.Kind = "conflict-update"
+	return valueConforms(&w, val, col, want)
+}

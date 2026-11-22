@@ -136,6 +136,25 @@ jobs:
           AVELOXIS_TEST_DB: postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable
         run: go test ./internal/collector/ -run TestFacadeRealRepoEndToEnd -count=1 -v -timeout 15m
 
+  # 0.29.226: internal/manifest judges reading SPEED in five tests only when
+  # the race detector is off (they branch on raceEnabled: under it time says
+  # nothing), and every other job runs that package under the detector, so
+  # those judgements ran on a developer's machine only. Here they run once a
+  # week WITHOUT it: about a minute on two processors. Weekly and in a job
+  # of its own, not on every push, because a judgement of time on a shared
+  # runner can be noisy: a failure here means "look at the reader's cost",
+  # and is not a registry or forge problem. No network is needed.
+  manifest-speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the manifest readers' speed tests (no race detector)
+        run: go test ./internal/manifest/ -run '^(TestAGemfileLineOfManyStatementsIsReadInLinearTime|TestNoRepeatedUnitIsReadInSuperLinearTime|TestAStatementThatDoesNotEndIsNotReadAgainForEveryLineOfIt|TestBuildFileReadersScaleLinearly|TestGemLogicalLinesAnswersAsThePatternsDo)$' -count=1 -v -timeout 20m
+
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade
   # + self-authored parse fixtures + zero-findings-without-error). The

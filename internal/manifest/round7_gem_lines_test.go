@@ -109,10 +109,11 @@ func TestGemLogicalLinesAnswersAsThePatternsDo(t *testing.T) {
 // NOT claimed: by the round-7 figure (100 KB in over a minute, without the
 // detector) it is near the line.
 //
-// Known gap, recorded for the operator (0.29.226): every CI job runs this
-// package under the detector, so the judgement of speed above, and those of
-// the other tests of this package that branch on raceEnabled, run on a
-// developer's machine only.
+// Every push's CI jobs run this package under the detector, so the judgement
+// of speed above, and those of the other tests of this package that branch
+// on raceEnabled, run without it once a week: the `manifest-speed` job of
+// .github/workflows/network-canary.yml (0.29.226; until then, on a
+// developer's machine only).
 var gemLineReadBound = func() time.Duration {
 	if raceEnabled {
 		return 2 * time.Minute

@@ -273,7 +273,7 @@ func TestIsAnonymousRateLimitBody(t *testing.T) {
 // the key, and whether that matters depends on a question the log could
 // not answer: does the SAME key come back with another such 403 inside
 // GitHub's one-minute secondary-limit floor (the pool re-selecting a
-// throttled key)? The chaoss.tv log held 745 of these lines in six days,
+// throttled key)? The production log held 745 of these lines in six days,
 // all secondary-limit bodies on search/commits and search/users, and none
 // said which key served them. Both body-classified arms must carry
 // token_hash — the same attribute the header-classified arms already
@@ -342,7 +342,7 @@ func TestGet_403RateLimitBodyLogsNameTheServingKey(t *testing.T) {
 }
 
 // TestHeaderless403RateLimitBodyRestsTheKey (worklist 67): the v0.29.9
-// decision rule was met on kate — 87 of 481 retry opportunities (18.1%)
+// decision rule was met on a production fleet — 87 of 481 retry opportunities (18.1%)
 // reused the SAME key against a ~1.9% baseline at 54 keys, because a
 // headerless search 403 marked nothing and least-loaded selection handed
 // the throttled key straight back. Option (a): the body is read under the

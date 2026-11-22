@@ -20,7 +20,7 @@ var ErrSchemaUnknown = errors.New("the database schema is unstamped")
 // RequireSchemaCurrent is the start gate of every process that never
 // migrates — web, api, the scancode worker (worklist item 49). Through
 // v0.29.67 they logged an ERROR when the stamp was behind their binary and
-// then served queries against columns the schema did not have (kate,
+// then served queries against columns the schema did not have (a production fleet,
 // 2026-09-13 and 2026-09-22: about 80 minutes of "does not exist" errors
 // while the migrate ran). Now they refuse, before binding a port, with the
 // migrate named. A stamp AHEAD of the binary (an older binary against a

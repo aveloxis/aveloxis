@@ -56,7 +56,7 @@ type ExternalTool struct {
 // an exact module version — a release tag or a pseudo-version naming one
 // commit, never @latest or a branch (TestSCCInstallIsPinnedToAValidatedVersion).
 // 0.29.144 pins scc's master at commit 62ac0b03 ("4.2.0 (beta)", the build
-// kate runs; the module proxy names it v4.1.1-0.20261108043418-62ac0b03d79a,
+// the production fleet runs; the module proxy names it v4.1.1-0.20261108043418-62ac0b03d79a,
 // a pseudo-version, because no tag follows v4.1.0 yet): the 4.1.0
 // release still counts the lines after a JS regex literal holding a quote
 // (/'/g) as code. Move it to the v4.2.0 tag once scc publishes one, after a

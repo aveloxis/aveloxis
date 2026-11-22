@@ -70,7 +70,7 @@ var metricSeriesSQL = map[string]string{
 	// commit-file row fetched and then dropped — the scan this release
 	// retires). The person is made distinct per bucket
 	// FIRST, so the deleted-loser rule is asked once per (bucket, person),
-	// not once per commit-file row (kate, 2026-11-04: 497,889 probes for
+	// not once per commit-file row (a production fleet, 2026-11-04: 497,889 probes for
 	// one repository).
 	"contributors": `
 		SELECT p.bucket, COUNT(*)::float
@@ -413,12 +413,12 @@ func (s *PostgresStore) SearchOrgs(ctx context.Context, query string, limit int)
 // daily picture is complete, the last/first plausible day of
 // repo_commit_daily (a UTC midnight: a lower bound of the true last
 // instant, which every consumer rounds to a UTC day — one primary-key
-// read); else the live scan of the commits table. kate 2026-10-07: with
+// read); else the live scan of the commits table. A production fleet, 2026-10-07: with
 // the daily table built fleet-wide, /stats still answered 503 on the
 // nine largest repositories — their stored bounds were bogus (a 2085-dated
 // commit the kernel forks share; an epoch first commit) and so read as
 // unfilled until their next walk repairs them, and this reader was the one
-// live scan left on the page (3.2M rows, 152 s, measured on kate).
+// live scan left on the page (3.2M rows, 152 s, measured on a production fleet).
 func (s *PostgresStore) LastActivityAt(ctx context.Context, repoIDs []int64) (time.Time, bool, error) {
 	byRepo, err := s.lastActivityByRepo(ctx, repoIDs)
 	if err != nil {

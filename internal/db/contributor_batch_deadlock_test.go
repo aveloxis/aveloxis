@@ -14,7 +14,7 @@ import (
 // the dedup map directly is random per process, so two workers whose batches
 // both touch popular shared contributors (regro-cf-autotick-bot, etc.) lock
 // them in different orders and deadlock (40P01). A revert to `range merged`
-// for the insert loop reintroduces the deadlock storm on aveloxis_large.
+// for the insert loop reintroduces the deadlock storm on the larger production database.
 func TestUpsertContributorBatchSortsForDeterministicLockOrder(t *testing.T) {
 	body := extractContributorBatchBodies(t)
 

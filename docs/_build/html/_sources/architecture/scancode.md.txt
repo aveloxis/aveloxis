@@ -264,7 +264,7 @@ The v0.21.0 work added these tests as architectural pins. A future refactor that
 
 ## 13. Startup health preflight + `aveloxis_ops.aveloxis_status`
 
-A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. The 2026-06-09 `aveloxis_large` incident was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
+A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. A production incident of 2026-06-09 was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
 
 ### The preflight
 

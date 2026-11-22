@@ -10,7 +10,7 @@ import (
 
 // v0.27.96 perf-wave indexes — the F1/F5/F7a findings from the first
 // pg_stat_statements snapshot (summary/21-perf-findings-2026-08.md,
-// measured on aveloxis_large 2026-08-18):
+// measured on the larger production database 2026-08-18):
 //
 //   - pull_requests(repo_id, pr_number): the staged processor's
 //     number→serial lookup ran 33.0M times at 31 ms mean (284 h — 18% of

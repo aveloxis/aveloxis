@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>Aveloxis Schema Documentation &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=e281c876"></script>
+      <script src="_static/documentation_options.js?v=ba8856c8"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/js/theme.js"></script>
@@ -8727,7 +8727,7 @@ is nullable and un-FK’d; <code class="docutils literal notranslate"><span clas
 <h3>Subsystem health<a class="headerlink" href="#subsystem-health" title="Link to this heading"></a></h3>
 <section id="aveloxis-status">
 <h4>aveloxis_status<a class="headerlink" href="#aveloxis-status" title="Link to this heading"></a></h4>
-<p>One row per Aveloxis subsystem, recording whether it is healthy. Upserted by <strong>startup preflights</strong> so a <em>system-level</em> failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is <strong>scancode</strong>: a corrupt host <code class="docutils literal notranslate"><span class="pre">libmagic</span></code> makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 <code class="docutils literal notranslate"><span class="pre">aveloxis_large</span></code> incident), which the scancode preflight now detects on start. See <a class="reference internal" href="architecture/scancode.html"><span class="std std-doc">ScanCode Worker §13</span></a> and <a class="reference internal" href="guide/troubleshooting.html"><span class="std std-doc">Troubleshooting</span></a>.</p>
+<p>One row per Aveloxis subsystem, recording whether it is healthy. Upserted by <strong>startup preflights</strong> so a <em>system-level</em> failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is <strong>scancode</strong>: a corrupt host <code class="docutils literal notranslate"><span class="pre">libmagic</span></code> makes every scan spam gigabytes of warnings and wedge workers (a production incident of 2026-06-09), which the scancode preflight now detects on start. See <a class="reference internal" href="architecture/scancode.html"><span class="std std-doc">ScanCode Worker §13</span></a> and <a class="reference internal" href="guide/troubleshooting.html"><span class="std std-doc">Troubleshooting</span></a>.</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Column</p></th>

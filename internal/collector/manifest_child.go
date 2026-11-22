@@ -212,42 +212,58 @@ func processCPUTime() time.Duration {
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
-// processMaxRSS is the most memory this process has had resident. It is
-// reported, never judged: the limit is on the heap, which the child can read
-// at any moment, and this is the system's own high-water mark of what that
-// heap cost.
+// processMaxRSS is the most memory this process has had resident, in bytes,
+// or 0 when that is not known. It is reported, never judged: the limit is on
+// the heap, which the child can read at any moment, and this is the system's
+// own high-water mark of what that heap cost.
+func processMaxRSS() int64 {
+	return residentHighWater(runtime.GOOS,
+		func() (string, error) {
+			b, err := os.ReadFile("/proc/self/status")
+			return string(b), err
+		},
+		func() int64 {
+			var ru syscall.Rusage
+			if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+				return 0
+			}
+			if runtime.GOOS == "darwin" {
+				return int64(ru.Maxrss)
+			}
+			return int64(ru.Maxrss) << 10
+		})
+}
+
+// residentHighWater chooses the source of the figure.
 //
 // On Linux it is the VmHWM line of /proc/self/status (0.29.223), the mark of
-// the memory image this program has run in since it was started. getrusage's
-// ru_maxrss is NOT that there: at an exec the kernel folds the mark of the
-// image being replaced into the new process's figure, and that image is the
-// starting process's, so a child of serve reported serve's memory (CI: 823
-// MiB "resident" in a child whose heap never passed 1 MiB; 1,442 MiB in each
-// of two children reading different files). Elsewhere, and on a Linux whose
-// status file cannot be read, it is ru_maxrss, which macOS counts in bytes
-// and Linux in kibibytes.
-func processMaxRSS() int64 {
-	if runtime.GOOS == "linux" {
-		if status, err := os.ReadFile("/proc/self/status"); err == nil {
-			if n, ok := statusHighWaterBytes(string(status)); ok {
-				return n
-			}
-		}
+// the memory image this program has run in since it was started, and 0 when
+// that line cannot be read (0.29.225). getrusage's ru_maxrss is NOT the
+// child's there, and is never used: at an exec the kernel folds the mark of
+// the image being replaced into the new process's figure, and that image is
+// the starting process's, so a child of serve reported serve's memory (CI:
+// 823 MiB "resident" in a child whose heap never passed 1 MiB; 1,442 MiB in
+// each of two children reading different files). A wrong figure that looks
+// like a right one is worse than none.
+//
+// Elsewhere it is ru_maxrss, which the caller hands over in bytes (macOS
+// counts it in bytes, the others in kibibytes).
+func residentHighWater(goos string, status func() (string, error), rusage func() int64) int64 {
+	if goos != "linux" {
+		return rusage()
 	}
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+	text, err := status()
+	if err != nil {
 		return 0
 	}
-	if runtime.GOOS == "darwin" {
-		return int64(ru.Maxrss)
-	}
-	return int64(ru.Maxrss) << 10
+	n, _ := statusHighWaterBytes(text)
+	return n
 }
 
 // statusHighWaterBytes reads the VmHWM line of a Linux /proc/<pid>/status
 // ("VmHWM:\t   51234 kB"): the most this memory image has had resident, in
-// bytes. The second result is false when the line is absent or is not a
-// positive number of kB, and the caller then uses another source.
+// bytes. The second result is false, and the first 0, when the line is absent
+// or is not a positive number of kB.
 func statusHighWaterBytes(status string) (int64, bool) {
 	for _, line := range strings.Split(status, "\n") {
 		rest, found := strings.CutPrefix(line, "VmHWM:")

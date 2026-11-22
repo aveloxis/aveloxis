@@ -23,7 +23,7 @@ import (
 // TestNonMigratingProcessesRefuseABehindSchema pins worklist item 49: web,
 // api and the scancode worker never migrate, and through v0.29.67 they only
 // logged an ERROR when the schema stamp was behind their binary, then served
-// queries against columns the schema lacked (kate, 2026-09-13 and
+// queries against columns the schema lacked (a production fleet, 2026-09-13 and
 // 2026-09-22: ~80 minutes of `does not exist` errors while the migrate
 // ran). Each now returns RequireSchemaCurrent's error right after the
 // logged check and before anything binds a port or starts work. The

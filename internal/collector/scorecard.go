@@ -659,7 +659,7 @@ func tailForError(s string) string {
 //
 // Before this the rotation was unconditional, so a 15-minute remote
 // timeout followed by a successful local fallback replaced an 18-check
-// set with an 11-check one — 10,214 repos on chaoss.tv held that
+// set with an 11-check one — 10,214 repos on a production fleet held that
 // 7-check deficit. Mode is the discriminator so the rule survives
 // scorecard adding or removing a check, and needs no platform case.
 // A probe ERROR is not "no prior set" (SR-5): nothing is written.

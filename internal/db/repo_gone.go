@@ -401,7 +401,7 @@ const goneSidelineSQL = "repo_gone_at IS NOT NULL"
 // archivedSidelineSQL is the OLD dead-arm sideline (0.29.140, operator
 // decision 2026-11-07): before this release reconcile-repos set repo_archived
 // ALONE on a definitive 404 — no gone stamp, no episode — and the row sat
-// archived and queueless (49 on kate). A repository the forge archived keeps
+// archived and queueless (49 on a production fleet). A repository the forge archived keeps
 // its queue row and cycles, so archived + unstamped + queueless is that
 // residue and nothing else; a queueless row that is not archived (a
 // data-bearing rename duplicate prelim dequeued on purpose) never matches.

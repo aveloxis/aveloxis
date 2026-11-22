@@ -6,7 +6,7 @@ package db
 // breadth_jitter_test.go — TDD suite for the v0.27.55 breadth-cooldown
 // jitter.
 //
-// Motivating diagnosis (2026-07-29, aveloxis_large): breadth throughput
+// Motivating diagnosis (2026-07-29, the larger production database): breadth throughput
 // was violently bimodal — 300-560K contributors marked on some days,
 // 411-7K on others — because a hard cooldown cliff makes each day's
 // eligible supply an exact echo of the marks one cooldown-period

@@ -84,7 +84,11 @@ func boundedLines(cmd *exec.Cmd, maxBytes int64, each func(line string) error) (
 		_ = swept.Wait()
 		return capture.String(), rerr
 	}
-	return capture.String(), swept.Wait()
+	// Wait FIRST (0.29.224): what the subprocess wrote to standard error is
+	// copied by a goroutine of os/exec that is done only when Wait returns,
+	// and `return capture.String(), swept.Wait()` read the capture before it.
+	werr := swept.Wait()
+	return capture.String(), werr
 }
 
 // boundedCapture is an io.Writer for a subprocess's standard error or its

@@ -5,7 +5,7 @@
 // v0.27.139 blind-window losses. Deliberately separate from routine
 // collection (operator requirement): routine collection keeps its 5%
 // gap threshold; this command visits ONLY the count-gap candidates
-// (~6,815 repos on aveloxis_large — 4.8% of the fleet, never a 100%
+// (~6,815 repos on the larger production database — 4.8% of the fleet, never a 100%
 // rescan) and runs the existing GapFiller at threshold 0: full number
 // listing → set-diff vs stored → per-item fetch incl. children and
 // comments (v0.16.12) → stage → process.

@@ -7,7 +7,7 @@
 //
 // Candidates are repos whose latest repo_info metadata counts exceed
 // the queue's cached stored counts (last_issues/last_prs — cumulative
-// since v0.21.2). Fleet sizing on aveloxis_large (2026-08-21): 6,815
+// since v0.21.2). Fleet sizing on the larger production database (2026-08-21): 6,815
 // of 141,031 collected repos, ≥175,590 missing items — 4.8% of the
 // fleet, which is the whole point: the healer targets ONLY these, not
 // a 100% rescan. Count-gap is a LOWER bound (stored rows for

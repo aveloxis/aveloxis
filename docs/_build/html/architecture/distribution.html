@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>Distribution Worker (v0.24.0+) &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e281c876"></script>
+      <script src="../_static/documentation_options.js?v=ba8856c8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2273,7 +2273,7 @@ aveloxis<span class="w"> </span>distribution-stats<span class="w"> </span>--repo
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet (chaoss.tv <code class="docutils literal notranslate"><span class="pre">aveloxis</span></code> DB) completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).</p>
+<p>Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).</p>
 <p>See <a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/getting-started/configuration.md</span></code></span></a> for the per-field operator reference table.</p>
 </section>
 <section id="what-the-subsystem-does-not-do">

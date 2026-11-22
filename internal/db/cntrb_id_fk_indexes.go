@@ -14,8 +14,8 @@ import (
 // make v0.22.1's ON UPDATE CASCADE tractable.
 //
 // Without these indexes every cntrb_id rewrite cascades into
-// sequential scans of the child tables. On the production
-// aveloxis_large DB this kept `aveloxis migrate-cntrb-ids` stuck
+// sequential scans of the child tables. On the
+// larger production database this kept `aveloxis migrate-cntrb-ids` stuck
 // on batch 1 for 17+ hours with zero committed progress: 5,000
 // batch rows × 15 unindexed child tables (some 50M+ rows) =
 // 75,000 sequential scans per batch attempt.
@@ -79,7 +79,7 @@ func cntrbIDFKIndexSQL(i int) string {
 // index build fails.
 //
 // Build durations vary widely by table size. On the production
-// fleet's aveloxis_large DB, the messages and pull_request_commits
+// fleet's larger production database, the messages and pull_request_commits
 // indexes are the long pole (each table holds tens of millions of
 // rows). Operators can run `aveloxis migrate` and let it run; the
 // CONCURRENTLY flag prevents the build from blocking writes.

@@ -23,6 +23,23 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
+// What a subprocess wrote to standard error is read AFTER it has been waited
+// for (0.29.224). os/exec copies standard error in a goroutine that is only
+// known to be done when Wait returns, and the last line of boundedLines read
+// the capture first (Go evaluates `return capture.String(), swept.Wait()`
+// left to right): a failing subprocess's message could come back empty. CI
+// caught it once in two runs of the test below ("err exit status 3, stderr
+// \"\""). Here the subprocess closes its standard output at once, so the
+// line loop ends, and writes its message a moment later.
+func TestBoundedLinesReadsStandardErrorAfterTheSubprocessEnds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	stderr, err := boundedLines(exec.CommandContext(ctx, "sh", "-c", "exec 1>&-; sleep 0.3; echo why >&2; exit 3"), 1<<20, func(string) error { return nil })
+	if err == nil || !strings.Contains(stderr, "why") {
+		t.Errorf("a subprocess that writes its error after closing its output: err %v, stderr %q; want its exit error and \"why\"", err, stderr)
+	}
+}
+
 // boundedLines takes a subprocess's output a line at a time and stops the
 // subprocess past its bound: a subprocess that never stops writing is
 // ended, not waited for.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // BEHAVIORAL driver for the R2 invariant on the commit-resolver path
-// (F4 of the 2026-09-11 chaoss.tv log analysis).
+// (F4 of the 2026-09-11 production log analysis).
 //
 // THE CONTRADICTION: docs/architecture/contributor-resolution.md's
 // invariant table says cntrb_login changes NEVER — "durable audit trail,

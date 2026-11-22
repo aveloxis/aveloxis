@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e281c876"></script>
+      <script src="../_static/documentation_options.js?v=ba8856c8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2895,10 +2895,10 @@ command says the check was skipped.</p>
 <h3>How a backend is placed on a host<a class="headerlink" href="#how-a-backend-is-placed-on-a-host" title="Link to this heading"></a></h3>
 <p>Each component tags its connection pool with an <code class="docutils literal notranslate"><span class="pre">application_name</span></code> that
 carries the component and this machine’s hostname, separated by <code class="docutils literal notranslate"><span class="pre">&#64;</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aveloxis</span><span class="o">-</span><span class="n">serve</span><span class="nd">@kate</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aveloxis</span><span class="o">-</span><span class="n">serve</span><span class="nd">@myhost</span>
 <span class="n">aveloxis</span><span class="o">-</span><span class="n">scancode</span><span class="o">-</span><span class="n">worker</span><span class="nd">@runner</span><span class="o">-</span><span class="mi">01</span>
-<span class="n">aveloxis</span><span class="o">-</span><span class="n">web</span><span class="nd">@kate</span>
-<span class="n">aveloxis</span><span class="o">-</span><span class="n">api</span><span class="nd">@kate</span>
+<span class="n">aveloxis</span><span class="o">-</span><span class="n">web</span><span class="nd">@myhost</span>
+<span class="n">aveloxis</span><span class="o">-</span><span class="n">api</span><span class="nd">@myhost</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">stop</span></code> matches on the part <strong>before</strong> the <code class="docutils literal notranslate"><span class="pre">&#64;</span></code> (the component) and

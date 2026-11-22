@@ -7,7 +7,7 @@ package api
 // without a valid token. A valid session token is not counted; an
 // operator-issued API token is counted against its own hourly allowance,
 // whatever address it comes from; no token, an unknown token or an expired
-// one stays on the per-IP bucket and daily cap. The kate incident: a
+// one stays on the per-IP bucket and daily cap. The production incident: a
 // signed-in browser opening a large repository page drained the per-IP
 // burst and charts failed with 429.
 
@@ -191,7 +191,7 @@ func TestOverLimitAddressCannotForceLookupsWithJunkTokens(t *testing.T) {
 }
 
 // The other side of the same rule: an address over its limit that has
-// presented no invalid token (a busy shared address, the kate campus case)
+// presented no invalid token (a busy shared address, the campus case seen in production)
 // still gets its signed-in callers resolved and served.
 func TestSignedInCallerBehindABusyAddressIsStillServed(t *testing.T) {
 	store := &fakeSessionStore{userID: 7, valid: map[string]bool{"sess": true}}

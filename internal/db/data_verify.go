@@ -576,7 +576,7 @@ func SortVerifyResults(results []VerifyResult) []VerifyResult {
 //
 // An interrupted concurrent build leaves an INVALID index that serves no
 // query and still slows every write. The migrate drops and rebuilds only the
-// indexes it builds itself, so the advice covers the other kind too (kate's
+// indexes it builds itself, so the advice covers the other kind too (a production fleet's
 // idx_contributor_repo_repo_git, an aborted hand-run build no migrate
 // touches): drop it concurrently. A build still running is INVALID until it
 // finishes — an interrupted migrate leaves its build running on the server —

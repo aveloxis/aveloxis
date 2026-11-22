@@ -29,7 +29,7 @@ import (
 // binary has completed here". So a transient stamp-write failure now
 // produces a FALSE refusal on a fleet whose migration genuinely
 // completed, and the operator's only visible remedy is a full re-run
-// (hours on aveloxis_large). The gate's premise ("the stamp moves only
+// (hours on the larger production database). The gate's premise ("the stamp moves only
 // when a migration completes") is false exactly when the stamp write
 // fails.
 //

@@ -12,7 +12,7 @@
 //     classes among {conversation bridges, review_comments,
 //     review-body refs}. These rows' text/author were silently
 //     overwritten cross-kind under the old arbiter — 198,237 on
-//     aveloxis_large. `aveloxis heal-messages` consumes the worklist.
+//     the larger production database. `aveloxis heal-messages` consumes the worklist.
 //  3. backfill msg_kind from bridge membership, keyset-windowed over
 //     msg_id (the bulk-backfill house rule — production max msg_id is
 //     ~56M). Priority inside a window: inline (2) > review body (3) >

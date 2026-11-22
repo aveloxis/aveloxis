@@ -11,7 +11,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/db"
 )
 
-// realistic libmagic spam captured from the 2026-06-09 aveloxis_large (Ubuntu)
+// realistic libmagic spam captured from the 2026-06-09 production (Ubuntu)
 // incident — the warning cites the compiled magic.mgc DB by path. The wedging
 // bug repeats this fingerprint thousands of times (it saturates the preflight's
 // 1 MB stderr cap), so the broken-test fixture repeats it well past the

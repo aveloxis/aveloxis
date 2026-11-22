@@ -6,7 +6,7 @@ package collector
 // libyear_registry_client.go — v0.29.56. The shared request path, pacing,
 // answer cache and keyed GitHub lookups behind the libyear resolvers.
 //
-// Measured in two hours of the 2026-09-17 chaoss.tv log and in production
+// Measured in two hours of the 2026-09-17 production log and in production
 // the same day:
 //   - crates.io answered 429 on 40 lines (3,153 deps). Its data-access
 //     policy allows at most 1 request per second, and 70 workers resolved
@@ -365,7 +365,7 @@ func fetchRegistryLastModified(ctx context.Context, rawURL string) (string, erro
 // 80% repeat rate above was measured over a 24-hour window, and a package
 // released today reaches libyear by the next day's scans, well inside
 // the fleet's recollection interval (days_until_recollect, 12 days on
-// chaoss.tv). Memory is bounded by the TTL: entries ≈ distinct lookups
+// a production fleet). Memory is bounded by the TTL: entries ≈ distinct lookups
 // per day (34,434 successful pairs measured), each a few hundred bytes.
 const registryCacheTTL = 24 * time.Hour
 

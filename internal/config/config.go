@@ -830,7 +830,7 @@ type CollectionConfig struct {
 	// Default 2 when unset — matches pre-v0.21.0 concurrency so
 	// operators upgrading don't see a sudden change in scancode CPU
 	// load. Operators on machines with spare CPU cores should raise
-	// this (operator running aveloxis_large at 64 cores has tested 12
+	// this (operator running the larger production database at 64 cores has tested 12
 	// without issues).
 	//
 	// v0.27.6: an EXPLICIT `"scancode_workers": 0` in aveloxis.json

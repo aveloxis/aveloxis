@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ScanCode Worker (v0.21.0+) &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>ScanCode Worker (v0.21.0+) &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e281c876"></script>
+      <script src="../_static/documentation_options.js?v=ba8856c8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2266,7 +2266,7 @@ clone traffic, the facade’s clones on top. To start more slowly, raise
 </section>
 <section id="startup-health-preflight-aveloxis-ops-aveloxis-status">
 <h2>13. Startup health preflight + <code class="docutils literal notranslate"><span class="pre">aveloxis_ops.aveloxis_status</span></code><a class="headerlink" href="#startup-health-preflight-aveloxis-ops-aveloxis-status" title="Link to this heading"></a></h2>
-<p>A <em>system-level</em> scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. The 2026-06-09 <code class="docutils literal notranslate"><span class="pre">aveloxis_large</span></code> incident was the motivating case. On that Ubuntu 24.04 host the system <code class="docutils literal notranslate"><span class="pre">libmagic</span></code> database (<code class="docutils literal notranslate"><span class="pre">/usr/share/misc/magic.mgc</span></code>) was corrupt, so scancode (via <code class="docutils literal notranslate"><span class="pre">typecode</span></code> → <code class="docutils literal notranslate"><span class="pre">python-magic</span></code> → <code class="docutils literal notranslate"><span class="pre">libmagic</span></code>) emitted <code class="docutils literal notranslate"><span class="pre">Warning:</span> <span class="pre">offset</span> <span class="pre">...</span> <span class="pre">invalid</span></code> at enormous volume — <strong>14+ GB of stderr per large repo</strong> — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.</p>
+<p>A <em>system-level</em> scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. A production incident of 2026-06-09 was the motivating case. On that Ubuntu 24.04 host the system <code class="docutils literal notranslate"><span class="pre">libmagic</span></code> database (<code class="docutils literal notranslate"><span class="pre">/usr/share/misc/magic.mgc</span></code>) was corrupt, so scancode (via <code class="docutils literal notranslate"><span class="pre">typecode</span></code> → <code class="docutils literal notranslate"><span class="pre">python-magic</span></code> → <code class="docutils literal notranslate"><span class="pre">libmagic</span></code>) emitted <code class="docutils literal notranslate"><span class="pre">Warning:</span> <span class="pre">offset</span> <span class="pre">...</span> <span class="pre">invalid</span></code> at enormous volume — <strong>14+ GB of stderr per large repo</strong> — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.</p>
 <section id="the-preflight">
 <h3>The preflight<a class="headerlink" href="#the-preflight" title="Link to this heading"></a></h3>
 <p>On startup (<code class="docutils literal notranslate"><span class="pre">ScancodeWorker.Run</span></code>, before the dispatcher claims any work), the worker runs <strong>one</strong> scancode invocation against a tiny synthetic input and classifies the result:</p>

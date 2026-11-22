@@ -15,7 +15,7 @@ import (
 // case-insensitive but case-preserving — commit metadata may
 // store "NitishT" while the contributors row was inserted as
 // "nitisht" (or vice versa) depending on the source endpoint.
-// Production diagnostic on the live aveloxis_large DB showed
+// Production diagnostic on the larger live database showed
 // 2,511 distinct commits recoverable under a case-insensitive
 // JOIN vs only 592 under the case-sensitive comparison.
 

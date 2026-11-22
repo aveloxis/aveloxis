@@ -45,7 +45,7 @@ func TestVulnUpsertRefreshesLifecycle(t *testing.T) {
 	src := mustReadFileStr(t, "vulnerability_store.go")
 	// The upsert (one spelling since PR #226) must un-resolve a reappearing
 	// vuln and stamp last_seen.
-	upsert := srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	upsert := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch("))
 	if !strings.Contains(upsert, "last_seen_at = NOW()") || !strings.Contains(upsert, "resolved_at = NULL") {
 		t.Error("the vulnerability upsert must SET last_seen_at = NOW(), resolved_at = NULL on conflict — a reappearing vuln is current again")
 	}

@@ -30,7 +30,7 @@
 // GitHub-only by definition); a real-world PEP 735 adopter (the
 // fixture test carries that family until adoption spreads).
 //
-// What this canary CANNOT measure (needs the chaoss.tv small-DB run):
+// What this canary CANNOT measure (needs a run against the smaller production database):
 // cross-repo OSV cache convergence under one long-lived serve process
 // (each ScanVulnerabilities call here shares one in-process cache,
 // but the fleet's convergence ratios need fleet-shaped input), and

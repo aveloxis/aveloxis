@@ -28,7 +28,7 @@ import (
 // v0.25.0 — scanner contract tests.
 //
 // The contract loosening surfaced by the 2026-05-22/23 production
-// diagnostic on the chaoss.tv aveloxis DB: every distribution-scan
+// diagnostic on a production database: every distribution-scan
 // failure during the ecosyste.ms outage was a Julia or R repo
 // where ecosyste.ms 500'd and every other source legitimately
 // returned "no data." The pre-v0.25.0 contract recorded these as

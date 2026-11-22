@@ -9,7 +9,7 @@ package collector
 // calcLibyear returns 0 when EITHER release date is missing or unparseable,
 // and nothing set NoLibyear for it, so "we could not work this out" was
 // stored as "this dependency is perfectly up to date". Measured on
-// chaoss.tv on 2026-09-17: of 3,196,143 rows carrying a libyear number,
+// a production fleet on 2026-09-17: of 3,196,143 rows carrying a libyear number,
 // 1,704,902 had a missing date — 53%. Of every row reading libyear = 0,
 // 87% meant unknown. The fleet average read 1.335 years where the honest
 // figure was 2.861, and the median read 0.

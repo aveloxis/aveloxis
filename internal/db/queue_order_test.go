@@ -33,7 +33,9 @@ func TestListQueuePageOrderByIncludesRepoIDTiebreaker(t *testing.T) {
 	// unchanged, and read where the text now stands: ListQueuePage runs
 	// that builder's statements, and the builder's body has the shape.
 	builtByQueuePageSQL(t)
-	body := srctest.FuncBody(t, string(data), "func queuePageSQL(")
+	// Comments are taken out first (Copilot on PR #263, third review): the
+	// append kept only in a comment satisfied the check below.
+	body := srctest.StripGoComments(srctest.FuncBody(t, string(data), "func queuePageSQL("))
 	// v0.29.0 re-anchor (review 2026-08-31 #1): the function's FIRST
 	// textual ORDER BY is now the repo_info latest-pick inside the meta
 	// join literal, which disarmed this pin silently — it happily

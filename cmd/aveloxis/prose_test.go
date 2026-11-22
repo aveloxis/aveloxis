@@ -26,7 +26,7 @@ func oneLine(s string) string {
 
 // The deploy-checklist's step notes were printed as one line each — the
 // longest is over four thousand characters — so `deploy-checklist
-// --pending` on kate scrolled as a wall with no line returns (operator,
+// --pending` on a production fleet scrolled as a wall with no line returns (operator,
 // 2026-11-03). Every prose line now wraps at the column width; a step's
 // COMMAND line never wraps (it is copied into a shell), and the text is
 // unchanged word for word.

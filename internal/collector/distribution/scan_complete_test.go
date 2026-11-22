@@ -120,7 +120,7 @@ func TestWorkerProcessJobPassesScanCompleteToStore(t *testing.T) {
 
 // TestCompositeScannerReturnsIncompleteOnEcosystemsTransient pins
 // the headline v0.25.0 partial-scan behavior. When ecosyste.ms 500s
-// (the dominant chaoss.tv failure mode), the scanner returns
+// (the dominant production failure mode), the scanner returns
 // complete=false so the store stamps distribution_scan_complete=
 // FALSE and the row re-claims on the next dispatch cycle.
 func TestCompositeScannerReturnsIncompleteOnEcosystemsTransient(t *testing.T) {

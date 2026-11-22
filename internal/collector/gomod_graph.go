@@ -222,7 +222,7 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
 	// GOWORK=off: each module is expanded on its own, and inside a go.work
 	// the toolchain refuses -mod=mod ("may only be set to readonly or
-	// vendor when in workspace mode") — 52 of 64 failures on kate
+	// vendor when in workspace mode") — 52 of 64 failures on a production fleet
 	// (2026-09-23 log review), each an empty Go closure.
 	// GOTOOLCHAIN=local: a cloned go.mod's `toolchain go1.X` line must not
 	// make this host download and run that toolchain (under `auto` it

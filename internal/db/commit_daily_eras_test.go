@@ -114,7 +114,7 @@ func TestReplaceRepoCommitDailyKeepsAnEarlierEraOnAnAdoptedChange(t *testing.T) 
 
 // The contributor_retention series reads the daily table for a repository
 // whose picture is complete (operator decision 2026-11-05: the last series on
-// the per-file rows; on kate the commits arm alone ran past the 3-minute
+// the per-file rows; on a production fleet the commits arm alone ran past the 3-minute
 // bound for nixpkgs and zephyr). The fixture's commits table says ONE commit
 // by alice (a drive-by under threshold 4); five daily commits make her a
 // repeat contributor — an answer only the daily table gives.
@@ -431,7 +431,7 @@ func TestTheRefoldIsAOneTimeFilterWithoutAnAdoptedChange(t *testing.T) {
 // planner served from idx_commits_author_email, filtering repo_id afterwards,
 // so every boundary-day row walked that author's commits in EVERY repository —
 // 58,497 probes and 82 million buffer hits, 88 s, on a 2-million-row copy;
-// kate's table has 1.47 billion. All of a boundary-day author's rows are one
+// The production table has 1.47 billion. All of a boundary-day author's rows are one
 // group, so the condition is a HAVING bool_or over the group, read from the
 // rows the arm already has (0.3 s, the same rows). The count of commits scan
 // nodes is cost-independent: a correlated read adds a node whatever the plan.

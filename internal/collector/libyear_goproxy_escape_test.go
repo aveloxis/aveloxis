@@ -8,7 +8,7 @@ package collector
 // resolver sent paths verbatim, so proxy.golang.org answered 404 for
 // every module with an uppercase letter (github.com/Masterminds/semver/v3,
 // github.com/Azure/go-ansiterm, …): 157 WARN lines and 1,883 dependencies
-// in two hours of the 2026-09-17 chaoss.tv log, and zero Go libyear rows
+// in two hours of the 2026-09-17 production log, and zero Go libyear rows
 // with an uppercase module name in production. Verified live the same
 // day: /github.com/Masterminds/semver/v3/@latest → 404,
 // /github.com/!masterminds/semver/v3/@latest → 200.

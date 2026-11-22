@@ -520,7 +520,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	historyTicker := time.NewTicker(s.cfg.Collection.ActivityHistoryIntervalValue())
 	defer historyTicker.Stop()
 	defer breadthTicker.Stop()
-	// 2026-09-12: per-key pool summary. The observability the chaoss.tv
+	// 2026-09-12: per-key pool summary. The observability the production
 	// analysis lacked — an aggregate "270,000 remaining, 54 alive" reads
 	// the same whether load is even or 96% on one key.
 	keyPoolTicker := time.NewTicker(keyPoolSummaryInterval)
@@ -2186,7 +2186,7 @@ func (s *Scheduler) buildOutcome(incremental bool, result *collector.CollectResu
 	// failures every cycle.
 	// v0.29.62: a repository the facade PROVED empty (the default branch
 	// resolves to no commit — FacadeResult.EmptyDefaultBranch, v0.29.58)
-	// is explained, not suspicious: 668 of 677 failed jobs on kate were
+	// is explained, not suspicious: 668 of 677 failed jobs on a production fleet were
 	// these (2026-09-23 log review; worklist 33).
 	provenEmpty := facadeResult != nil && facadeResult.EmptyDefaultBranch
 	// PR #226 Copilot review 5458877691: the gate reasons from the facade's

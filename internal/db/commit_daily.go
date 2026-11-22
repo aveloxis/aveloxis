@@ -337,7 +337,7 @@ const eraDayStartSQL = `(date_trunc('day', (` + commitDailyEraStartSQL + `) AT T
 // repository afterwards, so each boundary-day row walked that author's commits
 // in every repository: 58,497 probes, 82 million buffer hits, 88 s on a
 // 2-million-row copy, against 0.3 s for the same rows here (the evaluation of
-// 2026-11-08); kate's commits holds 1.47 billion rows. Inside an OR, before
+// 2026-11-08); one production fleet's commits table holds 1.47 billion rows. Inside an OR, before
 // that, it was a hashed SubPlan over the whole table. Each arm reads commits
 // once (TestTheEraFoldsReadCommitsOncePerArm).
 //

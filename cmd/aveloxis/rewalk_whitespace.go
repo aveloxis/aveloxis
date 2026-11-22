@@ -34,7 +34,7 @@ import (
 // RUNTIME EXPECTATION (grounded 2026-08-19): git log -p measured at
 // ~209 MB/s single-threaded on an M-series laptop; the fleet's patch
 // volume estimates at ~5-10 TB (162.7M commits, ~146B changed lines).
-// On kate at 8 workers expect roughly 8-24 h wall-clock (outer bound
+// On a production fleet at 8 workers expect roughly 8-24 h wall-clock (outer bound
 // ~2 days if disk-bound); the per-repo progress lines + running totals
 // let you extrapolate from the first hour. Safe alongside a running
 // serve: repos mid-collection are skipped this pass, and overlapping

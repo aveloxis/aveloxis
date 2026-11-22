@@ -6,7 +6,7 @@
 // scheme and re-set Authorization / PRIVATE-TOKEN on the next attempt, so a
 // redirect issued by the forge sent the token to the redirect target
 // (including over plain http). Production evidence before the fix
-// (chaoss.tv, 2026-09-06..13): 3,060 redirects followed, every one
+// (a production fleet, 2026-09-06..13): 3,060 redirects followed, every one
 // api.github.com → https://api.github.com — refusing everything else costs
 // nothing. The same code joined a relative Location onto the base URL, so a
 // GitLab base ending in /api/v4 doubled the path.

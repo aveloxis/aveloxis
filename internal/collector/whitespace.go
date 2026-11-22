@@ -74,7 +74,7 @@ const whitespaceLineCap = 64 * 1024
 // whitespaceLineCap bytes. v0.27.106 (PR #184 review): built on
 // ReadSlice so the retained prefix is the ONLY allocation — ReadString
 // would materialize the whole physical line first, letting one huge
-// generated/minified line allocate hundreds of MB per walker (kate is
+// generated/minified line allocate hundreds of MB per walker (the production host is
 // an OOM-sensitive host). Overflow fragments are consumed and dropped.
 func readCappedLine(r *bufio.Reader) (string, error) {
 	var kept []byte

@@ -9,7 +9,7 @@ import (
 )
 
 // v0.27.96 — the F1/F5/F7a index wave from the first pg_stat_statements
-// snapshot (summary/21-perf-findings-2026-08.md, measured on aveloxis_large
+// snapshot (summary/21-perf-findings-2026-08.md, measured on the larger production database
 // 2026-08-18 over an 11-day window):
 //
 //   F1  pull_requests(repo_id, pr_number)        — the staged processor's

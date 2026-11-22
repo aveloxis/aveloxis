@@ -12,7 +12,7 @@ import (
 // TestMigrateCmdHasSkipViewsFlag pins that `aveloxis migrate` accepts
 // a --skip-views flag so an operator can run schema-only migrations
 // without paying the materialized view rebuild cost. On a 100K-repo
-// fleet (chaoss.tv 2026-05) the matview rebuild takes a long time;
+// fleet (production, 2026-05) the matview rebuild takes a long time;
 // when the operator is iterating on a v0.19.4 schema-error fix they
 // shouldn't have to wait for views every retry.
 func TestMigrateCmdHasSkipViewsFlag(t *testing.T) {

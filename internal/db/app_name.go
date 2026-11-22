@@ -12,7 +12,7 @@ import (
 )
 
 // AppNameHostSep separates a component's match prefix from this host's
-// marker inside `application_name`: `aveloxis-serve@kate`. It is the
+// marker inside `application_name`: `aveloxis-serve@myhost`. It is the
 // one character the readers split on, and hostid.SanitizeHostTag
 // guarantees it can never appear inside the marker itself.
 const AppNameHostSep = "@"

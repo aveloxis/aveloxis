@@ -13,7 +13,7 @@ import (
 // aveloxis_data.contributors(cntrb_id) must be backed by a btree
 // index on the child table. Without indexes, ON UPDATE CASCADE
 // (added in v0.22.1) seq-scans every child table for every cntrb_id
-// being rewritten. On the production aveloxis_large DB this kept
+// being rewritten. On the larger production database this kept
 // `aveloxis migrate-cntrb-ids` stuck on batch 1 for 17+ hours with
 // zero committed progress: 5,000 batch rows × 15 unindexed child
 // tables (some 50M+ rows) = 75,000 sequential scans per batch.

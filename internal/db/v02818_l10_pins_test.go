@@ -63,7 +63,7 @@ func TestGitLabForceFullStepIsSeededFromThePriorStamp(t *testing.T) {
 	if strings.Contains(src, "execMigrationStep(ctx, pg, logger, errs,\n\t\t"+label) {
 		t.Error("the v0.27.37 step must not be a plain execMigrationStep (it re-flags every GitLab repo on every migrate)")
 	}
-	body := srctest.FuncBody(t, readSourceFile(t, "migration_ledger.go"), "func runOnceSeedIfApplied(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, "migration_ledger.go"), "func runOnceSeedIfApplied("))
 	for _, needle := range []string{"schemaVersionProbe(ctx)", "SchemaVersionAtLeast(prior, appliedSince)", "ON CONFLICT (step_label) DO NOTHING", "return false"} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("runOnceSeedIfApplied must contain %s", needle)
@@ -146,13 +146,13 @@ func TestRefreshAllRepoAggregatesHoldsAnAdvisoryLock(t *testing.T) {
 // like real ones — and merges the losers' checkpoints into the winner.
 func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	src := readSourceFile(t, "email_message_fk_indexes.go")
-	outer := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
+	outer := srctest.StripGoComments(srctest.FuncBody(t, src, "func dedupRepoGroupsListServe("))
 	for _, needle := range []string{"pg.pool.Begin(ctx)", "tx.Commit(ctx)", "tx.Rollback(ctx)", "dedupRepoGroupsListServeTx(ctx, tx, logger, pg.ownBackendPIDs)"} {
 		if !strings.Contains(outer, needle) {
 			t.Errorf("dedupRepoGroupsListServe must contain %s", needle)
 		}
 	}
-	fn := srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx(")
+	fn := srctest.StripGoComments(srctest.FuncBody(t, src, "func dedupRepoGroupsListServeTx("))
 	// 0.29.212: the consolidation's statements are the list
 	// dedupListServeSteps, which the function runs in order through
 	// dedupListServeStepSQL (so that the write-policy check runs each).
@@ -255,7 +255,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 			t.Errorf("%s must follow the gate with exactly `%s` — %s", site.fn, site.ret, site.why)
 		}
 	}
-	gateBody := srctest.FuncBody(t, src, "func emailMessageFKIndexesReadyFor(")
+	gateBody := srctest.StripGoComments(srctest.FuncBody(t, src, "func emailMessageFKIndexesReadyFor("))
 	if !strings.Contains(gateBody, "range emailMessageFKIndexes") || !strings.Contains(gateBody, "idx.indexName") || strings.Contains(gateBody, `"idx_email_message_`) {
 		t.Error("the gate must derive its columns and index names from emailMessageFKIndexes — no hand-spelled index names (SR-17)")
 	}
@@ -269,7 +269,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		{"email_message_fk_indexes.go", "func leadingColumnIndexValid("},
 		{"repo_group_fk_indexes.go", "func repoGroupFKIndexesReady("},
 	} {
-		fb := srctest.FuncBody(t, readSourceFile(t, site.file), site.fn)
+		fb := srctest.StripGoComments(srctest.FuncBody(t, readSourceFile(t, site.file), site.fn))
 		if !strings.Contains(fb, "usableFKIndexPredicateSQL") {
 			t.Errorf("%s must join usableFKIndexPredicateSQL (a partial index on an unrelated predicate is not a usable FK index)", site.fn)
 		}
@@ -284,10 +284,10 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	// collecting head stalled the rerun-until-0 contract); the dry-run
 	// sample keeps them in view, flagged.
 	dedupSrc := readSourceFile(t, "repo_dedup.go")
-	if !strings.Contains(srctest.FuncBody(t, dedupSrc, "func DedupCaseVariantReposBatch("), "sampleCaseVariantRepoDups(ctx, store, batchSize, true)") {
+	if !strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, dedupSrc, "func DedupCaseVariantReposBatch(")), "sampleCaseVariantRepoDups(ctx, store, batchSize, true)") {
 		t.Error("DedupCaseVariantReposBatch must read its window with excludeCollecting = true")
 	}
-	if !strings.Contains(srctest.FuncBody(t, dedupSrc, "func SampleCaseVariantRepoDups("), "sampleCaseVariantRepoDups(ctx, store, limit, false)") {
+	if !strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, dedupSrc, "func SampleCaseVariantRepoDups(")), "sampleCaseVariantRepoDups(ctx, store, limit, false)") {
 		t.Error("SampleCaseVariantRepoDups (the dry-run read) must keep collecting pairs in view")
 	}
 	if !strings.Contains(dedupSrc, "WHERE NOT ($2::boolean AND collecting)") {
@@ -298,7 +298,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	// class) through THE shared gate — no inline probe, no hand-spelled
 	// index name — and a not-ready refusal is a WARN skip, a probe error
 	// a failed step.
-	outerBody := srctest.FuncBody(t, src, "func dedupRepoGroupsListServe(")
+	outerBody := srctest.StripGoComments(srctest.FuncBody(t, src, "func dedupRepoGroupsListServe("))
 	if strings.Contains(outerBody, "leadingColumnIndexValid(") || strings.Contains(outerBody, "idx_email_message_rgls_id") {
 		t.Error("dedupRepoGroupsListServe must use emailMessageFKIndexesReadyFor, not an inline probe or a hand-spelled index name")
 	}
@@ -351,7 +351,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Contains(srctest.StripGoComments(src), "func serveBackendsBeyondOwnPool(ctx context.Context, pool") {
 		t.Error("the probe must never take the pool — the clear and the read would land on different connections")
 	}
-	probe := srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool(")
+	probe := srctest.StripGoComments(srctest.FuncBody(t, src, "func serveBackendsBeyondOwnPool("))
 	if !strings.Contains(probe, "a.datname = current_database() AND ") || !strings.Contains(probe, `appNamePrefixSQL("a.application_name")`) {
 		t.Error("serveBackendsBeyondOwnPool must filter pg_stat_activity by THIS database and the serve application_name PREFIX (pg_stat_activity is cluster-wide; the tag carries a host marker, so equality would count only this host's own serve and read every other host's as absent — the direction that lets the dedup run beside a live serve)")
 	}
@@ -388,7 +388,7 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 	if strings.Count(src, "WINDOW w AS") != 1 {
 		t.Errorf("the partition window must be spelled exactly once (dupListPartitionsSQL), found %d", strings.Count(src, "WINDOW w AS"))
 	}
-	if strings.Contains(srctest.FuncBody(t, src, "func listDedupPending("), "WINDOW") {
+	if strings.Contains(srctest.StripGoComments(srctest.FuncBody(t, src, "func listDedupPending(")), "WINDOW") {
 		t.Error("listDedupPending must reuse dupListPartitionsSQL, not spell the partition itself")
 	}
 	// pg_stat_activity readers filter by database: the cluster hosts two
@@ -421,7 +421,9 @@ func TestListDedupIsTransactionalAndCollisionAware(t *testing.T) {
 		t.Error("consolidateRepoGroups must repoint aveloxis_ops.mailing_list_staging.repo_group_id to the canonical group")
 	}
 	// The analyzer must still see the CONCURRENTLY build this dedup guards.
-	migrate := readSourceFile(t, "migrate.go")
+	// Comments out first (review round 15, T-1): the call moved after the
+	// build, with a comment naming it left at the old line, passed this.
+	migrate := srctest.StripGoComments(readSourceFile(t, "migrate.go"))
 	dedup := strings.Index(migrate, "dedupRepoGroupsListServe(ctx, pg, logger, errs)")
 	unique := strings.Index(migrate, `"idx_rgls_group_email"`)
 	if dedup < 0 || unique < 0 || dedup > unique {

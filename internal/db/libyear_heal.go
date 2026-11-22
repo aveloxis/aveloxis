@@ -9,12 +9,12 @@ package db
 // calcLibyear returns 0 when a release date is missing, and until v0.29.57
 // that 0 was stored as if it meant "up to date". The resolver now stores
 // NULL instead (the collector's settleLibyear), but only as each repository is
-// re-analysed — on chaoss.tv that is roughly a fortnight, and two of the ten
+// re-analysed — on a production fleet that is roughly a fortnight, and two of the ten
 // days before 2026-09-17 did no analysis at all.
 //
 // This command closes the half that re-analysis can never fix. A dependency
 // with no PINNED VERSION has no release date to measure age from, and no
-// registry fix can change that: measured on chaoss.tv on 2026-09-17,
+// registry fix can change that: measured on a production fleet on 2026-09-17,
 // 471,344 rows carried a libyear number with an empty current_version, and
 // ZERO of them had a current_release_date. Those are NULLed here in minutes
 // instead of never.

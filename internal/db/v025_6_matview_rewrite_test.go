@@ -21,7 +21,7 @@ import (
 // branch coverage from ~27% (pre-v0.25.6 email-canonical chain) to
 // ~92% (UUID directly stamped by the commit resolver) and eliminates
 // the empty-string Cartesian product that produced the 4.9TB temp-
-// space ENOSPC observed on aveloxis_large 2026-05-25.
+// space ENOSPC observed on the larger production database 2026-05-25.
 func TestExplorerNewContributorsUsesCmtGhtAuthorID(t *testing.T) {
 	src := readMatviewsSQLForV0255(t)
 	region := extractMatviewBlock(t, src, "explorer_new_contributors")
@@ -247,19 +247,19 @@ func TestVersionStampedV0256(t *testing.T) {
 	// warn-only like the extension it depends on: gate its creation on
 	// ginTrgmOpsVisible (pg_opclass_is_visible probe) so a registered-but-
 	// not-visible operator class — extension installed in a schema off the
-	// role's search_path, observed on kate 2026-06-13, SQLSTATE 42704 —
+	// role's search_path, observed on a production fleet 2026-06-13, SQLSTATE 42704 —
 	// skips-with-warning instead of failing migration fatally and blocking
 	// serve startup over a monitor-search perf optimization) → 0.25.31 (a
 	// single 401 no longer permanently invalidates an API key: KeyPool now
 	// quarantines a key only after maxAuthStrikes consecutive 401s — any
 	// success resets the count — with an exponential auto-recovering cooldown,
 	// and GetKey waits for a quarantined key to recover instead of returning
-	// ErrAllKeysInvalidated. Fixes the 2026-06-17 aveloxis_large crash-loop
+	// ErrAllKeysInvalidated. Fixes the 2026-06-17 production crash-loop
 	// where transient GitHub-auth-backend 401s bled 18 good keys out one at a
 	// time over 15 hours and the scheduler then crashed on ClassAuth) →
 	// 0.25.32 (case-variant duplicate repos: GitHub/GitLab URLs are
 	// case-insensitive at the forge, but repo_git matching was byte-exact —
-	// 1,220 duplicate pairs on aveloxis_large. Prevention via
+	// 1,220 duplicate pairs on the larger production database. Prevention via
 	// resolveCaseVariantURL in UpsertRepo/FindRepoByURL, cleanup via
 	// `aveloxis dedup-repos`, uq_repos_repo_git_ci backstop after drain,
 	// Phase 0 case self-heal via HealRepoCaseDrift) → 0.25.33 (first
@@ -306,8 +306,8 @@ func TestVersionStampedV0256(t *testing.T) {
 	// three VALUE-checking tripwires added — example-config effective
 	// defaults, commands-doc coverage, schema-count pins).
 	src := readSourceFile(t, "version.go")
-	if !strings.Contains(src, `var ToolVersion = "0.29.223"`) {
-		t.Error("internal/db/version.go must declare ToolVersion = \"0.29.223\". The tool_version columns and SBOM output read this constant.")
+	if !strings.Contains(src, `var ToolVersion = "0.29.226"`) {
+		t.Error("internal/db/version.go must declare ToolVersion = \"0.29.226\". The tool_version columns and SBOM output read this constant.")
 	}
 }
 

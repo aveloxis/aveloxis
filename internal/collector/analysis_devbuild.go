@@ -11,7 +11,7 @@
 // [dev-packages], setup.py tests_require/extras_require, setup.cfg
 // [options.extras_require]. Everything here is gated on
 // collection.dev_build_deps (default FALSE — the findings-volume
-// driver; canary on the small chaoss.tv DB before any default flip,
+// driver; canary on the smaller production database before any default flip,
 // per the v0.27.19 first-wave lesson). Knob off = the walk's
 // pre-v0.27.45 row set, byte-identical.
 //

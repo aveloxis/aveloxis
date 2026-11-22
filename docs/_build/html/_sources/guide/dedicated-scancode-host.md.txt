@@ -33,7 +33,7 @@ On the database host, allow the scancode machine to connect:
 listen_addresses = '*'          # or a specific interface address
 
 # pg_hba.conf — one line for the scancode host (use its actual address;
-# do NOT open 0.0.0.0/0 — chaoss.tv's postgres logs show constant
+# do NOT open 0.0.0.0/0 — a production host's postgres logs show constant
 # credential brute-forcing against exposed 5432 ports):
 hostssl  aveloxis  aveloxis  192.0.2.42/32  scram-sha-256
 

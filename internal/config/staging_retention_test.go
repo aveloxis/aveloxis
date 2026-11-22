@@ -16,7 +16,7 @@ import (
 // The pre-v0.22.4 PurgeStagedProcessed query hardcoded `INTERVAL '7
 // days'`. For a frequently-re-collected repo this stacked 3–5 cycles
 // of processed JSONB tombstones in the staging table (verified
-// empirically against aveloxis_large on 2026-05-16: zephyr had 84K
+// empirically against the larger production database on 2026-05-16: zephyr had 84K
 // staged issues against an actual 28K count). Not a correctness bug
 // (Processor reads WHERE NOT processed) but real disk waste and
 // diagnostic confusion.

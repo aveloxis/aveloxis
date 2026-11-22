@@ -141,7 +141,7 @@ func TestRunWiresBothSweeps(t *testing.T) {
 	body := scancodeMethodBody(t, src, "func (w *ScancodeWorker) Run(")
 	recover := strings.Index(body, "w.recoverOrphans(ctx)")
 	// v0.27.13: the startup sweep must run in the BACKGROUND —
-	// synchronous sweeping blocked dispatch for 20+ min on kate
+	// synchronous sweeping blocked dispatch for 20+ min on a production fleet
 	// (serial RemoveAll of multi-GB clones on a spinner). Pin the
 	// safego.Go form so a refactor can't quietly re-serialize it.
 	startup := strings.Index(body, `safego.Go(w.logger, "scancode-startup-sweep", func() { w.sweepCloneDirAtStartup(ctx) })`)

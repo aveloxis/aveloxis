@@ -52,7 +52,7 @@ import (
 // are doubled for fmt.Sprintf.
 //
 // The commits arm reads the daily table for a repository whose picture is
-// complete (0.29.140, operator decision 2026-11-05; measured on kate: the
+// complete (0.29.140, operator decision 2026-11-05; measured on a production fleet: the
 // per-file arm alone ran past the API's 3-minute bound for nixpkgs and
 // zephyr, the last series on those rows after 0.29.137 moved the
 // contributors, committers and code_change_commits arms). $5 = the

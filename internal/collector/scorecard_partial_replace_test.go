@@ -6,7 +6,7 @@
 // persistScorecard rotated the current rows to history UNCONDITIONALLY
 // and inserted whatever the run produced — so a 15-minute remote
 // timeout followed by a successful local fallback REPLACED an 18-check
-// remote set with an 11-check local one, and 10,214 repos on chaoss.tv
+// remote set with an 11-check local one, and 10,214 repos on a production fleet
 // came to hold the 7-check deficit (Branch-Protection, CII-Best-
 // Practices, CI-Tests, Code-Review, Contributors, Maintained,
 // Signed-Releases: zero rows in local mode). A consumer reading the

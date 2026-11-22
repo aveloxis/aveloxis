@@ -21,7 +21,7 @@
 //	           WHERE cntrb_id = $1::uuid
 //
 // v0.19.1 RECOVERED from that collision. The 2026-09-11 analysis of the
-// chaoss.tv logs showed recovery was the wrong level to fix it at:
+// production logs showed recovery was the wrong level to fix it at:
 //
 //   - That statement was the source of ALL 555 idx_contributors_login
 //     violations in the 2026-09-06..09-11 production log (555 of 555;

@@ -10,7 +10,7 @@ import (
 
 // v0.25.8 — source-contract tests for:
 //   1. idx_commits_cmt_ght_author_id — the missing index that caused a
-//      2+ day stalled rebuild of explorer_new_contributors on aveloxis_large
+//      2+ day stalled rebuild of explorer_new_contributors on the larger production database
 //      (2026-06-02 incident). cmt_ght_author_id is a plain UUID column with
 //      no REFERENCES clause, so it was invisible to the v0.22.6 FK-index
 //      audit that used pg_constraint.

@@ -24,7 +24,7 @@ import (
 // migrate runs, not a copy.
 func migrateStepSQL(t *testing.T, label string) string {
 	t.Helper()
-	src := srctest.PackageFunc(t, "internal/db", "func migrateStage10RecentReleases(")
+	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func migrateStage10RecentReleases("))
 	re := regexp.MustCompile("(?s)" + regexp.QuoteMeta(`"`+label+`"`) + "\\s*,\\s*`([^`]*)`")
 	m := re.FindStringSubmatch(src)
 	if m == nil {
@@ -323,7 +323,7 @@ func TestRepoStatsBatchCarriesTheGoneHistory(t *testing.T) {
 // The v0.27.50 migrate step mirrors the forge's archived flag from the latest
 // repo_info snapshot on EVERY migrate. A gone-stamped row's snapshot predates
 // its disappearance, so the step un-archived every gone repository with a
-// non-archived snapshot (426 on kate, 2026-11-05) into the stranded class.
+// non-archived snapshot (426 on a production fleet, 2026-11-05) into the stranded class.
 // Gone-stamped rows are left alone; the rest still follow the snapshot.
 func TestArchivedReconcileStepLeavesGoneRowsArchived(t *testing.T) {
 	store, ctx := v0251Connect(t)
@@ -1459,7 +1459,7 @@ func TestSetPlatformRepoIDIfEmptySeenReportsAGoneRowUnderTheListedID(t *testing.
 
 // The pre-0.29.140 reconcile-repos dead arm set repo_archived ALONE on a 404 —
 // no gone stamp, no episode — and the row sat archived and queueless (49 on
-// kate, 2026-11-07); mark-gone-repos counted a later 2xx on it "alive" and
+// a production fleet, 2026-11-07); mark-gone-repos counted a later 2xx on it "alive" and
 // left it there, so it never came back (operator decision 2026-11-07: lift
 // it as a resurrection). A repository the FORGE archived keeps its queue row
 // and cycles, so archived + unstamped + queueless is that residue alone. The

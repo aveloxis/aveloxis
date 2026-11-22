@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// The 2026-09-01 chaoss.tv diagnostic (pytorch/pytorch stuck since June):
+// The 2026-09-01 production diagnostic (pytorch/pytorch stuck since June):
 // the key pool tracked ONLY the core rate-limit bucket — UpdateFromResponse
 // discarded every response whose X-RateLimit-Resource was not "core", so a
 // key with a full core budget and ZERO graphql points looked perfect to
@@ -149,7 +149,7 @@ func TestAcquireGraphQLFastFailReturnsInsteadOfWaiting(t *testing.T) {
 // per-key shape this test used to pin (a key below 500 points was refused
 // for background work): that cliff shrank the background-eligible set as
 // keys depleted and concentrated the whole sweep onto the survivors — Bug
-// A of the chaoss.tv analysis. The reservation is now a share of the
+// A of the production log analysis. The reservation is now a share of the
 // pool's capacity, and a low key is as eligible as a high one for a
 // background caller while the pool as a whole is above the line.
 func TestGraphQLForegroundReserveIsPoolLevel(t *testing.T) {

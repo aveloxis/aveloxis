@@ -30,7 +30,7 @@ type APIKey struct {
 	// separate from the core bucket. Tracked per key since 2026-09-01:
 	// before that UpdateFromResponse DISCARDED graphql-resource headers,
 	// so a key with a full core budget and zero graphql points looked
-	// usable to every GraphQL checkout — the chaoss.tv pytorch incident
+	// usable to every GraphQL checkout — the production pytorch incident
 	// (36K "already exceeded for user ID" errors in 4 days; four monster
 	// repos' multi-day PR-batch jobs each dying on one unretried hit).
 	GraphQLRemaining int
@@ -82,7 +82,7 @@ type APIKey struct {
 	// this key (Acquire..release). Bounded by KeyPool.maxInflightPerKey;
 	// selection prefers the least-loaded key. Before this field existed
 	// the same *APIKey could be handed to any number of concurrent callers
-	// — the chaoss.tv analysis measured up to ~96% of 192 concurrent
+	// — the production analysis measured up to ~96% of 192 concurrent
 	// history-sweep requests landing on ONE key, tripping GitHub's
 	// per-key secondary limit 46,612 times in five days.
 	inflight int
@@ -100,7 +100,7 @@ type APIKey struct {
 	// key for the bucket — 403 or 429 with X-RateLimit-Remaining: 0 and no
 	// Retry-After — until the refusal's own reset. Header updates cannot
 	// lift it; only time can. Distinct from Remaining/ResetAt because the
-	// tracked window can disagree with the refusing one: on chaoss.tv the
+	// tracked window can disagree with the refusing one: on a production fleet the
 	// window guard filed a refusal whose reset was EARLIER than the
 	// tracked window as a stale response, the key kept a 4,310 balance,
 	// and it was leased 4,388 times in seven minutes while 53 other keys
@@ -220,7 +220,7 @@ type KeyPool struct {
 	foregroundReservePct int
 }
 
-// Admission defaults — derived from the 2026-09-12 chaoss.tv
+// Admission defaults — derived from the 2026-09-12 production
 // measurements, not picked:
 //
 //   - DefaultMaxInflight 40: saturation is ~26 in flight (75 points/sec x
@@ -287,7 +287,7 @@ const (
 	// returns "Bad credentials" for valid tokens during incidents; requiring
 	// several in a row (any success resets the count) prevents a transient
 	// 401 wave from permanently killing the whole pool — the failure mode that
-	// took aveloxis_large down repeatedly starting 2026-06-17.
+	// took the larger production database down repeatedly starting 2026-06-17.
 	maxAuthStrikes = 3
 
 	// authQuarantineBase and authQuarantineMax bound the exponential cooldown a
@@ -1255,7 +1255,7 @@ func (kp *KeyPool) InvalidateKey(key *APIKey) {
 //
 // It deliberately does NOT disable the key on a single 401. GitHub's auth
 // backend intermittently returns "Bad credentials" for valid tokens during
-// incidents (the cause of the 2026-06-17 aveloxis_large outage, where 18 good
+// incidents (the cause of the 2026-06-17 production outage, where 18 good
 // keys bled out one at a time over 15 hours and the scheduler then crash-looped
 // on ErrAllKeysInvalidated). Only after maxAuthStrikes CONSECUTIVE failures —
 // any successful response resets the count via UpdateFromResponse — is the key

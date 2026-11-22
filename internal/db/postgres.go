@@ -1953,7 +1953,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		// that appear in thousands of repos) lock those rows in different orders
 		// and deadlock (SQLSTATE 40P01). Consistent ordering makes a lock cycle
 		// impossible. (2026-06-09: fixes the contributor-deadlock storm on
-		// aveloxis_large; same class as Augur's old contributor deadlocks.)
+		// the larger production database; same class as Augur's old contributor deadlocks.)
 		logins := make([]string, 0, len(merged))
 		for login := range merged {
 			logins = append(logins, login)

@@ -7,7 +7,7 @@ package scheduler
 // with "candidates LIMIT N" and never stamped a failure, so every repo
 // that cannot be fetched (deleted, renamed, blocked) stayed at the head of
 // the ordered candidate set and was re-fetched on every later page. In two
-// hours of the 2026-09-17 chaoss.tv log the failures grew 197 → 238 → 279
+// hours of the 2026-09-17 production log the failures grew 197 → 238 → 279
 // across pages, each one costing an API call and a second of pacing on
 // every page after the first. Pages advance by a keyset cursor over
 // repo_id instead (the bulk-backfill rule).

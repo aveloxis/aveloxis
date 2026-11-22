@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e281c876"></script>
+      <script src="../_static/documentation_options.js?v=ba8856c8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2628,7 +2628,7 @@ cat<span class="w"> </span>/var/log/unattended-upgrades/unattended-upgrades.log
 grep<span class="w"> </span>-i<span class="w"> </span>restart<span class="w"> </span>/etc/needrestart/needrestart.conf
 </pre></div>
 </div>
-<p>Typical culprits on Ubuntu 24.04: <code class="docutils literal notranslate"><span class="pre">unattended-upgrades</span></code> + <code class="docutils literal notranslate"><span class="pre">needrestart</span></code> restarting the service after a security update (the confirmed cause on the chaoss.tv host — <code class="docutils literal notranslate"><span class="pre">apt-daily-upgrade.timer</span></code> fires ~06:1x UTC, upgrades <code class="docutils literal notranslate"><span class="pre">systemd</span></code> → a <code class="docutils literal notranslate"><span class="pre">daemon-reexec</span></code>, and <code class="docutils literal notranslate"><span class="pre">needrestart</span></code> then restarts every service linked to the patched libraries, including <code class="docutils literal notranslate"><span class="pre">postgresql&#64;17-main</span></code>), or a custom backup/maintenance cron that does <code class="docutils literal notranslate"><span class="pre">systemctl</span> <span class="pre">restart</span> <span class="pre">postgresql</span></code>.</p>
+<p>Typical culprits on Ubuntu 24.04: <code class="docutils literal notranslate"><span class="pre">unattended-upgrades</span></code> + <code class="docutils literal notranslate"><span class="pre">needrestart</span></code> restarting the service after a security update (the confirmed cause on one production host — <code class="docutils literal notranslate"><span class="pre">apt-daily-upgrade.timer</span></code> fires ~06:1x UTC, upgrades <code class="docutils literal notranslate"><span class="pre">systemd</span></code> → a <code class="docutils literal notranslate"><span class="pre">daemon-reexec</span></code>, and <code class="docutils literal notranslate"><span class="pre">needrestart</span></code> then restarts every service linked to the patched libraries, including <code class="docutils literal notranslate"><span class="pre">postgresql&#64;17-main</span></code>), or a custom backup/maintenance cron that does <code class="docutils literal notranslate"><span class="pre">systemctl</span> <span class="pre">restart</span> <span class="pre">postgresql</span></code>.</p>
 <p><strong>Fix (on the host)</strong></p>
 <p>Pick whichever matches your trigger:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># A. Stop needrestart from auto-restarting services (most common cause).</span>
@@ -2860,7 +2860,7 @@ aveloxis<span class="w"> </span>start<span class="w"> </span>all
 <section id="step-5-check-whether-locked-by-points-at-a-dead-worker">
 <h3>Step 5 — check whether <code class="docutils literal notranslate"><span class="pre">locked_by</span></code> points at a dead worker<a class="headerlink" href="#step-5-check-whether-locked-by-points-at-a-dead-worker" title="Link to this heading"></a></h3>
 <p>If rows are stuck in <code class="docutils literal notranslate"><span class="pre">status</span> <span class="pre">=</span> <span class="pre">'collecting'</span></code> and not making progress, the worker that locked them may have died.</p>
-<p>Worker IDs are generated at scheduler startup as <code class="docutils literal notranslate"><span class="pre">&lt;hostname&gt;-&lt;HHMMSS&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">internal/scheduler/scheduler.go</span></code>). So <code class="docutils literal notranslate"><span class="pre">kate-200608</span></code> means a scheduler started at 20:06:08 on host <code class="docutils literal notranslate"><span class="pre">kate</span></code>.</p>
+<p>Worker IDs are generated at scheduler startup as <code class="docutils literal notranslate"><span class="pre">&lt;hostname&gt;-&lt;HHMMSS&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">internal/scheduler/scheduler.go</span></code>). So <code class="docutils literal notranslate"><span class="pre">myhost-200608</span></code> means a scheduler started at 20:06:08 on host <code class="docutils literal notranslate"><span class="pre">myhost</span></code>.</p>
 <section id="compare-to-the-currently-running-scheduler">
 <h4>Compare to the currently-running scheduler<a class="headerlink" href="#compare-to-the-currently-running-scheduler" title="Link to this heading"></a></h4>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>grep<span class="w"> </span>-a<span class="w"> </span><span class="s2">&quot;worker_id\|scheduler started&quot;</span><span class="w"> </span>~/.aveloxis/aveloxis.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-3
@@ -3370,7 +3370,7 @@ a nearly-done orphan finish if nothing urgent is blocked behind it.</p>
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">backend_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">conn_age</span><span class="p">,</span>
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">query_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span><span class="p">,</span><span class="w"> </span><span class="k">left</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_large&#39;</span><span class="w">   </span><span class="c1">-- substitute your DB name</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis&#39;</span><span class="w">   </span><span class="c1">-- substitute your DB name</span>
 <span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;active&#39;</span>
 <span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">&#39;5 minutes&#39;</span>
 <span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">query_start</span><span class="p">;</span>
@@ -3510,7 +3510,7 @@ with.
 <span class="w">       </span><span class="n">age</span><span class="p">(</span><span class="n">now</span><span class="p">(),</span><span class="w"> </span><span class="n">query_start</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query_age</span><span class="p">,</span>
 <span class="w">       </span><span class="k">left</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">query</span>
 <span class="k">FROM</span><span class="w"> </span><span class="n">pg_stat_activity</span>
-<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis_large&#39;</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">datname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;aveloxis&#39;</span><span class="w">   </span><span class="c1">-- substitute your DB name</span>
 <span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;active&#39;</span>
 <span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">query_start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">&#39;5 minutes&#39;</span><span class="p">;</span>
 </pre></div>

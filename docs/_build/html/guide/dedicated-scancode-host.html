@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.223 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.226 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=e281c876"></script>
+      <script src="../_static/documentation_options.js?v=ba8856c8"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1887,7 +1887,7 @@ cross-host locks fall back to the derived stale-lock age window).</p>
 <span class="n">listen_addresses</span> <span class="o">=</span> <span class="s1">&#39;*&#39;</span>          <span class="c1"># or a specific interface address</span>
 
 <span class="c1"># pg_hba.conf — one line for the scancode host (use its actual address;</span>
-<span class="c1"># do NOT open 0.0.0.0/0 — chaoss.tv&#39;s postgres logs show constant</span>
+<span class="c1"># do NOT open 0.0.0.0/0 — a production host&#39;s postgres logs show constant</span>
 <span class="c1"># credential brute-forcing against exposed 5432 ports):</span>
 <span class="n">hostssl</span>  <span class="n">aveloxis</span>  <span class="n">aveloxis</span>  <span class="mf">192.0.2.42</span><span class="o">/</span><span class="mi">32</span>  <span class="n">scram</span><span class="o">-</span><span class="n">sha</span><span class="o">-</span><span class="mi">256</span>
 

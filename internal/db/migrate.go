@@ -400,7 +400,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		// stampSchemaVersion was called unconditionally before this check,
 		// which is how a lock-blocked addColumnIfMissing could result in a
 		// partial schema stamped as complete (observed 2026-06-02 on
-		// aveloxis_large when the ALTER TABLE on contributors waited 1+
+		// the larger production database when the ALTER TABLE on contributors waited 1+
 		// day for a lock held by the running matview refresh).
 		logger.Error("schema migrations completed with errors — aveloxis serve will refuse to start until these are resolved",
 			"count", len(errs))
@@ -505,7 +505,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// No tool_version backfill (removed v0.29.62, worklist 32). The step
 	// that stood here scanned ~31 tables in full on every migrate — about
-	// 50 min for commits alone on kate, 1.5 h per run — and stamped the
+	// 50 min for commits alone on a production fleet, 1.5 h per run — and stamped the
 	// current binary on rows an older one gathered, which the v0.25.11
 	// provenance rule forbids. The column DEFAULTs above and
 	// `tool_version = EXCLUDED.tool_version` on refreshing upserts are the
@@ -597,7 +597,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
 	// the "processed" signal, which left contributors with zero
 	// public events permanently at the front of the queue. With
-	// 1.4M contributors observed on the live aveloxis_large
+	// 1.4M contributors observed on the larger live production database
 	// fleet, only 225 (0.016%) ever got events recorded because
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
@@ -673,7 +673,7 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	// v0.29.8: is_automation_email's list-address clause compares
 	// lower(rgls_email) = lower(addr) on every call, and nothing indexed
 	// that expression — each call scanned the whole list table (~800 rows
-	// on chaoss.tv), lowercasing every row. Measured 25x on the serial
+	// on a production fleet), lowercasing every row. Measured 25x on the serial
 	// per-call cost (114 µs → 4.5 µs; synthetic benchmark, local PG 18 —
 	// summary/changelog/v0.29.md), which multiplies across every
 	// email_message / messages row a gated query touches. Non-unique, so
@@ -960,7 +960,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// connecting role's search_path — `CREATE EXTENSION IF NOT EXISTS`
 	// returns nil (no-op) but the index DDL then fails with SQLSTATE 42704
 	// ("operator class gin_trgm_ops does not exist for access method gin").
-	// Observed on kate 2026-06-13 with a search_path that excluded public.
+	// Observed on a production fleet 2026-06-13 with a search_path that excluded public.
 	// We discover the schema that actually contains gin_trgm_ops and
 	// qualify the reference (`<schema>.gin_trgm_ops`), so the critical
 	// monitor-search index builds on the same migrate run regardless of
@@ -1016,7 +1016,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// NOT LOWER(gh_login) — it cannot serve
 	// `LOWER(username) = LOWER(gh_login)`, and with no expression
 	// statistics the planner estimated an 86M-row join. The live cost:
-	// a 2-day-2-hour orphaned run of the backfill on aveloxis_large
+	// a 2-day-2-hour orphaned run of the backfill on the larger production database
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
@@ -1142,7 +1142,7 @@ func migrateStage5DistributionRepairs(ctx context.Context, pg *PostgresStore, lo
 	// v0.25.0 — one-shot reset for the Julia/R/conda cohort and any
 	// repo sidelined by the pre-v0.25.0 strict scanner contract.
 	//
-	// Two compounding issues drove this on chaoss.tv 2026-05-22/23:
+	// Two compounding issues drove this on a production fleet 2026-05-22/23:
 	//
 	//   1. The pre-v0.25.0 GitHub manifest classifier didn't recognize
 	//      Project.toml (Julia), DESCRIPTION (R/CRAN/Bioconductor),
@@ -1346,8 +1346,8 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_state", "TEXT DEFAULT ''")
 
 	// v0.20.12 backfill placeholder contributors for unresolvable logins
-	// in commits. Closes the 22,499-commit gap observed on live
-	// aveloxis_large: commits where cmt_author_platform_username is
+	// in commits. Closes the 22,499-commit gap observed on the
+	// larger live production database: commits where cmt_author_platform_username is
 	// set but no matching contributor row exists (case-insensitively)
 	// today. Without this backfill, BackfillCommitAuthorIDs has
 	// nothing to JOIN against and the commits stay perpetually
@@ -1614,8 +1614,8 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// adds the BEHAVIOR; these indexes make the behavior TRACTABLE.
 	// Without them, the cascade fan-out triggered by
 	// `aveloxis migrate-cntrb-ids` seq-scans every child table for
-	// every cntrb_id being rewritten — observed on the production
-	// aveloxis_large DB as a 17-hour stall on batch 1 (0 rows
+	// every cntrb_id being rewritten — observed on the
+	// larger production database as a 17-hour stall on batch 1 (0 rows
 	// committed) on 2026-05-17 because 15 of 16 cntrb_id child FKs
 	// were unindexed.
 	//
@@ -1805,7 +1805,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id)`)
 	// v0.29.77: the v0.27.4 (repo_id, created_at) indexes become covering —
 	// INCLUDE the author column — so the top-contributors issue and PR arms
-	// are index-only (kate 2026-10-07, repo 94609: 505K PR rows and 58K
+	// are index-only (a production fleet 2026-10-07, repo 94609: 505K PR rows and 58K
 	// issue rows read one heap page each; the plan is in the ledger). The
 	// same leading columns still serve the home tab's 90-day probes, so
 	// the plain forms are dropped once the covering ones exist. New names
@@ -2108,7 +2108,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// join contributors ON c.cntrb_id = co.cmt_ght_author_id. Without
 	// an index on the commits side, the planner seqscans 381 GB and
 	// hash-aggregates ~434M rows before touching contributors — observed
-	// as a 2+ day stalled rebuild on aveloxis_large (2026-06-02).
+	// as a 2+ day stalled rebuild on the larger production database (2026-06-02).
 	//
 	// Partial predicate mirrors the WHERE clause in the matview's commit
 	// branch: only the ~92% of commit rows with a resolved author UUID
@@ -2175,7 +2175,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// dead tuples behind — plain VACUUM won't return the space to the
 	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
 	// a maintenance window (docs/architecture/analysis.md).
-	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on kate.
+	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on a production fleet.
 	runOnce(ctx, pg, logger, errs,
 		"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",
 		func(errs *[]error) {
@@ -2205,7 +2205,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// See msg_ref_metadata.go.
 	// Ledgered (v0.28.4): the dedup's ROW_NUMBER() pass alone scans
 	// the 10.5M-row bridge table every re-run; the data_source +
-	// inline-comment keyset walks measured ~37-45 min on kate.
+	// inline-comment keyset walks measured ~37-45 min on a production fleet.
 	runOnce(ctx, pg, logger, errs,
 		"v0.27.15 msg_ref bridge repairs (dedup + data_source + inline-comment backfills)",
 		func(errs *[]error) {
@@ -2426,7 +2426,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// UpdateRepoMetadata keeps the flag current in both directions.
 	// 0.29.140: a gone-stamped row is left alone — SidelineRepo set its
 	// flag, and its snapshot predates its disappearance, so this step
-	// un-archived 426 gone repositories on kate (2026-11-05) into the
+	// un-archived 426 gone repositories on a production fleet (2026-11-05) into the
 	// stranded class (non-archived, no queue row) at every deploy; the 469
 	// "stranded" repositories reconcile-repos then walked.
 	execMigrationStep(ctx, pg, logger, errs,
@@ -2454,7 +2454,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
 	// v0.29.71: ledgered. It scanned the whole table on every migrate
-	// (7–61 s on kate) because the rule lived in the callers; the store now
+	// (7–61 s on a production fleet) because the rule lived in the callers; the store now
 	// applies it on every write (storedFindingScope), so no empty-scope row can
 	// reappear and one run is enough.
 	runOnceStep(ctx, pg, logger, errs,
@@ -2485,7 +2485,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
 		 ON aveloxis_data.contributors (cntrb_canonical)`)
 
-	// v0.29.71 (O11, operator go-ahead 2026-09-30; measured on kate,
+	// v0.29.71 (O11, operator go-ahead 2026-09-30; measured on a production fleet,
 	// summary/43 §2 item 9): the API's per-repository windowed reads. The
 	// top-contributors messages arm read every message row of a repository
 	// to keep the window's (pytorch: 1.24M rows for 347k, 788k buffers), the
@@ -2493,7 +2493,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// index-only. The weekly merged/closed series read every PR/issue row of
 	// the repository; the partial indexes hold only merged/closed rows.
 	// Fleet-scale tables: CONCURRENTLY, migration-only (SR-2); new names
-	// (SR-4). Sizes on kate: messages 143M rows (~5-6 GB), reviews 49M
+	// (SR-4). Sizes on a production fleet: messages 143M rows (~5-6 GB), reviews 49M
 	// (~2 GB), the two partials under 1 GB each.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_messages_repo_ts_cntrb",
@@ -2515,7 +2515,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.29.77: an index-only scan is only as good as the visibility map,
 	// and these tables are insert-mostly, so the default insert trigger
 	// (20% growth) leaves the newest pages — exactly the ones a freshly
-	// collected repository's rows sit in — unmarked for months (kate
+	// collected repository's rows sit in — unmarked for months (a production fleet
 	// 2026-10-07: messages 48% of pages all-visible, issues 50%, PRs 66%,
 	// reviews 81%, commits 89%; the covering reviews/messages indexes
 	// fetched 1.99M of 1.85M rows from the heap). The factor is derived
@@ -2701,7 +2701,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	//
 	// Migration-only (SR-2): NOT declared in schema.sql, because the base
 	// DDL runs first and would block-build these on fleet-scale tables
-	// (aveloxis_large: 23.0M pull_requests, 9.6M issues) during startup
+	// (the larger production database: 23.0M pull_requests, 9.6M issues) during startup
 	// migrate. Operators can pre-create by hand — the step then no-ops via
 	// IF NOT EXISTS.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
@@ -3003,7 +3003,7 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // schema-qualifies the operator class with this value so it resolves
 // regardless of the session search_path — pg_trgm's objects frequently
 // live in a schema (e.g. public) that isn't on the connecting role's
-// path (observed on kate 2026-06-13, SQLSTATE 42704). Returns "" on
+// path (observed on a production fleet 2026-06-13, SQLSTATE 42704). Returns "" on
 // query error or when the opclass is absent (extension not actually
 // installed), which the caller treats as warn-and-skip.
 func ginTrgmOpsSchema(ctx context.Context, pg *PostgresStore) string {
@@ -3112,7 +3112,7 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 // caller's error). PostgreSQL gathers an expression's statistics only when
 // the table is analyzed, never when the index is built, and until then the
 // planner prices every lookup at 0.5% of the table (0.29.142: aveloxis-cve's
-// lower(email) joins scanned a kate-shaped contributors table, 7.1 s, with
+// lower(email) joins scanned a production-shaped contributors table, 7.1 s, with
 // the 0.29.141 indexes valid; 0.5 s one ANALYZE later). pg_stats shows an
 // index's rows to its table's owner, which the migrate is; a role that cannot
 // see them reads "none" and analyzes, the safe direction. An empty table
@@ -4481,7 +4481,7 @@ func apiTokenDailyLimitColumnType() string {
 // the given table/column/type. Pre-v0.19.4 this helper used the
 // `_, _ = pg.pool.Exec(...)` discard-everything pattern, which made
 // every failure silent — that's how the v0.19.0 user_groups status/
-// approved_by/approved_at columns went missing on chaoss.tv even
+// approved_by/approved_at columns went missing on a production fleet even
 // though `aveloxis migrate` had completed successfully. The fixed
 // helper logs at ERROR and appends to the collector so the run
 // surfaces every failure, and so RunMigrations can fail closed.

@@ -55,7 +55,7 @@ func TestNewSetsEveryTimeout(t *testing.T) {
 // TestDefaultIsNeverTheShortestBound — the operator's rule (2026-09-29):
 // aveloxis's bound is a backstop, never the shortest in the chain; nginx
 // is tuned shorter. Every nginx timeout defaults to 60 s, and the slowest
-// API statement measured on kate (2026-09-22..28) was 59.9 s.
+// API statement measured on a production fleet (2026-09-22..28) was 59.9 s.
 func TestDefaultIsNeverTheShortestBound(t *testing.T) {
 	const nginxDefault = 60 * time.Second
 	if DefaultTimeout <= nginxDefault {

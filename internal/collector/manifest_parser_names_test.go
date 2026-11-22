@@ -5,7 +5,7 @@ package collector
 
 // manifest_parser_names_test.go — v0.29.56. Manifest parsers that read
 // text which is not a package name, found in the libyear WARN samples of
-// the 2026-09-17 chaoss.tv log. Every input below is a trimmed copy of the
+// the 2026-09-17 production log. Every input below is a trimmed copy of the
 // real manifest in the named repository (fetched the same day):
 //   - Cargo.toml: a comment line with '=' (eclipse-zenoh/zenoh-flat-jni:
 //     "# zenoh-flat's `unstable` feature (= `zenoh/unstable`)"), the
@@ -150,8 +150,8 @@ func TestParseCargoVersionsRealShapes(t *testing.T) {
 // unscannable dependency, which blocks that repo's scan-complete stamp
 // (v0.28.5). The dependency scan still inventories them.
 func TestNonRegistryDepsAreNeverLookedUpOrStored(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/collector/analysis.go"),
-		"func (ac *AnalysisCollector) scanLibyear(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/collector/analysis.go"),
+		"func (ac *AnalysisCollector) scanLibyear("))
 	skip := strings.Index(body, "if dep.NonRegistry {")
 	resolveCall := strings.Index(body, "resolveLibyearCached(")
 	insert := strings.Index(body, "rows = append(rows, lb)")

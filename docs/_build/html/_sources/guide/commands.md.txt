@@ -880,10 +880,10 @@ Each component tags its connection pool with an `application_name` that
 carries the component and this machine's hostname, separated by `@`:
 
 ```
-aveloxis-serve@kate
+aveloxis-serve@myhost
 aveloxis-scancode-worker@runner-01
-aveloxis-web@kate
-aveloxis-api@kate
+aveloxis-web@myhost
+aveloxis-api@myhost
 ```
 
 `stop` matches on the part **before** the `@` (the component) and

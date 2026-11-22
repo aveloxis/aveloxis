@@ -19,7 +19,7 @@
 -- CONCURRENTLY doesn't block writes; expect minutes on the 41 GB
 -- table):
 --
---   psql -h chaoss.tv -p 5434 -U aveloxis -d aveloxis_large \
+--   psql -h <host> -p <port> -U aveloxis -d <database> \
 --        -f scripts/create_message_heal_index.sql
 --
 -- If a previous attempt was interrupted, drop the INVALID leftover

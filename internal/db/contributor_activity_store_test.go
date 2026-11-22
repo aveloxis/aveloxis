@@ -32,7 +32,7 @@ var activityColumns = []string{
 }
 
 // TestSchemaGuardsNewIndexedColumnsForExistingFleets pins the fix for
-// the 2026-07-30 kate migrate failure: on an EXISTING database,
+// the 2026-07-30 production migrate failure: on an EXISTING database,
 // CREATE TABLE IF NOT EXISTS contributors no-ops, so columns that are
 // new in this release never materialize from the base DDL — and any
 // schema.sql CREATE INDEX referencing them fails with SQLSTATE 42703

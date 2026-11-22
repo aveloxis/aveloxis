@@ -6,10 +6,10 @@
 -- found missing. All reloadable — NO postgres restart needed; safe with
 -- serve running.
 --
--- Run as a superuser on kate:
+-- Run as a superuser on the database host:
 --   sudo -u postgres psql -p 5434 -f scripts/enable_perf_telemetry.sql
 --
--- Verify afterwards (from aveloxis_large):
+-- Verify afterwards (from the database connected to below):
 --   SHOW track_io_timing;                      -- on
 --   SELECT count(*) FROM pg_stat_statements;   -- grows under serve
 

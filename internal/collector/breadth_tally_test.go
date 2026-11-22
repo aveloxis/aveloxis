@@ -3,7 +3,7 @@
 
 package collector
 
-// breadth_tally_test.go — v0.29.56. Two hours of the 2026-09-17 chaoss.tv
+// breadth_tally_test.go — v0.29.56. Two hours of the 2026-09-17 production
 // log carried 184 identical WARN lines, one per contributor, all of them
 // "not found: https://api.github.com/users/X/events" — a deleted account,
 // which is an ANSWER, not a failure. The house rule is one aggregated line

@@ -168,7 +168,7 @@ func TestReplaceRepoCommitDailyReplacesAndClears(t *testing.T) {
 		t.Fatalf("a trimmed (clean) walk is the truth, smaller counts included: rows=%d sum=%d want 1/2", n, sum)
 	}
 	// Round 4 F1: a walk that changes nothing writes nothing — no new row
-	// version, no dead tuple, no WAL (kate's storage stalls on writes; a
+	// version, no dead tuple, no WAL (the production storage stalls on writes; a
 	// kernel fork has ~10^6 buckets). computed_at moves only on a change.
 	var before, after time.Time
 	if err := store.pool.QueryRow(ctx, `SELECT computed_at FROM aveloxis_data.repo_commit_daily WHERE repo_id = $1`, fx.repoID).Scan(&before); err != nil {
@@ -302,7 +302,7 @@ func TestRepoTimeSeriesReadsTheDailyTableWhenFilledAndAligned(t *testing.T) {
 	}
 }
 
-// 0.29.137 (the kate warm run of 2026-11-04: the contributors chart of a
+// 0.29.137 (the production warm run of 2026-11-04: the contributors chart of a
 // 3.2-million-row repository read every commit-file row through the
 // (repo_id, hash) index and discarded 85%% of them on the window, 3.4 s hot
 // and past nginx's 120 s cold): the commit arms of the contributors,

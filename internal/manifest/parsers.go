@@ -162,7 +162,7 @@ func parseTOMLDeps(content, section string) []string {
 //     `t upgrade` and rails was lost; and
 //   - a double-quoted name with a single-quoted CONSTRAINT
 //     (`gem "rails", '~> 7.0'`) inventoried the constraint — 387 rows of
-//     `aveloxis_large` are a Ruby "package" called `~> 7.0` or similar.
+//     the larger production database are a Ruby "package" called `~> 7.0` or similar.
 //
 // Item 71 (v0.29.69): "the first comma-separated argument" was not the name
 // either. A trailing modifier or an interpolated name became a fabricated gem

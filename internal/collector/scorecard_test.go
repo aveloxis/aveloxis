@@ -196,7 +196,7 @@ func TestSchedulerReducedDepletionForLocalScorecard(t *testing.T) {
 // 2026-09-12 to the superseding contract. The v0.21-era pin banned a
 // scorecard semaphore on the premise that local scorecard is mostly
 // disk I/O; since v0.27.5 the phase is REMOTE-primary (~40 GitHub API
-// calls per run) and the chaoss.tv analysis measured 71,519 runs per
+// calls per run) and the production log analysis measured 71,519 runs per
 // 71,566 jobs — every cycle — sharing the key pool with 70 workers and
 // the history sweep. A subprocess cannot hold a KeyPool lease, so the
 // pool's in-flight ceilings cannot see it; the scheduler bounds the

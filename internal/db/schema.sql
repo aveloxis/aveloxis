@@ -367,7 +367,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
 -- (LOWER(username) = LOWER(gh_login)). The v0.19.9 gh_login index
 -- cannot serve the LOWER() form, and without expression statistics
 -- the planner misestimated the join by ~4 orders of magnitude — a
--- live backfill ran 2+ days orphaned on aveloxis_large. Partial:
+-- live backfill ran 2+ days orphaned on a production database. Partial:
 -- the email-only cohort (gh_login = '') is excluded, matching the
 -- query's `!= ''` guards. Existing fleets get the CONCURRENTLY build
 -- from migrate.go; this plain form covers fresh installs.
@@ -378,7 +378,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
 -- probes: GetMailingListSenderResolveCandidates' NOT EXISTS,
 -- ResolveContributorIDByEmail's join, CreateEmailOnlyContributor's
 -- lookup. Without these the OR-equality anti-join planned as a full
--- contributors seq scan (9.4 GB on aveloxis_large) PER OUTER ROW —
+-- contributors seq scan (9.4 GB on a production database) PER OUTER ROW —
 -- observed 30-50 min hourly on 5 backends (2026-07-29). History:
 -- cntrb_email never had an index; cntrb_canonical's was dropped in
 -- v0.25.6 as "no reader", then v0.25.7+ shipped these readers. NEW
@@ -396,7 +396,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
 CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
     ON aveloxis_data.contributors (cntrb_canonical);
 
--- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 kate migrate
+-- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 production migrate
 -- failure): on a database where contributors already exists, the
 -- CREATE TABLE above no-ops and its new columns never materialize —
 -- and the CREATE INDEX statements below would then fail with 42703
@@ -1882,7 +1882,7 @@ CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
 -- / idx_pull_requests_repo_created (repo_id, created_at). v0.29.77: those
 -- are superseded by idx_issues_repo_created_reporter and
 -- idx_pull_requests_repo_created_author — the same keys INCLUDE the author
--- column, so the top-contributors issue and PR arms are index-only (kate
+-- column, so the top-contributors issue and PR arms are index-only (production
 -- 2026-10-07, repo 94609: 505K PR rows read one heap page each, 58K issue
 -- rows likewise). Both are MIGRATION-ONLY (SR-2: this base DDL runs
 -- before the CONCURRENTLY steps, so a plain form here would block-build
@@ -2740,7 +2740,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (
     processed    BOOLEAN DEFAULT FALSE
 );
 
--- v0.29.71: no vacuum truncation on staging (kate, 2026-09-26..30: 19
+-- v0.29.71: no vacuum truncation on staging (production, 2026-09-26..30: 19
 -- autovacuum runs on it and its TOAST cancelled "while truncating
 -- relation"). Truncation takes an ACCESS EXCLUSIVE lock, so each attempt
 -- stalled a staging writer until PostgreSQL cancelled it, and the file never
@@ -3468,7 +3468,7 @@ CREATE INDEX IF NOT EXISTS idx_repo_dependencies_repo_id ON aveloxis_data.repo_d
 -- behavior tractable. Without them, an UPDATE on
 -- contributors.cntrb_id (run by `aveloxis migrate-cntrb-ids`)
 -- seq-scans every child table for every row in the batch. The
--- aveloxis_large production DB observed a 17-hour stall on batch 1
+-- a large production DB observed a 17-hour stall on batch 1
 -- of that migration on 2026-05-17 because 15 of 16 child FKs were
 -- unindexed. idx_contributor_identities_cntrb (declared above)
 -- covers the 16th column; the 15 indexes below close the gap.
@@ -3523,7 +3523,7 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_pr_review_id ON a
 -- leads with pr_review_id, so it cannot serve a bare msg_id seek —
 -- without this index the heal-messages batch SELECT filter-scanned
 -- 30.5M index entries PER worklist row (measured 1.67s/probe ≈ 10.5
--- days for the 546K-row worklist on aveloxis_large, 2026-08-01).
+-- days for the 546K-row worklist on a production database, 2026-08-01).
 -- NON-partial on purpose: the probe value is a join variable
 -- (v0.27.54 lesson — partial predicates can't be proven at plan time
 -- for join-variable probes).
@@ -3730,7 +3730,7 @@ ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 --
 -- PARALLEL SAFE (v0.29.8): without a marker Postgres defaults a function
 -- to PARALLEL UNSAFE, which forced EVERY query calling this one to a
--- serial plan (proparallel = 'u' on both chaoss.tv databases,
+-- serial plan (proparallel = 'u' on both production databases,
 -- 2026-09-12; an aveloxis-analytics feature query ran 2.4 h serial).
 -- The body only reads its argument and one table, which is exactly
 -- what SAFE permits. STABLE, not IMMUTABLE: the list lookup can change

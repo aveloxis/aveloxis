@@ -875,7 +875,7 @@ cat /var/log/unattended-upgrades/unattended-upgrades.log
 grep -i restart /etc/needrestart/needrestart.conf
 ```
 
-Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on the chaoss.tv host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
+Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on one production host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
 
 **Fix (on the host)**
 
@@ -1140,7 +1140,7 @@ The output groups by `collecting` first, then `queued`. Within each group, the r
 
 If rows are stuck in `status = 'collecting'` and not making progress, the worker that locked them may have died.
 
-Worker IDs are generated at scheduler startup as `<hostname>-<HHMMSS>` (`internal/scheduler/scheduler.go`). So `kate-200608` means a scheduler started at 20:06:08 on host `kate`.
+Worker IDs are generated at scheduler startup as `<hostname>-<HHMMSS>` (`internal/scheduler/scheduler.go`). So `myhost-200608` means a scheduler started at 20:06:08 on host `myhost`.
 
 #### Compare to the currently-running scheduler
 
@@ -1749,7 +1749,7 @@ SELECT pid, state, application_name, client_addr,
        age(now(), backend_start) AS conn_age,
        age(now(), query_start) AS query_age, left(query, 100) AS query
 FROM pg_stat_activity
-WHERE datname = 'aveloxis_large'   -- substitute your DB name
+WHERE datname = 'aveloxis'   -- substitute your DB name
   AND state = 'active'
   AND query_start < now() - interval '5 minutes'
 ORDER BY query_start;
@@ -1904,7 +1904,7 @@ SELECT pid, state, application_name,
        age(now(), query_start) AS query_age,
        left(query, 100) AS query
 FROM pg_stat_activity
-WHERE datname = 'aveloxis_large'
+WHERE datname = 'aveloxis'   -- substitute your DB name
   AND state = 'active'
   AND query_start < now() - interval '5 minutes';
 ```

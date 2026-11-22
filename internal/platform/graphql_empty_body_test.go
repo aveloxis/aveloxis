@@ -113,7 +113,7 @@ func TestGraphQLGivesUpAfterPersistentEmptyBodies(t *testing.T) {
 	}
 }
 
-// TestGraphQLRetriesAfterTruncatedBody200 (worklist 66, the 2026-09-28 kate
+// TestGraphQLRetriesAfterTruncatedBody200 (worklist 66, the 2026-09-28 production
 // log): a NON-empty body cut off mid-JSON on HTTP 200 — `{"data":{"repository":
 // {"pr0":…` — was not retried: only a zero-byte body became a read failure,
 // so the truncated one reached parseGraphQLResponse, "decode graphql envelope:
@@ -173,7 +173,7 @@ func TestGraphQLDoesNotRetryAMalformedCompleteBody(t *testing.T) {
 
 // TestGraphQLDoesNotRetryATruncatedResourceLimitAnswer: GitHub sometimes
 // refuses a too-expensive query with a TRUNCATED body that carries
-// RESOURCE_LIMITS_EXCEEDED (the 2026-09-05 chaoss.tv shape the history
+// RESOURCE_LIMITS_EXCEEDED (the 2026-09-05 production shape the history
 // sweep subdivides on). That is the server's answer about the query, not a
 // stream abort: a retry gets the same answer and spends the read budget
 // (worklist 66, found by the full suite after the truncation retry landed).

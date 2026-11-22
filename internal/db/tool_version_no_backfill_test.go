@@ -18,7 +18,7 @@ import (
 // ran `UPDATE <table> SET tool_version = <current> WHERE tool_version IS
 // NULL OR empty` over ~31 tables on EVERY run. With no index on tool_version
 // each is a full scan whether or not a row matches — commits alone took
-// 2,700–3,500 s per migrate on kate, about 1.5 h per run (worklist 32).
+// 2,700–3,500 s per migrate on a production fleet, about 1.5 h per run (worklist 32).
 // It was also wrong: tool_version records the binary that GATHERED the
 // row (v0.25.11 operator decision), so stamping today's version on rows
 // an older binary wrote is fabricated provenance. Column DEFAULTs

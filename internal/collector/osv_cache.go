@@ -5,7 +5,7 @@
 // response cache (summary/14 §3, v0.27.21).
 //
 // Transitive dependency trees converge hard across repos (measured
-// 2026-07-16 on aveloxis_large: 708K direct dep rows → 142K distinct
+// 2026-07-16 on the larger production database: 708K direct dep rows → 142K distinct
 // (ecosystem, name, version) tuples = 5×; 1.08M findings → 11,544
 // distinct vuln IDs = 94×), so caching the two OSV answers —
 // "purl → vuln-ID stubs" and "vuln ID → detail" — converts most of

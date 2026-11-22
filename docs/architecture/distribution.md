@@ -310,7 +310,7 @@ All under `collection` in `aveloxis.json`:
 }
 ```
 
-Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet (chaoss.tv `aveloxis` DB) completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).
+Throughput math at defaults: the 30 s minimum start gap is enforced by the one dispatcher, whatever the worker count, so at most 120 starts/hour (2,880/day). A 3,300-repo fleet completes its first pass in ~27.5 hours; subsequent rescans are paced by the 180-day cadence gate (each repo scans roughly twice per year, ≈556 scans/day at 100K repos).
 
 See [`docs/getting-started/configuration.md`](../getting-started/configuration.md) for the per-field operator reference table.
 

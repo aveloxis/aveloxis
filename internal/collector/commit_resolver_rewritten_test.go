@@ -21,7 +21,7 @@ import (
 )
 
 // TestCommitResolverSkipsCommitsNoLongerOnTheDefaultBranch (worklist 73,
-// the 2026-09-28 kate log): IQSS/dss-workshops' history was rewritten
+// the 2026-09-28 production log): IQSS/dss-workshops' history was rewritten
 // upstream; the facade walked 55 commits but 359 unresolved rows remained
 // from the old history, every SHA lookup answered 422, and the resolver
 // aborted with "commits do not belong to this repo" (and its stale-clone

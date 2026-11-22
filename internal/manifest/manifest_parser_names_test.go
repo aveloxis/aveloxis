@@ -712,7 +712,7 @@ func TestProjectDependencyArrayBoundsIgnoreQuotedBrackets(t *testing.T) {
 }
 
 // The same comment rule at the other three readers of the `name = constraint`
-// grammar. Production evidence (chaoss.tv extract, 2026-09-17): 234 rows of
+// grammar. Production evidence (an extract, 2026-09-17): 234 rows of
 // repo_deps_libyear carry a version ending in a stray quote, one of them the
 // entire trailing comment — the version reaches the purl and the OSV lookup,
 // and a commented-out line was inventoried as a package literally named

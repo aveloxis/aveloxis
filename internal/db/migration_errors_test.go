@@ -17,7 +17,7 @@ import (
 // pattern (`_, _ = pg.pool.Exec(...)`). Pre-v0.19.4 it did, which made
 // every ALTER TABLE failure completely silent — the v0.19.0
 // `user_groups.{status, approved_by, approved_at}` columns were missing
-// on the chaoss.tv DB inspected on 2026-05-07 even though the binary
+// on the production database inspected on 2026-05-07 even though the binary
 // was v0.19.2 and migrate had supposedly run. Data integrity is
 // central to aveloxis: every schema migration error must surface.
 func TestAddColumnIfMissingNoLongerSwallowsErrors(t *testing.T) {

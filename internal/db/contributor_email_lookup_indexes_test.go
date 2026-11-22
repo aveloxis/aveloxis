@@ -6,7 +6,7 @@ package db
 // contributor_email_lookup_indexes_test.go — TDD suite for the v0.27.54
 // email/canonical lookup indexes on contributors.
 //
-// Motivating incident (2026-07-29, aveloxis_large): the hourly
+// Motivating incident (2026-07-29, the larger production database): the hourly
 // mailing-list sender-resolve candidates query
 // (GetMailingListSenderResolveCandidates) ran 30-50 minutes occupying 5
 // backends. EXPLAIN showed its NOT EXISTS against contributors planned as

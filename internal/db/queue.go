@@ -338,7 +338,7 @@ func (s *PostgresStore) RealignDueDates(ctx context.Context, recollectAfter time
 	}
 	// A row whose last attempt FAILED (last_error set; a completion without
 	// a message clears it) keeps the due date its failure gave it — NOW() + interval
-	// at the failure (worklist 68, the 2026-09-28 kate log: last_collected
+	// at the failure (worklist 68, the 2026-09-28 production log: last_collected
 	// is the last SUCCESS, so realigning a failed row put it in the past and
 	// it re-ran at every start; eight repositories failed within seconds of
 	// each of seven starts). A changed interval reaches such a row at its

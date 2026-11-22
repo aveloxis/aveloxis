@@ -308,7 +308,7 @@ func TestListRootManifests(t *testing.T) {
 }
 
 // TestListRootManifestsRecognizesJuliaRCondaManifests pins the v0.25.0
-// additions to wellKnownManifests. Pre-v0.25.0 chaoss.tv operator
+// additions to wellKnownManifests. Pre-v0.25.0 production operator
 // diagnostic showed every distribution-scan failure was a Julia or R
 // repo whose manifest existed in the GitHub Contents listing but was
 // dropped on the floor because classifyManifestFilename returned ""

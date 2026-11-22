@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // BEHAVIORAL driver for the batch rename pre-probe (F5 of the
-// 2026-09-11 chaoss.tv log analysis).
+// 2026-09-11 production log analysis).
 //
 // WHAT THE MEASUREMENT SHOWED. Over 2026-09-07..09-11 the production
 // serve raised 884 contributors_pkey unique violations and logged
@@ -248,8 +248,8 @@ func TestContributorBatchFirstSightStillInserts(t *testing.T) {
 // produced the input that needs it (the v0.29.4 probingSessionSQL
 // lesson) — and the cost of the guard is one statement.
 func TestRenamePreProbeRunsInsideTheSavepoint(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/db/postgres.go"),
-		"func (s *PostgresStore) upsertOneContributor(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/postgres.go"),
+		"func (s *PostgresStore) upsertOneContributor("))
 
 	spIdx := strings.Index(body, `tx.Exec(ctx, cntrbSavepointSQL(cntrbSP))`)
 	if spIdx < 0 {

@@ -283,7 +283,7 @@ func TestCheckPerfEndpoints(t *testing.T) {
 }
 
 // An endpoint a side never answered: the released side alone (main timing
-// out on a kate-shaped clone, the class a release fixes) is reported,
+// out on a production-shaped clone, the class a release fixes) is reported,
 // counted in its column (the review of the first fixes, finding 1); neither
 // side is the source's state, reported too, since a wrong request list is
 // refused before the run (checkPerfEndpoints; the L10 second round, F4);

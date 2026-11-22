@@ -16,7 +16,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
-// TestKeyPoolSummaryReportsStandingRefusals: on chaoss.tv 2026-09-17 every
+// TestKeyPoolSummaryReportsStandingRefusals: on a production fleet on 2026-09-17 every
 // summary line read core_remaining_min=4305 while one key was refused
 // 4,388 times — the tracked balance was the only per-key signal. The
 // summary must report keys whose refusal still stands, per bucket.

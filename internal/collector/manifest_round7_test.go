@@ -678,25 +678,56 @@ func TestCPUTimeCountsTimeInTheKernel(t *testing.T) {
 // existed before the exec into it, so every child reported the memory of
 // the process that started it. CI showed it: under a 64 MiB limit a child
 // with a 1 MiB heap "had" 823 MiB resident, and two children reading a
-// 1 MB and a 3 MB lockfile both "had" exactly 1,442 MiB. Those tests are
-// the Linux proof; this one holds the reading of the line on every system.
+// 1 MB and a 3 MB lockfile both "had" exactly 1,442 MiB. Those tests show
+// it on Linux only when the test process is itself large (review round 15:
+// on a small one the old figure stayed under their bound); a pin that does
+// not depend on that is planned work. This one holds the reading of the
+// line, and TestTheResidentMarkOnLinuxIsTheStatusFilesOrUnknown the choice
+// of source, on every system.
 func TestTheHighWaterMarkIsReadFromTheStatusFile(t *testing.T) {
 	const status = "Name:\taveloxis\nVmPeak:\t 1234567 kB\nVmHWM:\t   51234 kB\nVmRSS:\t   40000 kB\n"
 	if got, ok := statusHighWaterBytes(status); !ok || got != 51234<<10 {
 		t.Errorf("VmHWM of 51234 kB read as %d bytes (found %v); want %d", got, ok, 51234<<10)
 	}
 	for name, s := range map[string]string{
-		"no such line":          "Name:\taveloxis\nVmRSS:\t 40000 kB\n",
-		"another unit":          "VmHWM:\t 51234 MB\n",
-		"no number":             "VmHWM:\t kB\n",
-		"a negative number":     "VmHWM:\t -5 kB\n",
-		"zero":                  "VmHWM:\t 0 kB\n",
-		"a longer key":          "VmHWMX:\t 51234 kB\n",
-		"the key inside a line": "XVmHWM:\t 51234 kB\n",
-		"empty":                 "",
+		"no such line":                          "Name:\taveloxis\nVmRSS:\t 40000 kB\n",
+		"another unit":                          "VmHWM:\t 51234 MB\n",
+		"no number":                             "VmHWM:\t kB\n",
+		"a negative number":                     "VmHWM:\t -5 kB\n",
+		"zero":                                  "VmHWM:\t 0 kB\n",
+		"a longer key":                          "VmHWMX:\t 51234 kB\n",
+		"the key inside a line":                 "XVmHWM:\t 51234 kB\n",
+		"empty":                                 "",
+		"a number past what a byte count holds": "VmHWM:\t 9223372036854775807 kB\n",
 	} {
 		if got, ok := statusHighWaterBytes(s); ok {
-			t.Errorf("%s: read as %d bytes; want not found, so that the caller falls back", name, got)
+			t.Errorf("%s: read as %d bytes; want not found, so that nothing is reported", name, got)
+		}
+	}
+}
+
+// On Linux the figure is the status file's line or NOTHING (0, unknown):
+// never getrusage's, which is another process's mark there (review round 15,
+// P-2: a Linux child whose status file could not be read fell back to it in
+// silence). Elsewhere it is getrusage's, in bytes.
+func TestTheResidentMarkOnLinuxIsTheStatusFilesOrUnknown(t *testing.T) {
+	good := func() (string, error) { return "VmHWM:\t 2048 kB\n", nil }
+	unreadable := func() (string, error) { return "", errors.New("no /proc") }
+	noLine := func() (string, error) { return "Name:\tx\n", nil }
+	rusage := func() int64 { return 777 << 20 }
+	for name, c := range map[string]struct {
+		goos   string
+		status func() (string, error)
+		want   int64
+	}{
+		"linux, the line":                 {"linux", good, 2048 << 10},
+		"linux, no status file":           {"linux", unreadable, 0},
+		"linux, a status file without it": {"linux", noLine, 0},
+		"darwin":                          {"darwin", good, 777 << 20},
+		"freebsd":                         {"freebsd", unreadable, 777 << 20},
+	} {
+		if got := residentHighWater(c.goos, c.status, rusage); got != c.want {
+			t.Errorf("%s: %d bytes; want %d", name, got, c.want)
 		}
 	}
 }

@@ -69,7 +69,7 @@ func TestSchemaDeclaresLockfileTables(t *testing.T) {
 // saw (e.g. 'range-floor' forever after the repo adds a lockfile).
 func TestVulnUpsertAlwaysRefreshesClassification(t *testing.T) {
 	src := mustReadFileStr(t, "vulnerability_store.go")
-	upsert := srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	upsert := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch("))
 	if !strings.Contains(upsert, "declared_requirement = EXCLUDED.declared_requirement") {
 		t.Error("the vulnerability upsert must SET declared_requirement = EXCLUDED.declared_requirement")
 	}

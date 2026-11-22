@@ -224,7 +224,7 @@ func TestFetchContributorDailyHistoryMinWindowLossIsLogged(t *testing.T) {
 	}
 }
 
-// TestFetchContributorDailyHistorySubdividesOnResourceLimit (chaoss.tv
+// TestFetchContributorDailyHistorySubdividesOnResourceLimit (production
 // log, 2026-09-03..05: 11,003 stuck history fetches): GitHub rejects a
 // too-expensive window with RESOURCE_LIMITS_EXCEEDED (an error, no data)
 // — the same overload as a cap hit. The window must SUBDIVIDE, not fail
@@ -295,7 +295,7 @@ func TestFetchContributorHistoryMeta(t *testing.T) {
 // fails. Run under -race: the shared accumulator's merge is the
 // hazard the mutex exists for.
 // TestFetchContributorDailyHistorySubdividesOnTruncatedResourceLimit
-// (chaoss.tv log, 2026-09-05): GitHub sometimes rejects a too-expensive
+// (production log, 2026-09-05): GitHub sometimes rejects a too-expensive
 // window with a TRUNCATED body whose partial JSON carries
 // RESOURCE_LIMITS_EXCEEDED — the decode fails ("unexpected end of JSON
 // input") before the classifier can see the error type, so ClassTransient
@@ -325,7 +325,7 @@ func TestFetchContributorDailyHistorySubdividesOnTruncatedResourceLimit(t *testi
 	}
 }
 
-// TestFetchContributorDailyHistorySubdividesOnRetryExhaustion (chaoss.tv
+// TestFetchContributorDailyHistorySubdividesOnRetryExhaustion (production
 // log): a window so expensive GitHub returns repeated 500s exhausts the
 // retry budget (ErrTransient -> ClassTransient) — the sweep must subdivide,
 // not fail the whole contributor forever.

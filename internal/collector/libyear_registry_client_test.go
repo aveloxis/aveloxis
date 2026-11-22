@@ -4,7 +4,7 @@
 package collector
 
 // libyear_registry_client_test.go — v0.29.56. Two hours of the
-// 2026-09-17 chaoss.tv log (v0.29.55) showed the libyear registry layer
+// 2026-09-17 production log (v0.29.55) showed the libyear registry layer
 // losing data on every axis:
 //   - crates.io: 40 WARN lines of HTTP 429 (3,153 deps). Its data-access
 //     policy allows 1 request per second; 70 workers each resolving
@@ -533,7 +533,7 @@ func TestScanLibyearWiresKeyedGitHubClient(t *testing.T) {
 }
 
 // TestRegistryLayerIsSafeUnderConcurrency: the cache and the host pacer are
-// shared by every collection worker in the process (70 on chaoss.tv), so
+// shared by every collection worker in the process (70 on a production fleet), so
 // they are exercised from many goroutines at once under -race.
 func TestRegistryLayerIsSafeUnderConcurrency(t *testing.T) {
 	noRegistrySleep(t)
@@ -628,8 +628,8 @@ func TestRegistryPacingReportsThroughTheCollectionLogger(t *testing.T) {
 
 // TestScanLibyearSeedsTheRegistryLogger is the wiring half.
 func TestScanLibyearSeedsTheRegistryLogger(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/collector/analysis.go"),
-		"func (ac *AnalysisCollector) scanLibyear(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/collector/analysis.go"),
+		"func (ac *AnalysisCollector) scanLibyear("))
 	if !strings.Contains(body, "withRegistryLogger(ctx, ac.logger)") {
 		t.Error("scanLibyear must seed the registry layer's logger with the collection's own")
 	}

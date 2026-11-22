@@ -18,7 +18,7 @@ import (
 // index EXPRESSION only when the table is analyzed, never when the index is
 // built, and autovacuum analyzes a table only after about a tenth of its rows
 // change. Without them the planner guesses 0.5% of the table per lookup, so
-// aveloxis-cve's lower(email) joins kept a full scan of a kate-shaped
+// aveloxis-cve's lower(email) joins kept a full scan of a production-shaped
 // contributors table (4.45M rows: 7.1 s) with the 0.29.141 indexes in place,
 // and used them (0.5 s) one ANALYZE later. The build helper owns the rule:
 // a valid expression index with no statistics gets its table analyzed —

@@ -53,7 +53,7 @@ func TestGoModGraphOneLogsToolchainStderr(t *testing.T) {
 }
 
 // TestGoModGraphOneWorksInsideAGoWorkspace — 2026-09-23 log review: 52 of
-// 64 toolchain failures on kate were "-mod may only be set to readonly or
+// 64 toolchain failures on a production fleet were "-mod may only be set to readonly or
 // vendor when in workspace mode … or set GOWORK=off": a module under a
 // go.work refuses GOFLAGS=-mod=mod, so every workspace repo got an empty
 // Go closure. The expansion reads each module on its own, so it must run

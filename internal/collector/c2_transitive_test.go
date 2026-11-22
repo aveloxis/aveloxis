@@ -77,7 +77,7 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 			t.Errorf("gomod_graph.go missing %q", needle)
 		}
 	}
-	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) goModGraphOne(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) goModGraphOne("))
 	if !strings.Contains(body, "ac.logger.Warn") {
 		t.Error("toolchain failures must WARN and skip, never propagate")
 	}
@@ -89,7 +89,7 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 	if strings.Contains(body, "context.WithTimeout") {
 		t.Error("goModGraphOne must NOT create its own timeout — the budget is repo-wide (round 28)")
 	}
-	scan := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
+	scan := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph("))
 	if !strings.Contains(scan, "context.WithTimeout(ctx, goModGraphTimeout)") {
 		t.Error("scanGoModGraph must own the ONE repo-wide budget")
 	}

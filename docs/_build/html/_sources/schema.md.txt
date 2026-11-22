@@ -2196,7 +2196,7 @@ is nullable and un-FK'd; `envelope` is the raw API issue JSON. Shares
 
 #### aveloxis_status
 
-One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 `aveloxis_large` incident), which the scancode preflight now detects on start. See [ScanCode Worker §13](architecture/scancode.md) and [Troubleshooting](guide/troubleshooting.md).
+One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (a production incident of 2026-06-09), which the scancode preflight now detects on start. See [ScanCode Worker §13](architecture/scancode.md) and [Troubleshooting](guide/troubleshooting.md).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|

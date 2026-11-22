@@ -175,7 +175,7 @@ row is likewise absent for deleted forks.
 
 ## Known-empty columns (the 2026-08-19 fill-audit contract, v0.27.105)
 
-A fleet-wide fill-rate audit of `aveloxis_large` (every non-empty table,
+A fleet-wide fill-rate audit of a large production database (every non-empty table,
 type-aware populated predicates, sampled for 100M+-row tables) classified
 every column that was empty or near-empty in production. The classes and
 their canonical lists live in `internal/db/column_writer_tripwire_test.go`

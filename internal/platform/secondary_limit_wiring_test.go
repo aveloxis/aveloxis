@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// 2026-09-12, Bug C of the chaoss.tv analysis: a 403 + Retry-After (or a
+// 2026-09-12, Bug C of the production log analysis: a 403 + Retry-After (or a
 // 429) changed NO pool state — only the calling goroutine slept, and
 // every other caller kept being handed the throttled key, each earning
 // its own rejection and its own 60-second sleep (179 rejections in one

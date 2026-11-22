@@ -84,7 +84,7 @@ const goneRecheckTick = time.Hour
 // depends on how many such rows the whole cohort holds.
 //
 // Declined at the same review: a concurrent probe pool. The production
-// gone cohort is 1,113 repositories, ALL on github.com (chaoss.tv,
+// gone cohort is 1,113 repositories, ALL on github.com (a production fleet,
 // 2026-09-12), and the mark-gone-repos backlog waiting to join it is
 // github.com too. Parallel unauthenticated HEADs against one forge's
 // HTML host trade a hypothetical dead-host backlog for a real 429

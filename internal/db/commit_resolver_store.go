@@ -456,11 +456,11 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 // under a lowercased login from a different endpoint ("nitisht"), or
 // vice versa. A case-sensitive equality silently drops those commits
 // into a perpetual NULL-author state. Production diagnostic on the
-// live aveloxis_large DB showed 1,919 additional commits recoverable
+// live larger production database showed 1,919 additional commits recoverable
 // under the case-insensitive comparison.
 //
 // v0.27.25 — two fixes after a live 2-day-2-hour orphaned run of this
-// statement on aveloxis_large (2026-07-20 diagnostic):
+// statement on the larger production database (2026-07-20 diagnostic):
 //
 //  1. BOTH sides now exclude empty strings. Postgres "" = "" is TRUE
 //     (the v0.25.6 explorer_new_contributors lesson), and production

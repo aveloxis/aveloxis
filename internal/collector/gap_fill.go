@@ -52,7 +52,7 @@ const GapEdgeCount = 2
 // ExpandGapsWithEdges used to fetch every integer in [Start, End], and
 // on GitHub — whose issue and PR number spaces are shared — a PR gap
 // spanning issue numbers fetched those issues as PRs: 22,837 NOT_FOUND
-// per-path GraphQL errors on one aveloxis_large heal run, all wasted
+// per-path GraphQL errors on one heal run of the larger production database, all wasted
 // aliases. The expected set has always come from a full listing (the
 // range walk was simply a bug, never a heuristic).
 type Gap struct {

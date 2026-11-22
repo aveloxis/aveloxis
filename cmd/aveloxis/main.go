@@ -217,7 +217,7 @@ func runServe(cfgPath, monitorAddr string, workers int, useAugurKeys, allowSecon
 
 	// F13 (v0.27.131): serve startup trusts a current schema stamp and
 	// skips the migration re-walk (observed 1h42m of backfill-window
-	// re-walking on kate with zero collection). `aveloxis migrate`
+	// re-walking on a production fleet with zero collection). `aveloxis migrate`
 	// remains the full-run self-heal path and never fast-paths.
 	store.SetMigrateFastPath(true)
 	store.SetAllowSecondServe(allowSecondServe)

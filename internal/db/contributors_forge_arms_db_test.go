@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// kate 2026-10-07 (the ledger holds the plan): /contributors/top on repo
+// A production fleet, 2026-10-07 (the ledger holds the plan): /contributors/top on repo
 // 94609 read 505K pull-request rows and 58K issue rows one heap page each,
 // and the covering reviews/messages indexes fetched nearly every row from
 // the heap because the visibility map was half stale. The two v0.27.4

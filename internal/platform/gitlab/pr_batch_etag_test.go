@@ -14,7 +14,7 @@ import (
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
-// The 2026-08-26 aveloxis_large finding: petsc/petsc (the fleet's only
+// The 2026-08-26 production finding: petsc/petsc (the fleet's only
 // GitLab repo) had 0 of 9,450 merge requests stored since inception —
 // routine collection and heal-collection-gaps both failed every MR
 // batch with `gitlab pr batch at #N: labels: not modified (304)`. The

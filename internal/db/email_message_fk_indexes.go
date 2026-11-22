@@ -21,7 +21,7 @@ import (
 // v0.22.6/v0.22.7 FK-index audits, and shipped unindexed — the v0.25.34
 // class. `dedup-repos` repoints them by loser repo_id (a sequential scan
 // of the table per pair — 12 GB / 10.6M rows on the mailing-list
-// deployment, the `aveloxis` DB; ~300 MB on aveloxis_large) and then
+// deployment, the `aveloxis` DB; ~300 MB on the larger production database) and then
 // deletes the loser repos row,
 // whose DEFERRED FK checks seq-scan the table twice more at COMMIT; the
 // v0.28.18 repo_groups_list_serve dedup repoints rgls_id the same way.
@@ -218,7 +218,7 @@ func dedupRepoGroupsListServe(ctx context.Context, pg *PostgresStore, logger *sl
 // ServeApplicationName is serve's MATCH PREFIX — the component half of
 // the application_name `aveloxis serve` tags its pool with. Since
 // round 12 the tag itself is AppNameForHost(ServeApplicationName), the
-// prefix plus this host's marker (`aveloxis-serve@kate`), so every
+// prefix plus this host's marker (`aveloxis-serve@myhost`), so every
 // reader matches on appNamePrefixSQL rather than on equality. The
 // mailing-list worker pool lives only inside serve, so "an
 // aveloxis-serve backend other than this process" is the one signal

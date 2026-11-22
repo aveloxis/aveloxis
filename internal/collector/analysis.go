@@ -1348,7 +1348,7 @@ func libyearStatus(dep model.LibyearDep, row *model.LibyearRow, err error) strin
 //
 // calcLibyear returns 0 when either release date is missing or unparseable,
 // which is indistinguishable from a dependency that really is on the latest
-// release (v0.29.57). Measured on chaoss.tv on 2026-09-17: 1,704,902 of the
+// release (v0.29.57). Measured on a production fleet on 2026-09-17: 1,704,902 of the
 // 3,196,143 rows carrying a number had a missing date, so 87% of every row
 // reading "libyear = 0" meant "unknown" — and avg() counts a zero while it
 // skips a NULL, which reported the fleet at 1.335 years against an honest
@@ -1572,7 +1572,7 @@ func (ac *AnalysisCollector) scanSCC(ctx context.Context, repoID int64, workDir 
 	// DOUBLING. On 2026-09-15 repo 144636
 	// (opendatahub-io/odh-build-metadata, a 73 GB store of generated build
 	// metadata) drove that buffer to 1 GiB; the doubling to 2 GiB asked the
-	// kernel for one contiguous 2 GiB mapping, kate runs
+	// kernel for one contiguous 2 GiB mapping, the production fleet runs
 	// vm.overcommit_memory=2 so the mmap was refused, and the process died
 	// with "fatal error: runtime: out of memory" — taking all 70 collection
 	// workers and every background subsystem with it.
@@ -2235,7 +2235,7 @@ type sccFile struct {
 // repository (repo1), not the search API.
 //
 // v0.29.56: search.maven.org timed out or answered 403 for 86 WARN lines
-// (5,163 dependencies) in two hours of the 2026-09-17 chaoss.tv log and
+// (5,163 dependencies) in two hours of the 2026-09-17 production log and
 // stretched one repo's libyear phase to 40 minutes. Its answers also
 // carried no release date for the version in use, so every Maven libyear
 // was 0 (0 of 51,510 rows written in the prior 7 days). The repository

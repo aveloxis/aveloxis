@@ -92,6 +92,34 @@ func TestGemLogicalLinesAnswersAsThePatternsDo(t *testing.T) {
 	}
 }
 
+// gemLineReadBound is how long one read in the test below may take before
+// the test gives up on it.
+//
+// Without the detector it is 20 s, as it has always been: a megabyte reads
+// in tens of milliseconds, and the judgement of the test (a megabyte in at
+// most eight times a quarter of one) is made there.
+//
+// Under the detector NOTHING about speed is judged (the test reads 64 KB
+// once per unit, for what the detector is there to see), so the bound only
+// ends a read that never returns. It is two minutes: the read took 0.35 to
+// 0.46 s here at eight and at two processors (0.29.226), and a CI runner
+// was four to five times slower than this machine on the commit where the
+// megabyte read once took 27 s against the 20 s the test then allowed.
+// Whether two minutes would also catch a read gone back to the square is
+// NOT claimed: by the round-7 figure (100 KB in over a minute, without the
+// detector) it is near the line.
+//
+// Known gap, recorded for the operator (0.29.226): every CI job runs this
+// package under the detector, so the judgement of speed above, and those of
+// the other tests of this package that branch on raceEnabled, run on a
+// developer's machine only.
+var gemLineReadBound = func() time.Duration {
+	if raceEnabled {
+		return 2 * time.Minute
+	}
+	return 20 * time.Second
+}()
+
 // A Gemfile line of many `;` is read in time that grows with its length
 // (round 7: 100 KB on one line took over a minute, in the square).
 func TestAGemfileLineOfManyStatementsIsReadInLinearTime(t *testing.T) {
@@ -113,8 +141,8 @@ func TestAGemfileLineOfManyStatementsIsReadInLinearTime(t *testing.T) {
 			select {
 			case d := <-done:
 				return d
-			case <-time.After(20 * time.Second):
-				t.Fatalf("%q repeated to %d bytes on one line was not read in 20 s", unit, n)
+			case <-time.After(gemLineReadBound):
+				t.Fatalf("%q repeated to %d bytes on one line was not read in %s", unit, n, gemLineReadBound)
 				return 0
 			}
 		}

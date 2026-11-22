@@ -394,7 +394,7 @@ func (r *CommitResolver) ResolveCommits(ctx context.Context, repoID int64, owner
 	// Bulk backfill: connect commits to contributors via cmt_ght_author_id.
 	backfillStart := time.Now()
 	n, err := r.store.BackfillCommitAuthorIDs(ctx, repoID)
-	backfill := time.Since(backfillStart) // worklist item 75: up to 4,034 s on kate
+	backfill := time.Since(backfillStart) // worklist item 75: up to 4,034 s on a production fleet
 	if err != nil {
 		// Round-8 burn-down: a cancelled context is a `stop serve`, not a
 		// defect. Only the log is suppressed — surrounding behaviour is

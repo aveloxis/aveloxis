@@ -18,7 +18,7 @@ import (
 // v0.27.6 — behavioral tests for the self-healing ladder and the
 // typecode-libmagic env-pair discovery (scancode_remediate.go).
 //
-// July 2026 root cause (verified on chaoss.tv): the system libmagic
+// July 2026 root cause (verified on a production fleet): the system libmagic
 // was healthy and the wheel was injected, yet typecode's plugin
 // resolution failed inside the mini venv and fell back to the system
 // libmagic — a 5.39 wheel .so reading the 5.45-compiled system

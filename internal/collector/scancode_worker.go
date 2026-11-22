@@ -245,7 +245,7 @@ type ScancodeWorker struct {
 	// probe and every real scan) carries TYPECODE_LIBMAGIC_PATH +
 	// TYPECODE_LIBMAGIC_DB_PATH so typecode can never cross-load a
 	// wheel .so against a foreign compiled magic DB — the July 2026
-	// chaoss.tv root cause. See scancode_remediate.go.
+	// production root cause. See scancode_remediate.go.
 	typecodeEnv atomic.Pointer[typecodeEnvPair]
 }
 
@@ -409,7 +409,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// the (post-recovery) lock rows. runOne's defer only removes its
 	// clone on clean exits; hard kills leaked clone dirs forever.
 	//
-	// v0.27.13: runs in the BACKGROUND. On 2026-07-15 kate's first
+	// v0.27.13: runs in the BACKGROUND. On 2026-07-15 a production fleet's first
 	// post-upgrade start spent 20+ minutes inside this call — serial
 	// os.RemoveAll of multi-GB stale clones on a spinning disk ran
 	// 10+ minutes PER DIRECTORY — and the dispatcher below never
@@ -746,7 +746,7 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	// (tarballs, binary assets, compiled artifacts) aren't useful
 	// for that work. Critical for repos whose LFS budget is
 	// exhausted (2026-05-14 diagnostic: 214 clone failures on the
-	// chaoss.tv fleet, all "exceeded its LFS budget"); the LFS
+	// production fleet, all "exceeded its LFS budget"); the LFS
 	// fetch fails, which fails the smudge filter, which fails the
 	// checkout, which fails the whole clone. Skipping smudge bypasses
 	// the entire chain. Also speeds up clones on every LFS-using

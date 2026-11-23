@@ -71,7 +71,8 @@ PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt psql "postgres://aveloxis:PASSW
 # columns the database did not have yet). Release tags are v-prefixed
 # (v0.29.4), so set the bare number `aveloxis version` prints on the
 # primary and let the @v prefix supply the tag form:
-PRIMARY_VERSION=0.29.4   # what `aveloxis version` prints on the primary
+# What `aveloxis version` prints on the primary
+PRIMARY_VERSION=0.29.4
 go install "github.com/aveloxis/aveloxis/cmd/aveloxis@v${PRIMARY_VERSION}"
 
 # git is required for the shallow clones; then the analysis tools

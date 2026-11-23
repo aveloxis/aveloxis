@@ -9,7 +9,8 @@ does **not** do for you.
 Every upgrade is these four steps, in this order, on the primary host:
 
 ```bash
-AVELOXIS_SRC=/path/to/aveloxis    # the git checkout of this repository
+# The git checkout of this repository
+AVELOXIS_SRC=/path/to/aveloxis
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version   # 1. the new binary (running processes keep the old one until restarted)
 aveloxis deploy-checklist --pending   #    every step this database still needs, oldest first, and the migrate for step 3 — read it now, before step 3 moves the stamp
 aveloxis stop all                 # 2. nothing runs against the schema while it changes
@@ -125,7 +126,8 @@ LIMIT 1;
 ## The standard ladder
 
 ```bash
-AVELOXIS_SRC=/path/to/aveloxis   # the git checkout of this repository
+# The git checkout of this repository
+AVELOXIS_SRC=/path/to/aveloxis
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis
 aveloxis version                # confirm the new binary
 aveloxis deploy-checklist --pending   # the exact steps this database needs: follow them where they differ from these
@@ -164,7 +166,15 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
-**0.29.227 corrects wording. No schema change, no configuration change and no change in behaviour.** Review found a handful of sentences that 0.29.226's rewording had damaged, in comments and in one docs example (the `psql` example in the scaling guide now takes its port from a variable too). Two tests are tightened.
+**0.29.228 changes one script, tests and documentation. No schema change, no configuration change and no change in the binary's behaviour.** `scripts/enable_perf_telemetry.sql` now refuses to run without a database name, and refuses an empty one, before it changes any setting. In 0.29.227 the documented command, run with `DBNAME` unset, applied the three settings and created `pg_stat_statements` in the role's default database without a message. If you ran the script from 0.29.227, check that the extension is in the database `serve` uses:
+
+```sql
+SELECT current_database(), extname FROM pg_extension WHERE extname = 'pg_stat_statements';
+```
+
+The command from before 0.29.227, which passes no `-v dbname`, now changes nothing and says so; psql still exits 0. The shell examples in these guides and in the script headers no longer put a comment after an assignment on the same line: an interactive zsh with default options does not make such an assignment.
+
+**0.29.227 corrects wording. No schema change, no configuration change and no change in behaviour.** Review found a handful of sentences that 0.29.226's rewording had damaged, in comments and in one docs example (the `psql` example in the scaling guide now takes its port from a variable too). One test is tightened. `scripts/enable_perf_telemetry.sql` takes the database as `-v dbname="$DBNAME"` from this release; it had a fixed name.
 
 **0.29.226 changes comments, documentation and one test. No schema change, no configuration change and no change in behaviour.** The documentation and the source comments no longer name the fleet a figure was measured on, or its databases, and the examples in the guides use placeholders (`aveloxis-serve@myhost`, `-d "$DBNAME"`). `schema.sql` changed in comments only. `matviews.sql` is untouched, so no view needs a rebuild.
 

@@ -50,7 +50,8 @@ CONFIG=/etc/aveloxis/aveloxis.json
 ## 2. Install
 
 ```bash
-AVELOXIS_SRC=/home/aveloxis/aveloxis     # a git checkout of this repository
+# A git checkout of this repository
+AVELOXIS_SRC=/home/aveloxis/aveloxis
 git clone https://github.com/aveloxis/aveloxis.git "$AVELOXIS_SRC"
 cd "$AVELOXIS_SRC"
 go mod tidy

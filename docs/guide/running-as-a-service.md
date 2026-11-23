@@ -146,7 +146,8 @@ by hand and start the target last:
 
 ```bash
 # as the service user (sudo -iu aveloxis); the two systemctl lines need an account with sudo
-CFG=/etc/aveloxis/aveloxis.json         # the units' config; the checkout has no aveloxis.json
+# The units' config; the checkout has no aveloxis.json
+CFG=/etc/aveloxis/aveloxis.json
 AVELOXIS_SRC=/home/aveloxis/aveloxis
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version
 aveloxis deploy-checklist --pending -c "$CFG"   # read it now; it names the migrate step 3 runs

@@ -497,10 +497,12 @@ findings in summary/21). Run it per release, or monthly, and diff against the
 previous snapshot — performance review becomes a diff, not archaeology:
 
 ```bash
-DBHOST=db.example.org        # the PostgreSQL host
-DBPORT=5432                  # its port
-DBNAME=aveloxis              # the database
-PREVIOUS=20260818            # the date stamp of the last snapshot
+# Yours: the PostgreSQL host, its port, the database, and the date stamp of
+# the last snapshot.
+DBHOST=db.example.org
+DBPORT=5432
+DBNAME=aveloxis
+PREVIOUS=20260818
 psql -h "$DBHOST" -p "$DBPORT" -U aveloxis -d "$DBNAME" \
      -f scripts/perf_snapshot.sql > perf-$(date +%Y%m%d).txt
 diff "perf-$PREVIOUS.txt" perf-$(date +%Y%m%d).txt | less

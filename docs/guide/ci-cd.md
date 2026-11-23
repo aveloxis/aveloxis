@@ -266,7 +266,9 @@ The GitHub traffic canary (`TestLiveGitHubTrafficContract`, since v0.29.118) che
 
 The GitLab statistics canary (`TestLiveGitLabProjectStatisticsContract`, since v0.29.118) checks the shape of `GET /projects/:id/statistics`, the answer behind GitLab's daily clone counts: `fetches.total`, and `fetches.days[]` with an integer `count` and a `YYYY-MM-DD` `date`, newest first, within the last 30 UTC days, and no unique count. GitLab serves it only to a key with at least the Reporter role (and the `read_api` scope), so the canary needs `AVELOXIS_TEST_GITLAB_TOKEN` to hold such a token and the repository variable `AVELOXIS_TEST_GITLAB_STATS_PROJECT` to hold the `group/project` path of a gitlab.com project the token has that role on. Without the token or the variable, or when GitLab answers 403 or 404, the test skips and says why.
 
-The same workflow has two more jobs:
+The same workflow has four more jobs:
 
+- **`facade`** (since v0.29.222) clones a real repository and runs the git-log collection end to end against a PostgreSQL service container.
+- **`manifest-speed`** (since v0.29.226) runs eight tests of the manifest readers without the race detector. Under the detector, which every other job uses for that package, they compare fewer generated cases or do not judge reading time. It needs no network, and a failure here is not a registry or forge problem: look at the readers. `TestTheWeeklyJobRunsEveryFullFormTest` keeps the job's list equal to the tests.
 - **`tools`** installs the latest scancode and the pinned scc (what production's monthly updater installs) and runs their output through the real parse structs.
 - **`sbom-validators`** (since v0.29.67) installs the official SBOM validators, the SPDX project's `pyspdxtools` and CycloneDX's `cyclonedx-python-lib`, and runs `TestSBOMsPassTheOfficialValidators` on generated documents. It is its own job so a failing tool canary cannot skip it. Locally, set `AVELOXIS_TEST_SBOM_TOOLS` to a Python with both installed; the test skips without it.

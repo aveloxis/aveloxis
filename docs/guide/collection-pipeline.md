@@ -301,8 +301,10 @@ After SCC, [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit)
 **Invocation:**
 
 ```bash
-OUTPUT=/tmp/aveloxis-scancode/repo_123.json   # the JSON the worker ingests
-CHECKOUT=/tmp/aveloxis-scancode/repo_123      # the temporary clone
+# The JSON the worker ingests
+OUTPUT=/tmp/aveloxis-scancode/repo_123.json
+# The temporary clone
+CHECKOUT=/tmp/aveloxis-scancode/repo_123
 scancode -clpi --only-findings --json "$OUTPUT" --quiet --timeout 300 "$CHECKOUT"
 ```
 

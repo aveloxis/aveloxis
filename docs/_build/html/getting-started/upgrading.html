@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.227 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.228 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=1ef0d2d1"></script>
+      <script src="../_static/documentation_options.js?v=f6ea7113"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1863,7 +1863,8 @@ does <strong>not</strong> do for you.</p>
 <section id="the-four-steps">
 <h2>The four steps<a class="headerlink" href="#the-four-steps" title="Link to this heading"></a></h2>
 <p>Every upgrade is these four steps, in this order, on the primary host:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">    </span><span class="c1"># the git checkout of this repository</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># The git checkout of this repository</span>
+<span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version<span class="w">   </span><span class="c1"># 1. the new binary (running processes keep the old one until restarted)</span>
 aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w">   </span><span class="c1">#    every step this database still needs, oldest first, and the migrate for step 3 — read it now, before step 3 moves the stamp</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">                 </span><span class="c1"># 2. nothing runs against the schema while it changes</span>
@@ -1970,7 +1971,8 @@ binary that migrated the schema:</p>
 </section>
 <section id="the-standard-ladder">
 <h2>The standard ladder<a class="headerlink" href="#the-standard-ladder" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis<span class="w">   </span><span class="c1"># the git checkout of this repository</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># The git checkout of this repository</span>
+<span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/path/to/aveloxis
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis
 aveloxis<span class="w"> </span>version<span class="w">                </span><span class="c1"># confirm the new binary</span>
 aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w">   </span><span class="c1"># the exact steps this database needs: follow them where they differ from these</span>
@@ -2007,7 +2009,12 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
-<p><strong>0.29.227 corrects wording. No schema change, no configuration change and no change in behaviour.</strong> Review found a handful of sentences that 0.29.226’s rewording had damaged, in comments and in one docs example (the <code class="docutils literal notranslate"><span class="pre">psql</span></code> example in the scaling guide now takes its port from a variable too). Two tests are tightened.</p>
+<p><strong>0.29.228 changes one script, tests and documentation. No schema change, no configuration change and no change in the binary’s behaviour.</strong> <code class="docutils literal notranslate"><span class="pre">scripts/enable_perf_telemetry.sql</span></code> now refuses to run without a database name, and refuses an empty one, before it changes any setting. In 0.29.227 the documented command, run with <code class="docutils literal notranslate"><span class="pre">DBNAME</span></code> unset, applied the three settings and created <code class="docutils literal notranslate"><span class="pre">pg_stat_statements</span></code> in the role’s default database without a message. If you ran the script from 0.29.227, check that the extension is in the database <code class="docutils literal notranslate"><span class="pre">serve</span></code> uses:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">current_database</span><span class="p">(),</span><span class="w"> </span><span class="n">extname</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">pg_extension</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">extname</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;pg_stat_statements&#39;</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The command from before 0.29.227, which passes no <code class="docutils literal notranslate"><span class="pre">-v</span> <span class="pre">dbname</span></code>, now changes nothing and says so; psql still exits 0. The shell examples in these guides and in the script headers no longer put a comment after an assignment on the same line: an interactive zsh with default options does not make such an assignment.</p>
+<p><strong>0.29.227 corrects wording. No schema change, no configuration change and no change in behaviour.</strong> Review found a handful of sentences that 0.29.226’s rewording had damaged, in comments and in one docs example (the <code class="docutils literal notranslate"><span class="pre">psql</span></code> example in the scaling guide now takes its port from a variable too). One test is tightened. <code class="docutils literal notranslate"><span class="pre">scripts/enable_perf_telemetry.sql</span></code> takes the database as <code class="docutils literal notranslate"><span class="pre">-v</span> <span class="pre">dbname=&quot;$DBNAME&quot;</span></code> from this release; it had a fixed name.</p>
 <p><strong>0.29.226 changes comments, documentation and one test. No schema change, no configuration change and no change in behaviour.</strong> The documentation and the source comments no longer name the fleet a figure was measured on, or its databases, and the examples in the guides use placeholders (<code class="docutils literal notranslate"><span class="pre">aveloxis-serve&#64;myhost</span></code>, <code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">&quot;$DBNAME&quot;</span></code>). <code class="docutils literal notranslate"><span class="pre">schema.sql</span></code> changed in comments only. <code class="docutils literal notranslate"><span class="pre">matviews.sql</span></code> is untouched, so no view needs a rebuild.</p>
 <p><strong>0.29.225 is the fixes from one more review. No schema change and no configuration change.</strong> Nothing differs from 0.29.146 that an operator must act on.</p>
 <ul class="simple">

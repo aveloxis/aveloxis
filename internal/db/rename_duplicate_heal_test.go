@@ -28,7 +28,10 @@ import (
 // DEFERRABLE, so the violation surfaces at COMMIT — both Exec and
 // Commit must route through the check).
 func TestHealRenamedDuplicateShape(t *testing.T) {
-	fn := extractFunctionBody(t, "rename_duplicate_heal.go", "HealRenamedDuplicate")
+	// Comments removed from the body too (0.29.228, Copilot on PR #263): the
+	// loop or its Exec left in a comment satisfied the wiring check, with the
+	// step list still supplying every needle.
+	fn := srctest.StripGoComments(extractFunctionBody(t, "rename_duplicate_heal.go", "HealRenamedDuplicate"))
 	// 0.29.212: the heal's statements are the list renameHealSteps, which
 	// the function runs in order through renameHealStepSQL (so that the
 	// write-policy check runs each). The pieces pinned are the same, read

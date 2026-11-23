@@ -58,8 +58,8 @@ func TestEachLadderCarriesItsPredecessorsNotes(t *testing.T) {
 			t.Errorf("ladder %s does not carry ladder %s's notes — build it as withStartNote(the %s ladder, note)", v, prev, prev)
 		}
 	}
-	// Guard the denominator: 160 ladders at 0.29.227 (every release from
-	// 0.29.68 to 0.29.227), so a broken ordering or filter cannot pass by
+	// Guard the denominator: 161 ladders at 0.29.228 (every release from
+	// 0.29.68 to 0.29.228), so a broken ordering or filter cannot pass by
 	// checking nothing.
-	srctest.MinCount(t, "ladders checked for their chain", checked, 160)
+	srctest.MinCount(t, "ladders checked for their chain", checked, 161)
 }

@@ -597,8 +597,8 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
 	// the "processed" signal, which left contributors with zero
 	// public events permanently at the front of the queue. With
-	// 1.4M contributors observed on the larger live production
-	// fleet, only 225 (0.016%) ever got events recorded because
+	// 1.4M contributors observed on the larger production
+	// database, only 225 (0.016%) ever got events recorded because
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 

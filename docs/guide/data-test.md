@@ -155,8 +155,10 @@ captures rows the released schema missed. Two scenarios:
 If a FLAG is unexpected, run with `--keep-dbs`, then:
 
 ```bash
-TABLE=issues      # the flagged table
-PK=issue_id       # its primary key
+# The flagged table
+TABLE=issues
+# Its primary key
+PK=issue_id
 psql -d aveloxis_new -c "
   SELECT * FROM aveloxis_data.$TABLE
   WHERE $PK NOT IN (SELECT $PK FROM aveloxis_released.aveloxis_data.$TABLE);

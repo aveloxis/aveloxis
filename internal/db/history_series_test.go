@@ -13,6 +13,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestSnapshotTimeSeriesReadHistoryTables(t *testing.T) {
@@ -20,7 +22,9 @@ func TestSnapshotTimeSeriesReadHistoryTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(src)
+	// Comments removed (0.29.228, Copilot on PR #263): the two calls left in
+	// a comment above a reader that runs another statement satisfied this.
+	s := srctest.StripGoComments(string(src))
 	// Stage 1b: one reader, SnapshotSeries, behind /stars, /forks and
 	// /watchers.
 	for _, fn := range []string{"SnapshotSeries"} {

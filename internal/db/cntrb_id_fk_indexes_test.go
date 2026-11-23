@@ -87,7 +87,7 @@ func TestSchemaDeclaresIndexesOnAllCntrbIDFKChildColumns(t *testing.T) {
 				"Without it, v0.22.1's ON UPDATE CASCADE on cntrb_id rewrites "+
 				"seq-scans aveloxis_data.%s for every cntrb_id update — the "+
 				"root cause of the 17-hour stall on aveloxis migrate-cntrb-ids "+
-				"observed on the aveloxis_large production DB on 2026-05-17.",
+				"observed on the larger production database on 2026-05-17.",
 				needle, idx.table)
 		}
 	}

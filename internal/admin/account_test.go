@@ -62,7 +62,7 @@ func TestEmailConfirmBase(t *testing.T) {
 		// Refused: attacker-controllable or malformed.
 		{"hostile host", "", "evil.example.com", false, ""},
 		{"hostile host with port", "", "evil.example.com:443", false, ""},
-		{"production host", "", "chaoss.tv", false, ""},
+		{"production host", "", "metrics.example.org", false, ""},
 		{"loopback-looking subdomain", "", "localhost.evil.example.com", false, ""},
 		{"IPv4-looking subdomain", "", "127.0.0.1.evil.example.com", false, ""},
 		{"unspecified address", "", "0.0.0.0", false, ""},

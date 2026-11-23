@@ -22,8 +22,9 @@ import (
 const MatviewsDefinitionVersion = "0.29.57"
 
 // MatviewsDefinitionDigest is the sha256 of matviews.sql as shipped by
-// MatviewsDefinitionVersion (updated alone for a removal-only change).
-const MatviewsDefinitionDigest = "8fb0f3d26ac7af0914d8b6c7d35d060196cdcf1dc6f8fdfd39fc40880f96c5f0"
+// MatviewsDefinitionVersion (updated alone for a removal-only change, or one
+// that touches only comments: 0.29.229 reworded three).
+const MatviewsDefinitionDigest = "99cae7bea7724e8165ac66ee94ef22102cc699c27b7430bb9dbbe774076526a1"
 
 // MatviewsSQLDigest is the sha256 of the embedded matviews.sql, hex-encoded,
 // with CRLF line endings folded to LF so a core.autocrlf checkout hashes the

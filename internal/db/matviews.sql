@@ -90,7 +90,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_explorer_commits_committers_daily
 --
 -- v0.25.5: rewritten to fix a pre-existing CROSS JOIN bug. The previous
 -- definition used `FROM repos a, repo_deps_libyear b` with no join
--- condition; on aveloxis_large that produces a 52K × 636K = 33-billion-row
+-- condition; on a large fleet that produces a 52K × 636K = 33-billion-row
 -- intermediate that's computationally infeasible AND semantically wrong
 -- (every repo's "avg_libyear" was the fleet-wide average, not the repo's
 -- own). The fix adds `USING (repo_id)` and switches the group/order keys
@@ -405,7 +405,7 @@ WITH branched AS (
     -- cmt_ght_author_id (a plain UUID column, never declared as a FK
     -- so missed by the v0.22.6 FK-index audit), the planner seqscanned
     -- 381 GB and then hash-aggregated the full join result — observed
-    -- as a 2+ day rebuild on aveloxis_large.
+    -- as a 2+ day rebuild on a large fleet.
     --
     -- The two-phase approach reduces the join input from ~434M rows to
     -- the number of distinct (author_id, repo_id, date) groups before
@@ -1079,7 +1079,7 @@ DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.explorer_cntrb_per_file CASCADE;
 
 -- v0.25.5: an earlier draft attempted to pre-aggregate reviewers per PR
 -- via a CTE to cut the LEFT-JOIN fan-out (~500M intermediate rows on
--- aveloxis_large). It produced INCORRECT output — `string_agg(DISTINCT
+-- a large fleet). It produced INCORRECT output — `string_agg(DISTINCT
 -- prv.reviewer_ids, ',')` dedupes whole per-PR comma-strings rather than
 -- individual reviewer IDs, so the result column became a list of
 -- per-PR strings (`"alice,bob","alice,charlie"`) instead of the

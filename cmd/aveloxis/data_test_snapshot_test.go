@@ -139,13 +139,13 @@ func TestShippedSnapshotInputsLoad(t *testing.T) {
 	if len(tables) != 13 || must != 24 {
 		t.Errorf("the 0.29.207 rules name %d tables with %d must-differ rules; want 13 tables and 24 (two per new table, six for the added columns, two for the new indexes on existing tables)", len(tables), must)
 	}
-	for _, shape := range []string{"testdata/shape-provisional.json", "testdata/shape-kate-20261108.json"} {
+	for _, shape := range []string{"testdata/shape-provisional.json", "testdata/shape-fleet-20261108.json"} {
 		if _, err := loadSeedShape(shape); err != nil {
 			t.Fatalf("%s: %v", shape, err)
 		}
 	}
-	if settings, err := loadSnapshotSettings("testdata/settings-kate-20261108.json"); err != nil || settings["work_mem"] != "128MB" {
-		t.Fatalf("kate's planner settings load: %v %v", settings, err)
+	if settings, err := loadSnapshotSettings("testdata/settings-fleet-20261108.json"); err != nil || settings["work_mem"] != "128MB" {
+		t.Fatalf("the measured fleet's planner settings load: %v %v", settings, err)
 	}
 }
 

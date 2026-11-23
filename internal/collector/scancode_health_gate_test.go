@@ -74,7 +74,7 @@ func TestProbeCarriesTypecodeEnvPair(t *testing.T) {
 	env := string(dump)
 	if !strings.Contains(env, "TYPECODE_LIBMAGIC_PATH=/venv/libmagic.so") ||
 		!strings.Contains(env, "TYPECODE_LIBMAGIC_DB_PATH=/venv/magic.mgc") {
-		t.Errorf("the pinned typecode env pair must arrive in the scancode subprocess environment — without it typecode's broken plugin resolution silently falls back to the system libmagic (the July 2026 chaoss.tv root cause). Got env:\n%s", env)
+		t.Errorf("the pinned typecode env pair must arrive in the scancode subprocess environment — without it typecode's broken plugin resolution silently falls back to the system libmagic (the July 2026 production root cause). Got env:\n%s", env)
 	}
 }
 

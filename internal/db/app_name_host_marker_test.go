@@ -43,7 +43,7 @@ func TestAppNameForHostRoundTripsThroughTheSeparator(t *testing.T) {
 // behavior), never toward a marker two hosts could share.
 func TestSanitizeHostTagCannotProduceASeparator(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"kate", "kate"},
+		{"host-a", "host-a"},
 		{"runner-01.internal.example.com", "runner-01.internal.example.com"},
 		{"HOST_02", "HOST_02"},
 		{"", ""},

@@ -180,7 +180,7 @@ if [ -n "$MISSING" ]; then
    ERROR: required probe index(es) missing or INVALID: $MISSING
 
    Create them first (CONCURRENTLY — non-blocking, safe beside a running
-   serve; minutes on aveloxis, longer on aveloxis_large):
+   serve; minutes on a small database, longer on a large one):
 
      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_node_id
        ON aveloxis_data.pull_requests (node_id);

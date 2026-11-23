@@ -16,12 +16,12 @@ import (
 // the config holds comes back unchanged.
 func TestConnectionStringRoundTrips(t *testing.T) {
 	for _, d := range []DatabaseConfig{
-		{Host: "db.example", Port: 5432, User: "aveloxis", Password: "p@ss/w%rd?x#y:z w", DBName: "aveloxis_large", SSLMode: "disable"},
+		{Host: "db.example", Port: 5432, User: "aveloxis", Password: "p@ss/w%rd?x#y:z w", DBName: "aveloxis_fleet", SSLMode: "disable"},
 		{Host: "localhost", Port: 5433, User: "us@er", Password: "plain", DBName: "db name", SSLMode: "disable"},
 		{Host: "::1", Port: 5432, User: "u", Password: "p", DBName: "d", SSLMode: "disable"},
 		{Host: "/tmp", Port: 5432, User: "u", Password: "p", DBName: "d", SSLMode: "disable"},
 	} {
-		for name, dsn := range map[string]string{"plain": d.ConnectionString(), "app": d.ConnectionStringWithAppName("aveloxis-api@kate")} {
+		for name, dsn := range map[string]string{"plain": d.ConnectionString(), "app": d.ConnectionStringWithAppName("aveloxis-api@host-a")} {
 			pc, err := pgx.ParseConfig(dsn)
 			if err != nil {
 				t.Errorf("%s host=%q user=%q: does not parse (the error is not printed: it can quote the password)", name, d.Host, d.User)
@@ -31,7 +31,7 @@ func TestConnectionStringRoundTrips(t *testing.T) {
 				t.Errorf("%s: round trip changed the config: host %q→%q port %d→%d user %q→%q db %q→%q password equal=%v",
 					name, d.Host, pc.Host, d.Port, pc.Port, d.User, pc.User, d.DBName, pc.Database, pc.Password == d.Password)
 			}
-			if name == "app" && pc.RuntimeParams["application_name"] != "aveloxis-api@kate" {
+			if name == "app" && pc.RuntimeParams["application_name"] != "aveloxis-api@host-a" {
 				t.Errorf("application_name = %q", pc.RuntimeParams["application_name"])
 			}
 		}

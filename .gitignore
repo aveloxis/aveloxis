@@ -10,7 +10,7 @@ long-jobs/
 loadorgs
 el-orgs.txt
 long-running-jobs/**
-scancode-logs-chaoss.tv/**
+scancode-logs-*/**
 *.err
 syslog
 *.json
@@ -34,8 +34,6 @@ syslog
 !cmd/aveloxis/testdata/settings-*.json
 *code-workspace
 db.config.json
-aveloxis.chaoss.tv.json
-aveloxis.kate.json
 aveloxis.runlocal.json
 prompt-notes/**
 summary/**
@@ -127,4 +125,4 @@ __pycache__/
 *.pyd
 
 # Production logs copied in for a review session (0.29.140); never committed.
-kate-logs/
+*-logs/

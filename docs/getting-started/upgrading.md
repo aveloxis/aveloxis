@@ -166,6 +166,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.229 changes comments, tests and the ignore file. No schema change, no configuration change and no change in the binary's behaviour.** The last mentions of one deployment's host and database names are replaced with generic wording. Three of them were comments in the 8Knot view file; no view definition changed, so no view needs a rebuild and `aveloxis migrate --skip-views` is enough. If your checkout holds local configuration or log files, run `git status` once after the pull: the ignore file no longer lists `aveloxis.<host>.json` names one by one (every `*.json` outside the listed test data was already ignored) and now ignores any directory ending in `-logs/` and any `scancode-logs-*/`. Two test data files were renamed (`cmd/aveloxis/testdata/shape-fleet-20261108.json`, `settings-fleet-20261108.json`).
+
 **0.29.228 changes one script, tests and documentation. No schema change, no configuration change and no change in the binary's behaviour.** `scripts/enable_perf_telemetry.sql` now refuses to run without a database name, and refuses an empty one, before it changes any setting. In 0.29.227 the documented command, run with `DBNAME` unset, applied the three settings and created `pg_stat_statements` in the role's default database without a message. If you ran the script from 0.29.227, check that the extension is in the database `serve` uses:
 
 ```sql

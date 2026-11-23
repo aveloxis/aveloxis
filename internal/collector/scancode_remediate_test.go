@@ -90,7 +90,7 @@ func TestRemediationEnvPairingIsStepOneAndSufficient(t *testing.T) {
 		t.Errorf("the discovered pair must be applied exactly once, got %d", len(f.applied))
 	}
 	if len(f.commands) != 0 {
-		t.Errorf("no external commands may run when the env pairing alone fixes the host (injection alone was NEVER a durable fix on chaoss.tv — pairing is primary), got %v", f.commands)
+		t.Errorf("no external commands may run when the env pairing alone fixes the host (injection alone was NEVER a durable fix in production — pairing is primary), got %v", f.commands)
 	}
 }
 

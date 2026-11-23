@@ -116,7 +116,7 @@ func TestPoolDemandIsTheSumOfEveryConsumer(t *testing.T) {
 		t.Fatalf("perSlotConnections = %d, want 5: three staged phases + heartbeat + long-jobs watchdog", perSlotConnections)
 	}
 	if demand <= 120+15 {
-		t.Fatalf("the kate configuration's demand (%d) must exceed the old workers+15 literal (135) — that gap is the incident", demand)
+		t.Fatalf("the production configuration's demand (%d) must exceed the old workers+15 literal (135) — that gap is the incident", demand)
 	}
 	if len(attrs) == 0 || attrs[0] != "pool_demand" || attrs[1] != demand {
 		t.Fatalf("attributes must lead with the effective demand, got %v", attrs[:2])

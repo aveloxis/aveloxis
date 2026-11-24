@@ -457,7 +457,8 @@ func installScancode(ctx context.Context) error {
 // path (v0.27.6 unification). Semantics:
 //
 //   - alreadyInstalled == false → `pipx install scancode-toolkit-mini`
-//     then inject typecode-libmagic (pip --user remains the fresh-
+//     then hold pluggy at scancodePluggyPin (0.29.230, both branches and
+//     the pip fallback) and inject typecode-libmagic (pip --user remains the fresh-
 //     install-only fallback for hosts without pipx);
 //   - alreadyInstalled == true  → `pipx upgrade scancode-toolkit-mini`
 //     then ALWAYS re-inject (pipx upgrade may rebuild the venv,
@@ -522,6 +523,20 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 	return err
 }
 
+// scancodePluggyPin is the bound every scancode install holds pluggy to
+// (0.29.230). scancode-toolkit-mini 32.5.0 (with plugincode 32.0.0, the newest
+// of each on 2026-11-24) does not start with pluggy 1.7.0: every command,
+// `scancode --version` included, ends in "ValueError: did not find any
+// 'pre_scan' hooks". Tried on Python 3.12 and 3.15: 1.7.0 fails on both and
+// 1.6.0 starts on both, so the cause is pluggy's version, not Python's.
+// scancode's own requirement has no upper bound, so a new venv gets 1.7.0;
+// the weekly tools job had failed on it since 2026-10-19. Remove the bound
+// when a scancode release starts with the newest pluggy (run
+// TestLiveScancodeOutputShape against an unpinned install to find out;
+// TestScancodePluggyPinIsTheSameEverywhere holds the workflow and the docs
+// to this value).
+const scancodePluggyPin = "pluggy<1.7"
+
 // errNoPip is pipInstallScancodeFresh's answer when neither pip3 nor pip is
 // on PATH — an absence, told apart from a pip that ran and failed.
 var errNoPip = errors.New("neither pip3 nor pip is on PATH")
@@ -540,6 +555,15 @@ func pipxUpgradeScancode(ctx context.Context, pipxPath string) error {
 		return fmt.Errorf("pipx upgrade %s: %w (if scancode was installed via `pip install --user` rather than pipx, "+
 			"uninstall it and run `aveloxis install-tools` to move it into a pipx venv)",
 			scancodePipxPackage, err)
+	}
+	// 0.29.230: hold pluggy below the version scancode cannot start with
+	// (scancodePluggyPin). Not fatal, as the injection below is not: a
+	// failure here on the fresh branch would otherwise fall through to pip
+	// and leave a second scancode; the message says what will not work.
+	if err := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage); err != nil {
+		fmt.Printf("warning: holding pluggy at %s failed: %v\n", scancodePluggyPin, err)
+		fmt.Println("  scancode does NOT start with pluggy 1.7.0 (ValueError: did not find any 'pre_scan' hooks); check with: scancode --version")
+		fmt.Printf("  to retry: pipx inject --force %s '%s'\n", scancodePipxPackage, scancodePluggyPin)
 	}
 	if err := injectTypecodeLibmagic(ctx, pipxPath, scancodePipxPackage); err != nil {
 		fmt.Printf("warning: typecode-libmagic re-injection failed: %v\n", err)
@@ -565,6 +589,15 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 	cmd.Stderr = os.Stderr
 	if err := runToolCommand(ctx, cmd); err != nil {
 		return err
+	}
+	// 0.29.230: hold pluggy below the version scancode cannot start with
+	// (scancodePluggyPin). Not fatal, as the injection below is not: a
+	// failure here on the fresh branch would otherwise fall through to pip
+	// and leave a second scancode; the message says what will not work.
+	if err := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage); err != nil {
+		fmt.Printf("warning: holding pluggy at %s failed: %v\n", scancodePluggyPin, err)
+		fmt.Println("  scancode does NOT start with pluggy 1.7.0 (ValueError: did not find any 'pre_scan' hooks); check with: scancode --version")
+		fmt.Printf("  to retry: pipx inject --force %s '%s'\n", scancodePipxPackage, scancodePluggyPin)
 	}
 	// v0.23.6: inject typecode-libmagic into the freshly-built
 	// venv. Without this, every scancode run emits the
@@ -599,7 +632,9 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 			break // the bound expired on the previous pip: its error says so
 		}
 		fmt.Printf("Installing %s via %s --user...\n", scancodePipxPackage, pip)
-		cmd := exec.CommandContext(ctx, pipPath, "install", "--user", scancodePipxPackage)
+		// One pip command for scancode and the pluggy bound (0.29.230), so
+		// pip resolves them together.
+		cmd := exec.CommandContext(ctx, pipPath, "install", "--user", scancodePipxPackage, scancodePluggyPin)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err = runToolCommand(ctx, cmd)
@@ -623,6 +658,20 @@ func pipInstallScancodeFresh(ctx context.Context) error {
 		return fmt.Errorf("scancode install via pip: %w", err)
 	}
 	return errNoPip
+}
+
+// pinScancodePluggy runs `pipx inject --force <pkg> 'pluggy<1.7'`
+// (scancodePluggyPin has the reason). --force because pluggy is already in
+// the venv as scancode's own dependency, and without it pipx refuses
+// ("already seems to be injected"). pipx records the injected requirement
+// with its bound, so `pipx upgrade` and a venv rebuilt by `pipx reinstall`
+// keep it (tried with pipx 1.18.16: 1.6.0 after each). Safe to repeat.
+func pinScancodePluggy(ctx context.Context, pipxPath, scancodePkg string) error {
+	fmt.Printf("Holding pluggy at %s in the %s venv...\n", scancodePluggyPin, scancodePkg)
+	cmd := exec.CommandContext(ctx, pipxPath, "inject", "--force", scancodePkg, scancodePluggyPin)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return runToolCommand(ctx, cmd)
 }
 
 // injectTypecodeLibmagic (v0.23.6) runs `pipx inject scancode-toolkit-mini

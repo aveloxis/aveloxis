@@ -187,6 +187,11 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q pipx libmagic1
           pipx install scancode-toolkit-mini
+          # 0.29.230: what the binary's install runs since then
+          # (collector.scancodePluggyPin has the reason; a test keeps
+          # this line on the same bound). scancode 32.5.0 does not
+          # start with pluggy 1.7.0, which a new venv gets.
+          pipx inject --force scancode-toolkit-mini 'pluggy<1.7'
           pipx inject scancode-toolkit-mini typecode-libmagic
           go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

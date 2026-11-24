@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // v0.27.6 — ensureScancodeCurrent unification.
@@ -76,6 +78,9 @@ func TestEnsureScancodeCurrentInstalledUpgradesAndReinjects(t *testing.T) {
 	if !strings.Contains(calls, "inject "+scancodePipxPackage+" typecode-libmagic") {
 		t.Errorf("installed branch must ALWAYS re-inject typecode-libmagic after upgrade (pipx upgrade can rebuild the venv), got:\n%s", calls)
 	}
+	if !strings.Contains(calls, "inject --force "+scancodePipxPackage+" "+scancodePluggyPin) {
+		t.Errorf("installed branch must hold pluggy at %s after the upgrade (0.29.230: scancode does not start with pluggy 1.7.0), got:\n%s", scancodePluggyPin, calls)
+	}
 	// The two negative halves of the regression:
 	if strings.Contains(calls, "install "+scancodePipxPackage) {
 		t.Errorf("NEGATIVE TRIPWIRE: the installed branch must never run a bare `pipx install` — that's the exact call that failed monthly and cascaded into the shadow pip install. Got:\n%s", calls)
@@ -116,6 +121,43 @@ func TestEnsureScancodeCurrentFreshInstallsAndInjects(t *testing.T) {
 	}
 	if !strings.Contains(calls, "inject "+scancodePipxPackage+" typecode-libmagic") {
 		t.Errorf("fresh branch must inject typecode-libmagic after install, got:\n%s", calls)
+	}
+	if !strings.Contains(calls, "inject --force "+scancodePipxPackage+" "+scancodePluggyPin) {
+		t.Errorf("fresh branch must hold pluggy at %s after the install: a new venv gets pluggy 1.7.0 and scancode does not start, got:\n%s", scancodePluggyPin, calls)
+	}
+}
+
+// 0.29.230: the pip fallback (a host without pipx) installs scancode and the
+// pluggy bound in ONE pip command, so pip resolves them together.
+func TestEnsureScancodeCurrentPipFallbackCarriesThePluggyPin(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "calls.log")
+	binDir := t.TempDir() // no pipx here at all
+	pipRecorderStub(t, binDir, logFile)
+	t.Setenv("PATH", binDir+":/bin:/usr/bin")
+	t.Setenv("HOME", t.TempDir())
+
+	if err := EnsureScancodeCurrent(context.Background(), false); err != nil {
+		t.Fatalf("fresh install through pip must succeed, got %v", err)
+	}
+	got, _ := os.ReadFile(logFile)
+	if want := "PIP install --user " + scancodePipxPackage + " " + scancodePluggyPin; !strings.Contains(string(got), want) {
+		t.Errorf("the pip fallback must run %q, got:\n%s", want, got)
+	}
+}
+
+// The weekly tools job and the README install the way the binary does. A
+// workflow without the pin fails every week on a fault production's install
+// no longer has; a workflow with a pin the binary lacks passes while a new
+// host's scancode cannot start (the state from 2026-10-19 to 0.29.230).
+func TestScancodePluggyPinIsTheSameEverywhere(t *testing.T) {
+	want := "pipx inject --force " + scancodePipxPackage + " '" + scancodePluggyPin + "'"
+	for _, rel := range []string{"README.md", ".github/workflows/network-canary.yml", "docs/guide/commands.md"} {
+		if !strings.Contains(srctest.Read(t, rel), want) {
+			t.Errorf("%s must carry the command the binary runs: %s", rel, want)
+		}
+	}
+	if scancodePluggyPin != "pluggy<1.7" {
+		t.Errorf("scancodePluggyPin = %q: moving it needs the live canary (TestLiveScancodeOutputShape) run against the new bound first", scancodePluggyPin)
 	}
 }
 

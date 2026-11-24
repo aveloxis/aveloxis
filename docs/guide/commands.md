@@ -728,7 +728,7 @@ Installs optional analysis tools.
 aveloxis install-tools
 ```
 
-Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
+Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin, and since 0.29.230 holds one of scancode's dependencies below the version it cannot start with: `pipx inject --force scancode-toolkit-mini 'pluggy<1.7'`). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
@@ -744,7 +744,8 @@ the install path to pull updates: `go install` of the one pinned scc
 version Aveloxis validates (since 0.29.144; see the analysis architecture
 page), a fresh
 release tarball for scorecard, and `pipx upgrade` for scancode (preserving
-venv customizations) plus a `typecode-libmagic` re-injection.
+venv customizations) plus a `typecode-libmagic` re-injection and, since
+0.29.230, the same `pluggy<1.7` bound `install-tools` applies.
 
 ```bash
 aveloxis upgrade-tools

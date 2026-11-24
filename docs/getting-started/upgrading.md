@@ -166,6 +166,14 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.230 changes how scancode is installed. No schema change and no configuration change.** scancode-toolkit-mini 32.5.0 does not start with version 1.7.0 of one of its dependencies, pluggy: every command, `scancode --version` included, ends in `ValueError: did not find any 'pre_scan' hooks`. scancode's own requirement has no upper bound, so a scancode environment built since pluggy 1.7.0 was published gets it; one built earlier keeps its older pluggy and works. `aveloxis install-tools`, `aveloxis upgrade-tools` and the monthly tool update now hold pluggy below 1.7. On each host that runs the scancode worker, as the user `serve` runs as:
+
+```bash
+scancode --version
+```
+
+If it prints a version, nothing is needed now. If it prints that error, stop the processes, run `aveloxis upgrade-tools`, and check again. By hand the command is `pipx inject --force scancode-toolkit-mini 'pluggy<1.7'`.
+
 **0.29.229 changes comments, tests and the ignore file. No schema change, no configuration change and no change in the binary's behaviour.** The last mentions of one deployment's host and database names are replaced with generic wording. Three of them were comments in the 8Knot view file; no view definition changed, so no view needs a rebuild and `aveloxis migrate --skip-views` is enough. If your checkout holds local configuration or log files, run `git status` once after the pull: the ignore file no longer lists `aveloxis.<host>.json` names one by one (every `*.json` outside the listed test data was already ignored) and now ignores any directory ending in `-logs/` and any `scancode-logs-*/`. Two test data files were renamed (`cmd/aveloxis/testdata/shape-fleet-20261108.json`, `settings-fleet-20261108.json`).
 
 **0.29.228 changes one script, tests and documentation. No schema change, no configuration change and no change in the binary's behaviour.** `scripts/enable_perf_telemetry.sql` now refuses to run without a database name, and refuses an empty one, before it changes any setting. In 0.29.227 the documented command, run with `DBNAME` unset, applied the three settings and created `pg_stat_statements` in the role's default database without a message. If you ran the script from 0.29.227, check that the extension is in the database `serve` uses:

@@ -38,11 +38,7 @@ func TestWelcomeMailFollowsTheForgeIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	clean := func() {
-		if _, err := store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name LIKE '\_avwel\_%'`); err != nil {
-			t.Logf("cleanup: %v", err)
-		}
-	}
+	clean := func() { deleteWelcomeTestUsers(t, store) }
 	clean()
 	t.Cleanup(clean)
 
@@ -118,11 +114,7 @@ func TestWebStartStampsLegacyGitLabAccounts(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 	const login = "_avwel_legacy_gl"
-	clean := func() {
-		if _, err := store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login); err != nil {
-			t.Logf("cleanup: %v", err)
-		}
-	}
+	clean := func() { deleteWelcomeTestUsers(t, store) }
 	clean()
 	t.Cleanup(clean)
 	if _, err := store.Pool().Exec(ctx, `INSERT INTO aveloxis_ops.users (login_name, oauth_provider, gl_user_id) VALUES ($1, 'gitlab', 900901)`, login); err != nil {
@@ -155,11 +147,7 @@ func TestGitLabCallbackRecordsItsInstance(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 	const login = "_avwel_glhost"
-	clean := func() {
-		if _, err := store.Pool().Exec(ctx, `DELETE FROM aveloxis_ops.users WHERE login_name = $1`, login); err != nil {
-			t.Logf("cleanup: %v", err)
-		}
-	}
+	clean := func() { deleteWelcomeTestUsers(t, store) }
 	clean()
 	t.Cleanup(clean)
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,5 +211,30 @@ func TestWebStartStampStopIsNotAFailure(t *testing.T) {
 	s.StampLegacyGitLabAccounts(ctx)
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a stop during the start-up stamp was logged as a failure:\n%s", logs.String())
+	}
+}
+
+// deleteWelcomeTestUsers removes every account this file's tests create
+// (login names starting "_avwel_"; none of them runs in parallel), sessions
+// first. 0.29.232: the tests deleted the users alone and only logged the
+// answer. A sign-in writes a user_session_tokens row and that foreign key
+// does not cascade, so the delete was refused (SQLSTATE 23503), the account
+// stayed, and the next run against the same database met a returning user:
+// no welcome mail, and a 500 from the GitLab callback, whose fake forge has
+// a new host every run. One run on a new database passed; the Nightly job's
+// -count=8 failed seven of eight, on every run from 2026-10-26. A refused
+// cleanup fails the test now.
+func deleteWelcomeTestUsers(t *testing.T, store *db.PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	const mine = `SELECT user_id FROM aveloxis_ops.users WHERE login_name LIKE '\_avwel\_%'`
+	for _, q := range []string{
+		`DELETE FROM aveloxis_ops.user_session_tokens WHERE user_id IN (` + mine + `)`,
+		`DELETE FROM aveloxis_ops.users WHERE user_id IN (` + mine + `)`,
+	} {
+		if _, err := store.Pool().Exec(ctx, q); err != nil {
+			t.Errorf("cleanup of the _avwel_ test accounts failed, so the next run would meet them: %v", err)
+			return
+		}
 	}
 }

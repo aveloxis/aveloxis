@@ -166,6 +166,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.233 changes one test. No schema change, no configuration change and no change in the binary's behaviour.** The test that reads how a contributor's canonical e-mail is updated now requires the statement's whole expression, and its failure message names that expression. Before, it accepted any expression and its message named a different one. The statement is unchanged. Nothing to do on a host.
+
 **0.29.232 changes tests only. No schema change, no configuration change and no change in the binary's behaviour.** Three sign-in tests now remove their test accounts' sessions before the accounts and fail when that clean-up is refused. Before, the refusal was only logged, so a second run against the same database met the first run's accounts and failed; the Nightly stress job, which repeats each test eight times, had failed on it since 2026-10-26. Nothing to do on a host.
 
 **0.29.231 changes one CI workflow and its tests. No schema change, no configuration change and no change in the binary's behaviour.** The weekly Network Canaries `tools` job now installs scc, scorecard and scancode with `aveloxis install-tools` from a binary built from its checkout, the way a host is set up. Before, it carried its own install commands, a copy that could pass or fail apart from the binary's install. Nothing to do on a host.

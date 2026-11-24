@@ -177,3 +177,120 @@ func TestOfficialSBOMValidatorsAreScheduled(t *testing.T) {
 		t.Errorf("sbom-validators must install both validators (%v) and run the test (%v)", installed, ran)
 	}
 }
+
+// TestCanaryToolsJobInstallsThroughTheBinary — 0.29.231 (operator,
+// 2026-11-24: "have the canary install through aveloxis install-tools as
+// that is how any operator is going to do it"). Until then the weekly tools
+// job carried its own pipx and go install lines, so it proved a copy of the
+// install and never the binary's: the copy stayed unpinned for five weeks
+// (red since 2026-10-19) and, once pinned by hand, would have stayed green
+// while install-tools broke. The workflow is PARSED, as the SBOM job's test
+// does, and comment lines are dropped before any match. Asserted:
+//   - the tools job exists, with no needs, if, continue-on-error or defaults;
+//   - one step builds the binary from the checkout and runs install-tools,
+//     each as a whole line, so no "|| true" or pipe can swallow a failure
+//     (install-tools exits non-zero on a failed or off-PATH tool);
+//   - no step of the job installs a tool by any other command;
+//   - the canary step still gets AVELOXIS_TEST_TOOLS and names the four
+//     live tests (taken from the functions, so a rename breaks this build).
+func TestCanaryToolsJobInstallsThroughTheBinary(t *testing.T) {
+	var wf struct {
+		Jobs map[string]struct {
+			Needs           any `yaml:"needs"`
+			If              any `yaml:"if"`
+			ContinueOnError any `yaml:"continue-on-error"`
+			Defaults        any `yaml:"defaults"`
+			Steps           []struct {
+				Name             string            `yaml:"name"`
+				If               any               `yaml:"if"`
+				ContinueOnError  any               `yaml:"continue-on-error"`
+				Shell            any               `yaml:"shell"`
+				WorkingDirectory any               `yaml:"working-directory"`
+				Env              map[string]string `yaml:"env"`
+				Run              string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(srctest.Read(t, ".github/workflows/network-canary.yml")), &wf); err != nil {
+		t.Fatalf("network-canary.yml does not parse: %v", err)
+	}
+	job, ok := wf.Jobs["tools"]
+	if !ok {
+		t.Fatal("network-canary.yml must keep the tools job")
+	}
+	if job.Needs != nil || job.If != nil || job.ContinueOnError != nil || job.Defaults != nil {
+		t.Errorf("the tools job must have no needs, if, continue-on-error or defaults (needs=%v if=%v continue-on-error=%v defaults=%v)", job.Needs, job.If, job.ContinueOnError, job.Defaults)
+	}
+	// codeLines is a run block without its comment and blank lines.
+	codeLines := func(run string) []string {
+		var out []string
+		for _, line := range strings.Split(run, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			out = append(out, line)
+		}
+		return out
+	}
+	const (
+		buildLine   = `go build -o "$RUNNER_TEMP/aveloxis" ./cmd/aveloxis`
+		installLine = `"$RUNNER_TEMP/aveloxis" install-tools`
+	)
+	// Any of these in a step is a second install path beside the binary's.
+	otherInstalls := []string{"pipx install", "pipx inject", "pip install", "pip3 install", "go install", "apt-get install", "brew install"}
+	liveTests := []string{}
+	for _, fn := range []any{TestLiveScancodeOutputShape, TestLiveSCCOutputShape, TestLiveSCCStreamingDecodeMatchesUnmarshal, TestLiveScorecardOutputShape} {
+		name := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+		liveTests = append(liveTests, name[strings.LastIndex(name, ".")+1:])
+	}
+	built, installed := 0, 0
+	ranBy := map[string]bool{}
+	steps := 0
+	for _, st := range job.Steps {
+		if st.If != nil || st.ContinueOnError != nil || st.Shell != nil || st.WorkingDirectory != nil {
+			t.Errorf("step %q must have no if, continue-on-error, shell or working-directory", st.Name)
+		}
+		lines := codeLines(st.Run)
+		steps += len(lines)
+		for _, line := range lines {
+			switch line {
+			case buildLine:
+				built++
+			case installLine:
+				installed++
+			}
+			for _, other := range otherInstalls {
+				if strings.Contains(line, other) {
+					t.Errorf("step %q installs a tool beside the binary (%q): the job must install only through `aveloxis install-tools`", st.Name, line)
+				}
+			}
+			if strings.Contains(line, "install-tools") && line != installLine {
+				t.Errorf("step %q must run install-tools as the whole line %q, so nothing swallows its exit status: %q", st.Name, installLine, line)
+			}
+			for _, name := range liveTests {
+				if strings.Contains(line, name) {
+					ranBy[name] = true
+					if st.Env["AVELOXIS_TEST_TOOLS"] != "1" {
+						t.Errorf("step %q runs %s without AVELOXIS_TEST_TOOLS=1 in its env: the test would skip", st.Name, name)
+					}
+					// " | " and not a bare "|": the -run pattern is an alternation.
+					if strings.Contains(line, "||") || strings.Contains(line, " | ") || strings.Contains(line, "&&") || strings.Contains(line, ";") {
+						t.Errorf("step %q must not pipe or guard the %s run: %q", st.Name, name, line)
+					}
+				}
+			}
+		}
+	}
+	if steps == 0 {
+		t.Fatal("the tools job has no run lines: nothing was examined")
+	}
+	if built != 1 || installed != 1 {
+		t.Errorf("the tools job must build the binary from the checkout once (%d) and run install-tools once (%d)", built, installed)
+	}
+	for _, name := range liveTests {
+		if !ranBy[name] {
+			t.Errorf("the tools job must run %s", name)
+		}
+	}
+}

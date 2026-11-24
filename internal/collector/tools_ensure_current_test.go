@@ -145,13 +145,16 @@ func TestEnsureScancodeCurrentPipFallbackCarriesThePluggyPin(t *testing.T) {
 	}
 }
 
-// The weekly tools job and the README install the way the binary does. A
-// workflow without the pin fails every week on a fault production's install
-// no longer has; a workflow with a pin the binary lacks passes while a new
-// host's scancode cannot start (the state from 2026-10-19 to 0.29.230).
+// The README and the commands guide give the by-hand command the binary
+// runs. Until 0.29.231 the weekly tools job was held here too, because it
+// carried its own copy of the install (unpinned and red from 2026-10-19 to
+// 0.29.230 while the binary's install had the same fault unseen).
 func TestScancodePluggyPinIsTheSameEverywhere(t *testing.T) {
 	want := "pipx inject --force " + scancodePipxPackage + " '" + scancodePluggyPin + "'"
-	for _, rel := range []string{"README.md", ".github/workflows/network-canary.yml", "docs/guide/commands.md"} {
+	// The weekly tools job is not in this list since 0.29.231: it installs
+	// through `aveloxis install-tools`, so it runs the constant itself
+	// (TestCanaryToolsJobInstallsThroughTheBinary forbids a line of its own).
+	for _, rel := range []string{"README.md", "docs/guide/commands.md"} {
 		if !strings.Contains(srctest.Read(t, rel), want) {
 			t.Errorf("%s must carry the command the binary runs: %s", rel, want)
 		}

@@ -168,13 +168,19 @@ jobs:
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade
   # + self-authored parse fixtures + zero-findings-without-error). The
-  # job installs what production's monthly updater installs: the
-  # CURRENT latest scancode and the PINNED scc (0.29.144,
-  # collector.SCCInstallCmd; TestSCCPinIsTheSameEverywhere keeps this
-  # file on the same pin), and runs the installed binaries through our
-  # REAL parse structs. A new tool version failing the allowlist is the
-  # alert doing its job: eyeball the run, extend the allowlist in
-  # tool_output_canary_test.go (for scc, move the pin with it).
+  # job installs the tools the way an operator does, with
+  # `aveloxis install-tools` from a binary built from this checkout
+  # (0.29.231; until then it carried its own pipx and go install lines,
+  # a copy that stayed unpinned and red from 2026-10-19 to 0.29.230
+  # and could not show a fault in the binary's install). So it gets
+  # what a new host gets: the PINNED scc (collector.SCCInstallCmd), the
+  # CURRENT latest scorecard and scancode, scancode with pluggy held at
+  # collector.scancodePluggyPin. It then runs the installed binaries
+  # through our REAL parse structs. A new tool version failing the
+  # allowlist is the alert doing its job: eyeball the run, extend the
+  # allowlist in tool_output_canary_test.go (for scc, move the pin with
+  # it). TestCanaryToolsJobInstallsThroughTheBinary holds this job to
+  # the one install command.
   tools:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -183,29 +189,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install analysis tools (as production's updater does - scc pinned, the others latest)
+      - name: Install the analysis tools as an operator does (aveloxis install-tools)
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q pipx libmagic1
-          pipx install scancode-toolkit-mini
-          # 0.29.230: what the binary's install runs since then
-          # (collector.scancodePluggyPin has the reason; a test keeps
-          # this line on the same bound). scancode 32.5.0 does not
-          # start with pluggy 1.7.0, which a new venv gets.
-          pipx inject --force scancode-toolkit-mini 'pluggy<1.7'
-          pipx inject scancode-toolkit-mini typecode-libmagic
-          go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          # install-tools exits non-zero when a tool fails to install or
+          # lands off PATH, so each line stands alone: nothing may
+          # swallow that status. The runner image carries pipx and
+          # libmagic, the two things install-tools expects of a host.
+          go build -o "$RUNNER_TEMP/aveloxis" ./cmd/aveloxis
+          "$RUNNER_TEMP/aveloxis" install-tools
       - name: Run tool-output canaries
         env:
           AVELOXIS_TEST_TOOLS: "1"
         run: |
           go test ./internal/collector/ -run TestLiveScancodeOutputShape -count=1 -v -timeout 15m
           go test ./internal/collector/ -run 'TestLiveSCCOutputShape|TestLiveSCCStreamingDecodeMatchesUnmarshal' -count=1 -v
-          # scorecard's release-tarball install is exercised by
-          # `aveloxis install-tools` in production; here the canary
-          # skips if absent — the scancode + scc coverage is the
-          # automatic-upgrade risk this job exists for.
+          # 0.29.231: install-tools installs scorecard too (its newest
+          # release tarball), so this canary runs here now; before, it
+          # skipped because the job never installed scorecard.
           go test ./internal/collector/ -run TestLiveScorecardOutputShape -count=1 -v
 
   # v0.29.67 (worklist 53): the SPDX project's validator (pyspdxtools) and

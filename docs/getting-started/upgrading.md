@@ -166,6 +166,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.231 changes one CI workflow and its tests. No schema change, no configuration change and no change in the binary's behaviour.** The weekly Network Canaries `tools` job now installs scc, scorecard and scancode with `aveloxis install-tools` from a binary built from its checkout, the way a host is set up. Before, it carried its own install commands, a copy that could pass or fail apart from the binary's install. Nothing to do on a host.
+
 **0.29.230 changes how scancode is installed. No schema change and no configuration change.** scancode-toolkit-mini 32.5.0 does not start with version 1.7.0 of one of its dependencies, pluggy: every command, `scancode --version` included, ends in `ValueError: did not find any 'pre_scan' hooks`. scancode's own requirement has no upper bound, so a scancode environment built since pluggy 1.7.0 was published gets it; one built earlier keeps its older pluggy and works. `aveloxis install-tools`, `aveloxis upgrade-tools` and the monthly tool update now hold pluggy below 1.7. On each host that runs the scancode worker, as the user `serve` runs as:
 
 ```bash

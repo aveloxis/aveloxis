@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.230 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.231 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=b1b69258"></script>
+      <script src="../_static/documentation_options.js?v=15ce1641"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2009,6 +2009,7 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.231 changes one CI workflow and its tests. No schema change, no configuration change and no change in the binary’s behaviour.</strong> The weekly Network Canaries <code class="docutils literal notranslate"><span class="pre">tools</span></code> job now installs scc, scorecard and scancode with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code> from a binary built from its checkout, the way a host is set up. Before, it carried its own install commands, a copy that could pass or fail apart from the binary’s install. Nothing to do on a host.</p>
 <p><strong>0.29.230 changes how scancode is installed. No schema change and no configuration change.</strong> scancode-toolkit-mini 32.5.0 does not start with version 1.7.0 of one of its dependencies, pluggy: every command, <code class="docutils literal notranslate"><span class="pre">scancode</span> <span class="pre">--version</span></code> included, ends in <code class="docutils literal notranslate"><span class="pre">ValueError:</span> <span class="pre">did</span> <span class="pre">not</span> <span class="pre">find</span> <span class="pre">any</span> <span class="pre">'pre_scan'</span> <span class="pre">hooks</span></code>. scancode’s own requirement has no upper bound, so a scancode environment built since pluggy 1.7.0 was published gets it; one built earlier keeps its older pluggy and works. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">upgrade-tools</span></code> and the monthly tool update now hold pluggy below 1.7. On each host that runs the scancode worker, as the user <code class="docutils literal notranslate"><span class="pre">serve</span></code> runs as:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scancode<span class="w"> </span>--version
 </pre></div>

@@ -379,12 +379,15 @@ func TestSCCInstallIsPinnedToAValidatedVersion(t *testing.T) {
 	}
 }
 
-// The README and the weekly canary job install the same pin: the canary
-// validates what the fleet runs, and an operator copying the README gets it.
+// The README and the docs name the pin the binary installs, so an operator
+// copying either gets it. The weekly canary job validates what the fleet runs
+// by installing through the binary (0.29.231), no longer by a copied line.
 func TestSCCPinIsTheSameEverywhere(t *testing.T) {
 	root := srctest.Root(t)
-	for _, rel := range []string{"README.md", filepath.Join(".github", "workflows", "network-canary.yml"),
-		filepath.Join("docs", "architecture", "analysis.md")} {
+	// The weekly tools job installs through `aveloxis install-tools` since
+	// 0.29.231, so it runs SCCInstallCmd itself and carries no line of its
+	// own (TestCanaryToolsJobInstallsThroughTheBinary).
+	for _, rel := range []string{"README.md", filepath.Join("docs", "architecture", "analysis.md")} {
 		b, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatal(err)

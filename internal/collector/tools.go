@@ -45,8 +45,15 @@ type ExternalTool struct {
 	// what the install promised; its error is the install's. Read only
 	// for a command install with a BinDir.
 	VerifyInstalled func(ctx context.Context, path string) error
-	Description     string // what the tool does
-	Purpose         string // which collection phase uses it
+	// CheckStarts asks the installed binary at path (the one on PATH)
+	// whether it runs at all. install-tools calls it for a tool it finds
+	// installed and for one it has just installed; its error counts the
+	// tool as failed. Set for scancode only (0.29.234): scc's
+	// VerifyInstalled is not this, because install-tools leaves an
+	// installed scc of another version alone on purpose.
+	CheckStarts func(ctx context.Context, path string) error
+	Description string // what the tool does
+	Purpose     string // which collection phase uses it
 }
 
 // The one scc every host installs: install-tools, upgrade-tools and the
@@ -99,8 +106,9 @@ func ExternalTools() []ExternalTool {
 		{
 			Name:        "scancode",
 			CheckBinary: "scancode",
-			InstallCmd:  "pipx install scancode-toolkit-mini",
+			InstallCmd:  scancodeByHandInstall,
 			InstallFunc: installScancode,
+			CheckStarts: checkScancodeStarts,
 			Description: "ScanCode Toolkit — detects licenses, copyrights, and packages per file with precise line-level attribution",
 			Purpose:     "Phase 4c (Analysis): populates aveloxis_scan.scancode_file_results with per-file license and copyright detections (runs every 30 days per repo)",
 		},
@@ -460,6 +468,8 @@ func installScancode(ctx context.Context) error {
 //     then hold pluggy at scancodePluggyPin (0.29.230, both branches and
 //     the pip fallback) and inject typecode-libmagic (pip --user remains the fresh-
 //     install-only fallback for hosts without pipx);
+//     a failed hold is errScancodePinFailed on both branches (0.29.234),
+//     returned after the injection and never followed by pip;
 //   - alreadyInstalled == true  → `pipx upgrade scancode-toolkit-mini`
 //     then ALWAYS re-inject (pipx upgrade may rebuild the venv,
 //     dropping a prior injection). There is NO pip fallback and NO
@@ -485,9 +495,13 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 
 	if alreadyInstalled {
 		if pipxErr != nil {
+			// The host this reaches is one where pip installed scancode
+			// (the fresh install's fallback), so the recipe is pip's
+			// (round 19; tried with real pip over an install that had
+			// pluggy 1.7.0: it ends at 1.6.0 and scancode starts).
 			return fmt.Errorf("scancode is installed but pipx is not on PATH — cannot upgrade in place. "+
-				"Install pipx, or upgrade manually: pipx upgrade %s && pipx inject %s typecode-libmagic",
-				scancodePipxPackage, scancodePipxPackage)
+				"If pipx installed it, put pipx on PATH and run this again. "+
+				"If pip installed it, upgrade it by hand: %s", scancodePipByHandUpgrade)
 		}
 		return pipxUpgradeScancode(ctx, pipxPath)
 	}
@@ -501,6 +515,14 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 		err := pipxFreshInstallScancode(ctx, pipxPath)
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, errScancodePinFailed) {
+			// pipx installed scancode; only the hold failed. pip would
+			// add a second scancode beside it. Ahead of the context
+			// check (round 19): a hold that ran out of time is still
+			// the hold's failure, and joining the deadline onto it made
+			// install-tools print "timed out" without the retry command.
+			return err
 		}
 		if ctx.Err() != nil {
 			return fmt.Errorf("scancode install via pipx: %w", errors.Join(err, ctx.Err()))
@@ -518,7 +540,7 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 	case pipxFail != nil:
 		return fmt.Errorf("scancode install failed: pipx: %w; %w", pipxFail, err)
 	case errors.Is(err, errNoPip):
-		return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: pipx install %s", scancodePipxPackage)
+		return fmt.Errorf("scancode install failed: neither pipx nor pip found. Install Python 3.10+ and run: %s", scancodeByHandInstall)
 	}
 	return err
 }
@@ -533,9 +555,32 @@ func ensureScancodeCurrent(ctx context.Context, alreadyInstalled bool) error {
 // the weekly tools job had failed on it since 2026-10-19. Remove the bound
 // when a scancode release starts with the newest pluggy (run
 // TestLiveScancodeOutputShape against an unpinned install to find out;
-// TestScancodePluggyPinIsTheSameEverywhere holds the workflow and the docs
-// to this value).
+// TestScancodePluggyPinIsTheSameEverywhere holds the README and the docs
+// to this value; the weekly tools job installs through the binary, so it
+// runs the constant itself).
 const scancodePluggyPin = "pluggy<1.7"
+
+// The by-hand commands every message of this file prints (0.29.234, review
+// round 18: three messages still gave a bare `pipx install`, which builds a
+// scancode that does not start). scancodePluggyHoldCmd is what
+// pinScancodePluggy runs; scancodeByHandInstall is the manual install.
+const (
+	scancodePluggyHoldCmd = "pipx inject --force " + scancodePipxPackage + " '" + scancodePluggyPin + "'"
+	scancodeByHandInstall = "pipx install " + scancodePipxPackage + " && " + scancodePluggyHoldCmd
+	// scancodePipByHandUpgrade is the recipe for a scancode pip installed
+	// (a host without pipx): the fallback's own command with --upgrade.
+	scancodePipByHandUpgrade = "pip3 install --user --upgrade " + scancodePipxPackage + " '" + scancodePluggyPin + "'"
+)
+
+// errScancodePinFailed is the pipx branches' answer when scancode was
+// installed or upgraded but the pluggy hold (scancodePluggyPin) failed
+// (0.29.234, review round 18). Until then a failed hold was a printed
+// warning and a nil error: install-tools printed "scancode installed" and
+// exited 0 over a scancode that cannot start, against its own contract
+// (installToolsReport), and the monthly update counted the tool as updated.
+// ensureScancodeCurrent passes it up without trying pip, which would leave a
+// second scancode beside the pipx one.
+var errScancodePinFailed = errors.New("scancode is installed, but holding pluggy at " + scancodePluggyPin + " failed")
 
 // errNoPip is pipInstallScancodeFresh's answer when neither pip3 nor pip is
 // on PATH — an absence, told apart from a pip that ran and failed.
@@ -557,20 +602,75 @@ func pipxUpgradeScancode(ctx context.Context, pipxPath string) error {
 			scancodePipxPackage, err)
 	}
 	// 0.29.230: hold pluggy below the version scancode cannot start with
-	// (scancodePluggyPin). Not fatal, as the injection below is not: a
-	// failure here on the fresh branch would otherwise fall through to pip
-	// and leave a second scancode; the message says what will not work.
-	if err := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage); err != nil {
-		fmt.Printf("warning: holding pluggy at %s failed: %v\n", scancodePluggyPin, err)
-		fmt.Println("  scancode does NOT start with pluggy 1.7.0 (ValueError: did not find any 'pre_scan' hooks); check with: scancode --version")
-		fmt.Printf("  to retry: pipx inject --force %s '%s'\n", scancodePipxPackage, scancodePluggyPin)
-	}
+	// (scancodePluggyPin). A failed hold is reported after the injection
+	// below is tried (0.29.234, scancodePinFailure). When the hold failed
+	// because the context ended, the injection does not run either.
+	pinErr := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage)
 	if err := injectTypecodeLibmagic(ctx, pipxPath, scancodePipxPackage); err != nil {
 		fmt.Printf("warning: typecode-libmagic re-injection failed: %v\n", err)
 		fmt.Println("  scancode upgrade succeeded; the libmagic UserWarning may continue to print.")
 		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
 	}
-	return nil
+	return scancodePinFailure(pinErr)
+}
+
+// checkScancodeStarts is scancode's CheckStarts: `scancode --version` must
+// exit 0. 0.29.234 (operator, 2026-11-25). A scancode on PATH was "already
+// installed" to install-tools whether or not it could run, so after a hold
+// that failed, timed out or was interrupted, the next `aveloxis
+// install-tools && aveloxis start all` exited 0 and started over a scancode
+// that cannot start; three review rounds (18 to 20) each found that from
+// another side. The check asks the one question all of them reduce to, and
+// it also catches the next dependency that breaks start-up the way pluggy
+// 1.7.0 did. The error carries scancode's own last line and both repairs
+// for the known cause. An ended context is returned as the context's error:
+// a stop is not a verdict on scancode.
+func checkScancodeStarts(ctx context.Context, path string) error {
+	out := &tailBuffer{cap: scancodeStderrTailBytes}
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := runToolCommand(ctx, cmd)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	last := ""
+	for _, line := range strings.Split(out.String(), "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			last = l
+		}
+	}
+	return fmt.Errorf("scancode at %s does not start (`scancode --version`: %v; its last line: %q). "+
+		"If that line names 'pre_scan' hooks, its pluggy is too new: run %s if pipx installed scancode, or %s if pip did. "+
+		"For any other cause, run `scancode --version` yourself for the whole output",
+		path, err, last, scancodePluggyHoldCmd, scancodePipByHandUpgrade)
+}
+
+// CheckToolStarts runs a tool's CheckStarts on the binary PATH resolves to;
+// nil for a tool without one.
+func CheckToolStarts(ctx context.Context, tool ExternalTool, path string) error {
+	if tool.CheckStarts == nil {
+		return nil
+	}
+	return tool.CheckStarts(ctx, path)
+}
+
+// scancodePinFailure turns a failed pluggy hold into the error both pipx
+// branches return (errScancodePinFailed), nil for a hold that succeeded. It
+// says what will not work and the one command that repairs it. A venv built
+// before pluggy 1.7.0 still starts after a failed hold, so the message tells
+// the operator how to find out which case this is.
+func scancodePinFailure(pinErr error) error {
+	if pinErr == nil {
+		return nil
+	}
+	return fmt.Errorf("%w (%v): scancode does not start with pluggy 1.7.0 (ValueError: did not find any 'pre_scan' hooks). "+
+		"Check with `scancode --version`. To retry the hold: %s, or `aveloxis upgrade-tools`. "+
+		"A rerun of `aveloxis install-tools` does not retry it: it reports whether the installed scancode starts",
+		errScancodePinFailed, pinErr, scancodePluggyHoldCmd)
 }
 
 // pipxFreshInstallScancode installs scancode into a new pipx venv and
@@ -591,14 +691,10 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 		return err
 	}
 	// 0.29.230: hold pluggy below the version scancode cannot start with
-	// (scancodePluggyPin). Not fatal, as the injection below is not: a
-	// failure here on the fresh branch would otherwise fall through to pip
-	// and leave a second scancode; the message says what will not work.
-	if err := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage); err != nil {
-		fmt.Printf("warning: holding pluggy at %s failed: %v\n", scancodePluggyPin, err)
-		fmt.Println("  scancode does NOT start with pluggy 1.7.0 (ValueError: did not find any 'pre_scan' hooks); check with: scancode --version")
-		fmt.Printf("  to retry: pipx inject --force %s '%s'\n", scancodePipxPackage, scancodePluggyPin)
-	}
+	// (scancodePluggyPin). A failed hold is reported after the injection
+	// below is tried (0.29.234, scancodePinFailure). When the hold failed
+	// because the context ended, the injection does not run either.
+	pinErr := pinScancodePluggy(ctx, pipxPath, scancodePipxPackage)
 	// v0.23.6: inject typecode-libmagic into the freshly-built
 	// venv. Without this, every scancode run emits the
 	// libmagic UserWarning that dominated the 2026-05-21
@@ -611,7 +707,7 @@ func pipxFreshInstallScancode(ctx context.Context, pipxPath string) error {
 		fmt.Println("  scancode still works; the libmagic UserWarning will continue to print.")
 		fmt.Println("  to retry: pipx inject scancode-toolkit-mini typecode-libmagic")
 	}
-	return nil
+	return scancodePinFailure(pinErr)
 }
 
 // pipInstallScancodeFresh is the FRESH-INSTALL-ONLY pip fallback for

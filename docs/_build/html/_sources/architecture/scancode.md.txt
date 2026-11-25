@@ -216,7 +216,7 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 | `scancode worker started workers=N start_interval=... start_gap=...` | Once at startup | The pool is alive with N runners; `start_gap` is the effective spacing between starts (start_interval ÷ workers). If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
 | `scancode preflight: healthy` | Once at startup | The §13 health check passed — the toolchain works. |
 | `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` | Once at startup (ERROR) | The §13 health check detected a systemic failure (corrupt libmagic, a repeated error, or no JSON). Read the `detail` field; `aveloxis_ops.aveloxis_status` is also set to `broken`. |
-| `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `pipx install scancode-toolkit` then restart serve. |
+| `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `aveloxis install-tools`, then restart serve. |
 | `scancode recoverOrphans: examining locked rows count=...` | Startup | Recovery pass found stale locks. Followed by per-row decisions. |
 | `scancode recover: reboot survivor — clearing lock` | Startup | Case 1 of §5. |
 | `scancode recover: live orphan detected — spawning monitor` | Startup | Case 2 of §5. Monitor goroutine will log on completion. |

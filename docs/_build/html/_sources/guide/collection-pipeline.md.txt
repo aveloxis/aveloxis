@@ -332,7 +332,7 @@ ScanCode data enriches other features:
 - **SBOMs**: CycloneDX includes `evidence.licenses` and `evidence.copyright` on the root component. SPDX uses the aggregated SPDX expression for `licenseConcluded` (vs. `licenseDeclared` from the registry) and includes `copyrightText`.
 - **Web dashboard**: The repo detail page shows a "Source Code Licenses" section with per-license file counts, OSI compliance, and a copyright holders list.
 
-If ScanCode is not installed, this phase is silently skipped. Install it with `aveloxis install-tools` or `pipx install scancode-toolkit-mini`.
+If ScanCode is not installed, this phase is silently skipped. Install it with `aveloxis install-tools`.
 
 ### OpenSSF Scorecard (remote-first, local fallback)
 

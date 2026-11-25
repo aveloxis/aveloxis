@@ -366,7 +366,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	defer w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
 	if _, err := exec.LookPath("scancode"); err != nil {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
-			"install_hint", "pipx install scancode-toolkit")
+			"install_hint", "aveloxis install-tools")
 		// Record not-installed so the operator can see why scancode produces no data.
 		st, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
 		w.recordScancodeStatus(ctx, st, detail)

@@ -166,6 +166,22 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 
 ## What to watch for in the migrate output
 
+**0.29.234 changes what a failed scancode install reports. No schema change and no configuration change.** When `aveloxis install-tools`, `aveloxis upgrade-tools` or the monthly tool update installs or upgrades scancode but cannot hold pluggy below 1.7, that is now a failure: the two commands exit non-zero with the retry command, and the monthly update logs a WARN (with the retry command, unless the step ran out of time). In 0.29.230 to 0.29.233 it was a printed warning and a success, so `aveloxis install-tools && aveloxis start all` went on with a scancode that might not start. A scancode environment built before pluggy 1.7.0 still starts after such a failure; `scancode --version` tells you which case you have. The retry command is:
+
+```bash
+pipx inject --force scancode-toolkit-mini 'pluggy<1.7'
+```
+
+`aveloxis upgrade-tools` retries it too. Running `aveloxis install-tools` again does not retry it, but it no longer passes over the problem: `install-tools` now runs `scancode --version` on a scancode it finds installed (and on one it has just installed) and exits non-zero, with the repair commands, for as long as scancode does not start. So `aveloxis install-tools && aveloxis start all` stops on every run until scancode works.
+
+One addition to the 0.29.230 entry below: its repair, `aveloxis upgrade-tools`, needs a scancode that pipx installed. Where scancode was installed with pip (a host without pipx), repair it with:
+
+```bash
+pip3 install --user --upgrade scancode-toolkit-mini 'pluggy<1.7'
+```
+
+The messages the binary prints for a manual scancode install now include the same bound, and two documentation pages that gave a bare `pipx install` now send you to `aveloxis install-tools`.
+
 **0.29.233 changes one test. No schema change, no configuration change and no change in the binary's behaviour.** The test that reads how a contributor's canonical e-mail is updated now requires the statement's whole expression, and its failure message names that expression. Before, it accepted any expression and its message named a different one. The statement is unchanged. Nothing to do on a host.
 
 **0.29.232 changes tests only. No schema change, no configuration change and no change in the binary's behaviour.** Three sign-in tests now remove their test accounts' sessions before the accounts and fail when that clean-up is refused. Before, the refusal was only logged, so a second run against the same database met the first run's accounts and failed; the Nightly stress job, which repeats each test eight times, had failed on it since 2026-10-26. Nothing to do on a host.

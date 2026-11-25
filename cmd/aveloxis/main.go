@@ -1363,6 +1363,10 @@ Each tool is independently optional — if not installed, its phase is silently 
 
 Requires Go for scc/scorecard. Requires Python 3.10+ for scancode.
 
+A tool already on PATH is left as it is. scancode, installed now or
+before, is also asked whether it starts (scancode --version); the command
+exits non-zero, with the repair, while it does not.
+
 Tools installed:
   scc        — Code complexity analysis (repo_labor)
   scorecard  — OpenSSF Scorecard security checks (repo_deps_scorecard)

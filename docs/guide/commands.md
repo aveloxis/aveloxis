@@ -732,7 +732,7 @@ Installs three external analysis tools: [scc](https://github.com/boyter/scc) (pe
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
-Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69); since 0.29.144 the same holds for scc, whose upgrade also fails when the installed scc does not report the pinned version.
+Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Since 0.29.234 it also runs `scancode --version` on a scancode it finds installed or has just installed, and exits non-zero with the repair commands while scancode does not start. If scancode installs but its `pluggy<1.7` bound cannot be applied, the run fails with the retry command; retry with that command or with `aveloxis upgrade-tools` (a second `install-tools` does not retry the bound, it reports whether scancode starts). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69); since 0.29.144 the same holds for scc, whose upgrade also fails when the installed scc does not report the pinned version.
 
 ---
 
@@ -745,7 +745,9 @@ version Aveloxis validates (since 0.29.144; see the analysis architecture
 page), a fresh
 release tarball for scorecard, and `pipx upgrade` for scancode (preserving
 venv customizations) plus a `typecode-libmagic` re-injection and, since
-0.29.230, the same `pluggy<1.7` bound `install-tools` applies.
+0.29.230, the same `pluggy<1.7` bound `install-tools` applies. Since
+0.29.234 a bound that could not be applied is a failed upgrade, with the
+retry command in the message.
 
 ```bash
 aveloxis upgrade-tools

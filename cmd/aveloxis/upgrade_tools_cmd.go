@@ -59,7 +59,10 @@ Tools handled:
 Side effect: after scancode upgrade, runs ` + "`pipx inject scancode-toolkit-mini" +
 			" typecode-libmagic`" + ` to ensure the Python libmagic binding is in
 place. Without this, scancode emits a UserWarning on every scan that
-dominates stderr capture for diagnostics.
+dominates stderr capture for diagnostics. It also holds scancode's
+dependency pluggy below 1.7 (scancode does not start with pluggy 1.7.0);
+if that cannot be done the scancode upgrade is reported as failed, with
+the command to retry.
 
 Idempotent: re-running is safe. Tools not yet installed are reported but
 not installed — use ` + "`aveloxis install-tools`" + ` for fresh installs.

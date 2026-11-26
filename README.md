@@ -336,7 +336,7 @@ aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdro
 aveloxis start all
 
 # Open http://localhost:8082 (the web GUI; the first account to sign in is the admin)
-# and http://127.0.0.1:5555 (the scheduler's monitor) to watch collection progress.
+# and http://127.0.0.1:5555 (the monitor of the scheduler) to watch collection progress.
 # A public host: docs/getting-started/deployment.md
 ```
 

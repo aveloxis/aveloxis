@@ -14,7 +14,7 @@ AVELOXIS_SRC=/path/to/aveloxis
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version   # 1. the new binary (running processes keep the old one until restarted)
 aveloxis deploy-checklist --pending   #    every step this database still needs, oldest first, and the migrate for step 3 — read it now, before step 3 moves the stamp
 aveloxis stop all                 # 2. nothing runs against the schema while it changes
-aveloxis migrate --skip-views     # 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)
+aveloxis migrate --skip-views     # 3. the schema — a plain aveloxis migrate instead when the checklist asks for one (a release that changed a view definition)
 #                                 #    …then the checklist's checks, heals and audits, every block's, oldest first
 aveloxis ack-deploy               #    …then record that they ran
 aveloxis start all                # 4. serve, web and api; then any step the checklist says needs the running release
@@ -135,7 +135,7 @@ aveloxis stop all               # serve, web, api (also cleans stale pidfiles)
 aveloxis migrate --skip-views   # schema + ledgered backfills; skips the materialized views
 # ... operator-run heals from the table below, in order ...
 aveloxis refresh-views          # refresh the materialized views' data (--set 8knot or supply-chain for one set; add --aggregates for the dm_ tables; slow)
-aveloxis ack-deploy             # record that the steps ran; a non-interactive `start serve` refuses without it
+aveloxis ack-deploy             # record that the steps ran; a non-interactive start serve refuses without it
 aveloxis start all
 ```
 
@@ -165,6 +165,8 @@ SELECT schema_version FROM aveloxis_ops.schema_meta;   -- equals `aveloxis versi
 ```
 
 ## What to watch for in the migrate output
+
+**0.29.235 changes documentation and one test file. No schema change, no configuration change, no change in what the binary does.** The shell examples in these pages are written for a shell that reads `#` as a comment, which bash does and an interactive zsh with default options (the macOS default shell) does not. Before pasting or typing any of them in zsh, run `setopt interactive_comments`. Without it zsh reads each comment as part of a command: pasted whole, an example is often refused with a parse error and nothing runs; typed line by line, the words after a `#` reach the command as arguments or stop the line, and a comment line with an unpaired apostrophe swallowed the lines under it. This release removes the two worst cases. Comment lines no longer hold an unpaired apostrophe or backticks (19 lines in ten pages): in the upgrade recipe of [Running as a service](../guide/running-as-a-service.md) such a line swallowed the assignments, the install, the stop and the migrate, and only `ack-deploy` (with an empty `-c`) and the start of the target ran. And the comment after `aveloxis migrate --skip-views` in the four steps above no longer holds a command in backticks, which the same shell ran: a plain `aveloxis migrate`, with the line's own command not run. The other comments stand as they were, so the `setopt` line is still needed. The commented systemd timer example in the troubleshooting guide no longer puts a comment after the `OnCalendar` value (systemd has no comments after a value).
 
 **0.29.234 changes what a failed scancode install reports. No schema change and no configuration change.** When `aveloxis install-tools`, `aveloxis upgrade-tools` or the monthly tool update installs or upgrades scancode but cannot hold pluggy below 1.7, that is now a failure: the two commands exit non-zero with the retry command, and the monthly update logs a WARN (with the retry command, unless the step ran out of time). In 0.29.230 to 0.29.233 it was a printed warning and a success, so `aveloxis install-tools && aveloxis start all` went on with a scancode that might not start. A scancode environment built before pluggy 1.7.0 still starts after such a failure; `scancode --version` tells you which case you have. The retry command is:
 

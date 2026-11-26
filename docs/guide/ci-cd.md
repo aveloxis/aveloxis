@@ -181,7 +181,7 @@ of wall-clock; cheap insurance.
 ### Running the gate
 
 ```bash
-# From the contributor's working branch, with the schema change
+# From the working branch of the contributor, with the schema change
 # checked out locally:
 aveloxis data-test --released-tag origin/main
 ```
@@ -269,6 +269,6 @@ The GitLab statistics canary (`TestLiveGitLabProjectStatisticsContract`, since v
 The same workflow has four more jobs:
 
 - **`facade`** (since v0.29.222) clones a real repository and runs the git-log collection end to end against a PostgreSQL service container.
-- **`manifest-speed`** (since v0.29.226) runs eight tests of the manifest readers without the race detector. Under the detector, which every other job uses for that package, they compare fewer generated cases or do not judge reading time. It needs no network, and a failure here is not a registry or forge problem: look at the readers. `TestTheWeeklyJobRunsEveryFullFormTest` keeps the job's list equal to the tests.
+- **`manifest-speed`** (since v0.29.226) runs eight tests of the manifest readers without the race detector. Under the detector, which every other job uses for that package, they compare fewer generated cases, do not judge reading time, or allow a reading six times as long. It needs no network, and a failure here is not a registry or forge problem: look at the readers. `TestFullFormTestsAreTheTestsThatDoLessUnderTheDetector` keeps the list equal to the tests that read a race constant, and `TestTheWeeklyJobRunsEveryFullFormTest` keeps the job's command equal to the list, with no `env` block that could switch the detector on.
 - **`tools`** builds the binary from the checkout and runs `aveloxis install-tools`, the way a host is set up (since 0.29.231; before, the job carried its own install commands). That installs the pinned scc and the latest scorecard and scancode. The job then runs each tool's output through the real parse structs.
 - **`sbom-validators`** (since v0.29.67) installs the official SBOM validators, the SPDX project's `pyspdxtools` and CycloneDX's `cyclonedx-python-lib`, and runs `TestSBOMsPassTheOfficialValidators` on generated documents. It is its own job so a failing tool canary cannot skip it. Locally, set `AVELOXIS_TEST_SBOM_TOOLS` to a Python with both installed; the test skips without it.

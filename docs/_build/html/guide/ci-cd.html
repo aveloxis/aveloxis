@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>CI/CD Pipelines &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2026,7 +2026,7 @@ of wall-clock; cheap insurance.</p>
 </section>
 <section id="running-the-gate">
 <h3>Running the gate<a class="headerlink" href="#running-the-gate" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># From the contributor&#39;s working branch, with the schema change</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># From the working branch of the contributor, with the schema change</span>
 <span class="c1"># checked out locally:</span>
 aveloxis<span class="w"> </span>data-test<span class="w"> </span>--released-tag<span class="w"> </span>origin/main
 </pre></div>
@@ -2111,7 +2111,7 @@ convenience, not a requirement.</p>
 <p>The same workflow has four more jobs:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">facade</span></code></strong> (since v0.29.222) clones a real repository and runs the git-log collection end to end against a PostgreSQL service container.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">manifest-speed</span></code></strong> (since v0.29.226) runs eight tests of the manifest readers without the race detector. Under the detector, which every other job uses for that package, they compare fewer generated cases or do not judge reading time. It needs no network, and a failure here is not a registry or forge problem: look at the readers. <code class="docutils literal notranslate"><span class="pre">TestTheWeeklyJobRunsEveryFullFormTest</span></code> keeps the job’s list equal to the tests.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">manifest-speed</span></code></strong> (since v0.29.226) runs eight tests of the manifest readers without the race detector. Under the detector, which every other job uses for that package, they compare fewer generated cases, do not judge reading time, or allow a reading six times as long. It needs no network, and a failure here is not a registry or forge problem: look at the readers. <code class="docutils literal notranslate"><span class="pre">TestFullFormTestsAreTheTestsThatDoLessUnderTheDetector</span></code> keeps the list equal to the tests that read a race constant, and <code class="docutils literal notranslate"><span class="pre">TestTheWeeklyJobRunsEveryFullFormTest</span></code> keeps the job’s command equal to the list, with no <code class="docutils literal notranslate"><span class="pre">env</span></code> block that could switch the detector on.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">tools</span></code></strong> builds the binary from the checkout and runs <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>, the way a host is set up (since 0.29.231; before, the job carried its own install commands). That installs the pinned scc and the latest scorecard and scancode. The job then runs each tool’s output through the real parse structs.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">sbom-validators</span></code></strong> (since v0.29.67) installs the official SBOM validators, the SPDX project’s <code class="docutils literal notranslate"><span class="pre">pyspdxtools</span></code> and CycloneDX’s <code class="docutils literal notranslate"><span class="pre">cyclonedx-python-lib</span></code>, and runs <code class="docutils literal notranslate"><span class="pre">TestSBOMsPassTheOfficialValidators</span></code> on generated documents. It is its own job so a failing tool canary cannot skip it. Locally, set <code class="docutils literal notranslate"><span class="pre">AVELOXIS_TEST_SBOM_TOOLS</span></code> to a Python with both installed; the test skips without it.</p></li>
 </ul>

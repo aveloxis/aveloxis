@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Local development setup &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Local development setup &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1962,10 +1962,10 @@ createdb<span class="w"> </span>aveloxis_dev
 <section id="optional-add-api-keys">
 <h2>7. (Optional) Add API keys<a class="headerlink" href="#optional-add-api-keys" title="Link to this heading"></a></h2>
 <p>To do any actual collection from GitHub/GitLab, you need API tokens:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># GitHub: any classic PAT or fine-grained token with `public_repo` scope.</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># GitHub: any classic PAT or fine-grained token with the public_repo scope.</span>
 go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>add-key<span class="w"> </span>ghp_yourtokenhere<span class="w"> </span>--platform<span class="w"> </span>github
 
-<span class="c1"># GitLab: a personal access token with `read_api` scope.</span>
+<span class="c1"># GitLab: a personal access token with the read_api scope.</span>
 go<span class="w"> </span>run<span class="w"> </span>./cmd/aveloxis<span class="w"> </span>add-key<span class="w"> </span>glpat-yourtokenhere<span class="w"> </span>--platform<span class="w"> </span>gitlab
 </pre></div>
 </div>

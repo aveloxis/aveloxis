@@ -122,10 +122,10 @@ Installs both `scc` (code-complexity scanner) and `scorecard` (OpenSSF Scorecard
 To do any actual collection from GitHub/GitLab, you need API tokens:
 
 ```bash
-# GitHub: any classic PAT or fine-grained token with `public_repo` scope.
+# GitHub: any classic PAT or fine-grained token with the public_repo scope.
 go run ./cmd/aveloxis add-key ghp_yourtokenhere --platform github
 
-# GitLab: a personal access token with `read_api` scope.
+# GitLab: a personal access token with the read_api scope.
 go run ./cmd/aveloxis add-key glpat-yourtokenhere --platform gitlab
 ```
 

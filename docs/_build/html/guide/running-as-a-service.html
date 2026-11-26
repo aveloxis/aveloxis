@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Running Aveloxis as a Service &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1958,7 +1958,7 @@ sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class=
 
 <span class="c1"># Graceful stop until the next reboot. The units were enabled, and</span>
 <span class="c1"># aveloxis.target is WantedBy=multi-user.target, so a reboot starts</span>
-<span class="c1"># them again — `stop` does not persist:</span>
+<span class="c1"># them again — a stop does not persist:</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>stop<span class="w"> </span>aveloxis.target
 
 <span class="c1"># Stop AND keep it stopped across reboots:</span>
@@ -1992,14 +1992,14 @@ definition (it builds the materialized views only when none exist), so a
 release that needs a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> gets it only by hand. Run the four steps of <a class="reference internal" href="../getting-started/upgrading.html"><span class="std std-doc">Upgrading</span></a>
 by hand and start the target last:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># as the service user (sudo -iu aveloxis); the two systemctl lines need an account with sudo</span>
-<span class="c1"># The units&#39; config; the checkout has no aveloxis.json</span>
+<span class="c1"># The config of the units; the checkout has no aveloxis.json</span>
 <span class="nv">CFG</span><span class="o">=</span>/etc/aveloxis/aveloxis.json
 <span class="nv">AVELOXIS_SRC</span><span class="o">=</span>/home/aveloxis/aveloxis
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version
 aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># read it now; it names the migrate step 3 runs</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>stop<span class="w"> </span>aveloxis.target<span class="w">             </span><span class="c1"># nothing runs against the schema while it changes</span>
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span><span class="w">         </span><span class="c1"># or the plain form when the checklist asks for it</span>
-<span class="c1"># ... the checklist&#39;s checks and heals, oldest first, each aveloxis command with -c &quot;$CFG&quot; ...</span>
+<span class="c1"># ... the checks and heals of the checklist, oldest first, each aveloxis command with -c &quot;$CFG&quot; ...</span>
 aveloxis<span class="w"> </span>ack-deploy<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CFG</span><span class="s2">&quot;</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>start<span class="w"> </span>aveloxis.target
 </pre></div>

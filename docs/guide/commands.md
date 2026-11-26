@@ -60,10 +60,10 @@ See [`configuration.md` -> scancode worker](../getting-started/configuration.md)
 # Start with defaults (collection.workers, default 12; dashboard on 127.0.0.1:5555)
 aveloxis serve
 
-# Start with 4 workers and a custom dashboard address (8082 is the web GUI's port)
+# Start with 4 workers and a custom dashboard address (8082 is the port of the web GUI)
 aveloxis serve --workers 4 --monitor 127.0.0.1:5556
 
-# Start using Augur's API keys
+# Start using the API keys of Augur
 aveloxis serve --workers 4 --augur-keys
 ```
 
@@ -1373,7 +1373,7 @@ aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
 aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
 aveloxis data-verify --deterministic-sample   # sample by a hash of the id, so
                                               # two copies of one database read
-                                              # alike (data-test's snapshot mode)
+                                              # alike (the snapshot mode of data-test)
 ```
 
 Severities: FAIL = a code-enforced invariant is broken (exit 1);

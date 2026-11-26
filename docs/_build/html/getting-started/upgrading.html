@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upgrading &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Upgrading &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1868,7 +1868,7 @@ does <strong>not</strong> do for you.</p>
 <span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$AVELOXIS_SRC</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>go<span class="w"> </span>install<span class="w"> </span>./cmd/aveloxis<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>aveloxis<span class="w"> </span>version<span class="w">   </span><span class="c1"># 1. the new binary (running processes keep the old one until restarted)</span>
 aveloxis<span class="w"> </span>deploy-checklist<span class="w"> </span>--pending<span class="w">   </span><span class="c1">#    every step this database still needs, oldest first, and the migrate for step 3 — read it now, before step 3 moves the stamp</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w">                 </span><span class="c1"># 2. nothing runs against the schema while it changes</span>
-aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">     </span><span class="c1"># 3. the schema — a plain `aveloxis migrate` instead when the checklist asks for one (a release that changed a view definition)</span>
+aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">     </span><span class="c1"># 3. the schema — a plain aveloxis migrate instead when the checklist asks for one (a release that changed a view definition)</span>
 <span class="c1">#                                 #    …then the checklist&#39;s checks, heals and audits, every block&#39;s, oldest first</span>
 aveloxis<span class="w"> </span>ack-deploy<span class="w">               </span><span class="c1">#    …then record that they ran</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all<span class="w">                </span><span class="c1"># 4. serve, web and api; then any step the checklist says needs the running release</span>
@@ -1980,7 +1980,7 @@ aveloxis<span class="w"> </span>stop<span class="w"> </span>all<span class="w"> 
 aveloxis<span class="w"> </span>migrate<span class="w"> </span>--skip-views<span class="w">   </span><span class="c1"># schema + ledgered backfills; skips the materialized views</span>
 <span class="c1"># ... operator-run heals from the table below, in order ...</span>
 aveloxis<span class="w"> </span>refresh-views<span class="w">          </span><span class="c1"># refresh the materialized views&#39; data (--set 8knot or supply-chain for one set; add --aggregates for the dm_ tables; slow)</span>
-aveloxis<span class="w"> </span>ack-deploy<span class="w">             </span><span class="c1"># record that the steps ran; a non-interactive `start serve` refuses without it</span>
+aveloxis<span class="w"> </span>ack-deploy<span class="w">             </span><span class="c1"># record that the steps ran; a non-interactive start serve refuses without it</span>
 aveloxis<span class="w"> </span>start<span class="w"> </span>all
 </pre></div>
 </div>
@@ -2009,6 +2009,7 @@ once. Verify the stamp matches the binary afterwards:</p>
 </section>
 <section id="what-to-watch-for-in-the-migrate-output">
 <h2>What to watch for in the migrate output<a class="headerlink" href="#what-to-watch-for-in-the-migrate-output" title="Link to this heading"></a></h2>
+<p><strong>0.29.235 changes documentation and one test file. No schema change, no configuration change, no change in what the binary does.</strong> The shell examples in these pages are written for a shell that reads <code class="docutils literal notranslate"><span class="pre">#</span></code> as a comment, which bash does and an interactive zsh with default options (the macOS default shell) does not. Before pasting or typing any of them in zsh, run <code class="docutils literal notranslate"><span class="pre">setopt</span> <span class="pre">interactive_comments</span></code>. Without it zsh reads each comment as part of a command: pasted whole, an example is often refused with a parse error and nothing runs; typed line by line, the words after a <code class="docutils literal notranslate"><span class="pre">#</span></code> reach the command as arguments or stop the line, and a comment line with an unpaired apostrophe swallowed the lines under it. This release removes the two worst cases. Comment lines no longer hold an unpaired apostrophe or backticks (19 lines in ten pages): in the upgrade recipe of <a class="reference internal" href="../guide/running-as-a-service.html"><span class="std std-doc">Running as a service</span></a> such a line swallowed the assignments, the install, the stop and the migrate, and only <code class="docutils literal notranslate"><span class="pre">ack-deploy</span></code> (with an empty <code class="docutils literal notranslate"><span class="pre">-c</span></code>) and the start of the target ran. And the comment after <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span> <span class="pre">--skip-views</span></code> in the four steps above no longer holds a command in backticks, which the same shell ran: a plain <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code>, with the line’s own command not run. The other comments stand as they were, so the <code class="docutils literal notranslate"><span class="pre">setopt</span></code> line is still needed. The commented systemd timer example in the troubleshooting guide no longer puts a comment after the <code class="docutils literal notranslate"><span class="pre">OnCalendar</span></code> value (systemd has no comments after a value).</p>
 <p><strong>0.29.234 changes what a failed scancode install reports. No schema change and no configuration change.</strong> When <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>, <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">upgrade-tools</span></code> or the monthly tool update installs or upgrades scancode but cannot hold pluggy below 1.7, that is now a failure: the two commands exit non-zero with the retry command, and the monthly update logs a WARN (with the retry command, unless the step ran out of time). In 0.29.230 to 0.29.233 it was a printed warning and a success, so <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span> <span class="pre">&amp;&amp;</span> <span class="pre">aveloxis</span> <span class="pre">start</span> <span class="pre">all</span></code> went on with a scancode that might not start. A scancode environment built before pluggy 1.7.0 still starts after such a failure; <code class="docutils literal notranslate"><span class="pre">scancode</span> <span class="pre">--version</span></code> tells you which case you have. The retry command is:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pipx<span class="w"> </span>inject<span class="w"> </span>--force<span class="w"> </span>scancode-toolkit-mini<span class="w"> </span><span class="s1">&#39;pluggy&lt;1.7&#39;</span>
 </pre></div>

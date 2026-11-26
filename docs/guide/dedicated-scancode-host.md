@@ -69,9 +69,9 @@ PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt psql "postgres://aveloxis:PASSW
 # never @latest: the worker never migrates, so a newer binary than the
 # schema stamp refuses to start (v0.29.68; it logged an ERROR and read
 # columns the database did not have yet). Release tags are v-prefixed
-# (v0.29.4), so set the bare number `aveloxis version` prints on the
+# (v0.29.4), so set the bare number that aveloxis version prints on the
 # primary and let the @v prefix supply the tag form:
-# What `aveloxis version` prints on the primary
+# What aveloxis version prints on the primary
 PRIMARY_VERSION=0.29.4
 go install "github.com/aveloxis/aveloxis/cmd/aveloxis@v${PRIMARY_VERSION}"
 

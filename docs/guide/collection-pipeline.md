@@ -168,8 +168,8 @@ The repo is cloned as a bare repo (or fetched if a clone already exists):
 REPO_URL=https://github.com/augurlabs/augur
 CLONE_PATH=/data/aveloxis-repos/augurlabs-augur.git
 git clone --bare "$REPO_URL" "$CLONE_PATH"   # first time
-# subsequent runs — an explicit refspec, because `git clone --bare`
-# writes no fetch refspec: a bare `git fetch --all` downloads objects
+# subsequent runs — an explicit refspec, because git clone --bare
+# writes no fetch refspec: a bare git fetch --all downloads objects
 # but never advances refs/heads/*, leaving the clone permanently stale
 git -C "$CLONE_PATH" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune
 ```

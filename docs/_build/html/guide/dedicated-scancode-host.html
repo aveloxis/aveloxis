@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Dedicated Scancode Host &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1920,9 +1920,9 @@ key file leaves the previous certificate in place, so read the server log). Veri
 <span class="c1"># never @latest: the worker never migrates, so a newer binary than the</span>
 <span class="c1"># schema stamp refuses to start (v0.29.68; it logged an ERROR and read</span>
 <span class="c1"># columns the database did not have yet). Release tags are v-prefixed</span>
-<span class="c1"># (v0.29.4), so set the bare number `aveloxis version` prints on the</span>
+<span class="c1"># (v0.29.4), so set the bare number that aveloxis version prints on the</span>
 <span class="c1"># primary and let the @v prefix supply the tag form:</span>
-<span class="c1"># What `aveloxis version` prints on the primary</span>
+<span class="c1"># What aveloxis version prints on the primary</span>
 <span class="nv">PRIMARY_VERSION</span><span class="o">=</span><span class="m">0</span>.29.4
 go<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;github.com/aveloxis/aveloxis/cmd/aveloxis@v</span><span class="si">${</span><span class="nv">PRIMARY_VERSION</span><span class="si">}</span><span class="s2">&quot;</span>
 

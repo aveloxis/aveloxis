@@ -870,7 +870,7 @@ systemctl list-timers --all | grep -iE "apt|postgres|backup"
 sudo crontab -l; ls -la /etc/cron.d /etc/cron.daily
 # Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts
 # services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing
-# postgres's own version):
+# the version of postgres itself):
 cat /var/log/unattended-upgrades/unattended-upgrades.log
 grep -i restart /etc/needrestart/needrestart.conf
 ```
@@ -889,14 +889,15 @@ sudo sed -i "s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = 'l';/" /etc/needresta
 #    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist
 #     entry instead:  $nrconf{override_rc} = { qr(^postgresql) => 0 };  )
 
-# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC):
+# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC;
+#    09:00 below stands for whatever is genuinely low-traffic for your fleet):
 sudo systemctl edit apt-daily-upgrade.timer
 #    [Timer]
 #    OnCalendar=
-#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet
+#    OnCalendar=*-*-* 09:00
 #    RandomizedDelaySec=30m
 
-# C. Or, if you don't want unattended security upgrades restarting anything at all:
+# C. Or, if you do not want unattended security upgrades restarting anything at all:
 sudo dpkg-reconfigure -plow unattended-upgrades   # disable, and patch on your own schedule
 
 # Verify nothing restarts postgresql automatically afterward:
@@ -1681,7 +1682,7 @@ aveloxis deploy-checklist --pending # first: the deploy steps not done yet, if a
                                     # (the migrate creates the LOWER(repo_git)
                                     # lookup index and WARNs + skips the unique
                                     # index while dups remain; with no checklist,
-                                    # `stop all`, `migrate --skip-views`, `start all`)
+                                    # stop all, migrate --skip-views, start all)
 aveloxis stop serve                 # optional — dedup-repos skips mid-flight
                                     # pairs, but a quiet window drains all in one run
 aveloxis dedup-repos --dry-run      # review the plan

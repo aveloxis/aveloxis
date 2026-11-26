@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Commands Reference &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Commands Reference &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -1975,10 +1975,10 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Start with defaults (collection.workers, default 12; dashboard on 127.0.0.1:5555)</span>
 aveloxis<span class="w"> </span>serve
 
-<span class="c1"># Start with 4 workers and a custom dashboard address (8082 is the web GUI&#39;s port)</span>
+<span class="c1"># Start with 4 workers and a custom dashboard address (8082 is the port of the web GUI)</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--monitor<span class="w"> </span><span class="m">127</span>.0.0.1:5556
 
-<span class="c1"># Start using Augur&#39;s API keys</span>
+<span class="c1"># Start using the API keys of Augur</span>
 aveloxis<span class="w"> </span>serve<span class="w"> </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span>--augur-keys
 </pre></div>
 </div>
@@ -3376,7 +3376,7 @@ aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--ground-trut
 aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--min-identity-fill<span class="w"> </span><span class="m">95</span><span class="w">   </span><span class="c1"># optional floors → WARN below</span>
 aveloxis<span class="w"> </span>data-verify<span class="w"> </span>--deterministic-sample<span class="w">   </span><span class="c1"># sample by a hash of the id, so</span>
 <span class="w">                                              </span><span class="c1"># two copies of one database read</span>
-<span class="w">                                              </span><span class="c1"># alike (data-test&#39;s snapshot mode)</span>
+<span class="w">                                              </span><span class="c1"># alike (the snapshot mode of data-test)</span>
 </pre></div>
 </div>
 <p>Severities: FAIL = a code-enforced invariant is broken (exit 1);

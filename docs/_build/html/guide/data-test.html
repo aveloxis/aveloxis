@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Schema-change verification with aveloxis data-test &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2475,7 +2475,7 @@ the rename heal together on a few hot repositories of a migrated, seeded
 clone, with a row held to make operations queue and a tenth of them cut
 short, and checks the gone-history invariant every second on a consistent
 snapshot:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># a clone of a snapshot run&#39;s local side (kept with --keep-dbs); the test writes</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># a clone of the local side of a snapshot run (kept with --keep-dbs); the test writes</span>
 psql<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;CREATE DATABASE aveloxis_dt_stress TEMPLATE aveloxis_new STRATEGY FILE_COPY&quot;</span>
 <span class="nv">AVELOXIS_TEST_STRESS_DB</span><span class="o">=</span><span class="s2">&quot;postgres://user:pass@localhost:5432/aveloxis_dt_stress&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="nv">AVELOXIS_TEST_STRESS_DURATION_SECONDS</span><span class="o">=</span><span class="m">300</span><span class="w"> </span><span class="nv">AVELOXIS_TEST_STRESS_WORKERS</span><span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>

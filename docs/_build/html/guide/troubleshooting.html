@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Troubleshooting &mdash; Aveloxis 0.29.234 documentation</title>
+  <title>Troubleshooting &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=4dc788ff"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -2623,7 +2623,7 @@ systemctl<span class="w"> </span>list-timers<span class="w"> </span>--all<span c
 sudo<span class="w"> </span>crontab<span class="w"> </span>-l<span class="p">;</span><span class="w"> </span>ls<span class="w"> </span>-la<span class="w"> </span>/etc/cron.d<span class="w"> </span>/etc/cron.daily
 <span class="c1"># Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts</span>
 <span class="c1"># services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing</span>
-<span class="c1"># postgres&#39;s own version):</span>
+<span class="c1"># the version of postgres itself):</span>
 cat<span class="w"> </span>/var/log/unattended-upgrades/unattended-upgrades.log
 grep<span class="w"> </span>-i<span class="w"> </span>restart<span class="w"> </span>/etc/needrestart/needrestart.conf
 </pre></div>
@@ -2638,14 +2638,15 @@ sudo<span class="w"> </span>sed<span class="w"> </span>-i<span class="w"> </span
 <span class="c1">#    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist</span>
 <span class="c1">#     entry instead:  $nrconf{override_rc} = { qr(^postgresql) =&gt; 0 };  )</span>
 
-<span class="c1"># B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC):</span>
+<span class="c1"># B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC;</span>
+<span class="c1">#    09:00 below stands for whatever is genuinely low-traffic for your fleet):</span>
 sudo<span class="w"> </span>systemctl<span class="w"> </span>edit<span class="w"> </span>apt-daily-upgrade.timer
 <span class="c1">#    [Timer]</span>
 <span class="c1">#    OnCalendar=</span>
-<span class="c1">#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet</span>
+<span class="c1">#    OnCalendar=*-*-* 09:00</span>
 <span class="c1">#    RandomizedDelaySec=30m</span>
 
-<span class="c1"># C. Or, if you don&#39;t want unattended security upgrades restarting anything at all:</span>
+<span class="c1"># C. Or, if you do not want unattended security upgrades restarting anything at all:</span>
 sudo<span class="w"> </span>dpkg-reconfigure<span class="w"> </span>-plow<span class="w"> </span>unattended-upgrades<span class="w">   </span><span class="c1"># disable, and patch on your own schedule</span>
 
 <span class="c1"># Verify nothing restarts postgresql automatically afterward:</span>
@@ -3308,7 +3309,7 @@ state: while duplicates remain it logs</p>
 <span class="w">                                    </span><span class="c1"># (the migrate creates the LOWER(repo_git)</span>
 <span class="w">                                    </span><span class="c1"># lookup index and WARNs + skips the unique</span>
 <span class="w">                                    </span><span class="c1"># index while dups remain; with no checklist,</span>
-<span class="w">                                    </span><span class="c1"># `stop all`, `migrate --skip-views`, `start all`)</span>
+<span class="w">                                    </span><span class="c1"># stop all, migrate --skip-views, start all)</span>
 aveloxis<span class="w"> </span>stop<span class="w"> </span>serve<span class="w">                 </span><span class="c1"># optional — dedup-repos skips mid-flight</span>
 <span class="w">                                    </span><span class="c1"># pairs, but a quiet window drains all in one run</span>
 aveloxis<span class="w"> </span>dedup-repos<span class="w"> </span>--dry-run<span class="w">      </span><span class="c1"># review the plan</span>

@@ -16,14 +16,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestCommitResolverSkipsCommitsNoLongerOnTheDefaultBranch (worklist 73,
-// the 2026-09-28 kate log): IQSS/dss-workshops' history was rewritten
+// the 2026-09-28 production log): IQSS/dss-workshops' history was rewritten
 // upstream; the facade walked 55 commits but 359 unresolved rows remained
 // from the old history, every SHA lookup answered 422, and the resolver
 // aborted with "commits do not belong to this repo" (and its stale-clone
@@ -70,7 +68,7 @@ func TestCommitResolverSkipsCommitsNoLongerOnTheDefaultBranch(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "repo.git")
 	git(filepath.Dir(bare), "clone", "-q", "--bare", work, bare)
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

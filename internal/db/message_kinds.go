@@ -14,7 +14,7 @@ package db
 // and PullRequestReview (review bodies). The original arbiter
 // UNIQUE (platform_msg_id, platform_id) merged those spaces — the
 // postgres.go comment planned a "review-specific offset" that was
-// never implemented — and on aveloxis_large 198,237 msg rows were
+// never implemented — and on the larger production database 198,237 msg rows were
 // claimed by BOTH the issue-comment bridge and review_comments, each
 // collision silently overwriting the other kind's text and author
 // (later writer wins), with both bridges pointing at one shared row.

@@ -18,6 +18,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -116,9 +117,28 @@ func repoListingSQL(memberSubquery string, p ListingPage) string {
 		LIMIT $3 OFFSET $4`
 }
 
+// repoListingStatement is listRepos' statement: repoListingSQL for the
+// member subquery its caller wrote, a sort that is a key of
+// collectionRepoSorts and a direction that is "asc" or "desc". Any other
+// sort or direction is refused here, before a statement exists
+// (NormalizeListingPage gives no other).
+func repoListingStatement(memberSubquery, sortKey, dir string) (string, error) {
+	if _, ok := collectionRepoSorts[sortKey]; !ok {
+		return "", fmt.Errorf("repository listing: unknown sort %q", sortKey)
+	}
+	if dir != "asc" && dir != "desc" {
+		return "", fmt.Errorf("repository listing: unknown direction %q", dir)
+	}
+	return repoListingSQL(memberSubquery, ListingPage{Sort: sortKey, Dir: dir}), nil
+}
+
 // listRepos runs repoListingSQL and scans its rows.
 func (s *PostgresStore) listRepos(ctx context.Context, memberSubquery string, ownerID int64, userID int, p ListingPage) ([]PortalGroupRepo, error) {
-	rows, err := s.pool.Query(ctx, repoListingSQL(memberSubquery, p), ownerID, userID, p.PageSize, (p.Page-1)*p.PageSize)
+	stmt, err := repoListingStatement(memberSubquery, p.Sort, p.Dir)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, stmt, ownerID, userID, p.PageSize, (p.Page-1)*p.PageSize)
 	if err != nil {
 		return nil, err
 	}

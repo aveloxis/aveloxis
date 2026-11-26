@@ -8,7 +8,7 @@ package db
 // one and OSV answered with every advisory ever published for the package
 // (PyYAML's 2017 CVE, fixed in 5.1, on a project that installs PyYAML 6).
 // Those rows say "this package has had advisories", not "this repository is
-// exposed" — the VEX under_investigation class. Like the project's own
+// exposed": the version in use is not determined. Like the project's own
 // release advisories (kind 'self', v0.27.29), they leave every exposure
 // count and read, and are counted apart. One predicate for all of them
 // (SR-17): exposurePredicateSQL.
@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -37,16 +38,16 @@ func TestUnpinnedFindingsAreNotExposure(t *testing.T) {
 		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, repoID)
 		cleanupExecRetry(ctx, store, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
-	mk := func(id, pkg, purl, sev, resolution, kind string) *VulnerabilityRow {
+	mk := func(id, pkg, purl, sev, resolution, kind string) *model.VulnerabilityRow {
 		eco := "PyPI"
 		if strings.HasPrefix(purl, "pkg:githubactions/") {
 			eco = "githubactions"
 		}
-		return &VulnerabilityRow{VulnID: id, PackageName: pkg, PackagePurl: purl, Ecosystem: eco,
+		return &model.VulnerabilityRow{VulnID: id, PackageName: pkg, PackagePurl: purl, Ecosystem: eco,
 			Severity: sev, CVSSScore: map[string]float64{"CRITICAL": 9.8, "HIGH": 7.5}[sev], Source: "osv.dev",
 			VersionResolution: resolution, DependencyKind: kind, DependencyScope: "runtime"}
 	}
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{
 		mk("GHSA-lock-0001", "lockedpkg", "pkg:pypi/lockedpkg@1.0", "CRITICAL", "locked", "direct"),
 		mk("GHSA-flor-0001", "floorpkg", "pkg:pypi/floorpkg@2.0", "HIGH", "range-floor", "direct"),
 		mk("GHSA-unpn-0001", "unpinnedpkg", "pkg:pypi/unpinnedpkg", "CRITICAL", "unpinned", "direct"),
@@ -121,6 +122,8 @@ func TestUnpinnedFindingsAreNotExposure(t *testing.T) {
 // reviewed exception: it writes scope, it does not read exposure.
 func TestEveryExposureReadUsesThePredicate(t *testing.T) {
 	files := srctest.PackageFiles(t, "internal/db", 20)
+	// The file holding the finding upsert, found by its function.
+	_, upsertFile := srctest.PackageFuncAt(t, "internal/db", "func (s *PostgresStore) InsertVulnerabilityBatch(")
 	examined := 0
 	for name, src := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -134,7 +137,13 @@ func TestEveryExposureReadUsesThePredicate(t *testing.T) {
 		examined += n
 		allowed := 0
 		if strings.HasSuffix(name, "vuln_exposure.go") {
-			allowed = 3 // the two predicate spellings and unknownVersionSQL
+			allowed = 3 // the two predicate spellings and unknownVersionSQL (their builder, exposureExprSQL, is in entered_exposure_db_test.go since 0.29.220)
+		}
+		if strings.HasSuffix(upsertFile, name) || strings.HasSuffix(name, upsertFile) {
+			// 0.29.166: the finding upsert's old and new class, as text held
+			// equal to exposureExprSQL by
+			// TestTheUpsertSpellsTheExposureClassesAsTheBuilderDoes.
+			allowed = 3
 		}
 		if strings.HasSuffix(name, "migrate.go") {
 			allowed = 1 // the v0.27.51 scope backfill

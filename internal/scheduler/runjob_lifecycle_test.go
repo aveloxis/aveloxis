@@ -43,7 +43,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestRunJobLifecycleEndToEnd(t *testing.T) {
@@ -61,7 +60,7 @@ func TestRunJobLifecycleEndToEnd(t *testing.T) {
 	if err := db.RunMigrations(ctx, store, logger); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

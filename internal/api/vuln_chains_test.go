@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // v0.27.133 (C2) — the attribution walk. Enforces SR-6-adjacent
@@ -154,7 +155,7 @@ func TestChainsForDeclaredFallbackRootsAnyGraph(t *testing.T) {
 
 // Round-22 (Copilot): graph keys must FOLD — case, PyPI's
 // underscore/dot equivalence (PEP 503), and the libyear↔lockfile
-// ecosystem vocabulary split — via the ONE shared db.LockfileGraphKey.
+// ecosystem vocabulary split — via the ONE shared pkgid.Key.
 // Raw-string keys silently dropped valid chains for exactly the
 // packages whose spellings differ between subsystems.
 func TestChainsForFoldsPyPINames(t *testing.T) {
@@ -163,7 +164,7 @@ func TestChainsForFoldsPyPINames(t *testing.T) {
 		// row's manifest spelling) says Foo_Bar.
 		{Ecosystem: "pypi", ParentName: "flask", ChildName: "foo-bar"},
 	}
-	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("pypi", "Flask"): true}}
+	sets := db.DirectPackageSets{Declared: map[string]bool{pkgid.Key("pypi", "Flask"): true}}
 	idx := buildChainIndex(edges, sets)
 	chains, _ := idx.chainsFor("pypi", "Foo_Bar")
 	if len(chains) != 1 || chains[0].Root != "flask" {
@@ -177,7 +178,7 @@ func TestChainsForFoldsEcosystemAliases(t *testing.T) {
 		// root comes from libyear's "gem" vocabulary.
 		{Ecosystem: "rubygems", ParentName: "rails", ChildName: "actionpack"},
 	}
-	sets := db.DirectPackageSets{Declared: map[string]bool{db.LockfileGraphKey("gem", "rails"): true}}
+	sets := db.DirectPackageSets{Declared: map[string]bool{pkgid.Key("gem", "rails"): true}}
 	idx := buildChainIndex(edges, sets)
 	chains, _ := idx.chainsFor("rubygems", "actionpack")
 	if len(chains) != 1 || chains[0].Root != "rails" {
@@ -218,7 +219,7 @@ func TestChainsForReportsTotalRootsPastTheCap(t *testing.T) {
 	}
 }
 
-// v0.27.152 (round 31): root dedup folds through LockfileGraphKey —
+// v0.27.152 (round 31): root dedup folds through pkgid.Key —
 // the raw parent spelling let `Flask` and `flask` (two PyPI
 // lockfiles' spellings of ONE package) count as two distinct roots,
 // overcounting introduced_by_total_roots.

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/spdx"
 )
 
@@ -51,15 +52,15 @@ func TestRegistryLicenseListsAreStoredAsOR(t *testing.T) {
 		name     string
 		fixture  string
 		base     *string
-		resolver func(context.Context, libyearDep) (*db.LibyearRow, error)
-		dep      libyearDep
+		resolver func(context.Context, model.LibyearDep) (*model.LibyearRow, error)
+		dep      model.LibyearDep
 	}{
 		{"rubygems", "rubygems_rails.json", &rubygemsRegistryBase, resolveRubyGemsLibyear,
-			libyearDep{Name: "rails", Version: "7.0.0", Manager: "gem"}},
+			model.LibyearDep{Name: "rails", Version: "7.0.0", Manager: "gem"}},
 		{"packagist", "packagist_monolog.json", &packagistRegistryBase, resolvePackagistLibyear,
-			libyearDep{Name: "monolog/monolog", Version: "3.0.0", Manager: "composer"}},
+			model.LibyearDep{Name: "monolog/monolog", Version: "3.0.0", Manager: "composer"}},
 		{"hex", "hex_phoenix.json", &hexRegistryBase, resolveHexLibyear,
-			libyearDep{Name: "phoenix", Version: "1.7.0", Manager: "hex"}},
+			model.LibyearDep{Name: "phoenix", Version: "1.7.0", Manager: "hex"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := os.ReadFile("testdata/registries/" + tc.fixture)

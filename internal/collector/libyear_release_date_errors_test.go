@@ -30,7 +30,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
@@ -41,11 +41,11 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 		name string
 		// resolve runs the resolver against a server that answers the date
 		// request with dateStatus.
-		resolve func(t *testing.T, dateStatus int) (*db.LibyearRow, error)
+		resolve func(t *testing.T, dateStatus int) (*model.LibyearRow, error)
 	}{
 		{
 			name: "go",
-			resolve: func(t *testing.T, dateStatus int) (*db.LibyearRow, error) {
+			resolve: func(t *testing.T, dateStatus int) (*model.LibyearRow, error) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "/@latest") {
 						_, _ = io.WriteString(w, `{"Version":"v1.8.1","Time":"2024-06-22T17:02:30Z"}`)
@@ -56,7 +56,7 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 				defer srv.Close()
 				defer swapBase(&goProxyBase, srv.URL)()
 				return resolveGoLibyear(context.Background(),
-					libyearDep{Name: "github.com/spf13/cobra", Version: "v1.8.0", Manager: "go"})
+					model.LibyearDep{Name: "github.com/spf13/cobra", Version: "v1.8.0", Manager: "go"})
 			},
 		},
 		// Maven asks for TWO dates — the pinned version's .pom and the
@@ -66,19 +66,19 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 		// ship. So each arm gets a case that fails ONLY that request.
 		{
 			name: "maven/pinned-version-pom",
-			resolve: func(t *testing.T, dateStatus int) (*db.LibyearRow, error) {
+			resolve: func(t *testing.T, dateStatus int) (*model.LibyearRow, error) {
 				return resolveMavenWithPomStatus(t, "/3.12.0/", dateStatus)
 			},
 		},
 		{
 			name: "maven/latest-version-pom",
-			resolve: func(t *testing.T, dateStatus int) (*db.LibyearRow, error) {
+			resolve: func(t *testing.T, dateStatus int) (*model.LibyearRow, error) {
 				return resolveMavenWithPomStatus(t, "/3.20.0/", dateStatus)
 			},
 		},
 		{
 			name: "hackage",
-			resolve: func(t *testing.T, dateStatus int) (*db.LibyearRow, error) {
+			resolve: func(t *testing.T, dateStatus int) (*model.LibyearRow, error) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "/preferred") {
 						_, _ = io.WriteString(w, `{"normal-version":["2.2.1.0","2.0.0.0"]}`)
@@ -89,12 +89,12 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 				defer srv.Close()
 				defer swapBase(&hackageRegistryBase, srv.URL)()
 				return resolveHackageLibyear(context.Background(),
-					libyearDep{Name: "aeson", Version: "2.0.0.0", Manager: "haskell"})
+					model.LibyearDep{Name: "aeson", Version: "2.0.0.0", Manager: "haskell"})
 			},
 		},
 		{
 			name: "swiftpm",
-			resolve: func(t *testing.T, dateStatus int) (*db.LibyearRow, error) {
+			resolve: func(t *testing.T, dateStatus int) (*model.LibyearRow, error) {
 				gh := &fakeGitHubAPI{
 					answers: map[string]string{
 						"/repos/Alamofire/Alamofire/releases/latest": `{"tag_name":"5.10.2","published_at":"2024-11-14T18:00:00Z"}`,
@@ -103,7 +103,7 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 						"/repos/Alamofire/Alamofire/releases/tags/5.8.0": statusAnswer(dateStatus),
 					},
 				}
-				return resolveSwiftPMLibyear(context.Background(), gh, libyearDep{
+				return resolveSwiftPMLibyear(context.Background(), gh, model.LibyearDep{
 					Name: "Alamofire", Version: "5.8.0", Manager: "swiftpm",
 					Requirement: "https://github.com/Alamofire/Alamofire.git"})
 			},
@@ -148,7 +148,7 @@ func TestResolversTreatAReleaseDateFailureAsAFailure(t *testing.T) {
 
 // resolveMavenWithPomStatus serves Maven Central's metadata and every .pom
 // normally EXCEPT the one under failPathSegment, which answers dateStatus.
-func resolveMavenWithPomStatus(t *testing.T, failPathSegment string, dateStatus int) (*db.LibyearRow, error) {
+func resolveMavenWithPomStatus(t *testing.T, failPathSegment string, dateStatus int) (*model.LibyearRow, error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -164,7 +164,7 @@ func resolveMavenWithPomStatus(t *testing.T, failPathSegment string, dateStatus 
 	defer srv.Close()
 	defer swapBase(&mavenRepositoryBase, srv.URL+"/maven2")()
 	return resolveMavenLibyear(context.Background(),
-		libyearDep{Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"})
+		model.LibyearDep{Name: "org.apache.commons:commons-lang3", Version: "3.12.0", Manager: "maven"})
 }
 
 // swapBase points a registry base at a test server and returns the restore.

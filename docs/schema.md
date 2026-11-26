@@ -1269,9 +1269,122 @@ Libyear analysis results. Measures how out-of-date each dependency is by compari
 | `current_release_date` | TEXT | Analysis phase | Release date of current version. |
 | `latest_release_date` | TEXT | Analysis phase | Release date of latest version. |
 | `libyear` | FLOAT | Analysis phase | Libyear score (years between current and latest). |
+| `manifest_path` | TEXT | Analysis phase | The manifest that declared the dependency, relative to the clone's root with forward slashes (`svc/package.json`). Empty on a row written before 0.29.160. When that manifest later cannot be read or parsed, its rows are carried into the next inventory by this path. |
+| `libyear_status` | TEXT | Analysis phase | Why the row has a libyear or lacks one (0.29.162): `resolved` (the registry answered and libyear was computed), `no_version` (no version could be worked out), `no_release_date` (the package is known; no date for the version), `not_on_registry` (the registry says there is no such package), `cannot_be_asked` (an invalid coordinate or an unsupported host), `lookup_failed` (no answer this cycle; asked again at the next analysis), `no_timeline` (the ecosystem has no registry timeline: GitHub Actions). NULL on a row written before 0.29.162. A dependency whose lookup fails keeps its row since that release, with `libyear` NULL. |
+| `package_key` | TEXT | Analysis phase | The package's key (0.29.172): the ecosystem folded to one spelling (`rubygems` and `gem` are `gem`, `swiftpm` is `swift`, `packagist` is `composer`), `|`, and the name lower-cased, with PyPI's `_` and `.` folded to `-`. Two rows with the same key name the same package, whatever their manifests spelled. Indexed (`idx_repo_deps_libyear_package_key`). `repo_lockfile_packages` has the same column and index. NULL on a row written before 0.29.172 until the repository is analysed again, and on a row with no ecosystem or no name. |
+| `version_source` | TEXT | Analysis phase | Where `current_version` came from when it is not the declaration's own (0.29.177). `locked`: the nearest lockfile in the manifest's own directory, or the closest directory above it, resolves the dependency to exactly this version, and the row reports it (with `purl` at it, and `libyear` measured from it). `locked-several`: the nearest lockfiles resolve it to more than one version, or two lockfiles sit equally near and both hold it; `current_version` is still the declared one, and the vulnerability scan checks every locked version. `managed` (0.29.178): a Maven dependency declared with no version, whose version comes from `dependencyManagement` in its own pom, a parent pom in the repository, or a BOM those import that is in the repository. NULL: the version is the lowest the declaration allows, as before. `requirement` is always the declaration as written. Go modules and GitHub Actions are never `locked`: a Go module's version is the one `go.mod` states and an action is known by its ref. |
+| `version_reason` | TEXT | Analysis phase | Why a Maven dependency has no version, when its pom gives it none and a parent pom or BOM that might manage it could not be obtained (0.29.181): `inherited_not_found` (the parent or BOM is on no repository that is read, or was never asked for because it is a snapshot, a version range, or a coordinate a request cannot be built from), `inherited_lookup_failed` (it is not known whether a repository has it: one did not answer and nothing is stored, or declared repositories were left unconsulted because the analysis had waited on them as long as it may or because the build declares more than one lookup consults; the first two are retried at the next analysis, the last is the same each time), `inherited_repository_refused` (the repository that holds it may not be fetched from). NULL when the dependency has a version, or declares none and nothing that could manage it is missing. Since 0.29.213 `inherited_lookup_failed` and `inherited_repository_refused` are also given when the parent or BOM that would be consulted FIRST could not be obtained and a later one would have managed the dependency: the later one's version is withheld. Since 0.29.214 `inherited_not_found` withholds in the same way when that earlier parent or BOM was never asked for (the cases above, and also: no repository is configured, or two poms of the clone carry the same coordinates), and a parent or BOM that manages the dependency at a version it cannot itself give leaves the dependency with no version. Since 0.29.215: `inherited_lookup_failed` also means a pom of the repository itself that exists and could not be read; `inherited_not_found` also means the parent or BOM lies beyond a chain of 32 parents or 32 nested imports, or in a cycle, or is at `LATEST`/`RELEASE`, or might be on a repository the build declares that was not asked; and three values are new: `profile_managed` (Maven: a profile that is active by default in the pom itself declares the dependency with a version, so the pom's own declaration with no version is not given a managed version; 0.29.215 gave it behind any profile that managed the dependency, since 0.29.216 only a default-active profile's own declaration does, and since 0.29.217 only in the pom that holds the profile), `platforms_disagree` (Gradle: two platforms, or a platform and the Spring dependency-management plugin, give versions that differ and cannot be ordered) and `value_not_read` (Gradle: the version is written with, or managed through, a value that is not read: an expression too long to be read whole; or, since 0.29.217, a variable or property the build sets in a way that is not read (a computed value, under a condition, more than once), including a property through which a BOM imported by the Spring dependency-management plugin manages the dependency, and since 0.29.218 a property that is the version of a BOM that BOM imports. The same reason is given to what a BOM imported after that one would manage, and to a dependency that nothing manages, because which BOM answers for a dependency is not known while one of them is not read.) |
+| `version_hosts` | TEXT[] | Analysis phase | The package repository hosts whose fetched poms this version was worked out through (0.29.185): the hosts of the parent poms in the dependency's chain that were fetched, and of the BOM that supplied the version and its chain. A parent from one host and a BOM from another gives two. NULL when the version came from the repository's own files. It is what says which dependencies a repository host's answers touch. |
 | | | | *Standard metadata columns* |
 
 ---
+
+#### repo_declared_repositories
+
+The package repositories a repository's own build files name (0.29.184): a pom's
+`<repositories>` and `<pluginRepositories>`, and from 0.29.195 the entries of a Gradle
+`repositories { }` block (a build file's, a `buildscript`'s, and a settings file's
+`pluginManagement` and `dependencyResolutionManagement`). Replaced whole at each analysis; one row per
+manifest, address and use. Every declared repository is recorded, whether or not it is
+ever asked for anything.
+
+A repository with no `not_fetched_reason` may be asked for a parent pom or BOM that the
+configured repositories do not have, when `collection.declared_repository_fetch` is on
+(the default).
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `declared_repository_id` | BIGSERIAL (PK) | Database | Row id. |
+| `repo_id` | BIGINT | Analysis phase | The repository whose build file declares it. |
+| `manifest_path` | TEXT | Analysis phase | The build file, relative to the clone. |
+| `repository_url` | TEXT | Analysis phase | The address, with no trailing slash and never with credentials: an address that carried a user name or password is recorded without them. For an address that could not be read (built from a variable), the text as written. |
+| `host` | TEXT | Analysis phase | The address's host, lower case; empty when the address could not be read. Indexed. |
+| `used_for` | TEXT | Analysis phase | `dependencies` or `plugins`. |
+| `not_fetched_reason` | TEXT | Analysis phase | Why it is never fetched from: `not_https`, `credentials_in_url`, `unreadable`, `plugins_only`, or for a Gradle entry `local` (`mavenLocal()`), `flat_dir`, `ivy`, `shut_down` (`jcenter()`). NULL: it may be. |
+| `data_collection_date` | TIMESTAMPTZ | Database | When the row was written. |
+
+#### maven_pom_results
+
+What a Maven repository said about one pom (0.29.182). A Maven dependency declared with no
+version takes it from `dependencyManagement` in a parent pom or an imported BOM; when that
+pom is not in the repository being analysed it is fetched from the repositories in
+`collection.maven_repositories`, in order, and the answer is kept here. One row per
+serving repository and coordinate; the rows are not per analysed repository, and one row
+serves every repository that inherits from the same pom.
+
+Stored answers are used before any request is made. A pom that was obtained is never
+fetched again. A repository's "I have none" is asked again after a day. A lookup that got
+no answer is not stored, and when asking again fails, the stored answer stands: a
+repository's bad hour does not change a dependency's version.
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `repository_url` | TEXT (PK) | Analysis phase | The repository that answered, as configured. |
+| `group_id` | TEXT (PK) | Analysis phase | The pom's group. |
+| `artifact_id` | TEXT (PK) | Analysis phase | The pom's artifact. |
+| `version` | TEXT (PK) | Analysis phase | The pom's version. |
+| `found` | BOOLEAN | Analysis phase | TRUE: the pom was obtained. FALSE: the repository answered that it has none. |
+| `extract` | JSONB | Analysis phase | For a pom that was obtained: its coordinates, its parent, its properties and its `dependencyManagement` entries. The pom document itself is not kept. NULL for a miss. |
+| `fetched_at` | TIMESTAMPTZ | Analysis phase | When the repository gave this answer. |
+| `expires_at` | TIMESTAMPTZ | Analysis phase | When the answer is due to be asked again. NULL for a pom that was obtained. |
+
+#### repo_inventory_notes
+
+A declared dependency that was given no row in `repo_deps_libyear`, and why (0.29.164). The table is replaced per repository at each analysis, in the same transaction as the inventory, so it always describes the inventory stored beside it. When a manifest cannot be read or parsed, its notes are carried forward with its rows.
+
+A note is a record. By itself it closes no vulnerability finding and keeps none open.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `note_id` | BIGSERIAL (PK) | Auto-generated | Primary key. |
+| `repo_id` | BIGINT (FK -> repos) | Computed | Repository. |
+| `kind` | TEXT | Analysis phase | Why the dependency has no row: `non_registry` (it comes from a local path, a workspace, git or a URL, so it is not the registry package of the same name), `name_rejected` (the declared name is not a package name: it fails its ecosystem's name grammar, holds a byte that cannot be stored, or is too long; the registry is not asked about it), `no_namespace` (no purl can be built: a Maven or Gradle coordinate with no group, for example). |
+| `package_manager` | TEXT | Analysis phase | Package manager of the manifest that declared it. |
+| `name` | TEXT | Analysis phase | The declared name, cleaned of bytes that cannot be stored and cut to 2,704 bytes. |
+| `package_key` | TEXT | Computed | The package key of the stored name (`ecosystem|name`, folded as dependency keys are). |
+| `purl` | TEXT | Computed | The purl the dependency would have had, when one can be built and stored unchanged. Empty otherwise, and always for `non_registry`. |
+| `manifest_path` | TEXT | Analysis phase | The manifest that declared it, relative to the clone's root. |
+| `tool_source` | TEXT | Computed | `"aveloxis-analysis"`. |
+| `tool_version` | TEXT | Computed | Aveloxis version that wrote the row. |
+| `data_source` | TEXT | Computed | `"manifest"`. |
+| `data_collection_date` | TIMESTAMPTZ | Computed | When the note was written. |
+
+#### repo_dependency_coverage
+
+What Aveloxis knows about how completely it has read one repository's dependencies (0.29.159). One row per repository. A repository with no row, or with `analysed_at` NULL, has not been analysed since 0.29.159, and its stored `repo_deps_libyear` rows are taken as its inventory, as before.
+
+The analysis columns are written in the same transaction that replaces the repository's `repo_deps_libyear` rows, so they always describe the inventory stored beside them. The two attempt columns are written by their own statement, when an analysis did not replace the inventory. The scan columns are written by the vulnerability scan, in one statement of its own, on every scan attempt that is not interrupted by a shutdown.
+
+| Column | Type | Source | Description |
+|--------|------|--------|-------------|
+| `repo_id` | BIGINT (PK, FK -> repos) | Computed | Repository. |
+| `analysed_at` | TIMESTAMPTZ | Analysis phase | When the dependency inventory was last replaced whole. NULL: not since 0.29.159. |
+| `manifests_found` | INTEGER | Analysis phase | Manifest files found in the clone (files a manifest kind reads declarations from). |
+| `manifests_parsed` | INTEGER | Analysis phase | How many of those were read and parsed. |
+| `manifests_failed` | JSONB | Analysis phase | The manifests that could not be read or parsed: `[{"path", "kind", "reason", "rows_carried"}]`, the path relative to the clone's root, the reason `read` or `parse`, and how many of the manifest's previous inventory rows were carried into this inventory because it failed (0.29.160). `[]` when none. |
+| `lockfiles_failed` | JSONB | Analysis phase (lockfiles) | The lockfiles that exist and could not be read or parsed at the last lockfile phase (0.29.176), as `manifests_failed`: `path`, `kind`, `reason` and `rows_carried`, the number of that lockfile's previous package rows that were kept. A lockfile that fails keeps its previous rows for as long as it exists and fails, so its dependencies' locked versions and its transitive packages do not vanish. NULL when none failed. |
+| `maven_trees_not_whole` | JSONB | Analysis phase | The Maven trees that hold `dependencyManagement` entries and were not read whole at the last analysis (0.29.183): `root` (the tree's root-most pom) and `reason` (a pom of the tree could not be read or parsed, a parent or an imported BOM could not be obtained, a BOM import matches more than one pom, or `dependencyManagement` sits inside a profile). Such a tree's managed entries are still inventoried as dependencies. NULL when every such tree was read whole. |
+| `maven_tree_hosts` | JSONB | Analysis phase | The Maven trees whose parent and BOM chains used fetched poms, with the hosts they came from (0.29.185): `root` and `hosts`. A tree can depend on a host with no dependency row saying so (its parent was fetched and every version in it is explicit), so the tree's hosts are recorded for the tree. NULL when no tree used a fetched pom. |
+| `dependencies_declared` | INTEGER | Analysis phase | Dependencies the parsed manifests declared. |
+| `dependencies_without_row` | JSONB | Analysis phase | How many declared dependencies were given no `repo_deps_libyear` row, by reason: `non_registry`, `name_rejected`, `no_namespace` (the kinds of `repo_inventory_notes`, which names each one). `{}` when every one has a row. |
+| `last_attempt_at` | TIMESTAMPTZ | Analysis phase | When an analysis last did NOT replace the inventory. Later than `analysed_at` means the inventory is older than the last attempt to refresh it. |
+| `last_attempt_result` | TEXT | Analysis phase | Why: `clone_unavailable`, `root_unreadable`, `replace_failed`, or (0.29.213) one of the four ways the process that reads the manifests can end without a result: `manifest_read_cpu_limit` and `manifest_read_memory_limit` (it passed `collection.manifest_read_cpu_seconds` or `collection.manifest_read_memory_mb`), `manifest_read_timed_out` (stopped by the clock) and `manifest_read_failed` (it could not be started, crashed, or sent something that was refused). |
+| `lockfiles_read_at` | TIMESTAMPTZ | Analysis phase (lockfiles) | When a reading of the repository's lockfiles last finished and found some (0.29.214). NULL when none has since the column existed, and when the last reading found the repository has no lockfile. Not backfilled, and not by itself the date of the stored lockfile rows: those are dated by this column when it is set, else by their own snapshot (`aveloxis_data.repo_lockfiles.data_collection_date`: rows stored before the column existed), and when no lockfile row is stored there is nothing for it to date. A reader takes the date the store gives it (0.29.215), never this column alone. |
+| `lockfiles_unread_reason` | TEXT | Analysis phase (lockfiles) | Why the LATEST reading of the lockfiles did not finish (0.29.214): `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out`, `manifest_read_failed`, `root_unreadable`, (0.29.215) `lockfiles_not_reached`, when the reader was stopped while it read the manifests and never began on the lockfiles, or (0.29.216) `lockfiles_too_large`, when the reading replaced the stored rows and left one or more lockfiles unread because reading them would take more memory than allowed (those keep the rows of their last reading; 0.29.215 recorded this as `manifest_read_memory_limit`). NULL when it finished. While it is set, exact versions and transitive dependencies are out of date or not checked, and the repository's pages say so: with lockfile rows stored for the repository (in `aveloxis_data.repo_lockfiles`) they are as old as the date above gives; with none stored, no lockfile was read and transitive dependencies are not checked. It is written when the clone is known to hold a lockfile, lockfile rows are stored, an earlier reading read some, or an earlier reading already left a reason; so a repository that has never had a lockfile never carries one. One that had lockfiles and has deleted them can carry one, from a reading that was stopped before it learned what the clone holds, until the next reading that completes clears it. While it is set, `coverage.clean_result` is false on every surface (0.29.216). One statement writes both columns (`recordLockfileReadingOn` in `internal/db/history.go`). |
+| `last_scan_attempt_at` | TIMESTAMPTZ | Vulnerability scan | When a vulnerability scan was last ATTEMPTED, whatever came of it (0.29.161). Not `repos.vuln_scan_last_run`, which is the last completed scan. |
+| `scan_outcome` | TEXT | Vulnerability scan | What came of that scan: `sent` (targets were sent and answered), `nothing_to_send` (the repository declares nothing to check), `unsendable` (nothing could be sent), `unanswered` (0.29.208: targets were sent and OSV gave no complete answer for any of them), `inventory_incomplete` (nothing has ever said what the repository depends on, so nothing was closed or claimed) or `failed`. |
+| `scan_partial` | BOOLEAN | Vulnerability scan | TRUE when the outcome is `sent` and the scan's picture is not whole: the step that closes findings no longer reported failed, or (0.29.168) OSV refused to answer a dependency's query, or a finding was left open because an answer for its package was not complete. |
+| `scan_targets_sent` | INTEGER | Vulnerability scan | Targets sent to OSV. NULL when the scan failed before its targets were built. |
+| `scan_targets_dropped` | INTEGER | Vulnerability scan | Targets dropped before sending because OSV would have refused them. NULL as above. |
+| `scan_targets_rejected` | INTEGER | Vulnerability scan | Sent targets whose query OSV refused (0.29.168). Such a target has no answer: its findings are neither refreshed nor closed. NULL when the scan stopped before its answers were in, and on rows written before 0.29.168. |
+| `scan_targets_truncated` | INTEGER | Vulnerability scan | Sent targets whose answer from OSV was not read to its end (0.29.169): longer than a page cap set in `collection.osv_pages_per_query`, or, from 0.29.201, ended because OSV repeated a page token. The advisories that were read are recorded; nothing is closed for such a target. NULL when the scan stopped before its answers were in, and on rows written before 0.29.169. |
+| `scan_closures_held` | INTEGER | Vulnerability scan | Open findings the scan neither reported nor closed, because an answer for their package was not complete (0.29.168). NULL as above. |
+| `dependencies_unknown` | BOOLEAN | Vulnerability scan | TRUE when the scan found no stored inventory rows, no lockfile rows and no completed analysis: nothing is known about the repository's dependencies, and no dependency finding is closed. |
+| `first_scan_at` | TIMESTAMPTZ | Vulnerability scan | When the repository was first scanned. Written once, and only for a repository first scanned by 0.29.161 or later; NULL for good on every other. |
+| `tool_source` | TEXT | Computed | `"aveloxis-analysis"`. |
+| `tool_version` | TEXT | Computed | Aveloxis version that wrote the row. |
+| `data_source` | TEXT | Computed | `"analysis"`. |
+| `data_collection_date` | TIMESTAMPTZ | Computed | When the analysis columns were last written. |
 
 #### repo_deps_scorecard
 
@@ -1982,6 +2095,82 @@ Tracks the current working commit for facade processing per repository.
 
 ## aveloxis_ops Schema
 
+### Package repository hosts (v0.29.185)
+
+#### package_repository_hosts
+
+Every package repository host a pom was asked of and that answered: the configured
+Maven repositories, and the ones collected repositories' build files declare. One row per
+host. It is the list a later release watches for signs that a host has been abandoned.
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `host` | TEXT (PK) | Analysis phase | The host, lower case, with its port when it has one. |
+| `first_fetched_at` | TIMESTAMPTZ | Analysis phase | When the host first answered a request for a pom. Set once. |
+| `last_answered_at` | TIMESTAMPTZ | Analysis phase | When it last answered (with a pom, or that it has none). Moves at most once per analysis that asks it. An analysis served from stored answers asks nothing and moves nothing. |
+
+#### repository_host_signals
+
+What the periodic repository host check last saw of each package repository host
+(0.29.189), one row per host and kind of check. The check is observation only: nothing
+reads this table to act, and a host is distrusted only by an administrator. `kind` is
+`unresolvable` (the name no longer resolves), `refused_address` (it resolves to an address
+the outbound-address rule refuses), `certificate` (its certificate is not valid for it)
+or, from 0.29.190, `registered_later` (its domain was registered after the first fetch
+from it), or, from 0.29.191, `threat_list` (it, or a domain above it, is on the configured
+threat list: a hint, never a verdict). A look that could not tell never replaces a definitive answer.
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `host` | TEXT (PK) | Repository host check | The host, lower case, with its port when it has one. |
+| `kind` | TEXT (PK) | Repository host check | What was looked for. |
+| `state` | TEXT | Repository host check | The last definitive answer: `signal` or `clear`; `unknown` when no look has yet been able to tell. |
+| `detail` | TEXT | Repository host check | Why, for a signal (at most 300 characters). |
+| `since` | TIMESTAMPTZ | Repository host check | When the current `state` began. It does not move while the same answer repeats. |
+| `checked_at` | TIMESTAMPTZ | Repository host check | The last look. |
+| `unknown_since` | TIMESTAMPTZ | Repository host check | Set while the most recent look could not tell (a timeout, a refused connection); NULL after a definitive answer. |
+| `unknown_detail` | TEXT | Repository host check | Why that look could not tell. |
+| `dismissed_at` | TIMESTAMPTZ | Administrator | When an administrator marked the signal as seen. A signal is on the attention list while `since` is later than this. |
+| `dismissed_by` | TEXT | Administrator | Who. |
+
+#### distrusted_repository_hosts
+
+The package repository hosts an operator has decided not to use (0.29.186). Nothing is
+fetched from a host listed here, and nothing it served earlier is used: a dependency
+whose version came through it has no version at its repository's next analysis, with
+`version_reason` `inherited_repository_refused`. The writer of `maven_pom_results` refuses
+a row for a listed host in its own statement. Only an administrator adds or removes a
+row; nothing distrusts a host by itself.
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `host` | TEXT (PK) | Administrator | The host, lower case, with its port when it has one. |
+| `distrusted_at` | TIMESTAMPTZ | Administrator | When. |
+| `distrusted_by` | TEXT | Administrator | Who. |
+| `note` | TEXT | Administrator | Why, in their words. |
+
+### Background walks (v0.29.173)
+
+#### program_markers
+
+One row per background walk that runs to an end and must not start over. The
+first is the package-key fill, with one row per table it walks
+(`package-key-fill:repo_deps_libyear`, `package-key-fill:repo_lockfile_packages`):
+it gives a package key to dependency rows written before 0.29.172, in
+`aveloxis serve`, a step at a time. A stopped `serve` resumes at `cursor_id`; a
+row with `completed_at` set is finished and is never walked again.
+
+| Column | Type | Populated by | Description |
+|---|---|---|---|
+| `marker` | TEXT (PK) | The walk | Which walk, and over what. |
+| `cursor_id` | BIGINT | The walk | The largest surrogate key visited so far. |
+| `bound_id` | BIGINT | The walk, at its first step | The largest surrogate key the table had when the walk began. Rows above it were written after the walk began and need nothing from it. |
+| `rows_done` | BIGINT | The walk | Rows visited that could be handled (for the fill: keyed, or already keyed). |
+| `rows_skipped` | BIGINT | The walk | Rows visited that could not (for the fill: no ecosystem or no name, left with no key). |
+| `started_at` | TIMESTAMPTZ | The walk | When it began. |
+| `updated_at` | TIMESTAMPTZ | The walk | When it last advanced. |
+| `completed_at` | TIMESTAMPTZ | The walk | When the cursor reached the bound. NULL while it is running or stopped. |
+
 ### Jira collection state (v0.29.0)
 
 #### jira_project_serve
@@ -2007,7 +2196,7 @@ is nullable and un-FK'd; `envelope` is the raw API issue JSON. Shares
 
 #### aveloxis_status
 
-One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (the 2026-06-09 `aveloxis_large` incident), which the scancode preflight now detects on start. See [ScanCode Worker §13](architecture/scancode.md) and [Troubleshooting](guide/troubleshooting.md).
+One row per Aveloxis subsystem, recording whether it is healthy. Upserted by **startup preflights** so a *system-level* failure — one where the subsystem will never produce useful output until an operator intervenes — is recorded and surfaced instead of silently degrading. The first (and currently only) subsystem is **scancode**: a corrupt host `libmagic` makes every scan spam gigabytes of warnings and wedge workers (a production incident of 2026-06-09), which the scancode preflight now detects on start. See [ScanCode Worker §13](architecture/scancode.md) and [Troubleshooting](guide/troubleshooting.md).
 
 | Column | Type | Source | Description |
 |--------|------|--------|-------------|

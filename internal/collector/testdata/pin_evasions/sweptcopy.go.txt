@@ -1,0 +1,20 @@
+package collector
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"os/exec"
+)
+
+func PinEvasionSWEPTCOPY(ctx context.Context, dir string) int {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-files")
+	swept, err := startSweptCommand(cmd)
+	if err != nil {
+		return 0
+	}
+	defer swept.Close()
+	var b bytes.Buffer
+	_, _ = io.Copy(&b, swept.Stdout)
+	return b.Len()
+}

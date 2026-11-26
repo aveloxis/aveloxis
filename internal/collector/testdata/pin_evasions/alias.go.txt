@@ -1,0 +1,5 @@
+package collector
+
+import stdos "os"
+
+func PinEvasionALIAS(dir string) int { b, _ := stdos.ReadFile(dir + "/package.json"); return len(b) }

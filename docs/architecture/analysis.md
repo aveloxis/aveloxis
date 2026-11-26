@@ -50,7 +50,7 @@ The dependency scanner walks the full checkout looking for manifest files across
 | `pom.xml` | Java (Maven) | XML parser extracts `<dependency>` elements |
 | `pyproject.toml` | Python (PEP 621) | TOML parser extracts `[project.dependencies]` |
 | `setup.py` | Python (setuptools) | Regex parser for `install_requires` |
-| `build.gradle` | Java (Gradle) | Parses `implementation`, `compile`, `api` declarations |
+| `build.gradle`, `build.gradle.kts` | Java (Gradle) | Reads every `dependencies` block (the build script's own included) as tokens, not by running it: each configuration; the string, map and Kotlin named-argument notations; `platform(...)`; versions held in a variable the file assigns. See "Gradle build files" below. |
 | `composer.json` | PHP (Composer) | JSON parser extracts `require` + `require-dev` |
 | `Package.swift` | Swift (SPM) | Parses `.package(url:)` declarations |
 | `*.csproj` | .NET (NuGet) | XML parser extracts `<PackageReference>` elements |
@@ -88,7 +88,7 @@ A libyear of 0 means the dependency is up to date. A libyear of 2.5 means the ve
 
 ### Supported registries
 
-Twelve registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, and SwiftPM (via GitHub releases). Examples:
+Thirteen registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases), and CRAN (via crandb). Examples:
 
 | Registry | URL Pattern | Ecosystems |
 |---|---|---|
@@ -151,7 +151,7 @@ How requests are made (since v0.29.56):
   directly inside a directory named `requirements` (that directory name
   byte-exact),
   and never `requirements.txt` itself in any casing. Both walks match
-  `requirements.txt` in any letter case (one normalizer, `canonicalManifestName`,
+  `requirements.txt` in any letter case (one normalizer, `manifest.CanonicalManifestName`,
   v0.29.68 — through v0.29.67 they matched it byte for byte and a
   `Requirements.txt` was collected by nothing), so `requirements/requirements.txt`
   and `Requirements.txt` are the ordinary manifest, gate or no gate. Every other
@@ -186,11 +186,251 @@ Results are stored in `aveloxis_data.repo_deps_libyear`:
 | `latest_release_date` | Release date of latest version |
 | `libyear` | Years between current and latest (float) |
 
+### A dependency keeps its row when the registry cannot answer (0.29.162)
+
+The inventory says what a repository depends on. The manifest states that; the registry only adds the latest version, the dates and the licence. So a dependency whose lookup fails keeps its row, with its purl built from the manifest, `libyear` NULL, and the reason in `libyear_status`:
+
+| `libyear_status` | Meaning |
+|---|---|
+| `resolved` | The registry answered and libyear was computed. |
+| `no_version` | No version could be worked out for the dependency. |
+| `no_release_date` | The package is known; the registry gave no date for the version. |
+| `not_on_registry` | The registry says there is no such package (a private package, a typo, a deleted one). |
+| `cannot_be_asked` | The coordinate is invalid, or the host is one the resolver does not support. |
+| `lookup_failed` | No answer this cycle (a timeout, a rate limit, a server error). Asked again at the next analysis. |
+| `no_timeline` | The ecosystem has no registry timeline (GitHub Actions). |
+
+A row written before 0.29.162 has no status. Three kinds of dependency get no row, and since 0.29.164 each is recorded in `repo_inventory_notes` with its kind and counted under the same kind in `repo_dependency_coverage.dependencies_without_row`:
+
+- `non_registry`: it comes from a local path, a workspace, git or a URL, so it is not the registry package of the same name.
+- `no_namespace`: no purl can be built for it (a Maven or Gradle coordinate with no group, for example).
+- `name_rejected`: the declared name is not a package name. Each ecosystem has a name grammar (`pkgid.ValidName`); a name that fails it, holds a byte that cannot be stored, or is longer than 2,704 bytes gets no row, and the registry is not asked about it. Until 0.29.164 the registry was the only check, by answering for nothing else.
+
+### The inventory is replaced whole (0.29.157)
+
+The libyear phase works in three steps: it walks the clone and parses every manifest, it looks every declared dependency up, and only then does it write. The write is one transaction (`ReplaceRepoLibyear`): the previous rows are copied to `repo_deps_libyear_history`, deleted, and the new rows inserted. Either all of that happens or none of it.
+
+So `repo_deps_libyear` is never partial. An analysis that stops before the write, for any reason (a `stop serve` during the lookups, a database error, a clone whose root cannot be read), has written nothing, and the previous inventory stands whole. The cost is that an interrupted analysis keeps none of its progress; the next one starts again.
+
+Before 0.29.157 the previous rows were moved to history first and each new row was inserted after its own registry lookup. A vulnerability scan that read the table part-way found most dependencies missing and closed their findings as if they had been fixed.
+
+Three consequences:
+
+- A clone whose root cannot be read fails the phase and keeps the previous inventory. It used to be logged and treated as a repository with no dependencies.
+- A registry answer or a requirement string that holds a byte PostgreSQL cannot store (a NUL, invalid UTF-8) is cleaned before the write and the row is kept. One such row used to be lost with a WARN.
+- A dependency whose *name* holds such a byte gets no row: a cleaned name is a different name, and may be another package's. The analysis logs one WARN per repository with the count.
+
+Since 0.29.159 the same transaction writes the repository's row in `repo_dependency_coverage`: how many manifests were found and parsed, which failed, how many dependencies were declared, and how many were given no row and why. An analysis that does not replace the inventory records when and why in that row's two attempt columns instead. A manifest that cannot be read is recorded there and logged; it used to contribute nothing, silently, for most formats.
+
+Since 0.29.160 each row names the manifest that declared it (`manifest_path`), and a manifest that cannot be read or parsed keeps its dependencies: the replace carries its previous rows into the new inventory, as new rows, for as long as the file exists and fails. Deleting the file ends that. A row written before 0.29.160 names no manifest and cannot be carried.
+
+The dependency-name inventory (`repo_dependencies`) is built the same way since 0.29.158: walked first, then replaced in one transaction (`ReplaceRepoDependencies`).
+
 ### Rate limiting
 
 Each stored row also carries the registry-reported `license` (normalized to SPDX downstream) and a spec-conformant `purl` — these feed the license table, SBOM generation, and vulnerability scanning. Registry queries are not subject to GitHub/GitLab rate limits. However, some registries (notably crates.io) have their own rate limits. The libyear calculator makes requests sequentially to avoid overwhelming registries.
 
 ---
+
+## Gradle build files
+
+A Gradle build file is a program. Aveloxis does not run it; from 0.29.192 it reads the file
+as tokens and takes the declarations of every `dependencies` block, including
+`buildscript { dependencies { ... } }` and blocks inside `subprojects`, `allprojects` or a
+condition.
+
+- **Every configuration** is read (`implementation`, `api`, `compileOnly`, `runtimeOnly`,
+  `kapt`, `annotationProcessor`, `classpath`, a variant's such as `debugImplementation`, a
+  custom one). The scope follows from the name: a configuration with `test` in its name is
+  `dev`; `classpath`, an annotation processor, `kapt` and `ksp` are `build`; the rest are
+  `runtime`.
+- **Each notation**: `'group:artifact:version'`; `group: 'g', name: 'a', version: 'v'`;
+  Kotlin's `group = "g", name = "a", version = "v"`; with or without parentheses, over
+  several lines, several on a line, with a closure after. A classifier and an `@aar`
+  extension are not part of the version.
+- **`platform(...)` and `enforcedPlatform(...)`** are marked as a BOM.
+- **Variables.** `"g:a:$v"`, `"g:a:${versions.lib}"` and `version: v` are looked up among
+  what the file assigns: `ext.v = ...`, an `ext { }` block, `def`/`val`, `ext['v']`,
+  `extra["v"]`, `set("v", ...)`, `val v by extra(...)`, a map (`versions = [lib: '1']`), and
+  a project property set at the top of the file (`version = '1.0'`, read back as
+  `${project.version}`).
+- **The rest of the build**, from 0.29.193, read in the clone only and never run:
+  `gradle.properties` in each directory from the clone's root down to the build file (the
+  nearest wins); `settings.gradle(.kts)` (`gradle.ext.x = ...`); the build files of the
+  directories above; a file applied with `apply from:` (relative, or from `$rootDir`; a URL
+  is not opened); version catalogues, `gradle/*.versions.toml`, with their accessors
+  (`libs.guava`, `libs.bundles.testing`, `libs.versions.kotlin.get()`); and constants in
+  `buildSrc` sources (`object Versions { const val kotlin = "1.9" }` is
+  `Versions.kotlin`, and `Deps.guava` may hold a whole coordinate). A symbolic link, or a
+  path that leaves the clone, is not followed.
+- **Platforms supply versions**, from 0.29.194. A dependency written with no version takes
+  the version its platform manages. A platform is a Maven BOM. It is fetched from the configured Maven
+  repositories (`collection.maven_repositories`), with its own parents and imports. From
+  0.29.216 it is never taken from a `pom.xml` of the repository, because Gradle asks its
+  repositories for a platform's coordinates and reads no pom of the checkout for them
+  (see "Gradle" below). The
+  build's BOMs are the `platform(...)` and `enforcedPlatform(...)` it declares, those a
+  build file above declares for `allprojects` or `subprojects`, Spring's
+  `dependencyManagement { imports { mavenBom "g:a:v" } }`, and
+  `spring-boot-dependencies` at the Spring Boot plugin's version when the
+  `io.spring.dependency-management` plugin is applied in the same `plugins` block. Such a
+  row has `version_source` `managed` and records the repository hosts it came through. A
+  dependency the build gave a version to is never answered for by a platform, read or not.
+  When a platform cannot be obtained, each dependency it might have managed says why
+  (`version_reason`). A platform read whole, its own imports included, leaves the
+  inventory with a `managed_unused` note, as a pom's BOM import does; one that was not
+  obtained whole stays a row.
+- **Repositories blocks are recorded**, from 0.29.195, in `repo_declared_repositories`
+  like a pom's: `maven { url ... }` in each spelling, `google()`, `mavenCentral()`
+  (recorded as Maven Central's address, which is the configured repository when you have
+  not removed it) and `gradlePluginPortal()`. A block of a build file serves its
+  dependencies; `buildscript { repositories }` and a settings file's `pluginManagement`
+  serve plugins and are recorded and not used; `allprojects`, `subprojects` and a settings
+  file's `dependencyResolutionManagement` serve the projects below. `mavenLocal()`,
+  `flatDir`, `ivy`, `jcenter()` (shut down), an address that is not https, one with
+  credentials (which are never stored) and one that cannot be read are recorded with the
+  reason and never fetched from. A platform's BOM is asked of the configured repositories
+  first, then of the build's own fetchable ones (the build file's, then those shared from
+  above), under `collection.declared_repository_fetch` and never from a distrusted host.
+- **Two values are no value.** A variable the same file assigns twice with different
+  values (one per branch of a condition, usually) is not known: choosing one would be a
+  guess, and in a name it would be another package.
+- **What is not a dependency declares nothing**: `project(':core')`, `files(...)`,
+  `fileTree(...)`, `gradleApi()`, a `constraints { }` block (a constraint pins a version
+  for something else to use; it is not a dependency), anything outside a `dependencies`
+  block.
+- **A version that cannot be read is unknown.** A variable the file does not assign, a
+  dynamic version (`1.+`, `latest.release`) or a range leaves the row with no version and
+  with what was written in its requirement. An expression is never stored as a version. A
+  coordinate whose group or artifact cannot be read in full is not recorded: half a name
+  is another package's name.
+
+## Maven: read as a tree (0.29.178)
+
+A Maven dependency is often declared with no `<version>`: Maven takes it from
+`dependencyManagement`. Aveloxis resolves that the way Maven does, from the poms in the
+repository:
+
+1. an entry in the same pom's `dependencyManagement`;
+2. an entry in a parent pom's, up the chain (the nearest pom wins);
+3. an entry in a BOM that any pom of the chain imports (`<scope>import</scope>`).
+
+Properties (`${...}`) are resolved across the chain in the context of the pom being read,
+so a property the child overrides changes what a parent's entry means for that child.
+
+A parent is the pom at the child's `<relativePath>` (default `../pom.xml`; a directory
+means its `pom.xml`), and only when its coordinates are the ones the child names. An empty
+`<relativePath/>` means the parent is not in the repository. A BOM has coordinates and no
+place: it is taken from the repository only when exactly one pom of the importing pom's
+own build, or of the build of the pom being read, has those coordinates (0.29.216,
+0.29.217; a build is the poms joined by `<modules>`, see "A pom that is not known" below). A fixture or template pom elsewhere in the
+repository that carries the same coordinates is not a candidate. Nothing is read above the
+clone and no symlink is followed.
+
+A version found this way is stored with `version_source` `managed`.
+
+**A parent or BOM that is not in the repository (0.29.182)** is fetched from the Maven
+repositories in `collection.maven_repositories`, in order: a parent with an empty
+`<relativePath/>`, one that is not at its place, every parent of a fetched pom, and a BOM
+import no pom of the importing pom's build has the coordinates of. Not fetched: a snapshot, a version
+range, an unresolved `${...}` reference, and a BOM whose coordinates two poms of that
+build share.
+
+Each answer is stored (`maven_pom_results`) and used before any request: a pom is fetched
+once, ever; a repository's "I have none" is asked again after a day. When asking again
+fails, the stored answer stands, so a repository's bad hour does not change a dependency's
+version (and with it the dependency's findings). A dependency that still has no version
+because a pom could not be obtained says why in `version_reason`; one that is simply
+managed nowhere has no version and no reason. A dependency declared inside a `<plugin>` has build scope.
+
+**A `dependencyManagement` entry is not a dependency (0.29.183).** It says which version a
+dependency would get. Until this release each entry, and each BOM import's own
+coordinate, was inventoried as a dependency, so an entry nothing uses had vulnerability
+findings no module was exposed to. Now, in a tree read whole:
+
+- an entry whose version a dependency took has no row of its own: that dependency is its row;
+- an entry whose version was applied to no dependency (unused, or used at a version that
+  overrides it), and a BOM import's own coordinate, is recorded as a note
+  (`repo_inventory_notes`, kind `managed_unused`); a finding recorded on it closes with the
+  reason `never_applied`.
+
+A tree is a pom, the poms its `<modules>` name, and every pom whose parent chain reaches
+one of them. It is read whole unless a pom of it could not be read or parsed, a parent or
+an imported BOM could not be obtained, a BOM import matches more than one pom, or
+`dependencyManagement` sits inside a profile. In any of those cases a module that was not
+seen may be the user of an entry, so that tree's entries stay inventoried and
+`repo_dependency_coverage.maven_trees_not_whole` names the tree with the reason. Other
+trees of the repository are unaffected: a broken fixture pom is its own tree.
+
+## The clone is read by a process of its own (0.29.213)
+
+Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So nothing in the collection worker reads what a repository's files say. Each analysis starts one child process (`aveloxis manifest-read`, the same program) and the child reads the clone.
+
+**What the child does.** Three readings, each ending with its own completion message: the dependency names (with a list of the lockfile paths present, read from the directory, not from the files), the declarations with their versions (the walk the sections above describe, with Maven's and Gradle's trees and Go's test-only imports), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.
+
+**What the child has.** The clone directory and the options, and nothing else: an empty environment, no configuration file, no database connection, no network. A Maven parent or BOM that is not in the clone is asked of the analysis over the same pipe; the analysis answers from the configured repositories under the rules it always applied, and counts the coordinates asked (at most 1,000 an analysis; one more is a failed lookup).
+
+**What the analysis trusts.** Nothing the child says. Every path must be inside the clone and in its plain form, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept. The lockfile results are checked as they arrive and written to a temporary file (at most sixteen times the lockfiles' own size), so the worker does not hold them in memory.
+
+**The two limits.** The child watches its own processor time and its Go heap against `collection.manifest_read_cpu_seconds` and `collection.manifest_read_memory_mb`, ten times a second, and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. Before any file is read, its size times what reading its format costs (a factor per format; 0.29.216 measured each again on dense files and added a margin of one half to what was measured: from 6 for `Package.resolved` to 52 for `pubspec.lock` among lockfiles, from 15 for `pom.xml` to 100 for `requirements.txt` among manifests; [the configuration page](../getting-started/configuration.md) has the table) is compared with the memory left: a file that cannot fit is not read. It is recorded as one manifest or lockfile that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution. A file that passes is read into one buffer of its size. The factors are the highest cost over the shapes that were measured, not a bound over every file a reader accepts. A file of a shape that was not measured can cost more than its factor: a lockfile whose entries are almost all dependency edges with one-letter names (measured in review at two to three and a half times the factor for `Cargo.lock`, `uv.lock`, `pdm.lock`, `poetry.lock`, `Gemfile.lock`, `renv.lock` and `gradle.lockfile`), a `requirements.txt` of one-letter lines (twice its factor), and text that is not a file of its kind at all, which can cost more before the reader rejects it (a `pnpm-lock.yaml` of collections nested nine thousand deep, 97 times its length). Such a file is let by when it is small, and the child is stopped at its memory limit, which ends that repository's reading and no other's. The limit is on the Go heap; the child's resident memory has been measured at up to about one and a half times the setting. The same rule covers a file a reader opens for itself (a Gradle catalogue or applied script, a Maven parent, a Cargo workspace root, a Composer path repository): refused, it makes the build that needs it unread, never silently smaller. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.
+
+**What a stopped reading means.** A reading that is stopped stores nothing of what it had read. One reading that is not stopped stores part: a lockfile too large to read is left out alone (the third row).
+
+| Stopped during | Stored inventory | Stored lockfile rows | Recorded |
+|---|---|---|---|
+| the names or the declarations | stays as it was | the lockfile phase still runs, with nothing read: rows of lockfiles still in the clone stay, and when the names pass had listed the clone's lockfiles before the stop, rows of lockfiles that are gone are removed | `last_attempt_result` is `manifest_read_cpu_limit`, `manifest_read_memory_limit`, `manifest_read_timed_out` or `manifest_read_failed`; and, because the lockfiles went unread too, `lockfiles_unread_reason` is `lockfiles_not_reached` (0.29.215: no reading of them began, so none of the four reasons above is said of them), with the caution as in the row below |
+| the lockfiles | replaced; a dependency keeps the locked version its stored lockfile row gives it, if that lockfile is still in the clone | rows of lockfiles still in the clone stay; rows of lockfiles that are gone are removed | `lockfiles_unread_reason` on the coverage record (0.29.214), an ERROR in the log naming the limit, and a caution on the repository's page; `last_attempt_result` is untouched, because the inventory was replaced |
+| nothing: the reading finished, and one or more lockfiles were too large for the memory left (0.29.215) | replaced | replaced: every other lockfile's rows are this reading's, and each lockfile left unread keeps the rows of its last reading | `lockfiles_unread_reason` is `lockfiles_too_large` (0.29.216; 0.29.215 recorded `manifest_read_memory_limit`), `lockfiles_read_at` is kept, an ERROR in the log names the lockfiles and the setting, and the caution is the third sentence below |
+
+There is a second way to the third row's reason (0.29.216): a repository whose lockfiles would store more than 4,000,000 rows. That snapshot is refused whole, so every stored lockfile row is the previous reading's, `lockfiles_unread_reason` is `lockfiles_too_large`, and the log names the row limit. The page shows the same sentence as for a lockfile too large to read, though here it is about every lockfile of the repository, memory is not the cause, and no setting raises the limit.
+
+The reading is tried again at the repository's next collection, not sooner. The first lockfile reading that completes sets `lockfiles_read_at` and clears the reason, and the caution goes.
+
+While a caution is up, no surface says the repository has no vulnerabilities: `clean_result` is false, and the counts are unchanged (0.29.216). The caution has three sentences. For `lockfiles_too_large` with lockfile rows stored: "Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date.", with no date, because no one date is true of the stored rows. With no lockfile row stored that reason takes the "could not be read" sentence below, since nothing stored can be out of date (0.29.217). For every other reason there are two, and which one is said is decided from what is stored (0.29.215). With lockfile rows stored for the repository: "Lockfiles last read <date>; the latest read did not finish (...). Versions and transitive dependencies may be out of date.", the date being when those rows were read (rows stored before 0.29.214 carry their own snapshot's date). With none stored: "Lockfiles could not be read (...). Transitive dependencies are not checked." The reason in the parentheses is the latest reading's.
+
+**Which program the child is.** On Linux the child is started from the running program's own image (`/proc/self/exe`), which stays what it was when the file on disk is replaced; if the link can be read and cannot be started, the file on disk is started and one WARN says so (a Linux host with no procfs at all cannot start the reader: the program's own path is read from the same place). On other systems it is started from the file on disk. The request carries the asking program's version and, when the child was started from a file on disk, its build (the file's length and time; 0.29.216: not asked on Linux, where the running image itself is started, so a `touch` of the file no longer matters there; elsewhere a `touch` reads as another build until `serve` is restarted); a child that is another version or another build refuses, the reading fails as `manifest_read_failed`, and the log says once, at ERROR, that the manifest reader is another version and `serve` must be restarted. At start, `serve` runs the reader once on an empty directory and logs `manifest reader ok` with the program, version, build and limits, or `manifest reader self-test FAILED` at ERROR with advice; `serve` goes on either way. The self-test has 30 seconds (0.29.216); past that it fails with "the reader did not answer about an empty directory within 30s". `manifest reader ok` is logged at Info.
+
+**What else a worker takes from a repository, and what bounds it (restated in 0.29.216).** A tool's output is as much the repository's as its files are, and so are the rows a worker reads back from the database. The 0.29.215 release note said a worker holds no unbounded repository data. That was wrong, and the claim is withdrawn: review found a Go module expansion held at 3.7 GiB with every bound of that release respected, lockfile rows that were written as a stream and then read back whole to build the SBOM, and scc's rows not counted at all. What is true is listed here. Every place in the collector that takes a file's content, a directory's entries or a subprocess's output is registered in the source with one of two statements, "bounded" with its number or "NOT BOUNDED" with what it grows with, and a new unregistered read fails the build. The numbers are provisional.
+
+| What the worker takes | Bounded? | The bound, or what it grows with |
+|---|---|---|
+| Go's module graph (`go list`, `go mod graph`) | bounded | For one repository, over all its modules and both commands: 2,000,000 lines, 128 MiB of line text, 8 KiB a line, and 64 MiB of output from one command. About 480 MiB held at the bounds. Past any of them the expansion is incomplete: the stored closure stays as it was and one WARN says so. A build of 280 modules and 607,803 edges, with lines about 100 bytes long, was measured to complete in about 127 MiB (about 155 MiB with lines of 160 bytes). The line bound is three times that build; the bound on text is about twice it, and is the one such a build meets first |
+| The walk for `go.mod` files | bounded | 5,000,000 directory entries, 256 levels deep |
+| scc's rows (one a file) | bounded | 5,000,000 rows, about 1 GiB. A report of more files fails the scan through its usual failure path and nothing is written |
+| A scancode report | bounded | 256 MiB, held about two and a half times over while it is ingested. The number comes from an estimate, not from a real report. Past it the run fails |
+| A scorecard report | bounded | 16 MiB. Past it the run fails |
+| A repository's lockfile rows (lockfiles, packages, edges, the Go closure, carried rows) | bounded in rows | 4,000,000 for one repository: four times the largest snapshot of the fleets it was sized on (920,550 rows). A snapshot over it is refused whole: the previous rows stand, the reading is recorded `lockfiles_too_large` and the caution shows. No setting raises it |
+| One lockfile's parsed entries and edges | NOT bounded by a number of its own | Grows with the largest lockfile the reader's memory limit lets it read. Measured before 0.29.216: 556 MiB for a 60 MB `pnpm-lock.yaml`; a limit of 1024 MiB reads a `pnpm-lock.yaml` of at most about 22 MiB, and the 2048 default of 0.29.217 one of about 44.5 MiB, at which nothing was measured |
+| The names and declarations of a repository's manifests | NOT bounded by a number of its own | Held whole until the analysis ends. Grows with the count of manifests and declarations. Measured at a limit of 1024 MiB, the default until 0.29.217 (not measured at 2048): 507 MiB of names, 347 MiB of declarations |
+| One batch of the git log (500 commits) | NOT bounded in bytes | A commit holds a row for every file it touched. Measured: 963 MiB for one batch |
+| Lockfile rows read back: SBOM generation, the vulnerability scan's targets, the rows carried for a lockfile that failed | NOT bounded in bytes | At most 4,000,000 rows for a snapshot written from 0.29.216 on. An SPDX document was measured at 1.6 GiB for 1,000,000 rows, so about 6.4 GiB at the limit. The scan's targets were measured at 396 MiB for 240 MB of lockfiles |
+| A forge's answer to one GraphQL request | not this program's to bound | Read whole; its size is the forge's page |
+
+Bounding a worker's memory as a whole (SBOM generation, the scan's targets, code counting, the git log, and what the worker holds of the reader's result) is planned work and is not in this release. Lockfile rows are written to the database one lockfile at a time inside one transaction, from the temporary file. The error output kept from a tool is bounded too: a git clone or fetch, scorecard and scancode's clone keep the first and last 16 KiB; a command whose output is streamed (git log, the Go commands) keeps the first 2 KiB; scancode's own run keeps the first 1 MiB and the last 256 KiB.
+
+**No budgets inside the readers.** 0.29.195 to 0.29.212 counted work, and later memory and remote requests, inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file's correctness needs: the largest build file read (8 MiB), the length of a parent chain (32), the size of an interpolated value.
+
+**A pom that is not known.** A managed version is taken from a parent or a BOM only if every pom Maven would consult before it is known not to manage the artifact. A parent or BOM is looked for at its `relativePath` and then by its coordinates, before any package repository is asked. From 0.29.216 the lookup by coordinates is only among the poms of a build: the poms joined by `<modules>` entries, in either direction. Two builds are looked in: the build of the pom that names the coordinates, and (0.29.217) the build of the pom being read. The second matters for a parent that is used through `relativePath` and that no pom lists as a module: by the first rule alone it is a build of its own, and a BOM it imports from the build its child belongs to was not found. This stands for what Maven resolves without a repository, the projects of the build being run; which build Maven is run on is not known here. When the two builds together hold two poms with the coordinates, neither is taken. A pom elsewhere in the repository (a test fixture, an example, an archetype template, a vendored build) is never taken, whatever coordinates it gives itself; 0.29.215 took any one pom of the repository with the coordinates, and a fixture that called itself a published parent had its versions stored. A pom fetched from a repository is part of no build of the clone, so its parent and its imports are asked of the repositories and nothing of the clone is taken for them. A repository whose parent or BOM sits in the clone without being a module of the build now gets the published pom, or `inherited_not_found`.
+
+A pom whose content is not known withholds: its lookup failed; its repository is refused; it was never asked for (a snapshot, a version range, `LATEST` or `RELEASE`, a coordinate that cannot be resolved or that no request can be built from, no repository configured, a repository the build declares that is not asked: `http`, credentials, `mavenLocal`, or `collection.declared_repository_fetch` off); it is in the build and could not be read (poms declared ISO-8859-1, Windows-1252, US-ASCII or XML 1.1 are read; other declared encodings, such as ISO-8859-15, are not, and withhold); two poms of the build carry its coordinates; it lies beyond a chain of 32 parents or 32 nested imports, or in a parent or import cycle. So does a pom that manages the artifact at a version it cannot give. The dependency then has no version and `version_reason` says why. A pom that every repository answered "not found" for does not withhold: that is an answer. A tree in which anything was withheld is reported not whole.
+
+**Profiles (0.29.216).** The build that is read is Maven's default build. A profile with `<activeByDefault>true</activeByDefault>` is applied as Maven applies it: its properties, its managed entries and its imports. Any other profile changes nothing, because which profiles a build activates (by property, JDK, operating system or file) is not known here. 0.29.215 withheld every version a profile might manage; those versions are back. `profile_managed` means one thing: a pom's own profile that is active by default declares the dependency with a version, so that pom's own declaration of it with no version is not given the managed version. A module below that declares the dependency itself is not affected (0.29.217; 0.29.215 and 0.29.216 withheld its version too). The `<modules>` of a default profile are not joined into the build, so a parent or BOM listed only there is not found by its coordinates. A `<properties>` element inside a profile's `<build>` or `<reporting>` is a plugin's: it is not the profile's and not the pom's, and is not read (0.29.218; 0.29.217 took it for a property of the pom, so it stood over the pom's own properties written after `<profiles>`). The reader of a single file finds where a profile, its `<build>` and its `<reporting>` end by the first closing tag of that name, so this holds up to that tag only (see the known differences). `<activeByDefault>` is read wherever it stands in the profile and in any case (0.29.217). Maven also deactivates default profiles when another profile of the same pom is activated; that cannot be known, and the default build is what is modelled.
+
+Known differences from Maven: a pom listed by two aggregators joins both builds; a fetched pom finds nothing in the clone, where Maven's reactor would serve a module of the running build; profiles activated by JDK, operating system, file or property are taken as inactive; the modules a default profile lists are not part of the build; a pom of the repository whose file is not named `pom.xml` and that is reached only through a `relativePath` finds no parent or BOM in the repository by coordinates; where a plugin's configuration inside a profile's `<build>` itself holds a `<build>` element (the fabric8 docker-maven-plugin's `<images><image><build>`) or a `<profile>` element (the spring-boot-maven-plugin's `<configuration><profiles><profile>`), the reader of a single file takes the profile's build, or the profile, to end at that inner closing tag, and a plugin-configuration `<properties>` element written after it is still read as a property (the profile's, or the pom's), where Maven reads it as the plugin's.
+
+**Gradle (0.29.215, corrected in 0.29.216).** Two mechanisms are told apart. *Platforms* (`platform`, `enforcedPlatform`): the highest recommended version wins, by Gradle's version ordering (numeric parts numerically, a number above a word, and `dev` < other words < `rc` < `snapshot` < `final` < `ga` < `release` < `sp`); one enforced version overrides; a platform that could not be obtained leaves a dependency with NO written version not determined. *The Spring dependency-management plugin* (`mavenBom` imports and Spring Boot's own BOM): BOMs apply in order, Boot's first, and the last that manages the artifact answers; explicit `dependency` entries override imports; only a BOM that is not known AFTER the answer withholds. When both mechanisms manage one artifact at different versions, or two versions cannot be ordered, the version is not determined (`platforms_disagree`). A value longer than is read gives `value_not_read`.
+
+What 0.29.216 changed:
+
+- **A written version stands.** It is stored as written. 0.29.215 raised it to a platform's higher version; that is right in Gradle only for a platform on the same configuration, which is not modelled, so the rule was removed.
+- **The Spring plugin's property overrides are read.** A BOM entry whose version is written `${x.version}` takes the project's property when the project sets one: `ext['x.version'] = '...'`, `ext { set('x.version', '...') }`, Kotlin's `extra["x.version"] = "..."`, and `bomProperty("x.version", "...")` or `bomProperties(...)` inside the import. A value from `gradle.properties` also counts, because it is in the same variable scope, and so does what a build file above sets (not for a name that is an entry of a map in the build file being read: see below). In the build file being read only an assignment that is sure is taken (0.29.217): made at the top of the file, once, with a literal value. A property that file sets in any other way (inside `subprojects { }` or another block, under a condition, twice with different values, or to something that is not a literal, such as a call or an environment variable) is set by the build to a value that is not known: the dependencies the BOM manages through that property have no version, and `version_reason` is `value_not_read`. That includes a property that is the version of a BOM the Spring BOM imports (such as `jackson-bom.version`): what that BOM manages has no version, with `value_not_read`, and no repository is asked for it (0.29.218; 0.29.217 said `inherited_not_found`). The same reason is given to what a BOM imported after that one would manage, and to a dependency that nothing manages, because which BOM answers for a dependency is not known while one of them is not read. An entry of a map (`ext.slf4j = [version: '...']`) is not a project property and changes nothing, and neither is a dotted write of that entry (`ext.slf4j.version = '...'`, which puts a value into the map; 0.29.219: 0.29.218 took it for the property and stored its value). A name that is a map's entry and that the file also assigns by a quoted key (`ext['slf4j.version'] = '...'`, `set('slf4j.version', '...')`, `extra["slf4j.version"] = "..."`) is judged by those quoted-key assignments alone (0.29.218). A name that is a map's entry and has no quoted-key assignment in the file is not looked for in `gradle.properties` or in a build file above. These narrower rules are for the build file being read only. A property that reaches a project from a build file above it, or from a script one of them applies, is read by the earlier, looser rule (see the known differences). This applies to the Spring plugin only, not to `platform(...)`.
+- **A platform or `mavenBom` named by coordinates is read from the repositories only.** A `pom.xml` of the repository is never taken for it: Gradle resolves those coordinates from the build's repositories and reads no pom of the checkout. A repository that keeps its BOM as a `pom.xml` and consumes it from Gradle at a version that is not published (a snapshot, or with no repository to ask) gets no version for those dependencies, with `inherited_not_found`.
+- **Scope.** What `subprojects { }` declares (a platform, a `mavenBom`, a `dependencyManagement` entry) is for the subprojects and not for the root project's own dependencies; `allprojects { }` is for both. Management written for one configuration (`dependencyManagement { <configuration> { ... } }`) is for that configuration's rows only.
+- **Apply order, one sure case.** A script's assignment stands over the file's own only when the file's assignment is a top-level `ext`/`extra` property written before its first `apply from:`, every `apply from:` is a top-level statement, and the script's assignment is a top-level property too. In every other arrangement the file's own value is read, as before 0.29.215.
+
+Known differences from Gradle: a written version is not raised or replaced by a platform's; `overriddenByDependencies = false` is not read; the apply-order shapes outside the sure case keep the file's value; a project property that a Spring BOM uses and that the build file sets twice, in a block or under a condition is not read (Gradle takes the value the build ends with), and the dependencies managed through it have no version (`value_not_read`), also in the root project when the assignment stands inside `subprojects { }` and is not the root's at all. A Spring BOM property that a project takes from a build file above it, or from an applied script, is read by the looser rule that the file itself followed until 0.29.216: set there to something that is not a literal, or twice, the BOM's own version is stored with no reason; set there under a condition or inside another block, the value is taken as if unconditional; set there as an entry of a map (`ext.log4j2 = [version: '...']`), it is taken for the property `log4j2.version`. A property named like an entry of a map in the build file being read (and given no quoted-key assignment there) is not taken from `gradle.properties` or from a build file above, where Gradle would take it: the BOM's own version is stored. A dotted assignment is read as the property `log4j2.version` when no map in the file gives that entry a value that is read: with no map of that name (`ext.log4j2.version = '...'` alone), with an empty map, or with a map that does not list the key or gives it a value that is not a literal. Gradle, when a map of that name exists at all, puts the value into that map and the BOM's own version stands; with an empty map, or one that does not give the key a literal, this reader differs.
+
+These Maven and Gradle rules are from the tools' documentation; they were not checked against a running Maven or Gradle.
 
 ## Code complexity via scc
 

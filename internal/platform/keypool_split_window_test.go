@@ -25,7 +25,7 @@ func exhausted403(reset int64) *http.Response {
 }
 
 // TestZeroRemaining403WithEarlierResetStillBenchesTheKey replays the
-// chaoss.tv 2026-09-17 sequence at the pool level. One token, labelled
+// production sequence of 2026-09-17 at the pool level. One token, labelled
 // `core` on every response, was seen with two different windows: a
 // later-reset response with a high balance (the breadth worker's
 // /users/{login}/events traffic carried remaining ~4,305 and a reset about

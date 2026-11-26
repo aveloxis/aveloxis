@@ -172,6 +172,27 @@ func adminOperations() map[string]func(*Service, context.Context, Actor) error {
 		"DeleteCollection":          func(s *Service, ctx context.Context, a Actor) error { return s.DeleteCollection(ctx, a, 1) },
 		"AddGroupToCollection":      func(s *Service, ctx context.Context, a Actor) error { return s.AddGroupToCollection(ctx, a, 1, 2) },
 		"RemoveGroupFromCollection": func(s *Service, ctx context.Context, a Actor) error { return s.RemoveGroupFromCollection(ctx, a, 1, 2) },
+		// 0.29.187: the package repository hosts.
+		"ListRepositoryHosts": func(s *Service, ctx context.Context, a Actor) error {
+			_, err := s.ListRepositoryHosts(ctx, a, nil)
+			return err
+		},
+		"PreviewRepositoryHostDistrust": func(s *Service, ctx context.Context, a Actor) error {
+			_, _, err := s.PreviewRepositoryHostDistrust(ctx, a, "repo.example")
+			return err
+		},
+		"DistrustRepositoryHost": func(s *Service, ctx context.Context, a Actor) error {
+			_, _, err := s.DistrustRepositoryHost(ctx, a, "repo.example", "")
+			return err
+		},
+		"RestoreRepositoryHost": func(s *Service, ctx context.Context, a Actor) error {
+			_, err := s.RestoreRepositoryHost(ctx, a, "repo.example")
+			return err
+		},
+		"DismissRepositoryHostSignals": func(s *Service, ctx context.Context, a Actor) error {
+			_, err := s.DismissRepositoryHostSignals(ctx, a, "repo.example")
+			return err
+		},
 	}
 }
 

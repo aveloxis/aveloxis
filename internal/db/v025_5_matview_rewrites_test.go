@@ -14,7 +14,7 @@ import (
 // v0.25.5 — source-contract tests for the matview rewrites + four
 // new indexes. These pin the SHAPE of each fix so a future refactor
 // can't accidentally revert the work that took explorer_new_contributors
-// from 16h+ to 1-3h on aveloxis_large.
+// from 16h+ to 1-3h on the larger production database.
 
 // TestLibyearViewsHaveProperJoinCondition pins the v0.25.5 fix to the
 // libyear trio. Pre-v0.25.5 they cross-joined repos × repo_deps_libyear

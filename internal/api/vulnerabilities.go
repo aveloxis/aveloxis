@@ -24,8 +24,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/collector"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 type vulnJSON struct {
@@ -80,6 +82,17 @@ type vulnJSON struct {
 	// resolved (field omitted).
 	IntroducedByTotalRoots int    `json:"introduced_by_total_roots,omitempty"`
 	DependencyScope        string `json:"dependency_scope,omitempty"`
+
+	// 0.29.196 (summary/70, 4.8): decided by vulnclass, not by the client.
+	// Class is the finding's one class (closed, self,
+	// version_not_determined, exposure). Evidence is an exposure finding's
+	// grade (in_use, lowest_allowed, floating_ref, not_classified); absent
+	// for every other class. ClosedReason is why a closed finding closed
+	// when that was not a fix; absent for a current finding and for an
+	// ordinary resolution.
+	Class        string `json:"class"`
+	Evidence     string `json:"evidence,omitempty"`
+	ClosedReason string `json:"closed_reason,omitempty"`
 }
 
 // scannedVersionFromPurl derives the version a finding was scanned at
@@ -101,17 +114,6 @@ func scannedVersionFromPurl(purl string) string {
 		return ""
 	}
 	return purl[lastAt+1:]
-}
-
-// advisoryURLs returns the canonical description pages for a finding:
-// osv.dev resolves every id OSV emits (GHSA, PYSEC, GO-, RUSTSEC-…);
-// opencve is the CVE-specific page the operator pointed at.
-func advisoryURLs(vulnID, cveID string) (osv, cve string) {
-	osv = "https://osv.dev/vulnerability/" + vulnID
-	if cveID != "" {
-		cve = "https://app.opencve.io/cve/" + cveID
-	}
-	return osv, cve
 }
 
 func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Request) {
@@ -152,25 +154,7 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 	out := make([]vulnJSON, 0, len(rows))
 	counts := vulnCounts(rows)
 	for _, v := range rows {
-		osvURL, cveURL := advisoryURLs(v.VulnID, v.CVEID)
-		out = append(out, vulnJSON{
-			VulnID: v.VulnID, CVEID: v.CVEID,
-			PackageName: v.PackageName, PackagePurl: v.PackagePurl,
-			Ecosystem: v.Ecosystem, Severity: v.Severity,
-			CVSSScore: v.CVSSScore, CVSSVector: v.CVSSVector,
-			Summary: v.Summary, Details: v.Details,
-			ScannedVersion: scannedVersionFromPurl(v.PackagePurl),
-			FixedVersion:   v.FixedVersion, IntroducedVersion: v.IntroducedVersion,
-			Source: v.Source, Aliases: v.Aliases,
-			References:  json.RawMessage(v.ReferencesJSON),
-			AdvisoryURL: osvURL, CVEURL: cveURL,
-			FirstDetectedAt: v.FirstDetectedAt, LastSeenAt: v.LastSeenAt,
-			ResolvedAt:          v.ResolvedAt,
-			DeclaredRequirement: v.DeclaredRequirement,
-			VersionResolution:   v.VersionResolution,
-			DependencyKind:      v.DependencyKind,
-			DependencyScope:     v.DependencyScope,
-		})
+		out = append(out, vulnJSONOf(v))
 		// Round-19: CURRENT findings only. The chain index is built
 		// from the CURRENT lockfile edges; a resolved-historical
 		// finding describes an OLDER snapshot, so attaching today's
@@ -198,18 +182,59 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 		s.partialAnswer(r, serr, "vuln scan stamp lookup failed", "repo_id", repoID, "error", serr)
 		scannedAt = nil
 	}
-	s.writeJSON(w, r, map[string]any{
+	resp := map[string]any{
 		"repo_id":            repoID,
 		"vulnerabilities":    out,
 		"scanned_at":         scannedAt,
 		"lockfile_certainty": certainty,
 		"counts":             counts,
-	})
+	}
+	// 0.29.197 (summary/70, 4.8): the coverage state, decided by the one
+	// function the statistics answers use. When an input cannot be read the
+	// object is left out and the answer is partial: a client then shows
+	// "coverage not known", never "not yet scanned" (SR-5).
+	inputs, cerr := s.store.GetRepoCoverageInputs(r.Context(), []int64{repoID})
+	if cerr != nil {
+		s.partialAnswer(r, cerr, "coverage lookup failed", "repo_id", repoID, "error", cerr)
+	} else if in, found := inputs[repoID]; found {
+		in.CurrentExposure = counts["current"]
+		resp["coverage"] = vulnclass.Coverage(in)
+	}
+	s.writeJSON(w, r, resp)
+}
+
+// vulnJSONOf is one finding as the API sends it, less the chains the
+// handler adds from the lockfile edges. Its class, its evidence grade and
+// its closing reason are decided by vulnclass, so a client that keys on them
+// cannot disagree with the server's counts (0.29.196).
+func vulnJSONOf(v *model.VulnerabilityRow) vulnJSON {
+	osvURL, cveURL := collector.AdvisoryURLs(v.VulnID, v.CVEID)
+	return vulnJSON{
+		VulnID: v.VulnID, CVEID: v.CVEID,
+		PackageName: v.PackageName, PackagePurl: v.PackagePurl,
+		Ecosystem: v.Ecosystem, Severity: v.Severity,
+		CVSSScore: v.CVSSScore, CVSSVector: v.CVSSVector,
+		Summary: v.Summary, Details: v.Details,
+		ScannedVersion: scannedVersionFromPurl(v.PackagePurl),
+		FixedVersion:   v.FixedVersion, IntroducedVersion: v.IntroducedVersion,
+		Source: v.Source, Aliases: v.Aliases,
+		References:  json.RawMessage(v.ReferencesJSON),
+		AdvisoryURL: osvURL, CVEURL: cveURL,
+		FirstDetectedAt: v.FirstDetectedAt, LastSeenAt: v.LastSeenAt,
+		ResolvedAt:          v.ResolvedAt,
+		DeclaredRequirement: v.DeclaredRequirement,
+		VersionResolution:   v.VersionResolution,
+		DependencyKind:      v.DependencyKind,
+		DependencyScope:     v.DependencyScope,
+		Class:               string(vulnclass.Of(v)),
+		Evidence:            vulnclass.Evidence(v),
+		ClosedReason:        v.ClosedReason,
+	}
 }
 
 // vulnCounts splits a repository's findings for the payload's counts.
 // current/critical/direct/transitive/dev/runtime count EXPOSURE only
-// (db.IsExposureFinding): a repo with 3 direct and 400 transitive findings
+// (vulnclass.Exposure): a repo with 3 direct and 400 transitive findings
 // never reads as "403" (v0.27.21 C1 — the GUI leads with direct; a pre-C1
 // row with an empty kind counts as direct); the project's own release advisories count as
 // self (v0.27.29); and the unknown-version advisories of unpinned
@@ -217,17 +242,25 @@ func (s *Server) handleRepoVulnerabilities(w http.ResponseWriter, r *http.Reques
 // advisory for the package came back) count as unknown_version, with
 // their critical subset apart. runtime = exposure on runtime-scope deps
 // (v0.27.46, the GUI's headline).
-func vulnCounts(rows []*db.VulnerabilityRow) map[string]int {
+func vulnCounts(rows []*model.VulnerabilityRow) map[string]int {
 	c := map[string]int{"current": 0, "resolved": 0, "critical": 0, "direct": 0, "transitive": 0,
 		"dev": 0, "runtime": 0, "self": 0, "unknown_version": 0, "unknown_version_critical": 0}
+	// "resolved" is every closed finding; its parts say which are fixes
+	// (resolved_unlabelled) and which closed for a reason that is not one.
+	// The parts always sum to it.
+	c[vulnclass.ResolvedUnlabelledKey], c[vulnclass.ResolvedOtherReasonKey] = 0, 0
+	for _, reason := range vulnclass.ClosedReasons {
+		c[vulnclass.ResolvedCountKey(reason)] = 0
+	}
 	for _, v := range rows {
-		critical := v.Severity == "CRITICAL" || v.CVSSScore >= 9.0
-		switch {
-		case v.ResolvedAt != nil:
+		critical := vulnclass.IsCritical(v)
+		switch vulnclass.Of(v) {
+		case vulnclass.Closed:
 			c["resolved"]++
-		case v.DependencyKind == "self":
+			c[vulnclass.ResolvedCountKey(v.ClosedReason)]++
+		case vulnclass.Self:
 			c["self"]++
-		case db.IsUnknownVersionFinding(v):
+		case vulnclass.VersionNotDetermined:
 			c["unknown_version"]++
 			if critical {
 				c["unknown_version_critical"]++
@@ -250,145 +283,6 @@ func vulnCounts(rows []*db.VulnerabilityRow) map[string]int {
 		}
 	}
 	return c
-}
-
-// annotateCycloneDXWithVulns appends a CycloneDX `vulnerabilities`
-// array to a generated SBOM, covering the repo's CURRENT (unresolved)
-// findings. Components with a purl carry it as bom-ref (purl-less ones
-// carry an aveloxis: ref and are never scanned, v0.29.58), so affects.ref
-// matches directly. Resolved-historical findings are excluded — the
-// SBOM describes the repository as it stands.
-func annotateCycloneDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]byte, error) {
-	var doc map[string]any
-	if err := json.Unmarshal(sbom, &doc); err != nil {
-		return nil, err
-	}
-	entries := make([]map[string]any, 0, len(vulns))
-	for _, v := range vulns {
-		if v.ResolvedAt != nil {
-			continue
-		}
-		// v0.27.29: self-advisories describe the repo's OWN releases,
-		// not this SBOM's dependency components — their versionless
-		// purls match no component bom-ref, so affects.ref would
-		// dangle. The SBOM vulnerability array stays dependency-only.
-		if v.DependencyKind == "self" {
-			continue
-		}
-		osvURL, _ := advisoryURLs(v.VulnID, v.CVEID)
-		entry := map[string]any{
-			"id":     v.VulnID,
-			"source": map[string]any{"name": v.Source, "url": osvURL},
-			"ratings": []map[string]any{{
-				"score":    v.CVSSScore,
-				"severity": cdxSeverity(v.Severity),
-				"method":   cvssMethodFromVector(v.CVSSVector),
-				"vector":   v.CVSSVector,
-			}},
-			"description": v.Summary,
-			"affects":     []map[string]any{{"ref": v.PackagePurl}},
-		}
-		if v.FixedVersion != "" {
-			entry["recommendation"] = "Upgrade " + v.PackageName + " to " + v.FixedVersion + " or later"
-		}
-		if db.IsUnknownVersionFinding(v) {
-			// v0.29.70: VEX under_investigation — CycloneDX's in_triage.
-			entry["analysis"] = map[string]any{"state": "in_triage", "detail": db.UnknownVersionDetail}
-		}
-		entries = append(entries, entry)
-	}
-	doc["vulnerabilities"] = entries
-	return json.MarshalIndent(doc, "", "  ")
-}
-
-// annotateSPDXWithVulns attaches the repo's CURRENT (unresolved)
-// findings to a generated SPDX 2.3 document as package-level
-// externalRefs (referenceCategory SECURITY, referenceType advisory —
-// the spec's conformant vehicle; SPDX 2.3 has no native vulnerability
-// section, which is why ?vulns=1 used to 400 for spdx). Findings
-// match their package by purl first, then by package name; findings
-// matching no package are skipped (an SPDX externalRef must hang off
-// a real package — there is no dangling-ref form). Self-advisories
-// and resolved-historical findings are excluded, mirroring the
-// CycloneDX annotation. SPDX 3.0's security profile is the eventual
-// richer home.
-func annotateSPDXWithVulns(sbom []byte, vulns []*db.VulnerabilityRow) ([]byte, error) {
-	var doc map[string]any
-	if err := json.Unmarshal(sbom, &doc); err != nil {
-		return nil, err
-	}
-	byPurl := map[string][]*db.VulnerabilityRow{}
-	byName := map[string][]*db.VulnerabilityRow{}
-	for _, v := range vulns {
-		if v.ResolvedAt != nil || v.DependencyKind == "self" {
-			continue
-		}
-		if v.PackagePurl != "" {
-			byPurl[v.PackagePurl] = append(byPurl[v.PackagePurl], v)
-		}
-		if v.PackageName != "" {
-			byName[v.PackageName] = append(byName[v.PackageName], v)
-		}
-	}
-	pkgs, _ := doc["packages"].([]any)
-	for _, p := range pkgs {
-		pkg, ok := p.(map[string]any)
-		if !ok || pkg["SPDXID"] == "SPDXRef-RootPackage" {
-			continue
-		}
-		refs, _ := pkg["externalRefs"].([]any)
-		purl := ""
-		for _, r := range refs {
-			if ref, ok := r.(map[string]any); ok && ref["referenceType"] == "purl" {
-				purl, _ = ref["referenceLocator"].(string)
-			}
-		}
-		matched := byPurl[purl]
-		if len(matched) == 0 {
-			if name, _ := pkg["name"].(string); name != "" {
-				matched = byName[name]
-			}
-		}
-		seen := map[string]bool{}
-		for _, v := range matched {
-			osvURL, _ := advisoryURLs(v.VulnID, v.CVEID)
-			if osvURL == "" || seen[osvURL] {
-				continue
-			}
-			seen[osvURL] = true
-			ref := map[string]any{
-				"referenceCategory": "SECURITY",
-				"referenceType":     "advisory",
-				"referenceLocator":  osvURL,
-			}
-			if db.IsUnknownVersionFinding(v) {
-				// v0.29.70: SPDX 2.3 has no status field; the comment says
-				// what CycloneDX's in_triage does.
-				ref["comment"] = db.UnknownVersionDetail
-			}
-			refs = append(refs, ref)
-		}
-		if len(refs) > 0 {
-			pkg["externalRefs"] = refs
-		}
-	}
-	return json.MarshalIndent(doc, "", "  ")
-}
-
-// cdxSeverity maps OSV severity labels to CycloneDX's lowercase enum.
-func cdxSeverity(s string) string {
-	switch s {
-	case "CRITICAL":
-		return "critical"
-	case "HIGH":
-		return "high"
-	case "MEDIUM", "MODERATE":
-		return "medium"
-	case "LOW":
-		return "low"
-	default:
-		return "unknown"
-	}
 }
 
 // handleRepoScorecard serves the current OpenSSF Scorecard checks for
@@ -422,24 +316,4 @@ func (s *Server) handleRepoScorecard(w http.ResponseWriter, r *http.Request) {
 		resp["as_of"] = asOf
 	}
 	s.writeJSON(w, r, resp)
-}
-
-// cvssMethodFromVector derives the CycloneDX rating method from the
-// stored vector's prefix. v0.27.39 (summary/18 Phase 2 + the operator's
-// standards-conformance direction): the method was hardcoded "CVSSv31"
-// even when the score was computed from a v3.0 or v2 vector — wrong
-// provenance in the exported document.
-func cvssMethodFromVector(vector string) string {
-	switch {
-	case strings.HasPrefix(vector, "CVSS:3.1"):
-		return "CVSSv31"
-	case strings.HasPrefix(vector, "CVSS:3.0"):
-		return "CVSSv3"
-	case strings.HasPrefix(vector, "CVSS:4"):
-		return "CVSSv4"
-	case strings.HasPrefix(vector, "AV:"): // v2 vectors have no CVSS: prefix
-		return "CVSSv2"
-	default:
-		return "other"
-	}
 }

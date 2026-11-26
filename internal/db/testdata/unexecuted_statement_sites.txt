@@ -1,0 +1,8 @@
+# The store's library calls that take SQL through which no DB-tier test of the WHOLE SUITE sends a statement
+# (the union of every package's run: scripts/skip-census.sh; internal/db: TestTheSuiteReachesEveryStatementSite).
+# THIS FILE ONLY SHRINKS. One call per line: file, declaration, callee, #place among that declaration's such calls.
+#
+# EMPTY since 0.29.214 (operator decision 2026-11-20: the 96 calls listed here were given tests, not kept).
+# It stays empty: a new call that no test reaches fails the closing suite until a DB-tier test sends a
+# statement through it and asserts what the statement did. A line here needs the operator's review and,
+# after the call's name, a reason why no test can reach it.

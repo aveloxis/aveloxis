@@ -20,7 +20,6 @@ import (
 	"github.com/aveloxis/aveloxis/internal/config"
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Stage 1 of summary/59 (eval-3 target 2, the error contract copied from
@@ -47,7 +46,7 @@ func TestUserOrgPassErrorContract(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

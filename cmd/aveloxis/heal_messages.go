@@ -5,7 +5,7 @@
 // message_heal_worklist captured by the msg_kind migration — messages
 // rows whose text/author were silently overwritten by cross-kind ID
 // collisions under the old two-column arbiter (198,237 rows on
-// aveloxis_large). Refetches both claiming parents per row via the
+// the larger production database). Refetches both claiming parents per row via the
 // per-item comment endpoints (parent-deduplicated, so API cost is per
 // distinct issue/PR, not per collision), deletes the stale cross-kind
 // bridge links, and stamps healed_at. Resumable: interrupted or failed

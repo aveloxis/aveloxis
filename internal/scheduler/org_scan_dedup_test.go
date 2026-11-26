@@ -84,7 +84,7 @@ func newOrgScanFixture(t *testing.T) (*orgScanFixture, context.Context) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

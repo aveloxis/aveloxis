@@ -95,6 +95,16 @@ a half against its own reference table below:
     "matview_rebuild_day": "saturday",
     "matview_rebuild_skip_dm_aggregates": false,
     "supply_chain_refresh_hours": 24,
+    "osv_rejected_queries_per_batch": 10,
+    "osv_pages_per_query": 0,
+    "package_key_fill_rows": 1000,
+    "repository_host_check_hours": 24,
+    "manifest_read_cpu_seconds": 180,
+    "manifest_read_memory_mb": 2048,
+    "repository_host_registration_check": true,
+    "repository_host_threat_list_url": "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt",
+    "maven_repositories": ["https://repo1.maven.org/maven2", "https://repo.jenkins-ci.org/public"],
+    "declared_repository_fetch": true,
     "activity_history_window_days": 180,
     "activity_history_interval_minutes": 1,
     "activity_history_batch": 150,
@@ -267,6 +277,16 @@ The `collection` block holds every knob for the staged-pipeline scheduler and it
 | `collection.activity_history_cooldown_days` | integer | `90` | v0.28.3: the re-audit cooldown — how long a backfilled contributor stays out of the claim pool (jittered like the breadth cooldown). |
 | `collection.matview_rebuild_skip_dm_aggregates` | boolean | `false` | When `true`, the weekly scheduler rebuild refreshes ONLY the materialized views and skips the `dm_` aggregate table pass (a per-repo loop that can run for days on fleet-scale databases — while it runs, new collection claims are paused). With the skip on, `dm_repo_*` / `dm_repo_group_*` tables update only when an operator runs `aveloxis refresh-views --aggregates` (v0.28.18; plain `refresh-views` and `aveloxis migrate` refresh the materialized views only). To disable the weekly rebuild entirely (matviews AND aggregates), set `matview_rebuild_day` to `"disabled"`. |
 | `collection.supply_chain_refresh_hours` | integer | `24` | v0.29.61: how often `aveloxis serve` refreshes the two Aveloxis-owned supply-chain views (`explorer_package_exposure`, `explorer_package_advisory` — the GUI\'s dependencies page reads them through the API). Independent of `materialized_views` and `matview_rebuild_day`: every `aveloxis migrate` re-creates the pair from its Go definition and `serve` builds it when missing, on every deployment; the refresh runs CONCURRENTLY and takes seconds at fleet scale, never pausing collection. `0` turns the schedule off (`aveloxis refresh-views --set supply-chain` still refreshes them); a negative value, or one above 2,562,047 (where the hours no longer fit a Go duration), is refused at load. Default 24 because the profile\'s `median_days_open` has day resolution and exposure counts move as repositories are re-collected over days. |
+| `collection.osv_rejected_queries_per_batch` | integer | `10` | v0.29.168: how many queries OSV may refuse in one batch of a vulnerability scan before the scan fails. OSV refuses a query it cannot parse (a malformed package identifier), and used to fail the repository's whole scan for it. A refused query is now taken out and the rest of the batch is sent again, so each one costs one more request of up to 1,000 queries; the dependency it belongs to is not scanned, its findings are kept as they are, and the repository's scan is recorded as partial. A repository with more refused queries in a batch than this number fails its scan every time until its manifests change or the number is raised. `0` isolates none (the first refusal fails the scan, the behaviour before 0.29.168). Negative values and values above 1,000 are refused at load. The default is ten times the most refused queries one batch has had in production. |
+| `collection.osv_pages_per_query` | integer | `0` | A cap on how many pages of one query's answer a vulnerability scan reads from OSV. `0`, the default since 0.29.201, is no cap: every answer is read to its end. OSV cuts an answer at about 1,000 advisories and returns a token for the rest; before 0.29.169 the rest was never read, and the missing advisories looked fixed. A query with no version (a GitHub Action, the repository's own published package, a dependency declared with no version) returns the package's whole history and is the kind that runs to several pages. With no cap a read still ends: if OSV hands back a page token it has already given for the same query, that query stops there and is recorded as incomplete. Each scan's summary line carries `osv_longest_answer_pages`, the most pages one answer took, which is how to choose a cap if you want one. A number from 1 to 1,000 caps an answer: one longer than that is recorded as incomplete (the advisories read are stored, nothing is closed for that package, the scan is partial, and the log names the package on every scan). Negative values and values above 1,000 are refused at load. From 0.29.169 to 0.29.200 the default was a provisional 10. |
+| `collection.package_key_fill_rows` | integer | `1000` | v0.29.173: the rows one step of the package-key fill visits. From 0.29.172 every dependency row is stored with a package key; rows written earlier, in repositories that are not analysed again (archived, gone, failing), have none. `aveloxis serve` gives them one, once per database: it walks the dependency inventory and the lockfile packages from start to end, one step a second, and remembers where it is, so a restart resumes and a finished fill never starts over. The start log line `package-key fill` shows the effective value and `package-key fill complete` reports each table. `0` turns the fill off (the rows then get a key only when their repository is analysed again). Negative values and values above 50,000 are refused at load. |
+| `collection.repository_host_check_hours` | integer | `24` | v0.29.189: how often `serve` looks at each package repository host (the configured Maven repositories and, with `declared_repository_fetch` on, hosts a collected repository's pom declared and that have answered) for signs that it has been abandoned or taken over: the name no longer resolves, it resolves to an address the outbound-address rule refuses, or its certificate is not valid for it. Each look resolves the name and completes one TLS handshake with the host; nothing is requested. What it sees is listed on the administrator's Repository hosts page. The check never distrusts a host: that is an administrator's decision. A look that cannot tell (a timeout, a connection refused) is shown as "not known", never as clear and never as a signal. A distrusted host is not looked at. `0` turns the check off; negative is refused at load. |
+| `collection.manifest_read_cpu_seconds` | integer | `180` | 0.29.213 (default 180 since 0.29.214): the processor time one analysis may use to read a repository's clone: its dependency manifests and its lockfiles. Each analysis reads the clone in a child process of its own, which holds no database connection and no credentials. If the reading passes the limit while the manifests are being read, the analysis is stopped: the previous dependency inventory stays as it was, and the coverage record's last attempt says `manifest_read_cpu_limit`. The largest honest builds measured use about a second, and the largest lockfiles tested about 34 seconds. Accepted values are 1 to 86400; anything else is refused at load. There is no "unlimited". |
+| `collection.manifest_read_memory_mb` | integer | `2048` | 0.29.213 (default 2048 since 0.29.217; 1024 before): the memory, in mebibytes, that the process reading one repository's manifests and lockfiles may hold (its Go heap, checked ten times a second). Since 0.29.215 a manifest or lockfile is read only when its size times its format's cost fits in the memory left; a larger one is recorded as one file that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution on the repository's page. The costs, and the largest file of each format the default reads, are in the table under [What reading each file format costs](#what-reading-each-file-format-costs-029216); 0.29.216 raised every cost, which made the largest file read smaller than in 0.29.215, and 0.29.217 doubled the default, which doubles each largest size and doubles the most one reading can use. Raising this setting raises every largest size in proportion. The largest honest builds measured hold about 30 MiB, so an ordinary reading uses a small part of the limit. The limit is what the reading process (the child) may use at worst: 2048 MiB of Go heap, and its resident memory has been measured at up to about one and a half times the setting, about 3 GiB. The worker that started it also holds what the child returns for the declarations pass, the names and declarations of the repository's manifests, up to the same setting (2048 MiB; it is one of the holdings the [analysis page's table](../architecture/analysis.md) lists as not bounded by a number of its own, and nothing was measured for it at 2048). With `--workers N` the worst case is N readings at their limit at once: for 40 workers, 80 GiB of heap and up to about 120 GiB resident in the children, and up to about 80 GiB more inside `serve` if every one of those repositories also returns that much, so about 200 GiB in all. That needs 40 repositories with very large or hostile files being read at the same moment; allow for it on the host, or set the value lower. An operator who has set the value keeps it. `0` or a negative number is refused at load. |
+| `collection.repository_host_registration_check` | boolean | `true` | v0.29.190: whether the repository host check also asks, for each host that has answered, when its domain was registered. A registration later than Aveloxis's first fetch from the host is the direct sign of a name that lapsed and was registered by someone else, and is listed on the Repository hosts page. The date comes from the registries' public registration-data service (RDAP): Aveloxis fetches IANA's bootstrap file (`data.iana.org`), which names each top-level domain's server, and asks that server about the domain, so each domain is disclosed only to the registry that already holds it. The host itself is not contacted by this part, so it runs whatever `declared_repository_fetch` says. A registry that publishes no registration data, does not answer, or has no date is shown as "not known". Has no effect when `repository_host_check_hours` is `0`. |
+| `collection.repository_host_threat_list_url` | string | the Phishing.Database project's list of active domains | v0.29.191: a public list of host names reported as malicious, one per line (a hosts-file line, an address then the name, is read too; `#` starts a comment). Once a pass the repository host check downloads the list whole and matches the repository hosts against it on your machine, so no repository host is disclosed to the list's publisher; the only request is the download. A host is a match when it, or a domain above it down to the one a registry holds, is listed. A match is listed on the Repository hosts page as a hint, never a verdict: such lists also name shared hosting. Must be an `https` URL with no credentials, query or fragment (refused at load otherwise). An empty string turns the signal off. A list that cannot be fetched, is empty, or is longer than 128 MiB makes every host's answer "not known". Has no effect when `repository_host_check_hours` is `0`. |
+| `collection.maven_repositories` | list of URLs | Maven Central, then `https://repo.jenkins-ci.org/public` | v0.29.180: the Maven repositories asked about a Maven dependency, in order. Maven Central is not the only public repository: Jenkins plugins, for one, are published on the Jenkins project's own, and a dependency found only there was recorded as not being on any registry. The first repository that has the artifact answers; a dependency is "not on a registry" only when every repository in the list answered that it does not have it. Each entry is an `https` URL with no credentials and no query; anything else is refused at load. The hosts named here are trusted under the outbound-address rule the way the built-in registries are (any address except link-local), so a repository manager on your own network can be listed. Each miss on an earlier repository costs one request to the next. An empty list (`[]`) asks none: Maven dependencies then keep their rows with no age. The start log line `maven repositories` shows the hosts in use. |
+| `collection.declared_repository_fetch` | boolean | `true` | v0.29.184: whether a Maven repository that a collected repository's own build files declare (a pom's `<repositories>`, or a Gradle build's `repositories { }`) is asked for a parent pom or BOM that the repositories in `maven_repositories` do not have. **On, `serve` contacts hosts that the repositories you collect choose**, sending an identifying User-Agent and the coordinates of the pom asked for. Such a host is never trusted, by name or by address range, whatever `private_network_hosts` and your forge instances allow (0.29.208): it is reached only at a public address, over `https` on every redirect, and never when its address carries credentials. Every declared repository is recorded in `repo_declared_repositories`, fetched from or not. Off, no such host is contacted; a pom one already served stays stored and is still used, so switching this off does not change any dependency's version. The start log line `declared repositories` shows the effective value. |
 
 **REST → GraphQL refactor (v0.18.x phases)**
 
@@ -299,6 +319,59 @@ Periodic tickers that run on the scheduler. v0.16.5 / v0.18.29 / v0.19.7 moved e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `collection.shutdown_grace_seconds` | integer | `10` | v0.20.0: ctx-cancel grace window for in-flight workers before `Scheduler.Run` closes the pgx pool. Pre-v0.20.0 the wait was unbounded — a 26-minute `commits` UPDATE blocked shutdown for the full duration. Statements are cancelled at once whatever the value; too low shrinks the completion-stamp retry (half the grace, at most 5 s) and closes the pool under workers still unwinding; too high means a slow shutdown. |
+
+#### What reading each file format costs (0.29.216)
+
+Before the reader opens a manifest or a lockfile, it multiplies the file's size by a factor for its format and compares the result with the memory left under `collection.manifest_read_memory_mb`. A file that does not fit is not read. It is recorded as one manifest or lockfile that could not be read, and the rest of the repository is read. A lockfile left unread keeps its previous rows, and the repository's page shows the caution with the reason `lockfiles_too_large`.
+
+Each factor is the highest cost measured for that format, plus a margin of one half (so one and a half times it), rounded up. The cost was measured through the real reader on a set of shapes: the plain file, the shapes real tools write, and files built to cost more per byte by making entries and keys as short as the format allows. It is the highest over the shapes measured, not over every file a reader accepts; the paragraph under the tables says what was found to cost more. The numbers are provisional: they were measured on one machine.
+
+"Largest file read" is for a file read first, with the whole limit free, and is the limit divided by the factor: the reader itself holds about 2 MiB before the first file, so the largest file actually read is a little under the size shown (measured at the default: a 44.3 MiB `pnpm-lock.yaml` and a 145.6 MiB `package-lock.json` are read, 44.7 and 147.0 MiB are refused). What decides is the room left when the file is reached, so a file somewhat smaller can be refused late in a large repository. Raising the setting raises every size in proportion: at `4096` each is twice the size shown, and at `1024` (the default before 0.29.217) half.
+
+Lockfiles:
+
+| File | Measured cost (times its length) | Factor used | Largest file read at 2048 MiB |
+|---|---|---|---|
+| `pubspec.lock` | 34.21 | 52 | 39.4 MiB |
+| `stack.yaml.lock` | 33.90 | 51 | 40.2 MiB |
+| `pnpm-lock.yaml` | 30.41 | 46 | 44.5 MiB |
+| `packages.lock.json` | 12.87 | 20 | 102.4 MiB |
+| `mix.lock` | 12.21 | 19 | 107.8 MiB |
+| `package-lock.json` | 8.82 | 14 | 146.3 MiB |
+| `yarn.lock` | 9.14 | 14 | 146.3 MiB |
+| `Gemfile.lock` | 8.80 | 14 | 146.3 MiB |
+| `composer.lock` | 8.96 | 14 | 146.3 MiB |
+| `Cargo.lock` | 6.87 | 11 | 186.2 MiB |
+| `Pipfile.lock` | 6.65 | 10 | 204.8 MiB |
+| `pdm.lock` | 6.36 | 10 | 204.8 MiB |
+| `renv.lock` | 6.36 | 10 | 204.8 MiB |
+| `poetry.lock` | 5.72 | 9 | 227.6 MiB |
+| `uv.lock` | 5.52 | 9 | 227.6 MiB |
+| `bun.lock` | 4.96 | 8 | 256.0 MiB |
+| `gradle.lockfile` | 5.27 | 8 | 256.0 MiB |
+| `Package.resolved` | 3.40 | 6 | 341.3 MiB |
+
+Manifests:
+
+| File | Measured cost (times its length) | Factor used | Largest file read at 2048 MiB |
+|---|---|---|---|
+| `requirements.txt` | 66.20 | 100 | 20.5 MiB |
+| `Gemfile` | 40.62 | 61 | 33.6 MiB |
+| `Pipfile` | 36.13 | 55 | 37.2 MiB |
+| `package.json` | 35.40 | 54 | 37.9 MiB |
+| `composer.json` | 33.90 | 51 | 40.2 MiB |
+| `pubspec.yaml` | 33.90 | 51 | 40.2 MiB |
+| `pyproject.toml` | 33.90 | 51 | 40.2 MiB |
+| `Cargo.toml` | 32.49 | 49 | 41.8 MiB |
+| `go.mod` | 26.74 | 41 | 50.0 MiB |
+| `build.gradle` | 24.44 | 37 | 8 MiB (the build-file limit; 55.4 MiB by the factor) |
+| `mix.exs` | 17.05 | 26 | 78.8 MiB |
+| `pom.xml` | 9.58 | 15 | 8 MiB (the build-file limit; 136.5 MiB by the factor) |
+| any other manifest (for example `build.gradle.kts`) | not measured: the costliest manifest's is taken | 100 | 20.5 MiB; 8 MiB for a Maven or Gradle build file (the build-file limit) |
+
+A Maven or Gradle build file larger than 8 MiB is not read whatever the setting.
+
+A file can cost more than its factor. Two kinds were found. The first is a file its reader accepts, of a shape that was not among those measured: a lockfile whose entries are almost all dependency edges with one-letter names cost about one and a half to three and a half times the factor in review (`Cargo.lock`, `uv.lock`, `pdm.lock`, `poetry.lock`, `Gemfile.lock`, `renv.lock`, `gradle.lockfile`), and a `requirements.txt` of one-letter lines twice its factor. The second is text that is not a file of its kind, which can cost more before the reader rejects it (measured: a `pnpm-lock.yaml` of collections nested nine thousand deep, 97 times its length, against 30 for the costliest measured that parses). Either passes the check when it is small. If it then takes the reader past its memory limit, the reader is stopped: that repository's reading ends with the memory-limit reason and no other repository is affected.
 
 #### Scancode worker (v0.21.0)
 

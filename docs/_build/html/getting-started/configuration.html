@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>Configuration &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1901,6 +1944,16 @@ a half against its own reference table below:</p>
 <span class="w">    </span><span class="nt">&quot;matview_rebuild_day&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;saturday&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;matview_rebuild_skip_dm_aggregates&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;supply_chain_refresh_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;osv_rejected_queries_per_batch&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;osv_pages_per_query&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;package_key_fill_rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repository_host_check_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;manifest_read_cpu_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;manifest_read_memory_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2048</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repository_host_registration_check&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repository_host_threat_list_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;maven_repositories&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;https://repo1.maven.org/maven2&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;https://repo.jenkins-ci.org/public&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;declared_repository_fetch&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;activity_history_window_days&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;activity_history_interval_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;activity_history_batch&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">150</span><span class="p">,</span>
@@ -2219,6 +2272,56 @@ a half against its own reference table below:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">24</span></code></p></td>
 <td><p>v0.29.61: how often <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> refreshes the two Aveloxis-owned supply-chain views (<code class="docutils literal notranslate"><span class="pre">explorer_package_exposure</span></code>, <code class="docutils literal notranslate"><span class="pre">explorer_package_advisory</span></code> — the GUI’s dependencies page reads them through the API). Independent of <code class="docutils literal notranslate"><span class="pre">materialized_views</span></code> and <code class="docutils literal notranslate"><span class="pre">matview_rebuild_day</span></code>: every <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> re-creates the pair from its Go definition and <code class="docutils literal notranslate"><span class="pre">serve</span></code> builds it when missing, on every deployment; the refresh runs CONCURRENTLY and takes seconds at fleet scale, never pausing collection. <code class="docutils literal notranslate"><span class="pre">0</span></code> turns the schedule off (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">refresh-views</span> <span class="pre">--set</span> <span class="pre">supply-chain</span></code> still refreshes them); a negative value, or one above 2,562,047 (where the hours no longer fit a Go duration), is refused at load. Default 24 because the profile’s <code class="docutils literal notranslate"><span class="pre">median_days_open</span></code> has day resolution and exposure counts move as repositories are re-collected over days.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.osv_rejected_queries_per_batch</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">10</span></code></p></td>
+<td><p>v0.29.168: how many queries OSV may refuse in one batch of a vulnerability scan before the scan fails. OSV refuses a query it cannot parse (a malformed package identifier), and used to fail the repository’s whole scan for it. A refused query is now taken out and the rest of the batch is sent again, so each one costs one more request of up to 1,000 queries; the dependency it belongs to is not scanned, its findings are kept as they are, and the repository’s scan is recorded as partial. A repository with more refused queries in a batch than this number fails its scan every time until its manifests change or the number is raised. <code class="docutils literal notranslate"><span class="pre">0</span></code> isolates none (the first refusal fails the scan, the behaviour before 0.29.168). Negative values and values above 1,000 are refused at load. The default is ten times the most refused queries one batch has had in production.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.osv_pages_per_query</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>A cap on how many pages of one query’s answer a vulnerability scan reads from OSV. <code class="docutils literal notranslate"><span class="pre">0</span></code>, the default since 0.29.201, is no cap: every answer is read to its end. OSV cuts an answer at about 1,000 advisories and returns a token for the rest; before 0.29.169 the rest was never read, and the missing advisories looked fixed. A query with no version (a GitHub Action, the repository’s own published package, a dependency declared with no version) returns the package’s whole history and is the kind that runs to several pages. With no cap a read still ends: if OSV hands back a page token it has already given for the same query, that query stops there and is recorded as incomplete. Each scan’s summary line carries <code class="docutils literal notranslate"><span class="pre">osv_longest_answer_pages</span></code>, the most pages one answer took, which is how to choose a cap if you want one. A number from 1 to 1,000 caps an answer: one longer than that is recorded as incomplete (the advisories read are stored, nothing is closed for that package, the scan is partial, and the log names the package on every scan). Negative values and values above 1,000 are refused at load. From 0.29.169 to 0.29.200 the default was a provisional 10.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.package_key_fill_rows</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1000</span></code></p></td>
+<td><p>v0.29.173: the rows one step of the package-key fill visits. From 0.29.172 every dependency row is stored with a package key; rows written earlier, in repositories that are not analysed again (archived, gone, failing), have none. <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> gives them one, once per database: it walks the dependency inventory and the lockfile packages from start to end, one step a second, and remembers where it is, so a restart resumes and a finished fill never starts over. The start log line <code class="docutils literal notranslate"><span class="pre">package-key</span> <span class="pre">fill</span></code> shows the effective value and <code class="docutils literal notranslate"><span class="pre">package-key</span> <span class="pre">fill</span> <span class="pre">complete</span></code> reports each table. <code class="docutils literal notranslate"><span class="pre">0</span></code> turns the fill off (the rows then get a key only when their repository is analysed again). Negative values and values above 50,000 are refused at load.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repository_host_check_hours</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">24</span></code></p></td>
+<td><p>v0.29.189: how often <code class="docutils literal notranslate"><span class="pre">serve</span></code> looks at each package repository host (the configured Maven repositories and, with <code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> on, hosts a collected repository’s pom declared and that have answered) for signs that it has been abandoned or taken over: the name no longer resolves, it resolves to an address the outbound-address rule refuses, or its certificate is not valid for it. Each look resolves the name and completes one TLS handshake with the host; nothing is requested. What it sees is listed on the administrator’s Repository hosts page. The check never distrusts a host: that is an administrator’s decision. A look that cannot tell (a timeout, a connection refused) is shown as “not known”, never as clear and never as a signal. A distrusted host is not looked at. <code class="docutils literal notranslate"><span class="pre">0</span></code> turns the check off; negative is refused at load.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">180</span></code></p></td>
+<td><p>0.29.213 (default 180 since 0.29.214): the processor time one analysis may use to read a repository’s clone: its dependency manifests and its lockfiles. Each analysis reads the clone in a child process of its own, which holds no database connection and no credentials. If the reading passes the limit while the manifests are being read, the analysis is stopped: the previous dependency inventory stays as it was, and the coverage record’s last attempt says <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>. The largest honest builds measured use about a second, and the largest lockfiles tested about 34 seconds. Accepted values are 1 to 86400; anything else is refused at load. There is no “unlimited”.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code></p></td>
+<td><p>integer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2048</span></code></p></td>
+<td><p>0.29.213 (default 2048 since 0.29.217; 1024 before): the memory, in mebibytes, that the process reading one repository’s manifests and lockfiles may hold (its Go heap, checked ten times a second). Since 0.29.215 a manifest or lockfile is read only when its size times its format’s cost fits in the memory left; a larger one is recorded as one file that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution on the repository’s page. The costs, and the largest file of each format the default reads, are in the table under <a class="reference internal" href="#what-reading-each-file-format-costs-0-29-216">What reading each file format costs</a>; 0.29.216 raised every cost, which made the largest file read smaller than in 0.29.215, and 0.29.217 doubled the default, which doubles each largest size and doubles the most one reading can use. Raising this setting raises every largest size in proportion. The largest honest builds measured hold about 30 MiB, so an ordinary reading uses a small part of the limit. The limit is what the reading process (the child) may use at worst: 2048 MiB of Go heap, and its resident memory has been measured at up to about one and a half times the setting, about 3 GiB. The worker that started it also holds what the child returns for the declarations pass, the names and declarations of the repository’s manifests, up to the same setting (2048 MiB; it is one of the holdings the <a class="reference internal" href="../architecture/analysis.html"><span class="std std-doc">analysis page’s table</span></a> lists as not bounded by a number of its own, and nothing was measured for it at 2048). With <code class="docutils literal notranslate"><span class="pre">--workers</span> <span class="pre">N</span></code> the worst case is N readings at their limit at once: for 40 workers, 80 GiB of heap and up to about 120 GiB resident in the children, and up to about 80 GiB more inside <code class="docutils literal notranslate"><span class="pre">serve</span></code> if every one of those repositories also returns that much, so about 200 GiB in all. That needs 40 repositories with very large or hostile files being read at the same moment; allow for it on the host, or set the value lower. An operator who has set the value keeps it. <code class="docutils literal notranslate"><span class="pre">0</span></code> or a negative number is refused at load.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repository_host_registration_check</span></code></p></td>
+<td><p>boolean</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>v0.29.190: whether the repository host check also asks, for each host that has answered, when its domain was registered. A registration later than Aveloxis’s first fetch from the host is the direct sign of a name that lapsed and was registered by someone else, and is listed on the Repository hosts page. The date comes from the registries’ public registration-data service (RDAP): Aveloxis fetches IANA’s bootstrap file (<code class="docutils literal notranslate"><span class="pre">data.iana.org</span></code>), which names each top-level domain’s server, and asks that server about the domain, so each domain is disclosed only to the registry that already holds it. The host itself is not contacted by this part, so it runs whatever <code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> says. A registry that publishes no registration data, does not answer, or has no date is shown as “not known”. Has no effect when <code class="docutils literal notranslate"><span class="pre">repository_host_check_hours</span></code> is <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.repository_host_threat_list_url</span></code></p></td>
+<td><p>string</p></td>
+<td><p>the Phishing.Database project’s list of active domains</p></td>
+<td><p>v0.29.191: a public list of host names reported as malicious, one per line (a hosts-file line, an address then the name, is read too; <code class="docutils literal notranslate"><span class="pre">#</span></code> starts a comment). Once a pass the repository host check downloads the list whole and matches the repository hosts against it on your machine, so no repository host is disclosed to the list’s publisher; the only request is the download. A host is a match when it, or a domain above it down to the one a registry holds, is listed. A match is listed on the Repository hosts page as a hint, never a verdict: such lists also name shared hosting. Must be an <code class="docutils literal notranslate"><span class="pre">https</span></code> URL with no credentials, query or fragment (refused at load otherwise). An empty string turns the signal off. A list that cannot be fetched, is empty, or is longer than 128 MiB makes every host’s answer “not known”. Has no effect when <code class="docutils literal notranslate"><span class="pre">repository_host_check_hours</span></code> is <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code></p></td>
+<td><p>list of URLs</p></td>
+<td><p>Maven Central, then <code class="docutils literal notranslate"><span class="pre">https://repo.jenkins-ci.org/public</span></code></p></td>
+<td><p>v0.29.180: the Maven repositories asked about a Maven dependency, in order. Maven Central is not the only public repository: Jenkins plugins, for one, are published on the Jenkins project’s own, and a dependency found only there was recorded as not being on any registry. The first repository that has the artifact answers; a dependency is “not on a registry” only when every repository in the list answered that it does not have it. Each entry is an <code class="docutils literal notranslate"><span class="pre">https</span></code> URL with no credentials and no query; anything else is refused at load. The hosts named here are trusted under the outbound-address rule the way the built-in registries are (any address except link-local), so a repository manager on your own network can be listed. Each miss on an earlier repository costs one request to the next. An empty list (<code class="docutils literal notranslate"><span class="pre">[]</span></code>) asks none: Maven dependencies then keep their rows with no age. The start log line <code class="docutils literal notranslate"><span class="pre">maven</span> <span class="pre">repositories</span></code> shows the hosts in use.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collection.declared_repository_fetch</span></code></p></td>
+<td><p>boolean</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>v0.29.184: whether a Maven repository that a collected repository’s own build files declare (a pom’s <code class="docutils literal notranslate"><span class="pre">&lt;repositories&gt;</span></code>, or a Gradle build’s <code class="docutils literal notranslate"><span class="pre">repositories</span> <span class="pre">{</span> <span class="pre">}</span></code>) is asked for a parent pom or BOM that the repositories in <code class="docutils literal notranslate"><span class="pre">maven_repositories</span></code> do not have. <strong>On, <code class="docutils literal notranslate"><span class="pre">serve</span></code> contacts hosts that the repositories you collect choose</strong>, sending an identifying User-Agent and the coordinates of the pom asked for. Such a host is never trusted, by name or by address range, whatever <code class="docutils literal notranslate"><span class="pre">private_network_hosts</span></code> and your forge instances allow (0.29.208): it is reached only at a public address, over <code class="docutils literal notranslate"><span class="pre">https</span></code> on every redirect, and never when its address carries credentials. Every declared repository is recorded in <code class="docutils literal notranslate"><span class="pre">repo_declared_repositories</span></code>, fetched from or not. Off, no such host is contacted; a pom one already served stays stored and is still used, so switching this off does not change any dependency’s version. The start log line <code class="docutils literal notranslate"><span class="pre">declared</span> <span class="pre">repositories</span></code> shows the effective value.</p></td>
+</tr>
 </tbody>
 </table>
 <p><strong>REST → GraphQL refactor (v0.18.x phases)</strong></p>
@@ -2324,6 +2427,193 @@ a half against its own reference table below:</p>
 </tr>
 </tbody>
 </table>
+<section id="what-reading-each-file-format-costs-0-29-216">
+<h4>What reading each file format costs (0.29.216)<a class="headerlink" href="#what-reading-each-file-format-costs-0-29-216" title="Link to this heading"></a></h4>
+<p>Before the reader opens a manifest or a lockfile, it multiplies the file’s size by a factor for its format and compares the result with the memory left under <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code>. A file that does not fit is not read. It is recorded as one manifest or lockfile that could not be read, and the rest of the repository is read. A lockfile left unread keeps its previous rows, and the repository’s page shows the caution with the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code>.</p>
+<p>Each factor is the highest cost measured for that format, plus a margin of one half (so one and a half times it), rounded up. The cost was measured through the real reader on a set of shapes: the plain file, the shapes real tools write, and files built to cost more per byte by making entries and keys as short as the format allows. It is the highest over the shapes measured, not over every file a reader accepts; the paragraph under the tables says what was found to cost more. The numbers are provisional: they were measured on one machine.</p>
+<p>“Largest file read” is for a file read first, with the whole limit free, and is the limit divided by the factor: the reader itself holds about 2 MiB before the first file, so the largest file actually read is a little under the size shown (measured at the default: a 44.3 MiB <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> and a 145.6 MiB <code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code> are read, 44.7 and 147.0 MiB are refused). What decides is the room left when the file is reached, so a file somewhat smaller can be refused late in a large repository. Raising the setting raises every size in proportion: at <code class="docutils literal notranslate"><span class="pre">4096</span></code> each is twice the size shown, and at <code class="docutils literal notranslate"><span class="pre">1024</span></code> (the default before 0.29.217) half.</p>
+<p>Lockfiles:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Measured cost (times its length)</p></th>
+<th class="head"><p>Factor used</p></th>
+<th class="head"><p>Largest file read at 2048 MiB</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code></p></td>
+<td><p>34.21</p></td>
+<td><p>52</p></td>
+<td><p>39.4 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stack.yaml.lock</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code></p></td>
+<td><p>30.41</p></td>
+<td><p>46</p></td>
+<td><p>44.5 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">packages.lock.json</span></code></p></td>
+<td><p>12.87</p></td>
+<td><p>20</p></td>
+<td><p>102.4 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mix.lock</span></code></p></td>
+<td><p>12.21</p></td>
+<td><p>19</p></td>
+<td><p>107.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package-lock.json</span></code></p></td>
+<td><p>8.82</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">yarn.lock</span></code></p></td>
+<td><p>9.14</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code></p></td>
+<td><p>8.80</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composer.lock</span></code></p></td>
+<td><p>8.96</p></td>
+<td><p>14</p></td>
+<td><p>146.3 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code></p></td>
+<td><p>6.87</p></td>
+<td><p>11</p></td>
+<td><p>186.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Pipfile.lock</span></code></p></td>
+<td><p>6.65</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pdm.lock</span></code></p></td>
+<td><p>6.36</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">renv.lock</span></code></p></td>
+<td><p>6.36</p></td>
+<td><p>10</p></td>
+<td><p>204.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">poetry.lock</span></code></p></td>
+<td><p>5.72</p></td>
+<td><p>9</p></td>
+<td><p>227.6 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uv.lock</span></code></p></td>
+<td><p>5.52</p></td>
+<td><p>9</p></td>
+<td><p>227.6 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bun.lock</span></code></p></td>
+<td><p>4.96</p></td>
+<td><p>8</p></td>
+<td><p>256.0 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gradle.lockfile</span></code></p></td>
+<td><p>5.27</p></td>
+<td><p>8</p></td>
+<td><p>256.0 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Package.resolved</span></code></p></td>
+<td><p>3.40</p></td>
+<td><p>6</p></td>
+<td><p>341.3 MiB</p></td>
+</tr>
+</tbody>
+</table>
+<p>Manifests:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Measured cost (times its length)</p></th>
+<th class="head"><p>Factor used</p></th>
+<th class="head"><p>Largest file read at 2048 MiB</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code></p></td>
+<td><p>66.20</p></td>
+<td><p>100</p></td>
+<td><p>20.5 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Gemfile</span></code></p></td>
+<td><p>40.62</p></td>
+<td><p>61</p></td>
+<td><p>33.6 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Pipfile</span></code></p></td>
+<td><p>36.13</p></td>
+<td><p>55</p></td>
+<td><p>37.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">package.json</span></code></p></td>
+<td><p>35.40</p></td>
+<td><p>54</p></td>
+<td><p>37.9 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">composer.json</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pubspec.yaml</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></p></td>
+<td><p>33.90</p></td>
+<td><p>51</p></td>
+<td><p>40.2 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code></p></td>
+<td><p>32.49</p></td>
+<td><p>49</p></td>
+<td><p>41.8 MiB</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">go.mod</span></code></p></td>
+<td><p>26.74</p></td>
+<td><p>41</p></td>
+<td><p>50.0 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code></p></td>
+<td><p>24.44</p></td>
+<td><p>37</p></td>
+<td><p>8 MiB (the build-file limit; 55.4 MiB by the factor)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mix.exs</span></code></p></td>
+<td><p>17.05</p></td>
+<td><p>26</p></td>
+<td><p>78.8 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pom.xml</span></code></p></td>
+<td><p>9.58</p></td>
+<td><p>15</p></td>
+<td><p>8 MiB (the build-file limit; 136.5 MiB by the factor)</p></td>
+</tr>
+<tr class="row-even"><td><p>any other manifest (for example <code class="docutils literal notranslate"><span class="pre">build.gradle.kts</span></code>)</p></td>
+<td><p>not measured: the costliest manifest’s is taken</p></td>
+<td><p>100</p></td>
+<td><p>20.5 MiB; 8 MiB for a Maven or Gradle build file (the build-file limit)</p></td>
+</tr>
+</tbody>
+</table>
+<p>A Maven or Gradle build file larger than 8 MiB is not read whatever the setting.</p>
+<p>A file can cost more than its factor. Two kinds were found. The first is a file its reader accepts, of a shape that was not among those measured: a lockfile whose entries are almost all dependency edges with one-letter names cost about one and a half to three and a half times the factor in review (<code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">pdm.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">poetry.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">renv.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">gradle.lockfile</span></code>), and a <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> of one-letter lines twice its factor. The second is text that is not a file of its kind, which can cost more before the reader rejects it (measured: a <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> of collections nested nine thousand deep, 97 times its length, against 30 for the costliest measured that parses). Either passes the check when it is small. If it then takes the reader past its memory limit, the reader is stopped: that repository’s reading ends with the memory-limit reason and no other repository is affected.</p>
+</section>
 <section id="scancode-worker-v0-21-0">
 <h4>Scancode worker (v0.21.0)<a class="headerlink" href="#scancode-worker-v0-21-0" title="Link to this heading"></a></h4>
 <p>The scancode per-file license + copyright + package scan is run by a dedicated <code class="docutils literal notranslate"><span class="pre">ScancodeWorker</span></code> pool, decoupled from the per-repo collection pipeline. Pre-v0.21.0 scancode ran inline in <code class="docutils literal notranslate"><span class="pre">AnalysisCollector.AnalyzeRepo</span></code> gated by a 2-slot package-level semaphore; the 2026-05-14 production incident showed that shape doesn’t survive fleet-scale operation (177 of 180 collection workers parked behind the semaphore for 7+ hours). The decoupled pool fixes the structural problem and adds operator-tunable cadence + concurrency. See <code class="docutils literal notranslate"><span class="pre">docs/architecture/scancode.md</span></code> for the full architecture write-up.</p>

@@ -335,7 +335,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				readErr = io.ErrUnexpectedEOF
 			}
 			// A NON-empty body that ends inside a JSON value is the same
-			// stream abort (worklist 66, the 2026-09-28 kate log: a
+			// stream abort (worklist 66, the 2026-09-28 production log: a
 			// truncated `{"data":{"repository":{"pr0":…` body on 200 was
 			// ClassFatal, failed the PR batch, set force_full_recollect,
 			// and nixpkgs, kibana and azure-powershell restarted from zero
@@ -497,7 +497,7 @@ func (c *HTTPClient) GraphQLAt(ctx context.Context, endpoint, query string, vari
 				wait := parseRetryAfter(resp)
 				c.logger.Info("graphql secondary rate limit", "url", RedactURLUserinfo(url), "query", query, "wait", wait,
 					"token_hash", TokenHash(key.Token), "key", key.Ref())
-				// 2026-09-12 (Bug C of the chaoss.tv analysis): rest THIS
+				// 2026-09-12 (Bug C of the production analysis): rest THIS
 				// key in the pool for the Retry-After. Pre-fix only this
 				// goroutine slept and every other caller kept being handed
 				// the throttled key — 179 rejections in one second. Now the
@@ -717,7 +717,7 @@ type ctxKeyGraphQLBackground struct{}
 // diagnostic measured the history sweep at ~20% of the fleet's graphql
 // budget running back-to-back — enough sustained pressure to keep
 // individual keys graphql-dry under multi-day collection jobs; the
-// 2026-09-12 chaoss.tv analysis measured it at 113% and replaced the
+// 2026-09-12 production analysis measured it at 113% and replaced the
 // original per-key 500-point cliff with the pool-level line (a per-key
 // cliff shrank the eligible set as keys depleted and concentrated the
 // whole sweep onto the survivors).
@@ -784,7 +784,7 @@ func parseGraphQLResponse(body []byte, dest any, logger interface {
 	// Log partial errors but don't fail on them. These come from
 	// aliased-batch queries where one item was deleted/hidden AND from a
 	// too-expensive contributionsCollection where GitHub INTERNAL-errors
-	// on per-repo nodes. chaoss.tv log (2026-09-05): one such history
+	// on per-repo nodes. Production log (2026-09-05): one such history
 	// window emitted ~187 per-path INTERNAL errors, and ~470 expensive
 	// queries produced 87,728 WARNs in 90 minutes (the v0.27.91 flood
 	// class). AGGREGATE to one line per response — the type histogram +

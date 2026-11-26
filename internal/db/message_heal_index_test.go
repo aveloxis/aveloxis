@@ -9,7 +9,7 @@ import (
 )
 
 // v0.27.67 — the heal-messages "SELECT runs forever" fix (live
-// diagnosis 2026-08-01 on aveloxis_large): GetMessageHealBatch's
+// diagnosis 2026-08-01 on the larger production database): GetMessageHealBatch's
 // review-side LATERAL probes pull_request_review_message_ref by
 // msg_id, but the table's only msg_id-bearing index is
 // uq_pr_review_msg_ref (pr_review_id, msg_id) — pr_review_id leads,

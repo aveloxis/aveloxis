@@ -12,7 +12,7 @@ import (
 // TestSchemaStartRefusal pins the decision web, api and the scancode worker
 // make before binding a port (worklist item 49): a schema stamp behind the
 // binary refuses (through v0.29.67 CheckSchemaVersion logged an ERROR and
-// the process served queries against columns it did not have — kate,
+// the process served queries against columns it did not have — a production fleet,
 // 2026-09-13 and 2026-09-22); an unstamped database refuses; a stamp at or
 // ahead of the binary (a rollback) proceeds; a stamp that could not be read
 // refuses with the read error (SR-5: "could not read" is not "current").

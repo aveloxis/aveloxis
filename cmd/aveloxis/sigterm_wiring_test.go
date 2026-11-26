@@ -10,7 +10,7 @@ package main
 // releaseOurLocks, no pool close — the ENTIRE v0.20.0 graceful-
 // shutdown path was unreachable from the stop command and only ever
 // ran on foreground Ctrl-C. Production evidence (2026-07-20,
-// aveloxis_large): a BackfillCommitAuthorIDs UPDATE orphaned by a
+// the larger production database): a BackfillCommitAuthorIDs UPDATE orphaned by a
 // July 18 stop was still grinding 2 days 2h41m later, plus 8 repos
 // stuck in 'collecting' from that day's stop skipping lock release.
 

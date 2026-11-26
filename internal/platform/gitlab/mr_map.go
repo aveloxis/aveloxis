@@ -20,7 +20,7 @@ import (
 // and the HTTP client's ETag cache turned every hit after the first
 // into a 304, which none of those single-object readers can use:
 // `gitlab pr batch at #1: labels: not modified (304)` aborted every MR
-// batch (petsc/petsc on aveloxis_large: 0 of 9,450 MRs ever stored,
+// batch (petsc/petsc on the larger production database: 0 of 9,450 MRs ever stored,
 // routine collection AND the healer). These mappers are the single
 // source for both the public per-child methods (which still GET the
 // MR themselves) and the batch (which GETs it once).

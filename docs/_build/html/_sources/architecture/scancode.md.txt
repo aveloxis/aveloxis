@@ -216,7 +216,7 @@ The data flows from `aveloxis_data.repos.scancode_last_run` (written by `MarkSca
 | `scancode worker started workers=N start_interval=... start_gap=...` | Once at startup | The pool is alive with N runners; `start_gap` is the effective spacing between starts (start_interval ÷ workers). If absent, scancode is disabled (binary not installed or `mkdir scancode_clone_dir` failed). |
 | `scancode preflight: healthy` | Once at startup | The §13 health check passed — the toolchain works. |
 | `scancode preflight: SYSTEM-LEVEL FAILURE — scancode will not work until fixed` | Once at startup (ERROR) | The §13 health check detected a systemic failure (corrupt libmagic, a repeated error, or no JSON). Read the `detail` field; `aveloxis_ops.aveloxis_status` is also set to `broken`. |
-| `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `pipx install scancode-toolkit` then restart serve. |
+| `scancode binary not installed; ScancodeWorker disabled` | Startup | Install with `aveloxis install-tools`, then restart serve. |
 | `scancode recoverOrphans: examining locked rows count=...` | Startup | Recovery pass found stale locks. Followed by per-row decisions. |
 | `scancode recover: reboot survivor — clearing lock` | Startup | Case 1 of §5. |
 | `scancode recover: live orphan detected — spawning monitor` | Startup | Case 2 of §5. Monitor goroutine will log on completion. |
@@ -264,7 +264,7 @@ The v0.21.0 work added these tests as architectural pins. A future refactor that
 
 ## 13. Startup health preflight + `aveloxis_ops.aveloxis_status`
 
-A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. The 2026-06-09 `aveloxis_large` incident was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
+A *system-level* scancode failure — one where every scan is doomed regardless of the repo — used to be invisible: the fleet just degraded. A production incident of 2026-06-09 was the motivating case. On that Ubuntu 24.04 host the system `libmagic` database (`/usr/share/misc/magic.mgc`) was corrupt, so scancode (via `typecode` → `python-magic` → `libmagic`) emitted `Warning: offset ... invalid` at enormous volume — **14+ GB of stderr per large repo** — bogging scans down until the wall-clock timeout killed them. With the adaptive timeout stretching doomed scans to 16–24 h, a handful of repos wedged all worker slots and the scanned-repo count crawled.
 
 ### The preflight
 

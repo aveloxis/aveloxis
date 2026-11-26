@@ -55,7 +55,7 @@ const longHostname = "scancode-runner-01.internal.example.com"
 func TestHostMarkerAgreesWithTheTagForEveryComponentPrefix(t *testing.T) {
 	prefixes := []string{"aveloxis-serve", "aveloxis-web", "aveloxis-api", "aveloxis-scancode-worker"}
 
-	for _, host := range []string{"kate", longHostname, strings.Repeat("x", 200)} {
+	for _, host := range []string{"host-a", longHostname, strings.Repeat("x", 200)} {
 		want := hostMarkerFor(host)
 		if want == "" {
 			t.Fatalf("hostMarkerFor(%q) = %q: a nameable host must always produce a marker", host, want)
@@ -123,7 +123,7 @@ func TestHostMarkerIsPrefixIndependent(t *testing.T) {
 		}
 		return parts[1]
 	}
-	for _, host := range []string{"kate", longHostname} {
+	for _, host := range []string{"host-a", longHostname} {
 		short := marker(appNameForHostWith("aveloxis-web", host))
 		long := marker(appNameForHostWith("aveloxis-scancode-worker", host))
 		if short != long {
@@ -241,7 +241,7 @@ func TestLongHostnameTagAndReaderAgreeThroughTheRealQuery(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = appNameForHostWith(prefix, longHostname)
 	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

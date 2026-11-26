@@ -58,7 +58,7 @@ func TestListDedupHandlesStagingCollisions(t *testing.T) {
 	if before != 0 {
 		t.Skipf("an aveloxis-serve backend is already connected to the scratch DB (%d) — cannot run the liveness arms", before)
 	}
-	fakeServe, err := pgx.ConnectConfig(ctx, cfg)
+	fakeServe, err := OpenConnConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("fake serve connection: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/hostguard"
 	"github.com/aveloxis/aveloxis/internal/mailinglist"
 	"github.com/aveloxis/aveloxis/internal/model"
 )
@@ -44,7 +45,7 @@ type MailingListWorker struct {
 	sys      *mailinglist.System
 	backend  mailinglist.ArchiveSource
 	pacer    *mailinglist.Pacer
-	breaker  *mailinglist.Breaker
+	breaker  *hostguard.Breaker
 	cadence  time.Duration
 	backfill int // months of history to scan when a list has no checkpoint
 	pid      int
@@ -57,7 +58,7 @@ type MailingListWorker struct {
 // handling moved to the MailingListProcessor with the v0.25.x staging split:
 // the worker only fetches, classifies, and stages.
 func NewMailingListWorker(store mlStore, sys *mailinglist.System, backend mailinglist.ArchiveSource,
-	pacer *mailinglist.Pacer, breaker *mailinglist.Breaker, cadence time.Duration, backfillMonths int, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
+	pacer *mailinglist.Pacer, breaker *hostguard.Breaker, cadence time.Duration, backfillMonths int, pid int, bootID string, logger *slog.Logger) *MailingListWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}

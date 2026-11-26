@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // BEHAVIORAL drivers for the scorecard attempt-diagnostics added for F2
-// of the 2026-09-11 chaoss.tv log analysis.
+// of the 2026-09-11 production log analysis.
 //
 // WHAT THE PRODUCTION LOG COULD NOT ANSWER. Over 5.2 days, 7,078
 // distinct repos logged "scorecard remote attempt failed — falling back

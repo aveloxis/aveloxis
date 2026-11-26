@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // v0.29.58 (2026-09-22 log review, finding 4): four repositories lost their
@@ -18,61 +20,24 @@ import (
 // no vendor ("php", "ext-mbstring"), and a Gradle shorthand can drop the
 // group — each produced a namespace-less purl that 400ed the whole batch.
 
-// TestWireValidPurlRequiresNamespaceWhereOSVDoes pins the wire gate: a
-// namespace-required type without one is not sendable; types where the
-// spec makes it optional are unchanged.
-func TestWireValidPurlRequiresNamespaceWhereOSVDoes(t *testing.T) {
-	cases := []struct {
-		purl string
-		want bool
-	}{
-		// the three types OSV rejected in the 2026-09-22 log
-		{"pkg:swift/alamofire@5.8.0", false},
-		{"pkg:swift/github.com/Alamofire/Alamofire@5.8.0", true},
-		{"pkg:maven/artifact@1.0", false},
-		{"pkg:maven/org.apache.commons/commons-lang3@3.12.0", true},
-		{"pkg:composer/php@8.2", false},
-		{"pkg:composer/ext-mbstring@8.2", false},
-		{"pkg:composer/laravel/framework@10.0.0", true},
-		// an empty namespace segment is not a namespace
-		{"pkg:maven//artifact@1.0", false},
-		{"pkg:swift/@1.0", false},
-		// optional-namespace types keep their single-segment names
-		{"pkg:npm/express@4.18.0", true},
-		{"pkg:npm/%40scope/name@1.0.0", true},
-		{"pkg:pypi/flask@3.0.0", true},
-		{"pkg:golang/golang.org/x/text@v0.14.0", true},
-		{"pkg:cargo/serde@1.0.0", true},
-		{"pkg:nuget/Newtonsoft.Json@13.0.3", true},
-		// versionless (self-advisory) forms follow the same rule
-		{"pkg:swift/alamofire", false},
-		{"pkg:composer/vendor/pkg", true},
-	}
-	for _, tc := range cases {
-		if got := wireValidPurl(tc.purl); got != tc.want {
-			t.Errorf("wireValidPurl(%q) = %v, want %v", tc.purl, got, tc.want)
-		}
-	}
-}
-
 // TestPurlForPackageDropsNamespacelessTransitives pins the transitive
 // builder at the same rule, so a Package.resolved identity never reaches
 // the wire gate as a purl at all (SR-17: one rule, applied where the purl
 // is minted and where it is sent).
 func TestPurlForPackageDropsNamespacelessTransitives(t *testing.T) {
-	if got := purlForPackage("swiftpm", "", "alamofire", "5.8.0"); got != "" {
+	if got := pkgid.PurlForPackage("swiftpm", "", "alamofire", "5.8.0"); got != "" {
 		t.Errorf("swiftpm identity-only pin produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("packagist", "", "php", "8.2"); got != "" {
+	if got := pkgid.PurlForPackage("packagist", "", "php", "8.2"); got != "" {
 		t.Errorf("composer platform package produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("maven", "", "artifact", "1.0"); got != "" {
+	if got := pkgid.PurlForPackage("maven", "", "artifact", "1.0"); got != "" {
 		t.Errorf("maven without a group produced %q, want \"\"", got)
 	}
-	if got := purlForPackage("maven", "", "org.example:artifact", "1.0"); got != "pkg:maven/org.example/artifact@1.0" {
+	if got := pkgid.PurlForPackage("maven", "", "org.example:artifact", "1.0"); got != "pkg:maven/org.example/artifact@1.0" {
 		t.Errorf("maven group:artifact = %q", got)
 	}
-	if got := purlForPackage("packagist", "", "laravel/framework", "10.0.0"); got != "pkg:composer/laravel/framework@10.0.0" {
+	if got := pkgid.PurlForPackage("packagist", "", "laravel/framework", "10.0.0"); got != "pkg:composer/laravel/framework@10.0.0" {
 		t.Errorf("composer vendor/package = %q", got)
 	}
 }

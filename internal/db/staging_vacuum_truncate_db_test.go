@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestStagingSkipsVacuumTruncation — v0.29.71 (kate's PostgreSQL log,
+// TestStagingSkipsVacuumTruncation — v0.29.71 (the production PostgreSQL log,
 // 2026-09-26..30: 19 autovacuum runs on aveloxis_ops.staging and its TOAST
 // table cancelled "while truncating relation"). Truncation needs an ACCESS
 // EXCLUSIVE lock, so every attempt stalled a staging writer until

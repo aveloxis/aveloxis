@@ -193,11 +193,8 @@ internal/api/vulnerabilities_test.go internal/db/home_store.go
 internal/collector/aggregate_cadence_test.go internal/collector/facade.go
 internal/collector/aggregate_cadence_test.go internal/db/aggregates.go
 internal/collector/aggregate_cadence_test.go internal/scheduler/scheduler.go
-internal/collector/analysis_actions_test.go internal/collector/analysis.go
 internal/collector/analysis_actions_test.go internal/db/timeseries.go
-internal/collector/analysis_devbuild_test.go internal/collector/analysis.go
 internal/collector/analysis_license_test.go internal/collector/analysis.go
-internal/collector/analysis_missing_parsers_test.go internal/collector/analysis.go
 internal/collector/analysis_no_scancode_test.go internal/collector/analysis.go
 internal/collector/analysis_no_scancode_test.go internal/collector/scancode.go
 internal/collector/analysis_scc_process_test.go internal/collector/analysis.go
@@ -215,7 +212,6 @@ internal/collector/breadth_unconditional_test.go internal/collector/breadth.go
 internal/collector/c2_transitive_test.go internal/api/vulnerabilities.go
 internal/collector/c2_transitive_test.go internal/collector/gomod_graph.go
 internal/collector/c2_transitive_test.go internal/collector/lockfile_scan.go
-internal/collector/c2_transitive_test.go internal/collector/vuln_targets.go
 internal/collector/canceled_logging_test.go internal/collector/staged.go
 internal/collector/collect_uses_staged_test.go cmd/aveloxis/main.go
 internal/collector/collect_uses_staged_test.go internal/collector/collector.go
@@ -224,7 +220,6 @@ internal/collector/commit_daily_fold_test.go internal/collector/facade.go
 internal/collector/contributors_progress_test.go internal/collector/staged.go
 internal/collector/cvss_test.go internal/collector/cvss.go
 internal/collector/cvss_test.go internal/collector/vulnerability.go
-internal/collector/dep_parsing_test.go internal/collector/analysis.go
 internal/collector/distribution/scan_complete_test.go internal/collector/distribution/scanner.go
 internal/collector/distribution/scan_complete_test.go internal/collector/distribution/worker.go
 internal/collector/distribution/scanner_short_circuit_test.go internal/collector/distribution/scanner.go
@@ -232,7 +227,6 @@ internal/collector/distribution/scanner_test.go internal/collector/distribution/
 internal/collector/distribution/worker_test.go internal/collector/distribution/worker.go
 internal/collector/dm_aggregates_test.go internal/db/aggregates.go
 internal/collector/dm_aggregates_test.go internal/scheduler/scheduler.go
-internal/collector/docs_ecosystem_count_test.go internal/collector/analysis.go
 internal/collector/docs_facade_fetch_test.go internal/collector/facade.go
 internal/collector/docs_vuln_sbom_sync_test.go internal/collector/sbom.go
 internal/collector/enrich_batch_test.go internal/collector/enrich.go
@@ -280,8 +274,6 @@ internal/collector/identity_capture_test.go internal/platform/github/graphql_lis
 internal/collector/identity_capture_test.go internal/platform/github/graphql_pr_batch.go
 internal/collector/identity_capture_test.go internal/platform/gitlab/client.go
 internal/collector/identity_capture_test.go internal/platform/gitlab/mr_map.go
-internal/collector/libyear_history_test.go internal/collector/analysis.go
-internal/collector/libyear_history_test.go internal/db/history.go
 internal/collector/libyear_registry_client_test.go internal/collector/analysis.go
 internal/collector/libyear_registry_client_test.go internal/scheduler/scheduler.go
 internal/collector/libyear_registry_test.go internal/collector/analysis.go
@@ -293,7 +285,6 @@ internal/collector/listing_mode_test.go internal/scheduler/scheduler.go
 internal/collector/lockfile_scan_test.go internal/collector/analysis.go
 internal/collector/lockfile_scan_test.go internal/collector/lockfile_scan.go
 internal/collector/mailinglist_warn_ratelimit_test.go internal/collector/mailinglist_processor.go
-internal/collector/manifest_encoding_test.go internal/collector/analysis.go
 internal/collector/manifest_parser_names_test.go internal/collector/analysis.go
 internal/collector/message_heal_pass_test.go cmd/aveloxis/heal_messages.go
 internal/collector/message_heal_pass_test.go internal/collector/message_heal.go
@@ -317,7 +308,6 @@ internal/collector/phase5_issue_children_test.go internal/platform/github/graphq
 internal/collector/phase5_issue_children_test.go internal/platform/platform.go
 internal/collector/phase5_issue_children_test.go internal/scheduler/scheduler.go
 internal/collector/phase_c_test.go internal/collector/lockfile_scan.go
-internal/collector/phase_c_test.go internal/collector/vuln_targets.go
 internal/collector/phase_c_test.go internal/collector/vulnerability.go
 internal/collector/phase_completion_logs_test.go internal/collector/staged.go
 internal/collector/pr_child_mode_test.go internal/collector/gap_fill.go
@@ -342,7 +332,6 @@ internal/collector/sbom_compliance_test.go internal/collector/sbom.go
 internal/collector/sbom_graph_test.go internal/collector/sbom.go
 internal/collector/sbom_provenance_test.go internal/db/scancode_store.go
 internal/collector/sbom_scope_test.go internal/collector/sbom.go
-internal/collector/sbom_scope_test.go internal/collector/vulnerability.go
 internal/collector/sbom_store_errors_test.go internal/collector/sbom.go
 internal/collector/sbom_test.go internal/collector/sbom.go
 internal/collector/scancode_adaptive_timeout_test.go internal/collector/scancode_policy.go
@@ -394,7 +383,6 @@ internal/collector/staged_events_single_pass_test.go internal/collector/staged.g
 internal/collector/staged_events_single_pass_test.go internal/platform/github/client.go
 internal/collector/staged_events_single_pass_test.go internal/platform/gitlab/client.go
 internal/collector/staged_events_single_pass_test.go internal/platform/platform.go
-internal/collector/symlink_test.go internal/collector/analysis.go
 internal/collector/threading_mode_test.go internal/collector/staged.go
 internal/collector/threading_mode_test.go internal/config/config.go
 internal/collector/threading_mode_test.go internal/scheduler/scheduler.go
@@ -403,9 +391,7 @@ internal/collector/tools_ensure_current_test.go cmd/aveloxis/upgrade_tools_cmd.g
 internal/collector/tools_ensure_current_test.go internal/collector/tools.go
 internal/collector/tools_gobin_test.go internal/collector/tools.go
 internal/collector/tools_libmagic_test.go internal/collector/tools.go
-internal/collector/version_hygiene_test.go internal/collector/analysis.go
 internal/collector/version_hygiene_test.go internal/collector/vulnerability.go
-internal/collector/vuln_scan_stamp_test.go internal/collector/vulnerability.go
 internal/collector/vuln_targets_test.go internal/collector/analysis.go
 internal/collector/vuln_targets_test.go internal/collector/vulnerability.go
 internal/collector/vulnerability_details_test.go internal/collector/vulnerability.go
@@ -482,11 +468,7 @@ internal/db/cntrb_id_fk_indexes_test.go internal/db/migrate.go
 internal/db/code_review_round_2026_09_06_test.go internal/db/commit_resolver_store.go
 internal/db/code_review_round_2026_09_06_test.go internal/db/mailinglist_sender_resolve_store.go
 internal/db/collections_store_test.go internal/db/collections_store.go
-internal/db/column_write_policy_test.go internal/db/contributors.go
-internal/db/column_write_policy_test.go internal/db/migrate.go
-internal/db/column_write_policy_test.go internal/db/repo_forge_id_changes.go
 internal/db/column_write_policy_test.go internal/db/repo_gone.go
-internal/db/column_write_policy_test.go internal/db/repo_metadata.go
 internal/db/columnfill_diff_test.go cmd/aveloxis/data_test_cmd.go
 internal/db/commit_batch_test.go internal/db/commit_batch.go
 internal/db/commit_bounds_db_test.go internal/db/analytics_store.go
@@ -848,7 +830,6 @@ internal/db/vuln_batch_tx_test.go internal/db/vulnerability_store.go
 internal/db/vuln_digest_store_test.go internal/db/vuln_digest_store.go
 internal/db/vuln_exposure_classes_db_test.go internal/db/migrate.go
 internal/db/vuln_exposure_classes_db_test.go internal/db/vuln_exposure.go
-internal/db/vuln_lifecycle_test.go internal/collector/vulnerability.go
 internal/db/vuln_lifecycle_test.go internal/db/migrate.go
 internal/db/vuln_lifecycle_test.go internal/db/vuln_exposure.go
 internal/db/vuln_lifecycle_test.go internal/db/vulnerability_store.go
@@ -1033,20 +1014,6 @@ internal/web/admin_routes_test.go internal/web/server.go
 internal/web/monitor_search_test.go internal/db/queue.go
 internal/web/monitor_test.go internal/db/queue.go
 internal/web/oauth_email_fallback_test.go internal/db/web_store.go
-scripts/convergence_contracts_test.go cmd/aveloxis/dedup_repos.go
-scripts/convergence_contracts_test.go cmd/aveloxis/heal_collection_gaps.go
-scripts/convergence_contracts_test.go cmd/aveloxis/heal_collection_gaps_run.go
-scripts/convergence_contracts_test.go cmd/aveloxis/heal_messages.go
-scripts/convergence_contracts_test.go cmd/aveloxis/resolve_email_identities.go
-scripts/convergence_contracts_test.go cmd/aveloxis/rewalk_whitespace.go
-scripts/convergence_contracts_test.go cmd/aveloxis/strip_quoted_history.go
-scripts/convergence_contracts_test.go internal/collector/jira_worker.go
-scripts/convergence_contracts_test.go internal/collector/message_heal.go
-scripts/convergence_contracts_test.go internal/db/email_message_store.go
-scripts/convergence_contracts_test.go internal/db/gap_heal_store.go
-scripts/convergence_contracts_test.go internal/db/jira_store.go
-scripts/convergence_contracts_test.go internal/db/repo_dedup.go
-scripts/convergence_contracts_test.go scripts/standing_rules.go
 scripts/email_log_redaction_test.go internal/scheduler/vuln_digest.go
 scripts/prioritize_callers_test.go internal/api/portal.go
 scripts/url_log_redaction_test.go internal/platform/url_userinfo.go

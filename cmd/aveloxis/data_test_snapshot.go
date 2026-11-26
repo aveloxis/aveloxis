@@ -283,7 +283,7 @@ func sqlStringLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'",
 // extension there; the module must be preloaded server-side). An error means
 // the run reports no statement timings — logged, never silent.
 func (r *snapshotRun) resetStatements(name string) error {
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(name))
+	pool, err := openPool(r.ctx, r.databaseDSN(name))
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func (r *snapshotRun) resetStatements(name string) error {
 
 // topStatements reads one database's heaviest statements since its reset.
 func (r *snapshotRun) topStatements(name string, n int) ([]snapshotStatement, error) {
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(name))
+	pool, err := openPool(r.ctx, r.databaseDSN(name))
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +372,7 @@ func runSnapshot(ctx context.Context, logger *slog.Logger, primary *config.Confi
 	}
 	adminCfg := primary.Database
 	adminCfg.DBName = "postgres"
-	admin, err := pgxpool.New(ctx, adminCfg.ConnectionString())
+	admin, err := openPool(ctx, adminCfg.ConnectionString())
 	if err != nil {
 		return "", false, fmt.Errorf("connect to postgres: %w", err)
 	}
@@ -470,7 +470,7 @@ func runSnapshot(ctx context.Context, logger *slog.Logger, primary *config.Confi
 
 	// The comparisons, on the last A and B clones.
 	failed := false
-	openPool := func(name string) (*pgxpool.Pool, error) { return pgxpool.New(ctx, r.databaseDSN(name)) }
+	openPool := func(name string) (*pgxpool.Pool, error) { return openPool(ctx, r.databaseDSN(name)) }
 	relPool, err := openPool(released)
 	if err != nil {
 		return "", false, err
@@ -631,7 +631,7 @@ func verifyNotOK(required []string, local []db.VerifyResult) []db.VerifyResult {
 // that step, so its work on the seeded rows is never done and never compared
 // (a template made from a database a newer release migrated).
 func checkNoNewerLedgerSteps(ctx context.Context, dsn string) error {
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := openPool(ctx, dsn)
 	if err != nil {
 		return err
 	}

@@ -39,7 +39,7 @@ func TestScanDependenciesAbortsWhenTheClearFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	ac := NewAnalysisCollector(store, lg, t.TempDir())
-	err = ac.scanDependencies(ctx, 1, workDir, &AnalysisResult{})
+	err = ac.scanDependencies(ctx, 1, workDir, ac.readClone(ctx, 1, workDir), &AnalysisResult{})
 	if err == nil {
 		t.Fatal("scanDependencies returned nil after the snapshot clear failed; it must abort, not insert over the old rows")
 	}

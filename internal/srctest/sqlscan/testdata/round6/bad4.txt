@@ -1,0 +1,37 @@
+@@y01 write through a view whose definition is not in this Check call (another package)
+UPDATE aveloxis_augur_data.repo SET repo_language = $1
+@@y02 same with view present (control VIOL expected)
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS SELECT *, fe AS repo_language FROM aveloxis_data.repos
+@;
+UPDATE aveloxis_augur_data.repo SET repo_language = $1
+@@y03 unqualified through the compat view, renamed column
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS SELECT *, fe AS repo_language FROM aveloxis_data.repos
+@;
+UPDATE repo SET repo_language = $1
+@@y04 view present; search_path set in same text
+CREATE OR REPLACE VIEW aveloxis_augur_data.repo AS SELECT *, fe AS repo_language FROM aveloxis_data.repos
+@;
+SET search_path = aveloxis_augur_data; UPDATE repo SET repo_language = $1
+@@y05 trigger fn declared on table, trigger-assign of different-named col via NEW record var copy
+CREATE FUNCTION t() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE r record; BEGIN r := NEW; r.io := NOW(); RETURN r; END $$; CREATE TRIGGER tg BEFORE UPDATE ON aveloxis_data.repos FOR EACH ROW EXECUTE FUNCTION t()
+@@y06 fk cascade on registered column from create table (control: schema style)
+CREATE TABLE aveloxis_data.repos (id int, fe text REFERENCES s.o (code) ON UPDATE CASCADE ON DELETE SET NULL)
+@@y07 logical replication subscription
+CREATE SUBSCRIPTION sub CONNECTION 'host=x dbname=y' PUBLICATION p
+@@y08 alter enum rename value
+ALTER TYPE aveloxis_data.kind RENAME VALUE 'a' TO 'b'
+@@y09 drop type cascade
+DROP TYPE aveloxis_data.kind CASCADE
+@@y10 delete all rows
+DELETE FROM aveloxis_data.repos
+@@y11 insert on conflict do update where guard is merge-style... conflict set through alias column qualified (invalid)
+INSERT INTO aveloxis_data.repos AS r (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(r.fe, EXCLUDED.fe), io = r.io
+@@y12 guard uses alias that is also a FROM subquery alias inside EXISTS
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE EXISTS (SELECT 1 FROM s.stg r WHERE r.fe IS NULL) AND TRUE
+@@y13 guard IS NULL on target but SET in a different CTE-level update of same table
+WITH a AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) UPDATE aveloxis_data.repos SET x = 1 WHERE fe IS NULL
+@@y14 plpgsql guard reads variable (use_variable)
+CREATE FUNCTION f(v text) RETURNS void LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+DECLARE fe text; BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@y15 sql fn: guard reads nothing odd (control PASS ok)
+CREATE FUNCTION f(v text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL $$

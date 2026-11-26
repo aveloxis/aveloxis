@@ -367,7 +367,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_last_breadth
 -- (LOWER(username) = LOWER(gh_login)). The v0.19.9 gh_login index
 -- cannot serve the LOWER() form, and without expression statistics
 -- the planner misestimated the join by ~4 orders of magnitude — a
--- live backfill ran 2+ days orphaned on aveloxis_large. Partial:
+-- live backfill ran 2+ days orphaned on a production database. Partial:
 -- the email-only cohort (gh_login = '') is excluded, matching the
 -- query's `!= ''` guards. Existing fleets get the CONCURRENTLY build
 -- from migrate.go; this plain form covers fresh installs.
@@ -378,7 +378,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_gh_login_lower
 -- probes: GetMailingListSenderResolveCandidates' NOT EXISTS,
 -- ResolveContributorIDByEmail's join, CreateEmailOnlyContributor's
 -- lookup. Without these the OR-equality anti-join planned as a full
--- contributors seq scan (9.4 GB on aveloxis_large) PER OUTER ROW —
+-- contributors seq scan (9.4 GB on a production database) PER OUTER ROW —
 -- observed 30-50 min hourly on 5 backends (2026-07-29). History:
 -- cntrb_email never had an index; cntrb_canonical's was dropped in
 -- v0.25.6 as "no reader", then v0.25.7+ shipped these readers. NEW
@@ -396,7 +396,7 @@ CREATE INDEX IF NOT EXISTS idx_contributors_email_lookup
 CREATE INDEX IF NOT EXISTS idx_contributors_canonical_lookup
     ON aveloxis_data.contributors (cntrb_canonical);
 
--- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 kate migrate
+-- v0.27.57/58 EXISTING-FLEET GUARDS (the 2026-07-30 production migrate
 -- failure): on a database where contributors already exists, the
 -- CREATE TABLE above no-ops and its new columns never materialize —
 -- and the CREATE INDEX statements below would then fail with 42703
@@ -1574,11 +1574,214 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_libyear (
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
-    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+    data_collection_date TIMESTAMPTZ DEFAULT NOW(),
+    -- v0.29.160: the manifest that declared the dependency, relative to the
+    -- clone's root. '' on a row written before that release. Last, because
+    -- an existing fleet gains it by ALTER (migrate.go), which appends.
+    manifest_path    TEXT DEFAULT '',
+    -- v0.29.162: why the row has a libyear or lacks one: resolved,
+    -- no_version, no_release_date, not_on_registry, cannot_be_asked,
+    -- lookup_failed or no_timeline. NULL on a row written before that
+    -- release, which a reader shows as "not recorded".
+    libyear_status   TEXT,
+    -- v0.29.172: the package key (pkgid.Key of package_manager and name:
+    -- the folded ecosystem, '|', the folded name), written on insert. Its
+    -- lookup index is the migrate's (SR-2). NULL on a row written before
+    -- that release until the fill reaches it, and on a row that cannot be
+    -- keyed.
+    package_key      TEXT,
+    -- v0.29.177: where current_version came from when it is not the
+    -- declaration's own. 'locked': the nearest lockfile in the manifest's
+    -- ancestry resolves the dependency to exactly this version.
+    -- 'locked-several': it resolves to several, and current_version is
+    -- still the declared one. NULL: the declaration's version.
+    version_source   TEXT,
+    -- v0.29.181: why a Maven dependency has no version when its pom gives
+    -- it none and a parent pom or BOM that might manage it could not be
+    -- obtained: inherited_not_found, inherited_lookup_failed or
+    -- inherited_repository_refused; 0.29.215 adds profile_managed,
+    -- platforms_disagree and value_not_read (docs/schema.md). NULL otherwise.
+    version_reason   TEXT,
+    -- v0.29.185: the package repository hosts whose fetched poms this
+    -- version was worked out through (a parent from one, a BOM from
+    -- another). NULL when it came from the repository's own files.
+    version_hosts    TEXT[]
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_libyear_history (
     LIKE aveloxis_data.repo_deps_libyear INCLUDING ALL
+);
+
+-- repo_declared_repositories (v0.29.184; summary/70, 4.5): the package
+-- repositories a repository's own build files name (a pom's <repositories>
+-- and <pluginRepositories>), replaced whole at each analysis. One row per
+-- manifest, address and use. repository_url has no trailing slash and NEVER
+-- credentials (an address that carried them is recorded without them, with
+-- the reason); for an address that could not be read it is the text as
+-- written. not_fetched_reason is why the repository is never asked: not an
+-- https address, credentials in the address, unreadable, or a plugin
+-- repository. NULL: it may be asked (collection.declared_repository_fetch).
+-- Born empty on every fleet, so its key and index are declared here.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_declared_repositories (
+    declared_repository_id BIGSERIAL PRIMARY KEY,
+    repo_id            BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                         ON UPDATE CASCADE ON DELETE CASCADE
+                         DEFERRABLE INITIALLY DEFERRED,
+    manifest_path      TEXT NOT NULL,
+    repository_url     TEXT NOT NULL,
+    host               TEXT NOT NULL DEFAULT '',
+    used_for           TEXT NOT NULL,
+    not_fetched_reason TEXT,
+    data_collection_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (repo_id, manifest_path, repository_url, used_for)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_declared_repositories_host
+    ON aveloxis_data.repo_declared_repositories (host);
+
+-- maven_pom_results (v0.29.182; summary/70, 4.5): what a Maven repository
+-- said about one pom, kept so that a parent or BOM is fetched once and so
+-- that a repository's bad hour does not change a dependency's version. One
+-- row per (serving repository, group, artifact, version). found with an
+-- extract (coordinates, parent, properties, dependencyManagement: not the
+-- document) for a pom that was obtained, and no expiry for a configured
+-- repository, since a released pom does not change; found FALSE with an
+-- expiry for a repository's "I have none", since the artifact may be
+-- published later. A lookup that got no answer is never stored. Not
+-- per-repository data: one row serves every repository analysed. Born empty
+-- on every fleet, so its key is declared here (SR-1 does not apply) and is
+-- the ON CONFLICT arbiter of the one writer.
+CREATE TABLE IF NOT EXISTS aveloxis_data.maven_pom_results (
+    repository_url TEXT NOT NULL,
+    group_id       TEXT NOT NULL,
+    artifact_id    TEXT NOT NULL,
+    version        TEXT NOT NULL,
+    found          BOOLEAN NOT NULL,
+    extract        JSONB,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at     TIMESTAMPTZ,
+    PRIMARY KEY (repository_url, group_id, artifact_id, version)
+);
+
+-- v0.29.164 (summary/70, 4.2): a declared dependency that was given no
+-- inventory row, and why. Snapshot-replaced per analysis, in the transaction
+-- that replaces repo_deps_libyear; a failed manifest's notes are carried
+-- with its rows. kind: name_rejected (the name fails its ecosystem's grammar,
+-- cannot be stored unchanged, or is too long), non_registry (a path,
+-- workspace, git or URL source), no_namespace (no group where the purl type
+-- requires one). Born empty on every fleet; the index is declared here for
+-- that reason.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_inventory_notes (
+    note_id          BIGSERIAL PRIMARY KEY,
+    repo_id          BIGINT NOT NULL REFERENCES aveloxis_data.repos(repo_id)
+                       ON UPDATE CASCADE ON DELETE CASCADE
+                       DEFERRABLE INITIALLY DEFERRED,
+    kind             TEXT NOT NULL,
+    package_manager  TEXT NOT NULL DEFAULT '',
+    -- The declared name, sanitized and cut to the name bound.
+    name             TEXT NOT NULL DEFAULT '',
+    -- The package key of the stored name (ecosystem|name, folded).
+    package_key      TEXT NOT NULL DEFAULT '',
+    -- The purl of the declared dependency, when one can be built and stored
+    -- unchanged; '' otherwise and always for non_registry.
+    purl             TEXT NOT NULL DEFAULT '',
+    manifest_path    TEXT NOT NULL DEFAULT '',
+    tool_source      TEXT DEFAULT 'aveloxis-analysis',
+    tool_version     TEXT DEFAULT '',
+    data_source      TEXT DEFAULT 'manifest',
+    data_collection_date TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_repo_inventory_notes_repo
+    ON aveloxis_data.repo_inventory_notes (repo_id);
+
+-- v0.29.159 (summary/70, 4.7): what Aveloxis knows about how completely it
+-- has read one repository's dependencies. One row per repository, and two
+-- halves with separate writers.
+--
+-- The ANALYSIS half is written inside the transaction that replaces the
+-- dependency inventory (ReplaceRepoLibyear), so it describes exactly the
+-- inventory stored beside it: analysed_at is not NULL exactly when a whole
+-- inventory has been written by 0.29.159 or later. A repository with no row,
+-- or with analysed_at NULL, has not been analysed since that release, and its
+-- stored rows are taken as its inventory, as before.
+--
+-- The ATTEMPT columns are outside the half and written by their own
+-- statement (RecordInventoryAttempt): the last analysis that did NOT replace
+-- the inventory, and why. last_attempt_at later than analysed_at reads
+-- "the inventory is older than the last attempt to refresh it".
+--
+-- The table is born empty on every fleet; there is no seed and no backfill.
+CREATE TABLE IF NOT EXISTS aveloxis_data.repo_dependency_coverage (
+    repo_id                  BIGINT PRIMARY KEY REFERENCES aveloxis_data.repos(repo_id)
+                               ON UPDATE CASCADE ON DELETE CASCADE
+                               DEFERRABLE INITIALLY DEFERRED,
+    -- The analysis half.
+    analysed_at              TIMESTAMPTZ,
+    -- Manifest files a roster kind claimed, and how many of them were read
+    -- and parsed. The difference is manifests_failed.
+    manifests_found          INTEGER,
+    manifests_parsed         INTEGER,
+    -- [{"path": ..., "kind": ..., "reason": "read" | "parse"}], paths
+    -- relative to the clone's root. '[]' when none failed.
+    manifests_failed         JSONB,
+    -- v0.29.176: the lockfiles that exist and could not be read or parsed
+    -- at the last lockfile phase, as manifests_failed: path, kind, reason,
+    -- and how many of each one's previous rows were kept. NULL when none.
+    lockfiles_failed         JSONB,
+    -- v0.29.183: the Maven trees that hold dependencyManagement entries and
+    -- were not read whole at the last analysis ({root, reason}); their
+    -- managed entries are still inventoried. NULL when every such tree was.
+    maven_trees_not_whole    JSONB,
+    -- v0.29.185: the Maven trees whose parent and BOM chains used fetched
+    -- poms, with the repository hosts they came from ({root, hosts}). A
+    -- tree can depend on a host with no dependency row saying so.
+    maven_tree_hosts         JSONB,
+    -- Dependencies the manifests declared, and how many of those were given
+    -- no inventory row, by reason: {"non_registry": n, "name_rejected": n,
+    -- "lookup_failed": n}. '{}' when every one has a row.
+    dependencies_declared    INTEGER,
+    dependencies_without_row JSONB,
+    -- The attempt columns.
+    last_attempt_at          TIMESTAMPTZ,
+    last_attempt_result      TEXT,
+    -- v0.29.214: the lockfiles (RecordLockfileReading, their one writer).
+    -- lockfiles_read_at is when they were last read to the end; NULL when
+    -- they never were, or the last reading found none. lockfiles_unread_reason
+    -- is why the last reading did not finish, NULL when it did.
+    lockfiles_read_at        TIMESTAMPTZ,
+    lockfiles_unread_reason  TEXT,
+    -- v0.29.161: the SCAN half, written by the vulnerability scan in one
+    -- statement of its own (RecordScanCoverage). last_scan_attempt_at is the
+    -- time of the last scan ATTEMPT, whatever came of it; it is not
+    -- repos.vuln_scan_last_run, which stays the last COMPLETED scan.
+    last_scan_attempt_at     TIMESTAMPTZ,
+    -- sent | nothing_to_send | unsendable | unanswered | inventory_incomplete | failed
+    scan_outcome             TEXT,
+    -- TRUE when the outcome is 'sent' and something was held back or the
+    -- closing statement failed.
+    scan_partial             BOOLEAN,
+    -- Targets sent to OSV, and targets the wire gate dropped. NULL when the
+    -- scan failed before its targets were built.
+    scan_targets_sent        INTEGER,
+    scan_targets_dropped     INTEGER,
+    -- v0.29.168: sent targets OSV refused to answer, and open findings the
+    -- scan neither reported nor closed because an answer for their package
+    -- was not complete. NULL when the scan stopped before its answers.
+    scan_targets_rejected    INTEGER,
+    scan_closures_held       INTEGER,
+    -- v0.29.169: sent targets whose answer was longer than the page cap.
+    scan_targets_truncated   INTEGER,
+    -- TRUE when the scan found no stored inventory rows, no lockfile rows
+    -- and no analysis half: nothing has ever said what the repository
+    -- depends on. NULL when the scan's target reads did not complete.
+    dependencies_unknown     BOOLEAN,
+    -- When the repository was first scanned, written once and only for a
+    -- repository that had no scan stamp and no finding before that scan
+    -- began. NULL for good on every repository scanned before 0.29.161.
+    first_scan_at            TIMESTAMPTZ,
+    tool_source              TEXT DEFAULT 'aveloxis-analysis',
+    tool_version             TEXT DEFAULT '',
+    data_source              TEXT DEFAULT 'analysis',
+    data_collection_date     TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_scorecard (
@@ -1635,6 +1838,24 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_deps_vulnerabilities (
     first_detected_at TIMESTAMPTZ DEFAULT NOW(),
     last_seen_at      TIMESTAMPTZ DEFAULT NOW(),
     resolved_at       TIMESTAMPTZ,
+    -- v0.29.165: why the finding closed, when the closure is NOT a fix:
+    -- superseded, version_determined, version_lost, version_changed,
+    -- never_applied or unsendable. NULL on an open finding, on a closure
+    -- with no reason (the dependency is gone or was moved past the
+    -- advisory), and on every row closed before that release.
+    closed_reason     TEXT,
+    -- v0.29.166: when the finding entered exposure in this repository
+    -- (its class became exposure: by insert, by reopening, or by a change
+    -- in place). The digest's window reads it. NULL on a finding that has
+    -- never been exposure, and on every row written before that release.
+    entered_exposure_at TIMESTAMPTZ,
+    -- v0.29.171, the decision guards: the asked-at time of the OSV answer
+    -- that last decided this finding (wrote it, or closed it by omitting
+    -- it), and the target-set read time of the scan that last wrote or
+    -- closed it. A write or a close acts only if its own times are not
+    -- older. NULL on a row not yet decided under the rule: anything acts.
+    decided_asked_at    TIMESTAMPTZ,
+    decided_targets_at  TIMESTAMPTZ,
     -- v0.27.11 version-resolution accuracy: the raw requirement string
     -- from the manifest ("apache-airflow>=3.0.0") and how the scanned
     -- version was chosen: 'locked' (a lockfile resolved it, or go.mod
@@ -1661,7 +1882,7 @@ CREATE INDEX IF NOT EXISTS idx_repo_deps_vulns_repo_id
 -- / idx_pull_requests_repo_created (repo_id, created_at). v0.29.77: those
 -- are superseded by idx_issues_repo_created_reporter and
 -- idx_pull_requests_repo_created_author — the same keys INCLUDE the author
--- column, so the top-contributors issue and PR arms are index-only (kate
+-- column, so the top-contributors issue and PR arms are index-only (production
 -- 2026-10-07, repo 94609: 505K PR rows read one heap page each, 58K issue
 -- rows likewise). Both are MIGRATION-ONLY (SR-2: this base DDL runs
 -- before the CONCURRENTLY steps, so a plain form here would block-build
@@ -1755,6 +1976,9 @@ CREATE TABLE IF NOT EXISTS aveloxis_data.repo_lockfile_packages (
     -- so the transitive purl matches the direct writer's
     -- pkg:swift/github.com/Owner/Repo shape and OSV accepts it.
     purl_namespace   TEXT NOT NULL DEFAULT '',
+    -- v0.29.172: the package key (pkgid.Key of ecosystem and package_name),
+    -- written on insert; as on repo_deps_libyear.
+    package_key      TEXT,
     tool_source      TEXT DEFAULT 'aveloxis',
     tool_version     TEXT DEFAULT '',
     data_source      TEXT DEFAULT '',
@@ -2417,6 +2641,69 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.deploy_ack (
     note            TEXT NOT NULL DEFAULT ''
 );
 
+-- program_markers (v0.29.173): one row per background walk that runs to an
+-- end and must not start over: where it is (cursor_id), where it stops
+-- (bound_id, fixed when it begins), what it did, and when it finished. The
+-- first is the package-key fill, one row per table it walks.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.program_markers (
+    marker       TEXT PRIMARY KEY,
+    cursor_id    BIGINT NOT NULL DEFAULT 0,
+    bound_id     BIGINT NOT NULL DEFAULT 0,
+    rows_done    BIGINT NOT NULL DEFAULT 0,
+    rows_skipped BIGINT NOT NULL DEFAULT 0,
+    started_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+-- package_repository_hosts (v0.29.185; summary/70, 4.5, D14): every package
+-- repository host a pom was ever asked of and that answered. first_fetched_at
+-- is set once; last_answered_at moves with each analysis that gets an answer
+-- (a pom, or "I have none"). Later releases of the vulnerability program
+-- watch these hosts for signs of abandonment and let an operator distrust
+-- one.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.package_repository_hosts (
+    host             TEXT PRIMARY KEY,
+    first_fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- repository_host_signals (v0.29.189; summary/70, 4.5, D14): what the
+-- periodic check last saw of each package repository host, one row per host
+-- and kind of check. state is the last DEFINITIVE answer ('signal' or
+-- 'clear'), or 'unknown' when the check has never been able to tell; since
+-- is when that answer began. A check that cannot tell does not replace a
+-- definitive answer: it sets unknown_since and unknown_detail, which the
+-- next definitive check clears. dismissed_at is an administrator's "seen":
+-- a signal is on the attention list while it began after its dismissal.
+-- Nothing reads this table to act (SR-7).
+CREATE TABLE IF NOT EXISTS aveloxis_ops.repository_host_signals (
+    host           TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    state          TEXT NOT NULL CHECK (state IN ('signal', 'clear', 'unknown')),
+    detail         TEXT NOT NULL DEFAULT '',
+    since          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    checked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    unknown_since  TIMESTAMPTZ,
+    unknown_detail TEXT NOT NULL DEFAULT '',
+    dismissed_at   TIMESTAMPTZ,
+    dismissed_by   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (host, kind)
+);
+
+-- distrusted_repository_hosts (v0.29.186; summary/70, 4.5, D14): the package
+-- repository hosts an operator has decided not to use. Nothing is fetched
+-- from a host listed here and nothing it served earlier is used; the writer
+-- of maven_pom_results refuses a row for one in its own statement. A row is
+-- written and removed by an administrator only (a later release adds the
+-- console page); nothing distrusts a host by itself.
+CREATE TABLE IF NOT EXISTS aveloxis_ops.distrusted_repository_hosts (
+    host          TEXT PRIMARY KEY,
+    distrusted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    distrusted_by TEXT NOT NULL DEFAULT '',
+    note          TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS aveloxis_ops.migration_ledger (
     step_label   TEXT PRIMARY KEY,
     completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -2453,7 +2740,7 @@ CREATE TABLE IF NOT EXISTS aveloxis_ops.staging (
     processed    BOOLEAN DEFAULT FALSE
 );
 
--- v0.29.71: no vacuum truncation on staging (kate, 2026-09-26..30: 19
+-- v0.29.71: no vacuum truncation on staging (production, 2026-09-26..30: 19
 -- autovacuum runs on it and its TOAST cancelled "while truncating
 -- relation"). Truncation takes an ACCESS EXCLUSIVE lock, so each attempt
 -- stalled a staging writer until PostgreSQL cancelled it, and the file never
@@ -3180,8 +3467,8 @@ CREATE INDEX IF NOT EXISTS idx_repo_dependencies_repo_id ON aveloxis_data.repo_d
 -- the BEHAVIOR — ON UPDATE CASCADE; these indexes make the
 -- behavior tractable. Without them, an UPDATE on
 -- contributors.cntrb_id (run by `aveloxis migrate-cntrb-ids`)
--- seq-scans every child table for every row in the batch. The
--- aveloxis_large production DB observed a 17-hour stall on batch 1
+-- seq-scans every child table for every row in the batch. A
+-- large production DB observed a 17-hour stall on batch 1
 -- of that migration on 2026-05-17 because 15 of 16 child FKs were
 -- unindexed. idx_contributor_identities_cntrb (declared above)
 -- covers the 16th column; the 15 indexes below close the gap.
@@ -3236,7 +3523,7 @@ CREATE INDEX IF NOT EXISTS idx_pull_request_review_message_ref_pr_review_id ON a
 -- leads with pr_review_id, so it cannot serve a bare msg_id seek —
 -- without this index the heal-messages batch SELECT filter-scanned
 -- 30.5M index entries PER worklist row (measured 1.67s/probe ≈ 10.5
--- days for the 546K-row worklist on aveloxis_large, 2026-08-01).
+-- days for the 546K-row worklist on a production database, 2026-08-01).
 -- NON-partial on purpose: the probe value is a join variable
 -- (v0.27.54 lesson — partial predicates can't be proven at plan time
 -- for join-variable probes).
@@ -3443,7 +3730,7 @@ ALTER TABLE aveloxis_data.repo_distribution_manifest_history
 --
 -- PARALLEL SAFE (v0.29.8): without a marker Postgres defaults a function
 -- to PARALLEL UNSAFE, which forced EVERY query calling this one to a
--- serial plan (proparallel = 'u' on both chaoss.tv databases,
+-- serial plan (proparallel = 'u' on both production databases,
 -- 2026-09-12; an aveloxis-analytics feature query ran 2.4 h serial).
 -- The body only reads its argument and one table, which is exactly
 -- what SAFE permits. STABLE, not IMMUTABLE: the list lookup can change

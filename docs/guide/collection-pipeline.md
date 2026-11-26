@@ -168,8 +168,8 @@ The repo is cloned as a bare repo (or fetched if a clone already exists):
 REPO_URL=https://github.com/augurlabs/augur
 CLONE_PATH=/data/aveloxis-repos/augurlabs-augur.git
 git clone --bare "$REPO_URL" "$CLONE_PATH"   # first time
-# subsequent runs — an explicit refspec, because `git clone --bare`
-# writes no fetch refspec: a bare `git fetch --all` downloads objects
+# subsequent runs — an explicit refspec, because git clone --bare
+# writes no fetch refspec: a bare git fetch --all downloads objects
 # but never advances refs/heads/*, leaving the clone permanently stale
 git -C "$CLONE_PATH" fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' --prune
 ```
@@ -231,7 +231,7 @@ After facade completes, git commit author emails are resolved to GitHub user acc
 
 ## Periodic: Contributor enrichment and canonical emails
 
-On a periodic scheduler ticker (default 30 minutes, `enrich_interval_minutes` — moved out of the per-job path in v0.18.29), `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses).
+On a periodic scheduler ticker (default 30 minutes, `enrich_interval_minutes` — moved out of the per-job path in v0.18.29), `EnrichThinContributors` calls `GET /users/{login}` for contributors with missing profile data (empty company and location). This sets company, location and name from the profile when the profile has them, fills `cntrb_email` with the public email only when the column is empty (the first address observed stays, 0.29.216), fills an empty created_at, and sets `cntrb_canonical` from the public email (filtering noreply addresses; the profile's address replaces a stored canonical, an empty one clears nothing). It asks GitHub only; GitLab profiles are not enriched.
 
 **Token efficiency (v0.14.4+)**: Contributors are tracked via `cntrb_last_enriched_at` to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. (The separate `ResolveEmailsToCanonical` pass that older docs describe had not run since v0.19.7 and was removed in v0.29.68.)
 
@@ -264,7 +264,7 @@ Results are stored in `repo_dependencies`.
 
 ### Libyear calculation
 
-For each versioned dependency, queries its package registry to compare the current version against the latest — 12 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases). Examples:
+For each versioned dependency, queries its package registry to compare the current version against the latest — 13 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases), CRAN (via crandb). Examples:
 
 | Registry | URL |
 |---|---|
@@ -301,8 +301,10 @@ After SCC, [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit)
 **Invocation:**
 
 ```bash
-OUTPUT=/tmp/aveloxis-scancode/repo_123.json   # the JSON the worker ingests
-CHECKOUT=/tmp/aveloxis-scancode/repo_123      # the temporary clone
+# The JSON the worker ingests
+OUTPUT=/tmp/aveloxis-scancode/repo_123.json
+# The temporary clone
+CHECKOUT=/tmp/aveloxis-scancode/repo_123
 scancode -clpi --only-findings --json "$OUTPUT" --quiet --timeout 300 "$CHECKOUT"
 ```
 
@@ -330,7 +332,7 @@ ScanCode data enriches other features:
 - **SBOMs**: CycloneDX includes `evidence.licenses` and `evidence.copyright` on the root component. SPDX uses the aggregated SPDX expression for `licenseConcluded` (vs. `licenseDeclared` from the registry) and includes `copyrightText`.
 - **Web dashboard**: The repo detail page shows a "Source Code Licenses" section with per-license file counts, OSI compliance, and a copyright holders list.
 
-If ScanCode is not installed, this phase is silently skipped. Install it with `aveloxis install-tools` or `pipx install scancode-toolkit-mini`.
+If ScanCode is not installed, this phase is silently skipped. Install it with `aveloxis install-tools`.
 
 ### OpenSSF Scorecard (remote-first, local fallback)
 

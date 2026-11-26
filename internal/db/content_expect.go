@@ -117,6 +117,12 @@ func (r ContentRule) covers(kind string) bool {
 	return slices.Contains(r.Kinds, kind)
 }
 
+// contentNotNullCountSQL counts the rows of a table whose column is not
+// NULL; the names are quoted.
+func contentNotNullCountSQL(schema, table, col string) string {
+	return `SELECT COUNT(*) FROM ` + pgx.Identifier{schema, table}.Sanitize() + ` WHERE ` + pgx.Identifier{col}.Sanitize() + ` IS NOT NULL`
+}
+
 // CheckContent holds the row report and the schema-object differences
 // against the rules. released and newPool evaluate the rules' Where
 // predicates and NullOnly checks. A data problem a rule cannot judge (a
@@ -201,7 +207,7 @@ func (e *ContentExpectations) CheckContent(ctx context.Context, released, newPoo
 					seenObjects[i][col] = true
 					if r.NullOnly {
 						var n int64
-						if err := cols.pool.QueryRow(ctx, `SELECT COUNT(*) FROM `+pgx.Identifier{t.Schema, t.Table}.Sanitize()+` WHERE `+pgx.Identifier{col}.Sanitize()+` IS NOT NULL`).Scan(&n); err != nil {
+						if err := cols.pool.QueryRow(ctx, contentNotNullCountSQL(t.Schema, t.Table, col)).Scan(&n); err != nil {
 							return nil, fmt.Errorf("%s.%s null check: %w", name, col, err)
 						}
 						if n > 0 {
@@ -307,6 +313,18 @@ func (e *ContentExpectations) CheckContent(ctx context.Context, released, newPoo
 	return out, nil
 }
 
+// contentWherePassingSQL selects, among the rows with the given keys, those
+// a rule's predicate holds for. The table and its key are the catalog's
+// and are quoted. where is NOT: it is a predicate an operator wrote in the
+// data-test rules file, put into the statement as written, by design. What
+// confines it is where the statement runs: contentQuery's transaction,
+// which is READ ONLY, and as one parameterised statement.
+func contentWherePassingSQL(schema, table string, key []string, where string) string {
+	tbl := pgx.Identifier{schema, table}.Sanitize()
+	keyExpr := contentKeyExpr(key)
+	return `SELECT ` + keyExpr + `::text FROM ` + tbl + ` t WHERE ` + keyExpr + ` = ANY($1::jsonb[]) AND (` + where + `)`
+}
+
 // wherePassing evaluates each rule's Where predicate for the table's
 // differing rows, on the side each row exists on: rule index → key → passes.
 // A rule without a predicate passes every row.
@@ -320,8 +338,6 @@ func (e *ContentExpectations) wherePassing(ctx context.Context, released, newPoo
 			newKeys = append(newKeys, row.Key)
 		}
 	}
-	tbl := pgx.Identifier{t.Schema, t.Table}.Sanitize()
-	keyExpr := contentKeyExpr(t.Key)
 	for _, i := range idx {
 		r := e.Rules[i]
 		out[i] = map[string]bool{}
@@ -342,7 +358,7 @@ func (e *ContentExpectations) wherePassing(ctx context.Context, released, newPoo
 			// a timestamptz key renders in UTC only there, and an operator's
 			// predicate must not write.
 			err := contentQuery(ctx, side.pool, func(tx pgx.Tx) error {
-				rows, err := tx.Query(ctx, `SELECT `+keyExpr+`::text FROM `+tbl+` t WHERE `+keyExpr+` = ANY($1::jsonb[]) AND (`+r.Where+`)`, side.keys)
+				rows, err := tx.Query(ctx, contentWherePassingSQL(t.Schema, t.Table, t.Key, r.Where), side.keys)
 				if err != nil {
 					return err
 				}

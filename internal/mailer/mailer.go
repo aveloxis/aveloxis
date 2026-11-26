@@ -481,7 +481,7 @@ func (m *Mailer) recipientFor(to string) (string, error) {
 	return addr, nil
 }
 
-// SiteURL returns the configured site URL (e.g. "https://chaoss.tv"),
+// SiteURL returns the configured site URL (e.g. "https://aveloxis.example"),
 // normalized by New (no surrounding spaces, no trailing slash), or "" if
 // unset. v0.20.4 uses this to build click-to-confirm links
 // in email bodies. Safely handles a nil mailer (returns "").

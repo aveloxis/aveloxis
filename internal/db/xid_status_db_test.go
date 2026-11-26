@@ -15,7 +15,7 @@ import (
 )
 
 // TestXIDStatus (AVELOXIS_TEST_DB) — worklist item 78 (Stage 1, observation
-// only): anti-wraparound vacuums were suspected in the kate stalls with no
+// only): anti-wraparound vacuums were suspected in the production stalls with no
 // record of how fast transaction IDs are used. XIDStatus reads this
 // database's frozen-XID age, the freeze threshold that triggers those
 // vacuums, and the current transaction id (successive readings give the

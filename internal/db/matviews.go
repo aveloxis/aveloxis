@@ -209,12 +209,12 @@ func RefreshMaterializedViews(ctx context.Context, pg *PostgresStore, logger *sl
 	// `aveloxis refresh-views` exited 0 over a stale view. Keep going,
 	// accumulate, return.
 	var failed []error
-	for _, name := range matviewNames {
+	for i, name := range matviewNames {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		if err := refreshMatview(ctx, pg, logger, name); err != nil {
+		if err := refreshMatview(ctx, pg, logger, name, matviewRefreshConcurrentlySQL(i), matviewRefreshSQL(i)); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -248,6 +248,19 @@ func eightKnotMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, erro
 	return present, err
 }
 
+// The two refresh statements for the i-th of matviewNames (CONCURRENTLY
+// first; plain when the view has never been populated): functions of the
+// index, so that the write-policy check runs them for every view.
+func matviewRefreshConcurrentlySQL(i int) string {
+	name := matviewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name)
+}
+
+func matviewRefreshSQL(i int) string {
+	name := matviewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name)
+}
+
 // refreshMatview refreshes ONE materialized view: CONCURRENTLY first (a
 // unique index and a populated view; reads keep going), then plainly. A
 // shutdown is not a failed view (Copilot round 8: the in-flight Exec that
@@ -256,15 +269,15 @@ func eightKnotMatviewsPresent(ctx context.Context, pg *PostgresStore) (int, erro
 // failure on every `stop serve`) — the caller reads ctx.Err(). Any other
 // failure is logged here and returned for the caller to accumulate. Shared
 // by the 8Knot set and the supply-chain pair (SR-17).
-func refreshMatview(ctx context.Context, pg *PostgresStore, logger *slog.Logger, name string) error {
+func refreshMatview(ctx context.Context, pg *PostgresStore, logger *slog.Logger, name, concurrentlySQL, plainSQL string) error {
 	viewStart := time.Now()
-	_, err := pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name))
+	_, err := pg.pool.Exec(ctx, concurrentlySQL)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			logger.Info("materialized view refresh interrupted by shutdown", "view", name)
 			return err
 		}
-		_, err = pg.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name))
+		_, err = pg.pool.Exec(ctx, plainSQL)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				logger.Info("materialized view refresh interrupted by shutdown", "view", name)

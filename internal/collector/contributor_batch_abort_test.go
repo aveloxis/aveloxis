@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // BEHAVIORAL driver for the contributor-batch abort contract (F6 of the
-// 2026-09-11 chaoss.tv log analysis). Processor.processBatch's
+// 2026-09-11 production log analysis). Processor.processBatch's
 // contributor arm logged a Warn and returned nil when
 // UpsertContributorBatch failed, and PostgresStore.ProcessStaged then
 // proceeded to markStagedProcessed — so the staged contributor payloads
@@ -62,7 +62,7 @@ func TestContributorBatchFailureLeavesStagedRowsForReplay(t *testing.T) {
 
 	// Independent raw connection: staged-row state is asserted without
 	// trusting the store under test.
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

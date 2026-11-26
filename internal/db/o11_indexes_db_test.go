@@ -13,7 +13,7 @@ import (
 )
 
 // TestO11IndexesServeTheSlowShapes — v0.29.71 (O11, operator go-ahead
-// 2026-09-30, measured on kate: summary/43 §2 item 9). The top-contributors
+// 2026-09-30, measured on a production fleet: summary/43 §2 item 9). The top-contributors
 // messages arm read every message row of a repository to keep the window's
 // (pytorch: 1.24M rows for 347k), the reviews arm likewise, and the weekly
 // merged/closed series read every PR/issue row. migrate builds four indexes

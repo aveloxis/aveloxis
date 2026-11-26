@@ -214,7 +214,9 @@ func NewPostgresStore(ctx context.Context, connString string, logger *slog.Logge
 	cfg.BeforeClose = func(conn *pgx.Conn) {
 		store.trackBackend(conn.PgConn().PID(), false)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	// OpenPoolConfig: the one place a pool is opened, which gives the tracer
+	// above to the statement seam (nil in every binary).
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
@@ -1021,6 +1023,32 @@ func schemeless(u string) string {
 	return u
 }
 
+// repoURLColumns are the URL columns of a repository's rows that hold its
+// path, which a rename rewrites.
+var repoURLColumns = []struct {
+	table  string
+	column string
+}{
+	{"aveloxis_data.issues", "issue_url"},
+	{"aveloxis_data.issues", "html_url"},
+	{"aveloxis_data.pull_requests", "pr_url"},
+	{"aveloxis_data.pull_requests", "pr_html_url"},
+	{"aveloxis_data.pull_requests", "pr_diff_url"},
+	{"aveloxis_data.pull_request_reviews", "html_url"},
+	{"aveloxis_data.review_comments", "html_url"},
+	{"aveloxis_data.releases", "release_url"},
+}
+
+// repoURLRewriteSQL is the rewrite of the i-th of repoURLColumns. It is a
+// function of the index so that the write-policy check can run it for
+// every member (column_write_policy_test.go).
+func repoURLRewriteSQL(i int) string {
+	u := repoURLColumns[i]
+	return fmt.Sprintf(
+		`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
+		u.table, u.column, u.column, u.column)
+}
+
 // UpdateRepoURLs updates the git URL of a repo and fixes all stored URLs
 // (issue html_urls, PR html_urls, etc.) that contain the old org/repo path.
 // This handles GitHub/GitLab repo renames/transfers where all URLs change.
@@ -1075,23 +1103,8 @@ func (s *PostgresStore) UpdateRepoURLs(ctx context.Context, repoID int64, oldURL
 		}
 
 		// Bulk-update all URL columns that contain the old path.
-		updates := []struct {
-			table  string
-			column string
-		}{
-			{"aveloxis_data.issues", "issue_url"},
-			{"aveloxis_data.issues", "html_url"},
-			{"aveloxis_data.pull_requests", "pr_url"},
-			{"aveloxis_data.pull_requests", "pr_html_url"},
-			{"aveloxis_data.pull_requests", "pr_diff_url"},
-			{"aveloxis_data.pull_request_reviews", "html_url"},
-			{"aveloxis_data.review_comments", "html_url"},
-			{"aveloxis_data.releases", "release_url"},
-		}
-		for _, u := range updates {
-			if _, err := tx.Exec(ctx, fmt.Sprintf(
-				`UPDATE %s SET %s = REPLACE(%s, $1, $2) WHERE repo_id = $3 AND %s LIKE '%%' || $1 || '%%'`,
-				u.table, u.column, u.column, u.column),
+		for i, u := range repoURLColumns {
+			if _, err := tx.Exec(ctx, repoURLRewriteSQL(i),
 				oldPath, newPath, repoID); err != nil {
 				return fmt.Errorf("rename %s.%s: %w", u.table, u.column, err)
 			}
@@ -1940,7 +1953,7 @@ func (s *PostgresStore) UpsertContributorBatch(ctx context.Context, contribs []m
 		// that appear in thousands of repos) lock those rows in different orders
 		// and deadlock (SQLSTATE 40P01). Consistent ordering makes a lock cycle
 		// impossible. (2026-06-09: fixes the contributor-deadlock storm on
-		// aveloxis_large; same class as Augur's old contributor deadlocks.)
+		// the larger production database; same class as Augur's old contributor deadlocks.)
 		logins := make([]string, 0, len(merged))
 		for login := range merged {
 			logins = append(logins, login)
@@ -2099,6 +2112,20 @@ const renameRecoveryUpdateSQL = `
 	    data_collection_date = NOW()
 	WHERE cntrb_id = $1::uuid`
 
+// The savepoint statements of the contributor batch: one savepoint per
+// contributor (cntrb_sp_N) and one per identity row (ident_sp_N), N the
+// batch's running counter. A number is all that varies, written with %d.
+func cntrbSavepointSQL(n uint) string { return fmt.Sprintf("SAVEPOINT cntrb_sp_%d", n) }
+func cntrbSavepointRollbackSQL(n uint) string {
+	return fmt.Sprintf("ROLLBACK TO SAVEPOINT cntrb_sp_%d", n)
+}
+func cntrbSavepointReleaseSQL(n uint) string { return fmt.Sprintf("RELEASE SAVEPOINT cntrb_sp_%d", n) }
+func identSavepointSQL(n uint) string        { return fmt.Sprintf("SAVEPOINT ident_sp_%d", n) }
+func identSavepointRollbackSQL(n uint) string {
+	return fmt.Sprintf("ROLLBACK TO SAVEPOINT ident_sp_%d", n)
+}
+func identSavepointReleaseSQL(n uint) string { return fmt.Sprintf("RELEASE SAVEPOINT ident_sp_%d", n) }
+
 // ============================================================
 // upsertOneContributor performs the full per-contributor unit of the
 // batch upsert — savepoint-bracketed row INSERT with the v0.22.13
@@ -2154,8 +2181,8 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// ~419 innocent contributors after a single rename
 	// collision on the head of the batch.
 	*spCounter++
-	cntrbSP := fmt.Sprintf("cntrb_sp_%d", *spCounter)
-	if _, spErr := tx.Exec(ctx, "SAVEPOINT "+cntrbSP); spErr != nil {
+	cntrbSP := uint(*spCounter)
+	if _, spErr := tx.Exec(ctx, cntrbSavepointSQL(cntrbSP)); spErr != nil {
 		return spErr
 	}
 
@@ -2192,7 +2219,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				// anything else falls through to the ordinary path: the
 				// INSERT will trip contributors_pkey and the 23505
 				// backstop reports it with full context.
-				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+				if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_preprobe_update", login, updErr)
@@ -2200,7 +2227,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 					return updErr // the batch rolls back and withRetry retries it
 				}
 			} else {
-				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+				if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 					return relErr
 				}
 				s.logger.Info("contributor rename recovered in batch upsert",
@@ -2213,6 +2240,33 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		}
 	}
 
+	// cntrb_email is STORED first (0.29.216; operator, 2026-11-21; SR-11
+	// fill-only): the address on the row is the first one observed, and a
+	// later one never replaces it (it preferred the incoming one before).
+	// An incoming address that is not the stored one is not kept on the
+	// contributors row, and no alias row is written for it (0.29.217: the
+	// step 0.29.216 added for that was taken out again and is chunk 2 work;
+	// R5 in docs/architecture/contributor-resolution.md). When the
+	// observation carries a platform user id, the identity row's email
+	// takes it in the same call (upsertContributorIdentities).
+	//
+	// A stored cntrb_email of blanks only counts as present and so stays
+	// (review round 11, C11-5; before 0.29.216 any incoming address
+	// replaced it). Left so on purpose: no forge was shown to send one, and
+	// the guard that would treat it as empty, NULLIF(BTRIM(stored), ''),
+	// also rewrites a stored address that merely has a blank around it,
+	// which is a write to an established value that fill-only forbids.
+	//
+	// cntrb_canonical is INCOMING first, as in every release to 0.29.215
+	// (0.29.218, review round 11): the profile enrichment brings the
+	// forge's public address here as Canonical and is the one writer that
+	// leaves noreply addresses out, while the commit resolver fills the
+	// column first with whatever address the commit carries. Stored-first
+	// (0.29.216 and 0.29.217, no host ran either) made that commit address
+	// permanent, and the affiliation lookups go by this column's domain.
+	// An empty incoming value never clears a stored one. The operator's
+	// rule was about cntrb_email; this statement is the column's one
+	// recorded exception to fill-only (writejudge's registry).
 	err := tx.QueryRow(ctx, `
 		INSERT INTO aveloxis_data.contributors
 			(cntrb_id, cntrb_login, cntrb_email, cntrb_full_name,
@@ -2221,7 +2275,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		VALUES (COALESCE($1::uuid, gen_random_uuid()),
 		        $2,$3,$4,$5,$6,$7,$8,'aveloxis',$9,'GitHub API')
 		ON CONFLICT (cntrb_login) WHERE cntrb_login != '' DO UPDATE SET
-			cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email, ''), contributors.cntrb_email),
+			cntrb_email = COALESCE(NULLIF(contributors.cntrb_email, ''), EXCLUDED.cntrb_email),
 			cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name, ''), contributors.cntrb_full_name),
 			cntrb_company = COALESCE(NULLIF(EXCLUDED.cntrb_company, ''), contributors.cntrb_company),
 			cntrb_location = COALESCE(NULLIF(EXCLUDED.cntrb_location, ''), contributors.cntrb_location),
@@ -2250,7 +2304,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 		// aborted-tx state — required before any further
 		// statement in this tx (including the recovery
 		// UPDATE) can run.
-		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+		if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 			return rbErr
 		}
 
@@ -2279,14 +2333,14 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 				// violation on this row). Roll back and capture;
 				// a deadlock returns for the batch retry, anything
 				// else skips this contributor.
-				if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+cntrbSP); rbErr != nil {
+				if _, rbErr := tx.Exec(ctx, cntrbSavepointRollbackSQL(cntrbSP)); rbErr != nil {
 					return rbErr
 				}
 				captureErr("contributors_rename_update", login, updErr)
 				if isRetryableTxError(updErr) {
 					return updErr // the batch rolls back and withRetry retries it
 				}
-				if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+				if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 					return relErr
 				}
 				return nil
@@ -2311,7 +2365,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 			if isRetryableTxError(err) {
 				return err // the batch rolls back and withRetry retries it
 			}
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 				return relErr
 			}
 			return nil
@@ -2322,7 +2376,7 @@ func (s *PostgresStore) upsertOneContributor(ctx context.Context, tx pgx.Tx, log
 	// upserted via ON CONFLICT (cntrb_login match), or
 	// rename-recovered via UPDATE. Release the outer
 	// savepoint before processing identities.
-	if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+cntrbSP); relErr != nil {
+	if _, relErr := tx.Exec(ctx, cntrbSavepointReleaseSQL(cntrbSP)); relErr != nil {
 		return relErr
 	}
 
@@ -2351,8 +2405,8 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 	// contributor AND every later contributor in the batch.
 	for _, ident := range idents {
 		*spCounter++
-		identSP := fmt.Sprintf("ident_sp_%d", *spCounter)
-		if _, spErr := tx.Exec(ctx, "SAVEPOINT "+identSP); spErr != nil {
+		identSP := uint(*spCounter)
+		if _, spErr := tx.Exec(ctx, identSavepointSQL(identSP)); spErr != nil {
 			return spErr
 		}
 
@@ -2371,14 +2425,14 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			ident.Email, ident.AvatarURL, ident.URL, ident.NodeID, ident.Type, ident.IsAdmin,
 		)
 		if identErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("contributor_identities_insert", login, identErr)
 			if isRetryableTxError(identErr) {
 				return identErr // the batch rolls back and withRetry retries it
 			}
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			// Try the next identity — savepoint isolation
@@ -2397,7 +2451,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			historySource = LoginSourceRenameRecovery
 		}
 		if histErr := recordLoginObservation(ctx, tx, cntrb_id, int16(ident.Platform), ident.Login, historySource); histErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("contributor_login_history_insert", login, histErr)
@@ -2408,7 +2462,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 			// locks, the history row is re-recorded the next time this
 			// identity is observed, and retrying the whole batch would redo
 			// every contributor in it for one derived row. captureErr logs it.
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			continue
@@ -2421,14 +2475,14 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 		// errors are contained in this identity's savepoint below.
 		backfillErr := backfillDenormalizedIdentity(ctx, tx, cntrb_id, ident)
 		if backfillErr != nil {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+identSP); rbErr != nil {
+			if _, rbErr := tx.Exec(ctx, identSavepointRollbackSQL(identSP)); rbErr != nil {
 				return rbErr
 			}
 			captureErr("identity_denorm_backfill", login, backfillErr)
 			// Not escaped on a retryable failure either, for the same reason as the
 			// login-history write above: the mirror columns are rewritten
 			// from the identity on every later upsert of this contributor.
-			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+			if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 				return relErr
 			}
 			continue
@@ -2438,7 +2492,7 @@ func (s *PostgresStore) upsertContributorIdentities(ctx context.Context, tx pgx.
 		// gh_*/gl_* backfill (still under the same savepoint
 		// scope so any unforeseen failure in the backfill
 		// UPDATE is also contained).
-		if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+identSP); relErr != nil {
+		if _, relErr := tx.Exec(ctx, identSavepointReleaseSQL(identSP)); relErr != nil {
 			return relErr
 		}
 	}

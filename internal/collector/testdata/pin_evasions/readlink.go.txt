@@ -1,0 +1,5 @@
+package collector
+
+import "os"
+
+func PinEvasionREADLINK(dir string) string { s, _ := os.Readlink(dir + "/link"); return s }

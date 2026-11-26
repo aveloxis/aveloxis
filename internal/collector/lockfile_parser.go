@@ -23,11 +23,14 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/aveloxis/aveloxis/internal/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +47,11 @@ type LockfileEntry struct {
 	// (v0.29.59, worklist 46). Empty where the format has none; such an
 	// entry of a namespace-required type never becomes a purl.
 	Namespace string
+	// Ecosystem (0.29.205) overrides the lockfile's ecosystem for this one
+	// entry. Empty for every format but renv.lock, the one lockfile that
+	// holds packages of two ecosystems: a Bioconductor package is recorded
+	// as "bioconductor", never as the CRAN package of its name (SR-6).
+	Ecosystem string
 	// Scope (v0.27.21 C1) — 'dev' when the format flags the entry as
 	// development-only (package-lock v2/3 `dev`, poetry `category`),
 	// '' otherwise (unknown/runtime). Refined per-format extraction is
@@ -71,6 +79,12 @@ type LockfileResult struct {
 	Entries     []LockfileEntry
 	Edges       []LockfileEdge // parent→child edges; empty for edge-less formats (documented per format)
 	DirectKnown bool           // whether Direct flags are meaningful for this format
+	// v0.29.175: entries whose "version" was not a version. Aliased were
+	// recorded under their real package; NotRegistry (a git or URL source)
+	// and NotAVersion (a requirement string) were left out.
+	Aliased     int
+	NotRegistry int
+	NotAVersion int
 }
 
 // parsedLockfileData is a parser's raw output before roster metadata is
@@ -79,6 +93,9 @@ type parsedLockfileData struct {
 	Entries     []LockfileEntry
 	Edges       []LockfileEdge
 	DirectKnown bool
+	// NotRegistry counts the entries a parser left out because the file
+	// itself says they are not from a registry (renv.lock's Source).
+	NotRegistry int
 }
 
 type lockfileSpec struct {
@@ -113,7 +130,16 @@ var lockfileKinds = map[string]lockfileSpec{
 	"packages.lock.json": {ecosystem: "nuget", parse: parseDotnetPackagesLock},
 	"gradle.lockfile":    {ecosystem: "maven", parse: parseGradleLockfile},
 	"stack.yaml.lock":    {ecosystem: "hackage", parse: parseStackYamlLock},
+	renvLockKind:         {ecosystem: "cran", parse: parseRenvLock},
 }
+
+// renvLockKind is the one lockfile whose entries may be of another ecosystem
+// than the lockfile's (LockfileEntry.Ecosystem). lockfileScopeDev is the one
+// scope a parser gives an entry.
+const (
+	renvLockKind     = "renv.lock"
+	lockfileScopeDev = "dev"
+)
 
 // ParseLockfile dispatches on the roster filename. Unknown kinds are
 // an error (the walk should never call it with one — this is the
@@ -135,19 +161,106 @@ func ParseLockfile(kind string, data []byte) (*LockfileResult, error) {
 	res.Entries = parsed.Entries
 	res.Edges = parsed.Edges
 	res.DirectKnown = parsed.DirectKnown
+	res.NotRegistry = parsed.NotRegistry
+	settleLockedVersions(res)
 	return res, nil
 }
 
-// lockfileMatchKey normalizes a package name for matching lockfile
-// entries against declared manifest dependencies. Lowercased for every
-// ecosystem; PyPI additionally folds '_' and '.' to '-' (PEP 503:
-// flask_sqlalchemy == flask.sqlalchemy == flask-sqlalchemy).
-func lockfileMatchKey(ecosystem, name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if ecosystem == "pypi" {
-		n = strings.NewReplacer("_", "-", ".", "-").Replace(n)
+// settleLockedVersions is the one pass, after every parser, over what a
+// lockfile wrote in its version field when that is not a version (v0.29.175;
+// summary/70, 4.3). The parsers store the field as written.
+//
+//   - An npm alias ("npm:strip-ansi@6.0.1" under the name "strip-ansi-cjs")
+//     is recorded under the real name and version. The alias is a name the
+//     lockfile invented; scanned under it, the real package was never
+//     checked. Edges that name the alias as parent follow it.
+//   - A git or URL source ("github:owner/repo#commit", "git+https://...",
+//     "file:", "link:", "workspace:") is not the registry package of that
+//     name (SR-6): no entry, counted.
+//   - A requirement string (">= 2.3.0") is not a locked version: no entry,
+//     counted.
+func settleLockedVersions(res *LockfileResult) {
+	type renamed struct{ name, version string }
+	aliases := map[string]renamed{} // "alias\x00version as written" -> the real package
+	kept := res.Entries[:0:0]
+	for _, e := range res.Entries {
+		if real, version, ok := npmAliasTarget(res.Ecosystem, e.Version); ok {
+			aliases[e.Name+"\x00"+e.Version] = renamed{real, version}
+			e.Name, e.Version = real, version
+			res.Aliased++
+		}
+		switch {
+		case isNonRegistrySource(e.Version):
+			res.NotRegistry++
+			continue
+		case !isLockedVersion(e.Version):
+			res.NotAVersion++
+			continue
+		}
+		kept = append(kept, e)
 	}
-	return ecosystem + "|" + n
+	res.Entries = kept
+	for i, ed := range res.Edges {
+		if r, ok := aliases[ed.ParentName+"\x00"+ed.ParentVersion]; ok {
+			res.Edges[i].ParentName, res.Edges[i].ParentVersion = r.name, r.version
+		}
+	}
+}
+
+// npmAliasTarget reads "npm:<name>@<version>": the real package an npm alias
+// stands for. The name may be scoped ("npm:@scope/name@1.0.0"), so the
+// version starts at the LAST '@'.
+func npmAliasTarget(ecosystem, v string) (name, version string, ok bool) {
+	rest, isAlias := strings.CutPrefix(v, "npm:")
+	if ecosystem != "npm" || !isAlias {
+		return "", "", false
+	}
+	at := strings.LastIndexByte(rest, '@')
+	if at <= 0 || at == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:at], rest[at+1:], true
+}
+
+// nonRegistrySourcePrefixes are how a lockfile writes a dependency that does
+// not come from its registry.
+var nonRegistrySourcePrefixes = []string{
+	"github:", "gitlab:", "bitbucket:", "gist:", "git+", "git:", "git@",
+	"file:", "link:", "workspace:", "portal:", "patch:", "npm:",
+}
+
+// isNonRegistrySource reports whether a version field names a source, not a
+// version: one of the prefixes above, or any URL. (A registry tarball URL of
+// the package itself was already read as its version by npmLockVersion; a
+// URL that reaches here is another package's tarball or another host's
+// file. A leftover "npm:" is an alias that could not be read.)
+func isNonRegistrySource(v string) bool {
+	if strings.Contains(v, "://") {
+		return true
+	}
+	for _, p := range nonRegistrySourcePrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLockedVersion reports whether a version field is one version, as a
+// lockfile locks it, and not a requirement: it is not empty, does not start
+// with a comparison or range operator or a bracket, and holds no space, no
+// "||" and no wildcard on its own. It deliberately does not ask for digits:
+// a Composer "dev-master" is what that lockfile locked.
+func isLockedVersion(v string) bool {
+	if v == "" || v == "*" || strings.ContainsAny(v, " \t") || strings.Contains(v, "||") {
+		return false
+	}
+	switch v[0] {
+	case '<', '>', '=', '~', '^', '[', '(', '*':
+		return false
+	}
+	// "!=" is a requirement; "1!2.0" (a Python epoch) is a version.
+	return !strings.HasPrefix(v, "!")
 }
 
 // ============================================================
@@ -202,7 +315,7 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 			}
 			scope := ""
 			if pkg.Dev {
-				scope = "dev"
+				scope = lockfileScopeDev
 			}
 			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: pkg.Version, Direct: direct[name], Scope: scope})
 			// v0.27.133 C2: the per-entry dependency maps were decoded
@@ -223,33 +336,209 @@ func parsePackageLockJSON(data []byte) (parsedLockfileData, error) {
 	// C2: the parent is in scope at each recursion level — record the
 	// edge (constraint unknown in the v1 nested shape; the child value
 	// IS the resolution).
+	//
+	// 0.29.213: the tree is read once (npmV1Tree). It was decoded level by
+	// level, each node's text again from the level above, which costs the
+	// depth times the size: 190 KB of one nested chain took 1.5 seconds.
 	seen := map[string]bool{}
 	var out parsedLockfileData
-	var walk func(parentName, parentVersion string, deps map[string]json.RawMessage)
-	walk = func(parentName, parentVersion string, deps map[string]json.RawMessage) {
-		for name, raw := range deps {
-			var node struct {
-				Version      string                     `json:"version"`
-				Dependencies map[string]json.RawMessage `json:"dependencies"`
+	var walk func(parentName, parentVersion string, deps []npmV1Dep)
+	walk = func(parentName, parentVersion string, deps []npmV1Dep) {
+		for _, dep := range deps {
+			name, node := dep.name, dep.node
+			if node == nil {
+				continue // not a dependency's object: left out, as it was
 			}
-			if err := json.Unmarshal(raw, &node); err != nil {
-				continue
-			}
-			node.Version = npmLockVersion(name, node.Version)
-			if node.Version != "" && !seen[name+"@"+node.Version] {
-				seen[name+"@"+node.Version] = true
-				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.Version})
+			node.version = npmLockVersion(name, node.version)
+			if node.version != "" && !seen[name+"@"+node.version] {
+				seen[name+"@"+node.version] = true
+				out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: node.version})
 			}
 			if parentName != "" {
 				out.Edges = append(out.Edges, LockfileEdge{ParentName: parentName, ParentVersion: parentVersion, ChildName: name})
 			}
-			if len(node.Dependencies) > 0 {
-				walk(name, node.Version, node.Dependencies)
+			if len(node.dependencies) > 0 {
+				walk(name, node.version, node.dependencies)
 			}
 		}
 	}
-	walk("", "", doc.Dependencies)
+	walk("", "", npmV1Tree(data))
 	return out, nil
+}
+
+// npmV1Node is a dependency's object in a package-lock.json v1: its version
+// and the dependencies nested in it.
+type npmV1Node struct {
+	version      string
+	dependencies []npmV1Dep
+}
+
+// npmV1Dep is one name of a "dependencies" object. node is nil when its
+// value is not a dependency's object (a string, a number, an object whose
+// version is not a string or whose dependencies are not an object): such a
+// name was always left out, with everything under it.
+type npmV1Dep struct {
+	name string
+	node *npmV1Node
+}
+
+// npmV1Tree reads the top-level "dependencies" of a document that
+// encoding/json has already accepted, in one pass over its tokens. It reads
+// as encoding/json read the same text into structs: a field's name matches
+// without regard to case, a name given twice in one object keeps its last
+// value, a "dependencies" given twice adds to the first, and a
+// "dependencies" that is null EMPTIES it (encoding/json sets a map to nil
+// for a null; round 7: the null was read as leaving the first in place, and
+// a node's nested dependencies written before a null gave edges
+// encoding/json did not).
+func npmV1Tree(data []byte) []npmV1Dep {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	var deps []npmV1Dep
+	index := map[string]int{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return deps
+		}
+		if name, _ := key.(string); strings.EqualFold(name, "dependencies") {
+			var ok bool
+			if deps, ok = npmV1Deps(dec, deps, index); !ok {
+				return deps
+			}
+			continue
+		}
+		if !jsonSkipValue(dec) {
+			return deps
+		}
+	}
+	return deps
+}
+
+// npmV1Deps reads a "dependencies" value into deps: an object's names, each
+// with its node; a null empties it. wellFormed is false when the value is
+// anything else (it has been read past all the same), and when the text
+// ended.
+func npmV1Deps(dec *json.Decoder, deps []npmV1Dep, index map[string]int) (_ []npmV1Dep, wellFormed bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return deps, false
+	}
+	if tok == nil {
+		for name := range index {
+			delete(index, name)
+		}
+		return deps[:0], true
+	}
+	if tok != json.Delim('{') {
+		jsonSkipRest(dec, tok)
+		return deps, false
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return deps, false
+		}
+		name, _ := key.(string)
+		node, ok := npmV1NodeOf(dec)
+		if !ok {
+			return deps, false
+		}
+		if at, again := index[name]; again {
+			deps[at].node = node
+			continue
+		}
+		index[name] = len(deps)
+		deps = append(deps, npmV1Dep{name, node})
+	}
+	_, err = dec.Token() // the closing brace
+	return deps, err == nil
+}
+
+// npmV1NodeOf reads one dependency's value. The node is nil when the value
+// is not a dependency's object; read is false only when the text ended.
+func npmV1NodeOf(dec *json.Decoder) (node *npmV1Node, read bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if tok == nil {
+		return &npmV1Node{}, true // a null: an object with nothing in it
+	}
+	if tok != json.Delim('{') {
+		return nil, jsonSkipRest(dec, tok)
+	}
+	node = &npmV1Node{}
+	good := true
+	index := map[string]int{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		switch name, _ := key.(string); {
+		case strings.EqualFold(name, "version"):
+			tok, err := dec.Token()
+			if err != nil {
+				return nil, false
+			}
+			switch v := tok.(type) {
+			case string:
+				node.version = v
+			case nil:
+			default:
+				good = false
+				if !jsonSkipRest(dec, tok) {
+					return nil, false
+				}
+			}
+		case strings.EqualFold(name, "dependencies"):
+			deps, wellFormed := npmV1Deps(dec, node.dependencies, index)
+			node.dependencies = deps
+			if !wellFormed {
+				good = false
+			}
+		default:
+			if !jsonSkipValue(dec) {
+				return nil, false
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, false
+	}
+	if !good {
+		return nil, true
+	}
+	return node, true
+}
+
+// jsonSkipValue reads past the next value; jsonSkipRest, past the rest of a
+// value whose first token is tok. False: the text ended.
+func jsonSkipValue(dec *json.Decoder) bool {
+	tok, err := dec.Token()
+	return err == nil && jsonSkipRest(dec, tok)
+}
+
+func jsonSkipRest(dec *json.Decoder, tok json.Token) bool {
+	if d, ok := tok.(json.Delim); !ok || d == '}' || d == ']' {
+		return true
+	}
+	for depth := 1; depth > 0; {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+	}
+	return true
 }
 
 // parseYarnLock dispatches between yarn's classic v1 text format and
@@ -284,8 +573,8 @@ func parseYarnLockV1(data []byte) (parsedLockfileData, error) {
 			firstKey := strings.TrimSpace(strings.Split(header, ",")[0])
 			firstKey = strings.Trim(firstKey, `"`)
 			// name@range — the name may itself start with @scope/, and the
-			// range may be a URL or file: reference (splitNPMSpec).
-			currentName, _, _ = splitNPMSpec(firstKey)
+			// range may be a URL or file: reference (manifest.SplitNPMSpec).
+			currentName, _, _ = manifest.SplitNPMSpec(firstKey)
 			currentVersion = ""
 			inDeps = false
 			continue
@@ -339,7 +628,7 @@ func parseYarnBerry(data []byte) (parsedLockfileData, error) {
 				inDeps, flushable = false, false
 				continue
 			}
-			currentName, _, _ = splitNPMSpec(firstKey)
+			currentName, _, _ = manifest.SplitNPMSpec(firstKey)
 			inDeps = false
 			flushable = currentName != "" && !isWorkspace
 			continue
@@ -409,40 +698,46 @@ func yarnDepLine(trimmed, sep string) (name, constraint string, ok bool) {
 // from the "importers" section (or the legacy top-level
 // dependencies/devDependencies on very old lockfiles).
 func parsePnpmLock(data []byte) (parsedLockfileData, error) {
-	type pnpmPkg struct {
-		Dependencies         map[string]string `yaml:"dependencies"`
-		OptionalDependencies map[string]string `yaml:"optionalDependencies"`
+	// Read through the node walk of lockfile_yaml.go, not yaml.Unmarshal
+	// into maps, which is quadratic in a mapping's keys.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	var doc struct {
-		Packages  map[string]pnpmPkg `yaml:"packages"`
-		Snapshots map[string]pnpmPkg `yaml:"snapshots"` // v9: edges moved here
-		Importers map[string]struct {
-			Dependencies    map[string]yaml.Node `yaml:"dependencies"`
-			DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
-		} `yaml:"importers"`
-		Dependencies    map[string]yaml.Node `yaml:"dependencies"`
-		DevDependencies map[string]yaml.Node `yaml:"devDependencies"`
+	directNames := map[string]bool{}
+	// The names of a dependencies mapping; its values (a version, or a
+	// specifier and a version) are not read.
+	collectDirect := func(n *yaml.Node) error {
+		deps, err := yamlPairs(n)
+		for _, d := range deps {
+			directNames[d.key] = true
+		}
+		return err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	importers, err := yamlPairs(yamlField(root, "importers"))
+	if err != nil {
+		return parsedLockfileData{}, err
+	}
+	for _, imp := range importers {
+		fields, err := yamlPairs(imp.val)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		if err := errors.Join(collectDirect(yamlField(fields, "dependencies")), collectDirect(yamlField(fields, "devDependencies"))); err != nil {
+			return parsedLockfileData{}, err
+		}
+	}
+	if err := errors.Join(collectDirect(yamlField(root, "dependencies")), collectDirect(yamlField(root, "devDependencies"))); err != nil {
 		return parsedLockfileData{}, err
 	}
 
-	directNames := map[string]bool{}
-	collectDirect := func(deps map[string]yaml.Node) {
-		for name := range deps {
-			directNames[name] = true
-		}
+	packages, err := yamlPairs(yamlField(root, "packages"))
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	for _, imp := range doc.Importers {
-		collectDirect(imp.Dependencies)
-		collectDirect(imp.DevDependencies)
-	}
-	collectDirect(doc.Dependencies)
-	collectDirect(doc.DevDependencies)
-
 	var out parsedLockfileData
-	for key := range doc.Packages {
-		name, version := splitPnpmPackageKey(key)
+	for _, pkg := range packages {
+		name, version := splitPnpmPackageKey(pkg.key)
 		if name == "" || version == "" {
 			continue
 		}
@@ -451,22 +746,35 @@ func parsePnpmLock(data []byte) (parsedLockfileData, error) {
 	// v0.27.133 C2: edges. v5/v6 carry per-package dependencies inside
 	// `packages`; v9 moved them to the parallel `snapshots` section
 	// (values there are RESOLVED versions).
-	collectEdges := func(m map[string]pnpmPkg) {
-		for key, pkg := range m {
-			pName, pVersion := splitPnpmPackageKey(key)
-			if pName == "" {
-				continue
+	collectEdges := func(m []yamlPair) error {
+		for _, pkg := range m {
+			fields, err := yamlPairs(pkg.val)
+			if err != nil {
+				return err
 			}
-			for child, constraint := range pkg.Dependencies {
-				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
-			}
-			for child, constraint := range pkg.OptionalDependencies {
-				out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child, Constraint: constraint})
+			pName, pVersion := splitPnpmPackageKey(pkg.key)
+			for _, section := range []string{"dependencies", "optionalDependencies"} {
+				children, constraints, err := yamlStringMap(yamlField(fields, section))
+				if err != nil {
+					return err
+				}
+				if pName == "" {
+					continue // read, as it always was, and not a package's edges
+				}
+				for i, child := range children {
+					out.Edges = append(out.Edges, LockfileEdge{ParentName: pName, ParentVersion: pVersion, ChildName: child.key, Constraint: constraints[i]})
+				}
 			}
 		}
+		return nil
 	}
-	collectEdges(doc.Packages)
-	collectEdges(doc.Snapshots)
+	snapshots, err := yamlPairs(yamlField(root, "snapshots"))
+	if err != nil {
+		return parsedLockfileData{}, err
+	}
+	if err := errors.Join(collectEdges(packages), collectEdges(snapshots)); err != nil {
+		return parsedLockfileData{}, err
+	}
 	out.DirectKnown = true
 	return out, nil
 }
@@ -577,27 +885,6 @@ func npmLockVersion(name, v string) string {
 	return v
 }
 
-// splitNPMSpec splits an npm package reference "name@ref" (a yarn
-// selector, a bun tuple head). A package name's only '@' is a scope's, at
-// position 0, so the name ends at the first '@' after it; the ref may
-// itself contain '@' (tarball URLs, yarn patch: references). ok is false
-// when there is no ref.
-//
-// v0.29.56: the parsers cut at the LAST '@', storing names such as
-// "@pkgr/utils@https://registry.npmjs.org/" and
-// "@npmcli/config@patch:@npmcli/config@npm%3A10.7.1#~/.yarn/patches/".
-func splitNPMSpec(spec string) (name, ref string, ok bool) {
-	if len(spec) < 2 {
-		return "", "", false
-	}
-	at := strings.IndexByte(spec[1:], '@')
-	if at < 0 {
-		return "", "", false
-	}
-	at++
-	return spec[:at], spec[at+1:], true
-}
-
 // parseBunLock handles Bun ≥1.2's TEXT lockfile (bun.lock) — JSONC:
 // JSON with comments and trailing commas. The binary bun.lockb is
 // detect-only (see the roster). Direct deps come from the root
@@ -639,7 +926,7 @@ func parseBunLock(data []byte) (parsedLockfileData, error) {
 		if err := json.Unmarshal(tuple[0], &spec); err != nil {
 			continue
 		}
-		name, version, ok := splitNPMSpec(spec)
+		name, version, ok := manifest.SplitNPMSpec(spec)
 		if !ok {
 			continue
 		}

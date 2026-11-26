@@ -35,8 +35,21 @@ func runInstallTools(parent context.Context) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("install-tools interrupted after %d of %d tools (installs are idempotent; rerun to continue): %w", installed+failed, len(tools), ctx.Err())
 		}
+		// The one mid-tool interrupt message, for an install and for the
+		// start check alike (TestToolInterruptMessagesCountTheSameProgress
+		// holds it to the loop-top message's count).
+		interrupted := func() error {
+			return fmt.Errorf("install-tools interrupted at %s (%d of %d done; installs are idempotent, rerun to continue): %w", tool.Name, installed+failed, len(tools), ctx.Err())
+		}
 		// Check if already installed.
 		if path, err := exec.LookPath(tool.CheckBinary); err == nil {
+			if !toolStarts(ctx, tool, path) {
+				if ctx.Err() != nil {
+					return interrupted()
+				}
+				failed++
+				continue
+			}
 			fmt.Printf("✓ %s already installed: %s\n", tool.Name, path)
 			installed++
 			continue
@@ -49,7 +62,7 @@ func runInstallTools(parent context.Context) error {
 		tcancel()
 		if err != nil {
 			if ctx.Err() != nil {
-				return fmt.Errorf("install-tools interrupted while installing %s (%d of %d done; installs are idempotent, rerun to continue): %w", tool.Name, installed+failed, len(tools), ctx.Err())
+				return interrupted()
 			}
 			fmt.Printf("✗ Failed to install %s: %s\n  Manual install: %s\n", tool.Name, toolFailureText(err), tool.InstallCmd)
 			failed++
@@ -61,6 +74,13 @@ func runInstallTools(parent context.Context) error {
 		// 15: it printed a warning and exited 0, and `install-tools &&
 		// start all` went on).
 		if path, err := exec.LookPath(tool.CheckBinary); err == nil {
+			if !toolStarts(ctx, tool, path) {
+				if ctx.Err() != nil {
+					return interrupted()
+				}
+				failed++
+				continue
+			}
 			fmt.Printf("✓ %s installed: %s\n", tool.Name, path)
 		} else {
 			fmt.Println(offPathMessage(ctx, tool))
@@ -77,6 +97,37 @@ func runInstallTools(parent context.Context) error {
 	return installToolsReport(failed, offPath, len(tools))
 }
 
+// toolStarts asks a tool that is on PATH whether it runs (0.29.234;
+// collector.CheckToolStarts, set for scancode), under the per-tool bound,
+// and prints the failure. False counts the tool as failed, so the command
+// exits non-zero on every run until the tool starts: an installed scancode
+// that cannot start was "already installed" and exit 0 before. False with
+// the caller's context ended is an interrupt, which the caller reports.
+func toolStarts(ctx context.Context, tool collector.ExternalTool, path string) bool {
+	tctx, cancel := context.WithTimeout(ctx, collector.ToolInstallBound())
+	defer cancel()
+	err := collector.CheckToolStarts(tctx, tool, path)
+	if err == nil {
+		return true
+	}
+	if ctx.Err() == nil {
+		fmt.Printf("✗ %s is installed but does not start: %s\n", tool.Name, startCheckFailureText(tool.CheckBinary, err))
+	}
+	return false
+}
+
+// startCheckFailureText words a failed start check. One that ran out of the
+// per-tool bound gets words of its own (review round 21): toolFailureText's
+// are an install's ("a slow network or registry ... install by hand"), and
+// the check uses neither. The tool is still counted as not starting: a
+// binary that does not answer `--version` in that time cannot be used.
+func startCheckFailureText(binary string, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("`%s --version` did not answer within %s (the per-tool bound); run it by hand to see where it stops", binary, collector.ToolInstallBound())
+	}
+	return err.Error()
+}
+
 // installToolsReport is install-tools' exit status: like upgrade-tools, a
 // tool that failed to install exits non-zero (review round 14: `aveloxis
 // install-tools && aveloxis start all` on a host without Python 3.10
@@ -86,9 +137,9 @@ func runInstallTools(parent context.Context) error {
 func installToolsReport(failed, offPath, total int) error {
 	switch {
 	case failed > 0 && offPath > 0:
-		return fmt.Errorf("%d of %d tools failed to install and %d installed off PATH — export the directory before `aveloxis start`", failed, total, offPath)
+		return fmt.Errorf("%d of %d tools failed to install or to start and %d installed off PATH — export the directory before `aveloxis start`", failed, total, offPath)
 	case failed > 0:
-		return fmt.Errorf("%d of %d tools failed to install", failed, total)
+		return fmt.Errorf("%d of %d tools failed to install or to start", failed, total)
 	case offPath > 0:
 		return fmt.Errorf("%d of %d tools installed but not on PATH — export the directory before `aveloxis start`", offPath, total)
 	}

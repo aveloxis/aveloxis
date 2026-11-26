@@ -10,7 +10,7 @@
 #   NULL. The classifier's body-URL rule (which supplies owner/repo/kind/
 #   number) never fires on Apache GitBox mail, so ResolveMirrorLink was never
 #   called. Measured 2026-08-29: 0 of 396,809 mirror rows linked in `aveloxis`,
-#   0 of 82,869 in `aveloxis_large`.
+#   0 of 82,869 in a larger production database.
 #
 # HOW
 #   Apache's GitBox relay uses the GitHub GraphQL node ID as the local part of
@@ -39,15 +39,15 @@
 #   # -c/--config, default ./aveloxis.json). The positional <database>, if
 #   # given, overrides the config's dbname.
 #   ./scripts/heal_mirror_links.sh --dry-run                 # heals config's dbname
-#   ./scripts/heal_mirror_links.sh aveloxis_large --dry-run  # override the dbname
-#   ./scripts/heal_mirror_links.sh aveloxis_large            # write pass
-#   ./scripts/heal_mirror_links.sh -c /path/aveloxis.json aveloxis_large --dry-run
+#   ./scripts/heal_mirror_links.sh other_db --dry-run  # override the dbname
+#   ./scripts/heal_mirror_links.sh other_db            # write pass
+#   ./scripts/heal_mirror_links.sh -c /path/aveloxis.json other_db --dry-run
 #
 #   # PG* environment variables still work and OVERRIDE the config:
-#   PGHOST=chaoss.tv PGPORT=5434 PGUSER=aveloxis PGPASSWORD=... \
+#   PGHOST=db.example.org PGPORT=5432 PGUSER=aveloxis PGPASSWORD=... \
 #     ./scripts/heal_mirror_links.sh aveloxis --dry-run
 #
-#   WINDOW=100000 ./scripts/heal_mirror_links.sh aveloxis_large
+#   WINDOW=100000 ./scripts/heal_mirror_links.sh other_db
 #
 # WINDOW SIZING -- bigger is NOT faster. msg_class and the IS NULL link
 # predicates are unindexed, so each window relies on the PK range
@@ -63,7 +63,7 @@ set -euo pipefail
 # default ./aveloxis.json) so operators don't have to know the PG* dance. Any
 # PG* already set in the environment WINS (backward compatible with the old
 # usage). The positional <database>, if given, OVERRIDES the config's dbname —
-# so you can heal aveloxis_large from a config that points at aveloxis.
+# so you can heal another database from a config that points at aveloxis.
 CONFIG="${AVELOXIS_CONFIG:-aveloxis.json}"
 DRY_RUN=""
 DB=""
@@ -147,9 +147,9 @@ echo "== heal_mirror_links: database=$DB window=$WINDOW ${DRY_RUN}"
 # against pull_requests.node_id / issues.node_id; unindexed that is a
 # sequential scan per row (measured on `aveloxis`: the resolvable-count
 # query below -- the one that JOINS node_id -- did not finish in 5 minutes
-# over 396,809 mirrors unindexed, and returns in ~26s indexed; on
-# aveloxis_large the joined tables are 23.0M / 9.6M rows). Refusing beats
-# grinding.
+# over 396,809 mirrors unindexed, and returns in ~26s indexed; on a
+# large production database the joined tables are 23.0M / 9.6M rows).
+# Refusing beats grinding.
 # Mirrors internal/db/email_message_fk_indexes.go's usableFKIndexPredicateSQL
 # (SR-17: one rule for "an index that actually serves a probe on its leading
 # column"): VALID, leading key IS the column, and full or partial on exactly
@@ -180,7 +180,7 @@ if [ -n "$MISSING" ]; then
    ERROR: required probe index(es) missing or INVALID: $MISSING
 
    Create them first (CONCURRENTLY — non-blocking, safe beside a running
-   serve; minutes on aveloxis, longer on aveloxis_large):
+   serve; minutes on a small database, longer on a large one):
 
      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pull_requests_node_id
        ON aveloxis_data.pull_requests (node_id);

@@ -72,7 +72,7 @@ func EnrichThinContributors(ctx context.Context, store *db.PostgresStore, resolv
 				// Rate limit, transient or auth failure, shutdown, an empty
 				// key pool, a cut-off body: nothing was learned about this
 				// login, so stamping the 30-day cooldown would hide it with
-				// no data. On chaoss.tv, 2026-09-17, ~500 rate-limited
+				// no data. On a production fleet, 2026-09-17, ~500 rate-limited
 				// lookups were stamped that way (SR-5).
 				unanswered++
 				if firstUnanswered == nil {

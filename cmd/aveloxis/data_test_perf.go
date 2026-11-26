@@ -467,7 +467,7 @@ func (r *snapshotRun) apiReplay(reps int, timeout time.Duration) ([]perfSample, 
 		return nil, err
 	}
 	released, local := dataTestSides[dataTestReleased].dbname, dataTestSides[dataTestNew].dbname
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(released))
+	pool, err := openPool(r.ctx, r.databaseDSN(released))
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +641,7 @@ func checkReplayAccess(client *http.Client, url string) error {
 }
 
 func (r *snapshotRun) execOn(db, sql string) error {
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(db))
+	pool, err := openPool(r.ctx, r.databaseDSN(db))
 	if err != nil {
 		return err
 	}
@@ -700,7 +700,7 @@ func planExecutionMS(plan string) (float64, bool) {
 // rolls back (EXPLAIN ANALYZE executes the statement: a write must not
 // persist), and writes the plan beside the report.
 func (r *snapshotRun) runProbe(db string, p snapshotProbe, planPath string) (float64, string) {
-	pool, err := pgxpool.New(r.ctx, r.databaseDSN(db))
+	pool, err := openPool(r.ctx, r.databaseDSN(db))
 	if err != nil {
 		return math.NaN(), err.Error()
 	}

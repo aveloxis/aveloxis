@@ -1,0 +1,126 @@
+@@ E01 VALUES with scalar sub on target
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, (SELECT max(x.ar) FROM aveloxis_data.repos x)) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E02 SELECT join target
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT u.id, t.ar FROM unnest($1::int[]) u(id) JOIN aveloxis_data.repos t ON t.repo_id = u.id ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E03 moved CTE
+WITH moved AS (DELETE FROM aveloxis_data.repos WHERE repo_id = $1 RETURNING *) INSERT INTO aveloxis_data.repos SELECT * FROM moved ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E04 DEFAULT VALUES
+INSERT INTO aveloxis_data.repos DEFAULT VALUES ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E05 TABLE x
+INSERT INTO aveloxis_data.repos TABLE aveloxis_data.repos ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E06 TABLE other
+INSERT INTO aveloxis_data.repos TABLE aveloxis_data.other ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E07 SELECT from other only
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT o.id, o.ar FROM aveloxis_data.other o ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E08 SELECT other where exists target
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT o.id, o.ar FROM aveloxis_data.other o WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos r WHERE r.repo_id = o.id) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E09 SELECT target bare col other
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT $1, fe FROM aveloxis_data.repos WHERE repo_id = $2 ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E10 house-style: move loser's rows (same table) 
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT $1, l.ar FROM aveloxis_data.repos l WHERE l.repo_id = $2 ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E11 union arm reads target
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT $1, $2 UNION ALL SELECT x.repo_id, x.ar FROM aveloxis_data.repos x ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E12 nested union
+INSERT INTO aveloxis_data.repos (repo_id, ar) (SELECT $1, $2 UNION ALL (SELECT $3,$4 UNION ALL SELECT x.repo_id, x.ar FROM aveloxis_data.repos x)) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E13 source with CTE reading target
+WITH s AS (SELECT repo_id, ar FROM aveloxis_data.repos) INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT s.repo_id, s.ar FROM s ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E14 source with inner WITH reading target
+INSERT INTO aveloxis_data.repos (repo_id, ar) WITH s AS (SELECT repo_id, ar FROM aveloxis_data.repos) SELECT s.repo_id, s.ar FROM s ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E15 source SELECT with bare * from CTE with col list
+WITH s(a, b) AS (SELECT repo_id, ar FROM aveloxis_data.repos) INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT * FROM s ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E16 source: unnest clean, insert col from value in ORDER BY (cond)
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT u.id, u.a FROM unnest($1::int[], $2::text[]) u(id, a) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E17 excluded other column when source clean
+INSERT INTO aveloxis_data.repos (repo_id, ar, fe) VALUES ($1,$2,$3) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.fe || EXCLUDED.ar
+@@ E18 excluded.ar where INSERT omits ar from column list (EXCLUDED.ar = default, fine)
+INSERT INTO aveloxis_data.repos (repo_id) VALUES ($1) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E19 values source w/ bare col? (invalid in PG) 
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, lower($2)) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar || repos.fe
+@@ E20 source function schema
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, aveloxis_data.f($2)) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E21 source from LATERAL over other
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT o.id, k.v FROM aveloxis_data.other o CROSS JOIN LATERAL (SELECT o.ar AS v) k ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E22 source from JSON_TABLE lateral over... only other
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT (SELECT j.v FROM JSON_TABLE((SELECT to_jsonb(x) FROM aveloxis_data.repos x LIMIT 1), '$' COLUMNS (v text PATH '$.ar')) j), $1 ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ E23 JSON_TABLE correlated in scalar sub of the value
+UPDATE aveloxis_data.repos r SET ar = (SELECT j.v FROM JSON_TABLE(to_jsonb(r), '$' COLUMNS (v text PATH '$.ar')) j)
+@@ E24 XMLTABLE correlated
+UPDATE aveloxis_data.repos r SET ar = (SELECT x.v FROM XMLTABLE('/r' PASSING xmlforest(r.ar AS r) COLUMNS v text PATH '.') x)
+@@ E25 JSON_TABLE reading target via sub-select inside its context arg
+UPDATE aveloxis_data.repos r SET ar = j.v FROM JSON_TABLE((SELECT jsonb_agg(x.ar) FROM aveloxis_data.repos x), '$[*]' COLUMNS (v text PATH '$')) j
+@@ E26 join alias w/ target inside value sub
+UPDATE aveloxis_data.repos r SET ar = (SELECT j.ar FROM (aveloxis_data.other o JOIN aveloxis_data.repos x ON x.repo_id = o.id) j LIMIT 1)
+@@ E27 MERGE update with source target
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.repos s ON s.repo_id = t.repo_id + 1 WHEN MATCHED THEN UPDATE SET ar = s.ar
+@@ E28 MERGE update with clean source
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.other s ON s.id = t.repo_id WHEN MATCHED THEN UPDATE SET ar = s.ar
+@@ E29 MERGE insert arm from target source
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.repos s ON s.repo_id = t.repo_id + 1 WHEN NOT MATCHED THEN INSERT (repo_id, ar) VALUES (s.repo_id, s.ar)
+@@ E30 MERGE source subselect target
+MERGE INTO aveloxis_data.repos t USING (SELECT x.repo_id, x.ar FROM aveloxis_data.repos x) s ON s.repo_id = t.repo_id WHEN MATCHED THEN UPDATE SET ar = s.ar
+@@ E31 MERGE source unnest
+MERGE INTO aveloxis_data.repos t USING unnest($1::int[], $2::text[]) s(id, a) ON s.id = t.repo_id WHEN MATCHED THEN UPDATE SET ar = s.a
+@@ E32 MERGE t.ar
+MERGE INTO aveloxis_data.repos t USING unnest($1::int[], $2::text[]) s(id, a) ON s.id = t.repo_id WHEN MATCHED THEN UPDATE SET ar = t.ar || s.a
+@@ E33 update from two items, one target, value from clean one
+UPDATE aveloxis_data.repos r SET ar = o.ar FROM aveloxis_data.other o, aveloxis_data.repos r2 WHERE o.id = r.repo_id AND r2.repo_id = o.id
+@@ E34 update: bare other col with unclean FROM
+UPDATE aveloxis_data.repos r SET ar = fe FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ E35 update: placeholder only with unclean FROM
+UPDATE aveloxis_data.repos r SET ar = $1 FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ E36 CTE data-modifying as FROM
+WITH d AS (DELETE FROM aveloxis_data.other WHERE id = $1 RETURNING id, ar) UPDATE aveloxis_data.repos r SET ar = d.ar FROM d WHERE d.id = r.repo_id
+@@ E37 CTE recursive self
+WITH RECURSIVE c(id, ar) AS (SELECT $1::int, $2::text UNION ALL SELECT c.id + 1, c.ar FROM c WHERE c.id < 5) UPDATE aveloxis_data.repos r SET ar = c.ar FROM c WHERE c.id = r.repo_id
+@@ E38 CTE recursive via target in recursive arm
+WITH RECURSIVE c(id, ar) AS (SELECT $1::int, $2::text UNION ALL SELECT x.repo_id, x.ar FROM c JOIN aveloxis_data.repos x ON x.repo_id = c.id + 1) UPDATE aveloxis_data.repos r SET ar = c.ar FROM c WHERE c.id = r.repo_id
+@@ E39 mutual CTEs a->b->a with target hidden in b
+WITH RECURSIVE a(id, ar) AS (SELECT $1::int, $2::text UNION ALL SELECT b.id, b.ar FROM b), b(id, ar) AS (SELECT x.repo_id, x.ar FROM aveloxis_data.repos x) UPDATE aveloxis_data.repos r SET ar = a.ar FROM a WHERE a.id = r.repo_id
+@@ E40 CTE name shadowed by inner WITH inside FROM subselect
+WITH c AS (SELECT $1::int AS id, $2::text AS ar) UPDATE aveloxis_data.repos r SET ar = s.ar FROM (WITH c AS (SELECT x.repo_id AS id, x.ar FROM aveloxis_data.repos x) SELECT c.id, c.ar FROM c) s WHERE s.id = r.repo_id
+@@ E41 CTE named like a schema-qualified relation? item with schema and CTE of same name
+WITH other AS (SELECT x.repo_id AS id, x.ar FROM aveloxis_data.repos x) UPDATE aveloxis_data.repos r SET ar = other.ar FROM other WHERE other.id = r.repo_id
+@@ E42 CTE in a sibling statement of the same text not visible
+WITH c AS (SELECT $1::int AS id, $2::text AS ar) SELECT 1 FROM c
+@;
+UPDATE aveloxis_data.repos r SET ar = c.ar FROM c WHERE c.id = r.repo_id
+@@ E43 CTE: clean, output is bare target col name from other
+WITH c AS (SELECT id, ar FROM aveloxis_data.other) UPDATE aveloxis_data.repos r SET ar = c.ar FROM c WHERE c.id = r.repo_id
+@@ E44 CTE with MATERIALIZED and search clause
+WITH c AS MATERIALIZED (SELECT o.id, o.ar FROM aveloxis_data.other o) UPDATE aveloxis_data.repos r SET ar = c.ar FROM c WHERE c.id = r.repo_id
+@@ E45 CTE: insert returning into update (ins returns target rows)
+WITH ins AS (INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, $2) RETURNING repo_id, ar) UPDATE aveloxis_data.repos r SET ar = ins.ar FROM ins WHERE r.repo_id = $3
+@@ E46 subselect in FROM with ORDER BY stored (cond) other out
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT o.id, o.v FROM aveloxis_data.other o ORDER BY (SELECT x.ar FROM aveloxis_data.repos x LIMIT 1) LIMIT 1) s WHERE s.id = r.repo_id
+@@ E47 DISTINCT ON stored expr
+UPDATE aveloxis_data.repos r SET ar = (SELECT DISTINCT ON ((SELECT x.ar FROM aveloxis_data.repos x LIMIT 1)) o.v FROM aveloxis_data.other o)
+@@ E48 window def reading target? (windowClause)
+UPDATE aveloxis_data.repos r SET ar = (SELECT first_value(o.v) OVER w FROM aveloxis_data.other o WINDOW w AS (ORDER BY (SELECT x.ar FROM aveloxis_data.repos x LIMIT 1)) LIMIT 1)
+@@ E49 inline OVER reading target in ORDER BY (inside target list)
+UPDATE aveloxis_data.repos r SET ar = (SELECT first_value(o.v) OVER (ORDER BY (SELECT x.ar FROM aveloxis_data.repos x LIMIT 1)) FROM aveloxis_data.other o LIMIT 1)
+@@ E50 agg FILTER / ORDER BY in agg reading r.ar
+UPDATE aveloxis_data.repos r SET ar = (SELECT string_agg(o.v, ',' ORDER BY o.v = r.ar) FROM aveloxis_data.other o)
+@@ E51 unnest($1) alias same as target alias in own FROM 
+UPDATE aveloxis_data.repos r SET ar = r.ar FROM unnest($1::text[]) r(ar)
+@@ E52 own FROM item named excluded
+UPDATE aveloxis_data.repos r SET ar = excluded.ar FROM aveloxis_data.repos excluded WHERE excluded.repo_id = r.repo_id
+@@ E53 conflict-update: sub-select item named excluded reads target
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = (SELECT excluded.ar FROM aveloxis_data.repos excluded LIMIT 1)
+@@ E54 conflict-update referencing target name w/ alias
+INSERT INTO aveloxis_data.repos AS t (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = t.ar
+@@ E55 conflict-update: repos.ar when alias given (PG errors)
+INSERT INTO aveloxis_data.repos AS t (repo_id, ar) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = repos.ar
+@@ E56 multi-assign row
+UPDATE aveloxis_data.repos SET (ar, fe) = (SELECT x.ar, $1 FROM aveloxis_data.repos x LIMIT 1)
+@@ E57 multi-assign row direct
+UPDATE aveloxis_data.repos SET (fe, ar) = ROW(fe, ar)
+@@ E58 EXECUTE USING variable from stored
+DO $$ DECLARE v text; BEGIN SELECT ar INTO v FROM aveloxis_data.repos LIMIT 1; EXECUTE 'UPDATE aveloxis_data.repos SET ar = $1' USING v; END $$
+@@ E59 sql function param $1
+CREATE FUNCTION aveloxis_data.f(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = $1 $$
+@@ E60 sql fn named param
+CREATE FUNCTION aveloxis_data.f(v text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = v $$
+@@ E61 PREPARE/EXECUTE
+PREPARE p(text) AS UPDATE aveloxis_data.repos SET ar = $1
+@;
+EXECUTE p((SELECT ar FROM aveloxis_data.repos LIMIT 1))

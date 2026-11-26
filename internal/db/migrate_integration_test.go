@@ -131,8 +131,8 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 		t.Error("aveloxis_data.repos.scancode_last_run does not exist after RunMigrations — the v0.21.0 column adds either silently no-op'd or the migration ran against a different DB than the test verifies.")
 	}
 
-	if n, err := supplyChainViewsPresent(ctx, store); err != nil || n != len(SupplyChainViewNames) {
-		t.Errorf("fresh database: %d of %d supply-chain views built (err=%v)", n, len(SupplyChainViewNames), err)
+	if n, err := supplyChainViewsPresent(ctx, store); err != nil || n != len(supplyChainViewNames) {
+		t.Errorf("fresh database: %d of %d supply-chain views built (err=%v)", n, len(supplyChainViewNames), err)
 	}
 
 	// Every materialized view was built. The view block only WARNs when a
@@ -157,6 +157,12 @@ func TestRunMigrationsOnFreshDB(t *testing.T) {
 		if !built[name] {
 			t.Errorf("materialized view %s was not built on a fresh database — see the migrate's \"materialized view creation had errors\" WARN", name)
 		}
+	}
+	// Round 6: the refresh of the 8Knot set (one statement per view, a
+	// CONCURRENTLY form and a plain one, each made by a builder since
+	// 0.29.212) was sent to a database by no test. The views exist here.
+	if err := RefreshMaterializedViews(ctx, store, logger); err != nil {
+		t.Errorf("refreshing the materialized views this migrate built: %v", err)
 	}
 }
 

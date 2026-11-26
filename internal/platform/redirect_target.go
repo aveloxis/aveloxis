@@ -78,7 +78,7 @@ func onClientHostString(baseURL, rawURL string) error {
 // userinfo — returns ErrOffHostRefused; an unparseable Location is ErrGone
 // (unfollowable, like an empty one).
 //
-// Production before the fix (chaoss.tv, 2026-09-06..13): 3,060 redirects
+// Production before the fix (one fleet, 2026-09-06..13): 3,060 redirects
 // followed, all to https://api.github.com, so the refusal never fires on real
 // forge traffic; it exists for the redirect that would leak.
 func redirectTarget(baseURL, currentURL, location string) (string, error) {

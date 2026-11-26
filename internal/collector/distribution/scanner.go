@@ -32,7 +32,7 @@ import (
 //   - "Sources we needed had transient failures"
 //     (failure, quadratic backoff, retry sooner).
 //
-// The diagnostic that surfaced this: every chaoss.tv distribution
+// The diagnostic that surfaced this: every production distribution
 // failure on 2026-05-22/23 was a Julia or R repo where ecosyste.ms
 // 500'd and every other source legitimately had nothing. The
 // pre-v0.25.0 contract recorded these as failures, walked the

@@ -1,0 +1,166 @@
+@@ D01 add fk not valid set null on registered col
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk1 FOREIGN KEY (ar) REFERENCES aveloxis_data.other (id) ON DELETE SET NULL NOT VALID
+@@ D02 validate
+ALTER TABLE aveloxis_data.repos VALIDATE CONSTRAINT fk1
+@@ D03 add column with references set null (Q7-3)
+ALTER TABLE aveloxis_data.repos ADD COLUMN ar text REFERENCES aveloxis_data.other (id) ON DELETE SET NULL
+@@ D04 on update set default
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk1 FOREIGN KEY (ar) REFERENCES aveloxis_data.other (id) ON UPDATE SET DEFAULT
+@@ D05 fk on referencing side new table -> repos cascade (does not write repos)
+CREATE TABLE aveloxis_data.newkid (id int, rid int REFERENCES aveloxis_data.repos (repo_id) ON DELETE CASCADE)
+@@ D06 fk on delete cascade FROM repos to other (deletes repos rows)
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk1 FOREIGN KEY (ar) REFERENCES aveloxis_data.other (id) ON DELETE CASCADE
+@@ D07 fk multi-col with set null (col list) other col only
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk1 FOREIGN KEY (ar, fe) REFERENCES aveloxis_data.other (a, b) ON DELETE SET NULL (fe)
+@@ D08 fk multi-col set null col list ar
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk1 FOREIGN KEY (zz, fe) REFERENCES aveloxis_data.other (a, b) ON DELETE SET NULL (zz)
+@@ D09 truncate kid's parent cascade: lone (no refs) CASCADE
+TRUNCATE aveloxis_data.lone CASCADE
+@@ D10 truncate other (Table()-declared only) cascade
+TRUNCATE aveloxis_data.other CASCADE
+@@ D11 truncate kid cascade
+TRUNCATE aveloxis_data.kid CASCADE
+@@ D12 truncate table then registered refs added in same text
+CREATE TABLE aveloxis_data.t1 (id int primary key);
+@;
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT f FOREIGN KEY (zz) REFERENCES aveloxis_data.t1 (id);
+@;
+TRUNCATE aveloxis_data.t1 CASCADE
+@@ D13 truncate restart identity cascade w/ ONLY
+TRUNCATE ONLY aveloxis_data.lone RESTART IDENTITY CASCADE
+@@ D14 drop table parent cascade where registered inherits? (drop other cascade)
+DROP TABLE aveloxis_data.other CASCADE
+@@ D15 drop table of partitioned parent whose partition is... registered is child: CREATE repos as partition recorded? 
+DROP TABLE aveloxis_data.lone
+@@ D16 detach concurrently
+ALTER TABLE aveloxis_data.repos DETACH PARTITION aveloxis_data.repos_p1 CONCURRENTLY
+@@ D17 no inherit
+ALTER TABLE aveloxis_data.repos NO INHERIT aveloxis_data.other
+@@ D18 other no inherit repos
+ALTER TABLE aveloxis_data.other NO INHERIT aveloxis_data.repos
+@@ D19 cluster / vacuum full / reindex
+CLUSTER aveloxis_data.repos USING repos_pkey;
+@;
+VACUUM FULL aveloxis_data.repos;
+@;
+REINDEX TABLE aveloxis_data.repos
+@@ D20 alter constraint deferrable
+ALTER TABLE aveloxis_data.repos ALTER CONSTRAINT fk1 DEFERRABLE
+@@ D21 drop type cascade
+DROP TYPE aveloxis_data.t CASCADE
+@@ D22 drop type restrict
+DROP TYPE aveloxis_data.t
+@@ D23 drop domain cascade
+DROP DOMAIN d CASCADE
+@@ D24 drop extension cascade (drops columns of its types)
+DROP EXTENSION citext CASCADE
+@@ D25 drop function cascade (drops generated cols/defaults/triggers)
+DROP FUNCTION aveloxis_data.f() CASCADE
+@@ D26 drop sequence cascade
+DROP SEQUENCE aveloxis_data.s CASCADE
+@@ D27 drop collation cascade (drops columns with that collation)
+DROP COLLATION mycoll CASCADE
+@@ D28 alter schema rename
+ALTER SCHEMA aveloxis_data RENAME TO old
+@@ D29 alter schema other rename onto
+ALTER SCHEMA x RENAME TO aveloxis_data
+@@ D30 drop owned
+DROP OWNED BY aveloxis
+@@ D31 reassign owned
+REASSIGN OWNED BY a TO b
+@@ D32 temp same text
+CREATE TEMP TABLE tmp_x (id int); INSERT INTO tmp_x VALUES (1); UPDATE tmp_x SET id = 2
+@@ D33 temp named repos shadows registered: unqualified write
+CREATE TEMP TABLE repos (repo_id int, ar text); UPDATE repos SET ar = ar
+@@ D34 temp after write
+UPDATE tmp_x SET id = 2; CREATE TEMP TABLE tmp_x (id int)
+@@ D35 temp dropped before write
+CREATE TEMP TABLE tmp_x (id int); DROP TABLE tmp_x; UPDATE tmp_x SET id = 2
+@@ D36 temp in other statement text
+CREATE TEMP TABLE tmp_x (id int)
+@;
+UPDATE tmp_x SET id = 2
+@@ D37 pg_temp.x undeclared
+UPDATE pg_temp.tmp_x SET id = 2
+@@ D38 temp ON COMMIT DROP then commit in same text
+BEGIN; CREATE TEMP TABLE tmp_x (id int) ON COMMIT DROP; COMMIT; UPDATE tmp_x SET id = 2
+@@ D39 CREATE TEMP IF NOT EXISTS (may not be the one made: a permanent tmp_x on search path? no: temp first)
+CREATE TEMP TABLE IF NOT EXISTS tmp_x (id int); UPDATE tmp_x SET id = 2
+@@ D40 temp rolled back
+BEGIN; CREATE TEMP TABLE tmp_x (id int); ROLLBACK; UPDATE tmp_x SET id = 2
+@@ D41 temp renamed away then written
+CREATE TEMP TABLE tmp_x (id int); ALTER TABLE tmp_x RENAME TO tmp_y; UPDATE tmp_x SET id = 2
+@@ D42 temp created AS SELECT / INTO TEMP
+SELECT 1 AS id INTO TEMP tmp_x; UPDATE tmp_x SET id = 2
+@@ D43 temp view over registered then written (view is not table kind)
+CREATE TEMP VIEW tv AS SELECT * FROM aveloxis_data.repos; UPDATE tv SET ar = ar
+@@ D44 temp table INHERITS registered
+CREATE TEMP TABLE tk () INHERITS (aveloxis_data.repos); UPDATE tk SET ar = ar
+@@ D45 temp table partition of registered
+CREATE TEMP TABLE tk PARTITION OF aveloxis_data.repos DEFAULT; INSERT INTO tk (ar) VALUES ($1)
+@@ D46 temp created in DO, written at top
+DO $$ BEGIN CREATE TEMP TABLE tmp_x (id int); END $$; UPDATE tmp_x SET id = 2
+@@ D47 temp table LIKE registered, ar AlwaysRefresh from itself (fine)
+CREATE TEMP TABLE tk (LIKE aveloxis_data.repos); UPDATE tk SET ar = ar
+@@ D48 temp explicit schema pg_temp create then bare write
+CREATE TABLE pg_temp.tmp_x (id int); UPDATE tmp_x SET id = 2
+@@ D49 temp with schema-qualified aveloxis_data.tmp? cannot. temp set then set search_path
+CREATE TEMP TABLE tmp_x (id int); SET search_path = aveloxis_data; UPDATE tmp_x SET id = 2
+@@ D50 temp, then ATTACH it as partition to registered
+CREATE TEMP TABLE tk (repo_id int, ar text); ALTER TABLE aveloxis_data.repos ATTACH PARTITION tk DEFAULT; INSERT INTO tk (ar) VALUES ($1)
+@@ D51 temp, then ALTER tk INHERIT registered
+CREATE TEMP TABLE tk (repo_id int, ar text); ALTER TABLE tk INHERIT aveloxis_data.repos; UPDATE tk SET ar = ar
+@@ D52 temp then FROM temp reading target for AR
+CREATE TEMP TABLE tk AS SELECT repo_id, ar FROM aveloxis_data.repos; UPDATE aveloxis_data.repos r SET ar = tk.ar FROM tk WHERE tk.repo_id = r.repo_id
+@@ D53 unlogged table as scratch copy for AR (catalog knows)
+CREATE TABLE aveloxis_data.scratch AS SELECT repo_id, ar FROM aveloxis_data.repos; UPDATE aveloxis_data.repos r SET ar = s.ar FROM aveloxis_data.scratch s WHERE s.repo_id = r.repo_id
+@@ D54 INSERT SELECT * from target into registered
+INSERT INTO aveloxis_data.repos SELECT * FROM aveloxis_data.repos
+@@ D55 alter table add constraint fk on kid referencing repos ON UPDATE CASCADE (writes kid, not registered)
+ALTER TABLE aveloxis_data.kid ADD CONSTRAINT f FOREIGN KEY (rid) REFERENCES aveloxis_data.repos (repo_id) ON UPDATE CASCADE
+@@ D56 partition of with FK col action
+CREATE TABLE aveloxis_data.x2 PARTITION OF aveloxis_data.other (ar REFERENCES aveloxis_data.lone ON DELETE SET NULL) DEFAULT
+@@ D57 alter table repos alter column ar set default / add generated
+ALTER TABLE aveloxis_data.repos ALTER COLUMN ar ADD GENERATED ALWAYS AS IDENTITY
+@@ D58 alter table repos alter column ar set not null (no write)
+ALTER TABLE aveloxis_data.repos ALTER COLUMN ar SET NOT NULL
+@@ D59 alter table ALTER COLUMN ar SET DATA TYPE
+ALTER TABLE aveloxis_data.repos ALTER ar TYPE int USING 0
+@@ D60 drop table if exists registered, cascade
+DROP TABLE IF EXISTS aveloxis_data.repos CASCADE
+@@ D61 drop view cascade (drops dependent views only)
+DROP VIEW aveloxis_data.v_repos CASCADE
+@@ D62 alter table set access method / rewrite (no value change)
+ALTER TABLE aveloxis_data.repos SET ACCESS METHOD heap
+@@ D63 alter type rename attribute cascade / alter type ... alter attribute type cascade
+ALTER TYPE aveloxis_data.ct ALTER ATTRIBUTE a TYPE text CASCADE
+@@ D64 alter domain set default/ drop constraint
+ALTER TABLE aveloxis_data.repos ALTER COLUMN ar DROP EXPRESSION
+@@ D65 alter table ... add column generated stored referencing ar (no write of ar)
+ALTER TABLE aveloxis_data.repos ADD COLUMN ar2 text GENERATED ALWAYS AS (ar) STORED
+@@ D66 alter table drop column other cascade
+ALTER TABLE aveloxis_data.repos DROP COLUMN zz CASCADE
+@@ D67 alter table rename constraint / set (fillfactor) / disable trigger all
+ALTER TABLE aveloxis_data.repos DISABLE TRIGGER ALL
+@@ D68 alter table enable replica trigger; alter trigger rename; 
+ALTER TABLE aveloxis_data.repos ENABLE ALWAYS TRIGGER t1
+@@ D69 create trigger on other that updates repos inside function elsewhere
+CREATE TRIGGER t AFTER INSERT ON aveloxis_data.other FOR EACH ROW EXECUTE FUNCTION aveloxis_data.f()
+@@ D70 alter table repos split/merge partitions (pg17 none) ; ALTER TABLE ... OF type
+ALTER TABLE aveloxis_data.repos OF aveloxis_data.ct
+@@ D71 lock / comment / security label
+COMMENT ON COLUMN aveloxis_data.repos.ar IS 'x'
+@@ D72 alter table set schema of other onto registered schema name collision n/a; ALTER TABLE x RENAME TO repos in other schema
+ALTER TABLE public.pt RENAME TO repos
+@@ D73 alter table aveloxis_data.other rename to repos (takes name? exists)
+ALTER TABLE aveloxis_data.other RENAME TO repos
+@@ D74 alter view rename to registered name
+ALTER VIEW aveloxis_data.v_repos RENAME TO repos
+@@ D75 alter table public.repos set schema aveloxis_data
+ALTER TABLE public.repos SET SCHEMA aveloxis_data
+@@ D76 alter sequence / matview rename
+ALTER MATERIALIZED VIEW aveloxis_data.mv RENAME TO repos
+@@ D77 alter index rename to repos (index names share the namespace; exists -> error) 
+ALTER INDEX aveloxis_data.i RENAME TO repos
+@@ D78 create table repos in pg_temp explicitly then write qualified pg_temp.repos
+CREATE TABLE pg_temp.repos (ar text); UPDATE pg_temp.repos SET ar = ar

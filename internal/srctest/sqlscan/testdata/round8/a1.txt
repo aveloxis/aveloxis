@@ -1,0 +1,112 @@
+@@ A01 lateral subselect carries r2.ar
+UPDATE aveloxis_data.repos r SET ar = s.v FROM aveloxis_data.repos r2 CROSS JOIN LATERAL (SELECT r2.ar AS v) s WHERE r2.repo_id = r.repo_id
+@@ A02 lateral function unnest(ARRAY[r2.ar])
+UPDATE aveloxis_data.repos r SET ar = u.v FROM aveloxis_data.repos r2, unnest(ARRAY[r2.ar]) AS u(v) WHERE r2.repo_id = r.repo_id
+@@ A03 lateral function no colnames
+UPDATE aveloxis_data.repos r SET ar = u FROM aveloxis_data.repos r2, lower(r2.ar) AS u WHERE r2.repo_id = r.repo_id
+@@ A04 lateral subselect, comma
+UPDATE aveloxis_data.repos r SET ar = s.v FROM aveloxis_data.repos r2, LATERAL (SELECT r2.ar AS v) s WHERE r2.repo_id = r.repo_id
+@@ A05 lateral subselect whole row
+UPDATE aveloxis_data.repos r SET ar = s.v FROM aveloxis_data.repos r2, LATERAL (SELECT (r2).ar AS v) s WHERE r2.repo_id = r.repo_id
+@@ A06 join alias
+UPDATE aveloxis_data.repos r SET ar = j.ar FROM (aveloxis_data.repos r2 JOIN aveloxis_data.other o ON o.id = r2.repo_id) AS j WHERE j.repo_id = r.repo_id
+@@ A07 join USING merged col, qualified by other side
+UPDATE aveloxis_data.repos r SET ar = o.ar FROM aveloxis_data.other o JOIN aveloxis_data.repos r2 USING (ar) WHERE r2.repo_id = r.repo_id
+@@ A08 natural join other-qualified
+UPDATE aveloxis_data.repos r SET ar = o.ar FROM aveloxis_data.other o NATURAL JOIN aveloxis_data.repos r2 WHERE o.id = r.repo_id
+@@ A09 subselect: ar renamed via alias in nested other-name: SELECT ar AS x
+UPDATE aveloxis_data.repos r SET ar = s.x FROM (SELECT repo_id, r2.ar AS x FROM aveloxis_data.repos r2) s WHERE s.repo_id = r.repo_id
+@@ A10 subselect: other col (R26-like deliberately passes)
+UPDATE aveloxis_data.repos r SET ar = s.fe FROM (SELECT repo_id, fe FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A11 subselect: colnames rename
+UPDATE aveloxis_data.repos r SET ar = s.b FROM (SELECT repo_id, ar FROM aveloxis_data.repos) AS s(a, b) WHERE s.a = r.repo_id
+@@ A12 subselect: positional rename via outer colnames on self
+UPDATE aveloxis_data.repos r SET ar = r2.c5 FROM aveloxis_data.repos AS r2(c1,c2,c3,c4,c5) WHERE r2.c1 = r.repo_id
+@@ A13 subselect output aggregated without name: max(ar)
+UPDATE aveloxis_data.repos r SET ar = s.max FROM (SELECT repo_id, max(ar) FROM aveloxis_data.repos GROUP BY 1) s WHERE s.repo_id = r.repo_id
+@@ A14 subselect output via window named
+UPDATE aveloxis_data.repos r SET ar = s.p FROM (SELECT repo_id, lag(ar) OVER (ORDER BY repo_id) AS p FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A15 subselect: value moved through WHERE-correlated other alias: SELECT x.fe AS ar (ok: other col)
+UPDATE aveloxis_data.repos r SET ar = s.ar FROM (SELECT repo_id, fe AS ar FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A16 subselect: alias chain inside same select (PG disallows ref to output alias in select list)
+UPDATE aveloxis_data.repos r SET ar = s.y FROM (SELECT repo_id, ar AS x, fe AS y FROM aveloxis_data.repos ORDER BY x) s WHERE s.repo_id = r.repo_id
+@@ A17 cte referenced
+WITH old AS (SELECT repo_id, ar AS keep FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = old.keep FROM old WHERE old.repo_id = r.repo_id
+@@ A18 cte other col
+WITH old AS (SELECT repo_id, fe AS keep FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = old.keep FROM old WHERE old.repo_id = r.repo_id
+@@ A19 cte with column list
+WITH old(a, b) AS (SELECT repo_id, ar FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = old.b FROM old WHERE old.a = r.repo_id
+@@ A20 cte with column list renaming: fe column named b holds ar
+WITH old(repo_id, fe) AS (SELECT repo_id, ar FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = old.fe FROM old WHERE old.repo_id = r.repo_id
+@@ A21 cte aliased in FROM
+WITH old AS (SELECT repo_id, ar FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = o.ar FROM old o WHERE o.repo_id = r.repo_id
+@@ A22 cte via second cte
+WITH a AS (SELECT repo_id, ar FROM aveloxis_data.repos), b AS (SELECT repo_id, ar AS z FROM a) UPDATE aveloxis_data.repos r SET ar = b.z FROM b WHERE b.repo_id = r.repo_id
+@@ A23 recursive cte
+WITH RECURSIVE a(id, v) AS (SELECT repo_id, ar FROM aveloxis_data.repos UNION ALL SELECT id, v FROM a WHERE false) UPDATE aveloxis_data.repos r SET ar = a.v FROM a WHERE a.id = r.repo_id
+@@ A24 cte data-modifying RETURNING old
+WITH d AS (UPDATE aveloxis_data.other SET x = 1 RETURNING id), o AS (SELECT repo_id, ar AS z FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = o.z FROM o, d WHERE o.repo_id = r.repo_id
+@@ A25 matview in FROM
+UPDATE aveloxis_data.repos r SET ar = m.ar FROM aveloxis_data.mv m WHERE m.repo_id = r.repo_id
+@@ A26 view over view in FROM
+UPDATE aveloxis_data.repos r SET ar = m.ar FROM aveloxis_data.v2 m WHERE m.repo_id = r.repo_id
+@@ A27 unknown relation in FROM
+UPDATE aveloxis_data.repos r SET ar = m.ar FROM aveloxis_data.nobody m WHERE m.repo_id = r.repo_id
+@@ A28 unqualified relation in FROM named like a view
+UPDATE aveloxis_data.repos r SET ar = m.ar FROM v_repos m WHERE m.repo_id = r.repo_id
+@@ A29 table function in FROM
+UPDATE aveloxis_data.repos r SET ar = f.ar FROM aveloxis_data.read_repos() f WHERE f.repo_id = r.repo_id
+@@ A30 ONLY
+UPDATE aveloxis_data.repos r SET ar = r2.ar FROM ONLY aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ A31 subselect in value over a view
+UPDATE aveloxis_data.repos r SET ar = (SELECT v.ar FROM aveloxis_data.v2 v WHERE v.repo_id = r.repo_id)
+@@ A32 subselect in value over matview, other col name
+UPDATE aveloxis_data.repos r SET ar = (SELECT v.zz FROM aveloxis_data.mv v WHERE v.repo_id = r.repo_id)
+@@ A33 subselect in value over unknown table
+UPDATE aveloxis_data.repos r SET ar = (SELECT v.zz FROM aveloxis_data.nobody v WHERE v.repo_id = r.repo_id)
+@@ A34 values joined to target in derived table
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT x.repo_id, x.ar || v.s AS v FROM aveloxis_data.repos x, (VALUES ($1)) v(s)) s WHERE s.repo_id = r.repo_id
+@@ A35 set op in derived
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT repo_id, ar AS v FROM aveloxis_data.repos UNION ALL SELECT 1, 'x') s WHERE s.repo_id = r.repo_id
+@@ A36 TABLE cmd
+UPDATE aveloxis_data.repos r SET ar = s.ar FROM (TABLE aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A37 subselect star
+UPDATE aveloxis_data.repos r SET ar = s.ar FROM (SELECT * FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A38 subselect row json
+UPDATE aveloxis_data.repos r SET ar = s.j->>'ar' FROM (SELECT repo_id, row_to_json(x) AS j FROM aveloxis_data.repos x) s WHERE s.repo_id = r.repo_id
+@@ A39 subselect whole row unnamed alias: SELECT x FROM repos x  (column named x)
+UPDATE aveloxis_data.repos r SET ar = (s.x).ar FROM (SELECT x FROM aveloxis_data.repos x) s WHERE (s.x).repo_id = r.repo_id
+@@ A40 subselect whole row by table name without alias
+UPDATE aveloxis_data.repos r SET ar = (s.repos).ar FROM (SELECT repos FROM aveloxis_data.repos) s WHERE (s.repos).repo_id = r.repo_id
+@@ A41 whole item row to json
+UPDATE aveloxis_data.repos r SET ar = to_jsonb(s)->>'x' FROM (SELECT repo_id, ar AS x FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A42 bare name from item
+UPDATE aveloxis_data.repos r SET ar = keep FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A43 scalar subselect over FROM item (correlated)
+UPDATE aveloxis_data.repos r SET ar = (SELECT s.keep) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A44 scalar subselect over cte
+WITH old AS (SELECT repo_id, ar AS keep FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = (SELECT keep FROM old WHERE old.repo_id = r.repo_id)
+@@ A45 subselect over cte with other alias
+WITH old AS (SELECT repo_id, ar AS keep FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = (SELECT o.keep FROM old o WHERE o.repo_id = r.repo_id)
+@@ A46 conflict-update with cte
+WITH old AS (SELECT repo_id, ar AS keep FROM aveloxis_data.repos) INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT repo_id, keep FROM old ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ A47 conflict-update: excluded other col
+INSERT INTO aveloxis_data.repos (repo_id, ar, fe) VALUES ($1,$2,$3) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.fe
+@@ A48 merge using target
+MERGE INTO aveloxis_data.repos r USING (SELECT repo_id, ar AS keep FROM aveloxis_data.repos) s ON s.repo_id = r.repo_id WHEN MATCHED THEN UPDATE SET ar = s.keep
+@@ A49 merge using lateral
+MERGE INTO aveloxis_data.repos r USING (aveloxis_data.other o CROSS JOIN LATERAL (SELECT ar AS keep FROM aveloxis_data.repos x WHERE x.repo_id = o.id) l) ON o.id = r.repo_id WHEN MATCHED THEN UPDATE SET ar = l.keep
+@@ A50 subselect in FROM: partition child name unknown to catalog
+UPDATE aveloxis_data.repos r SET ar = p.ar FROM aveloxis_data.repos_p1 p WHERE p.repo_id = r.repo_id
+@@ A51 FROM item reads target via subselect inside function arg
+UPDATE aveloxis_data.repos r SET ar = u.v FROM unnest(ARRAY(SELECT ar FROM aveloxis_data.repos)) AS u(v)
+@@ A52 FROM subselect with scalar subselect output named
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT o.id, (SELECT x.ar FROM aveloxis_data.repos x WHERE x.repo_id = o.id) AS v FROM aveloxis_data.other o) s WHERE s.id = r.repo_id
+@@ A53 FROM subselect with target only in WHERE (other col out)
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT o.id, o.v FROM aveloxis_data.other o WHERE EXISTS (SELECT 1 FROM aveloxis_data.repos x WHERE x.repo_id = o.id)) s WHERE s.id = r.repo_id
+@@ A54 ar from other table col ar where other is a table (ok)
+UPDATE aveloxis_data.repos r SET ar = o.ar FROM aveloxis_data.other o WHERE o.id = r.repo_id
+@@ A55 jsonb_to_recordset lateral over r2 row
+UPDATE aveloxis_data.repos r SET ar = j.ar FROM aveloxis_data.repos r2, jsonb_to_record(to_jsonb(r2)) AS j(ar text) WHERE r2.repo_id = r.repo_id
+@@ A56 lateral subselect star
+UPDATE aveloxis_data.repos r SET ar = s.ar FROM aveloxis_data.repos r2, LATERAL (SELECT r2.*) s WHERE r2.repo_id = r.repo_id

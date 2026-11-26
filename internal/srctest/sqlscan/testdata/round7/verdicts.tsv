@@ -1,0 +1,192 @@
+p1.txt	base-fe-coalesce (ok)	pass
+p1.txt	selfjoin-ar reads another row's stored	assign
+p1.txt	selfjoin-ar same row via alias	assign
+p1.txt	cte-over-target ar	assign
+p1.txt	subselect-in-from ar	assign
+p1.txt	view-in-subselect ar	assign
+p1.txt	view-in-from ar	assign
+p1.txt	fe guarded bare from selfjoin	assign
+p1.txt	pnn incoming is $ but stored is from-other	assign
+p1.txt	g with selfjoin	pass
+p1.txt	conflict alias x	pass
+p1.txt	conflict alias excluded-other-col	assign
+p1.txt	conflict bare stored	pass
+p1.txt	conflict guard in DO UPDATE WHERE	pass
+p1.txt	conflict guard in index predicate only	assign
+p1.txt	conflict excluded in subselect	pass
+p1.txt	conflict subselect aliased excluded over target	pass
+p1.txt	ar via function of stored other-col whole row	assign
+p1.txt	ar via quoted name	assign
+p1.txt	ar via quoted uppercase (a different column)	pass
+p1.txt	fe guard with OR true	assign
+p1.txt	fe guard IS NOT DISTINCT FROM NULL	assign
+p1.txt	fe guard = '' only	assign
+p1.txt	fe guard on outer stmt of CTE	assign
+p1.txt	fe default	assign
+p1.txt	io default	assign
+p1.txt	ar default	pass
+p1.txt	pnn default	assign
+p1.txt	fe coalesce(fe, default)?	pass
+p1.txt	fe NULLIF trim	assign
+p1.txt	fe NULLIF cast	assign
+p1.txt	fe NULLIF ''::text	assign
+p1.txt	fe three args	assign
+p1.txt	fe case	pass
+p1.txt	merge update	pass
+p1.txt	merge update bare src with target-name alias	assign
+p1.txt	merge guard in WHEN MATCHED AND	assign
+p1.txt	merge guard in ON	assign
+p1.txt	merge insert io	pass
+p1.txt	delete	pass
+p1.txt	insert-select same table	pass
+p1.txt	insert overriding	pass
+p2.txt	D01 alter schema rename (registered tables' schema)	rename-schema
+p2.txt	D02 other schema renamed TO aveloxis_data	rename-schema
+p2.txt	D03 truncate other cascade	truncate
+p2.txt	D04 drop owned	owned
+p2.txt	D05 alter type using	alter-column
+p2.txt	D06 set default	pass
+p2.txt	D07 add generated identity on io	pass
+p2.txt	D08 rename col into registered	alter-column
+p2.txt	D09 rename col from registered	alter-column
+p2.txt	D10 drop column cascade	alter-column
+p2.txt	D11 like + swap	child-target+rename-table
+p2.txt	D12 drop type cascade	drop-type
+p2.txt	D13 create or replace view named like registered (unqualified)	pass
+p2.txt	D14 create policy	pass
+p2.txt	D15 event trigger	pass
+p2.txt	D16 trigger on view over registered	pass
+p2.txt	D17 alter table rename constraint	pass
+p2.txt	D18 add col with fk action on registered col? (new constraint)	fk-action
+p2.txt	D19 add column with fk (column constraint) via ALTER ADD COLUMN named registered	fk-action
+p2.txt	D20 alter column generic: drop not null	pass
+p2.txt	D21 import foreign schema into aveloxis_data	pass
+p2.txt	D22 alter view rename to registered	rename-table
+p2.txt	D23 subscription	pass
+p2.txt	D24 delete all rows	pass
+p2.txt	D25 alter table set schema on other to become child? no: other renamed to registered name in other schema	pass
+p2.txt	D26 alter index rename	pass
+p2.txt	D27 create table ... of type / partition by on new table	pass
+p2.txt	D28 alter table all in tablespace	pass
+p2.txt	D29 alter sequence owned	pass
+p2.txt	D30 alter table alter column type on FK-referenced parent (cascade rewrite?) other	pass
+p2.txt	D31 drop schema cascade	drop-schema
+p2.txt	D32 alter domain add constraint	pass
+p2.txt	D33 update pg_catalog	unknown-target
+p2.txt	D34 update pg_class no schema	unqualified-target
+p2.txt	D35 alter table ... alter column set data type via ALTER TYPE composite	pass
+p2.txt	D36 alter table rename unqualified	unqualified-target
+p2.txt	D37 alter table repos drop column unqualified	unqualified-target
+p2.txt	D38 refresh matview	pass
+p2.txt	D39 create table as with same name as registered in other schema then set schema	pass
+p2.txt	D40 alter extension / create extension	pass
+p3.txt	R01 returns table col named fe, use_variable, guard reads variable	assign
+p3.txt	R02 OUT param named fe, use_variable	assign
+p3.txt	R03 IN param named fe use_variable (control)	assign
+p3.txt	R04 DO use_variable + EXECUTE const: ar reads stored	assign
+p3.txt	R05 DO use_variable; nested CREATE FUNCTION sql inside EXECUTE	assign
+p3.txt	R06 plpgsql use_variable; fill with stored shadowed by var: COALESCE(fe,$1)	assign
+p3.txt	R07 variable_conflict in a comment, real default error	assign
+p3.txt	R08 variable_conflict use_column in string literal later in the body	assign
+p3.txt	R09 hash-operator lookalike: x # variable_conflict use_column as expression	assign
+p3.txt	R10 two directives: use_column then use_variable (last wins in PG?)	assign
+p3.txt	R11 label-qualified	assign
+p3.txt	R12 loop record	assign
+p3.txt	R13 loop record over target (stored through a record)	assign
+p3.txt	R14 sql fn param named fe: guard is column (ok accept)	assign
+p3.txt	R15 sql fn named like table, qualified param	assign
+p3.txt	R16 insert as excluded	assign
+p3.txt	R17 conflict update pnn stored qualified by schema.table	pass
+p3.txt	R18 update from with other schema's repos (same bare name)	assign
+p3.txt	R19 update: FROM function named like target	assign
+p3.txt	R20 lateral	assign
+p3.txt	R21 set op subselect	assign
+p3.txt	R22 whole row field	assign
+p3.txt	R23 whole-row via from alias of self	assign
+p3.txt	R24 returning (no effect)	pass
+p3.txt	R25 merge when not matched by source update	assign
+p3.txt	R26 merge: source alias same as column; fe fill reading source	assign
+p3.txt	R27 trigger NEW.ar := OLD.ar	trigger-assign
+p3.txt	R28 rule on other with OLD	assign
+p3.txt	R29 quoted mixed case alias	assign
+p3.txt	R30 keepcarry with stored cast / other col	pass
+p3.txt	R31 keepcarry with result NOW() AT TIME ZONE	assign
+p3.txt	R32 keepcarry result user schema now()	assign
+p3.txt	R33 earliest LEAST($1, e, extra)	pass
+p3.txt	R34 greatest missing fallback same order	assign
+p3.txt	R35 greatest with two different params	pass
+p3.txt	R36 pnn with different param cast truncation	pass
+p3.txt	R37 pn nullif incoming cast then stored	pass
+p3.txt	R38 fe second arg subselect of other table	pass
+p3.txt	R39 fe coalesce stored with collate	assign
+p3.txt	R40 fe guard collate	assign
+p3.txt	R41 fe guard with char padding semantic: fe = '' OR fe IS NULL	pass
+p3.txt	R42 guard on other row via FROM alias	assign
+p3.txt	R43 guard with target unaliased but qualified by name while FROM has alias "repos"	assign
+p3.txt	R44 guard: 3-part	pass
+p3.txt	R45 guard NULLIF IS NULL	pass
+p3.txt	R46 guard bare fe with FROM (ambiguous if other has fe; else target)	pass
+p3.txt	R47 conflict update where guard bare	pass
+p3.txt	R48 conflict update guard on EXCLUDED	assign
+p3.txt	R49 fe = EXCLUDED other column under guard	assign
+p3.txt	R50 pnn incoming EXCLUDED other column	assign
+surv.txt	S36 flip: non-temp unqualified create then write	unqualified-target
+surv.txt	S53 flip: child of unqualified registered parent	partition
+surv.txt	S53b inherits	partition
+surv.txt	S20 flip (invalid in PG): alias excluded	assign
+surv.txt	S24 flip (invalid in PG): 3-part with alias	assign
+surv.txt	S13: case without else	assign
+fp.txt	F01 store fe nullif qualified by table	pass
+fp.txt	F02 alias added	pass
+fp.txt	F03 cast added on incoming	pass
+fp.txt	F04 cast on the whole	assign
+fp.txt	F05 dedupOnePair style guard	pass
+fp.txt	F06 reordered guard	pass
+fp.txt	F07 OR guard	pass
+fp.txt	F08 reversed equals guard	pass
+fp.txt	F09 guard length	assign
+fp.txt	F10 guard with cast value	pass
+fp.txt	F11 CTE introduced	pass
+fp.txt	F12 batch fill coalesce from unnest	pass
+fp.txt	F13 batch fill guarded bare from unnest	pass
+fp.txt	F14 conflict store shape	pass
+fp.txt	F15 conflict alias	pass
+fp.txt	F16 conflict schema-qualified stored	pass
+fp.txt	F17 conflict nullif both	pass
+fp.txt	F18 conflict CASE spelling	pass
+fp.txt	F19 conflict guarded bare in DO UPDATE WHERE	pass
+fp.txt	F20 pn store	pass
+fp.txt	F21 pn param	pass
+fp.txt	F22 pn trim	pass
+fp.txt	F23 pn alias	pass
+fp.txt	F24 pnn conflict	pass
+fp.txt	F25 pnn cast	pass
+fp.txt	F26 pnn from batch	pass
+fp.txt	F27 g store	pass
+fp.txt	F28 g param cast	pass
+fp.txt	F29 g plain GREATEST (ignores NULLs in PG: same value)	pass
+fp.txt	F30 ar excluded	pass
+fp.txt	F31 ar excluded with change guard	pass
+fp.txt	F32 ar now	pass
+fp.txt	F33 ar batch store style	pass
+fp.txt	F34 ar from aggregate of other table (stage9 style)	pass
+fp.txt	F35 ar correlated subselect other table	pass
+fp.txt	F36 ar correlated subselect other table, unaliased bare columns	pass
+fp.txt	F37 ar subselect whose other table has a column of the same name (bare)	assign
+fp.txt	F38 ar case on param	pass
+fp.txt	F39 ar quoted, ONLY, returning	pass
+fp.txt	F40 e store	pass
+fp.txt	F41 e swapped alias	pass
+fp.txt	F42 k store-like	pass
+fp.txt	F43 k with COALESCE result	pass
+fp.txt	F44 k current_timestamp	pass
+fp.txt	F45 io insert do nothing	pass
+fp.txt	F46 io untouched in conflict	pass
+fp.txt	F47 comment inside	pass
+fp.txt	F48 delete then insert snapshot	pass
+fp.txt	F49 temp staging across statements in ONE text	assign
+fp.txt	F50 guard IS NULL then additional OR in parens elsewhere	pass
+fp.txt	F51 fe: store UpdateRepoMetadata created_at shape	pass
+fp.txt	F52 fe with FOR UPDATE CTE lock first	pass
+fp.txt	F53 ar with FOR UPDATE CTE lock first (CTE over target, reads no ar)	pass
+fp.txt	F54 ar subselect that locks/reads target for another column	assign

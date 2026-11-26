@@ -400,7 +400,7 @@ func RunMigrations(ctx context.Context, pg *PostgresStore, logger *slog.Logger) 
 		// stampSchemaVersion was called unconditionally before this check,
 		// which is how a lock-blocked addColumnIfMissing could result in a
 		// partial schema stamped as complete (observed 2026-06-02 on
-		// aveloxis_large when the ALTER TABLE on contributors waited 1+
+		// the larger production database when the ALTER TABLE on contributors waited 1+
 		// day for a lock held by the running matview refresh).
 		logger.Error("schema migrations completed with errors — aveloxis serve will refuse to start until these are resolved",
 			"count", len(errs))
@@ -505,7 +505,7 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 
 	// No tool_version backfill (removed v0.29.62, worklist 32). The step
 	// that stood here scanned ~31 tables in full on every migrate — about
-	// 50 min for commits alone on kate, 1.5 h per run — and stamped the
+	// 50 min for commits alone on a production fleet, 1.5 h per run — and stamped the
 	// current binary on rows an older one gathered, which the v0.25.11
 	// provenance rule forbids. The column DEFAULTs above and
 	// `tool_version = EXCLUDED.tool_version` on refreshing upserts are the
@@ -597,8 +597,8 @@ func migrateStage1CoreColumns(ctx context.Context, pg *PostgresStore, logger *sl
 	// MAX(contributor_repo.data_collection_date) NULLS FIRST as
 	// the "processed" signal, which left contributors with zero
 	// public events permanently at the front of the queue. With
-	// 1.4M contributors observed on the live aveloxis_large
-	// fleet, only 225 (0.016%) ever got events recorded because
+	// 1.4M contributors observed on the larger production
+	// database, only 225 (0.016%) ever got events recorded because
 	// the worker kept reselecting the same dead-end users.
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "cntrb_last_breadth_at", "TIMESTAMPTZ")
 
@@ -673,7 +673,7 @@ func migrateStage2MailingList(ctx context.Context, pg *PostgresStore, logger *sl
 	// v0.29.8: is_automation_email's list-address clause compares
 	// lower(rgls_email) = lower(addr) on every call, and nothing indexed
 	// that expression — each call scanned the whole list table (~800 rows
-	// on chaoss.tv), lowercasing every row. Measured 25x on the serial
+	// on a production fleet), lowercasing every row. Measured 25x on the serial
 	// per-call cost (114 µs → 4.5 µs; synthetic benchmark, local PG 18 —
 	// summary/changelog/v0.29.md), which multiplies across every
 	// email_message / messages row a gated query touches. Non-unique, so
@@ -790,7 +790,7 @@ func migrateStage3ScancodeDistribution(ctx context.Context, pg *PostgresStore, l
 	// v0.29.89: each API token gets a daily allowance (its own value, like
 	// the hour; the default comes from the token_requests_per_day quota).
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_ops.api_tokens", "rate_limit_per_day",
-		fmt.Sprintf("INT NOT NULL DEFAULT %d CHECK (rate_limit_per_day > 0)", capacity.Shipped[capacity.QuotaTokenRequestsPerDay].Allowed))
+		apiTokenDailyLimitColumnType())
 	// v0.29.69 (worklist 69): the metadata backfill's attempt stamp (see
 	// schema.sql). NULL on existing rows = never answered = still a candidate.
 	// No index: the candidate query pages the repos PK and this is one more
@@ -893,6 +893,15 @@ func deleteUnhashedEmailConfirmations(ctx context.Context, pg *PostgresStore, lo
 	}
 }
 
+// reposTrgmIndexSQL creates the trigram index the monitor's search uses,
+// with the operator class in the schema the catalog says pg_trgm is in.
+func reposTrgmIndexSQL(schema string) string {
+	return fmt.Sprintf(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm
+				ON aveloxis_data.repos
+				USING GIN ((repo_owner || '/' || repo_name) %s.gin_trgm_ops)`,
+		quoteIdent(schema))
+}
+
 // migrateStage4DedupAndIndexes — commit dedup, repo-name cleanup, case-insensitive unique, performance indexes.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
@@ -951,7 +960,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// connecting role's search_path — `CREATE EXTENSION IF NOT EXISTS`
 	// returns nil (no-op) but the index DDL then fails with SQLSTATE 42704
 	// ("operator class gin_trgm_ops does not exist for access method gin").
-	// Observed on kate 2026-06-13 with a search_path that excluded public.
+	// Observed on a production fleet 2026-06-13 with a search_path that excluded public.
 	// We discover the schema that actually contains gin_trgm_ops and
 	// qualify the reference (`<schema>.gin_trgm_ops`), so the critical
 	// monitor-search index builds on the same migrate run regardless of
@@ -971,10 +980,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	} else {
 		execCreateIndexConcurrently(ctx, pg, logger, errs,
 			"aveloxis_data", "idx_repos_owner_name_trgm",
-			fmt.Sprintf(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repos_owner_name_trgm
-				ON aveloxis_data.repos
-				USING GIN ((repo_owner || '/' || repo_name) %s.gin_trgm_ops)`,
-				quoteIdent(schema)))
+			reposTrgmIndexSQL(schema))
 	}
 	// NOTE: the mailing-list projection's LINK-by-title fallback
 	// (`issue_title LIKE '%[KEY-N]%'`) does NOT need a trigram index — the query
@@ -1010,7 +1016,7 @@ func migrateStage4DedupAndIndexes(ctx context.Context, pg *PostgresStore, logger
 	// NOT LOWER(gh_login) — it cannot serve
 	// `LOWER(username) = LOWER(gh_login)`, and with no expression
 	// statistics the planner estimated an 86M-row join. The live cost:
-	// a 2-day-2-hour orphaned run of the backfill on aveloxis_large
+	// a 2-day-2-hour orphaned run of the backfill on the larger production database
 	// (2026-07-20), against a documented expectation of tens of
 	// minutes. v0.20.12's own comment named this index as "the next
 	// step" if the join profiled as a bottleneck. Same partial
@@ -1136,7 +1142,7 @@ func migrateStage5DistributionRepairs(ctx context.Context, pg *PostgresStore, lo
 	// v0.25.0 — one-shot reset for the Julia/R/conda cohort and any
 	// repo sidelined by the pre-v0.25.0 strict scanner contract.
 	//
-	// Two compounding issues drove this on chaoss.tv 2026-05-22/23:
+	// Two compounding issues drove this on a production fleet 2026-05-22/23:
 	//
 	//   1. The pre-v0.25.0 GitHub manifest classifier didn't recognize
 	//      Project.toml (Julia), DESCRIPTION (R/CRAN/Bioconductor),
@@ -1340,8 +1346,8 @@ func migrateStage6CountBackfills(ctx context.Context, pg *PostgresStore, logger 
 	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.contributors", "gh_state", "TEXT DEFAULT ''")
 
 	// v0.20.12 backfill placeholder contributors for unresolvable logins
-	// in commits. Closes the 22,499-commit gap observed on live
-	// aveloxis_large: commits where cmt_author_platform_username is
+	// in commits. Closes the 22,499-commit gap observed on the
+	// larger live production database: commits where cmt_author_platform_username is
 	// set but no matching contributor row exists (case-insensitively)
 	// today. Without this backfill, BackfillCommitAuthorIDs has
 	// nothing to JOIN against and the commits stay perpetually
@@ -1608,8 +1614,8 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	// adds the BEHAVIOR; these indexes make the behavior TRACTABLE.
 	// Without them, the cascade fan-out triggered by
 	// `aveloxis migrate-cntrb-ids` seq-scans every child table for
-	// every cntrb_id being rewritten — observed on the production
-	// aveloxis_large DB as a 17-hour stall on batch 1 (0 rows
+	// every cntrb_id being rewritten — observed on the
+	// larger production database as a 17-hour stall on batch 1 (0 rows
 	// committed) on 2026-05-17 because 15 of 16 cntrb_id child FKs
 	// were unindexed.
 	//
@@ -1716,6 +1722,30 @@ func migrateStage8FKHardening(ctx context.Context, pg *PostgresStore, logger *sl
 	ensureAllFKsDeferrable(ctx, pg, logger, errs)
 }
 
+// The two backfills of contributor_login_history (v0.23.0), stamped with
+// the running version.
+func loginHistoryFromIdentitiesSQL() string {
+	return fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
+			(cntrb_id, platform_id, login, source, tool_version)
+		 SELECT i.cntrb_id, i.platform_id, i.login, 'backfill', '%s'
+		 FROM aveloxis_data.contributor_identities i
+		 JOIN aveloxis_data.contributors c USING (cntrb_id)
+		 WHERE COALESCE(i.login, '') != ''
+		   AND COALESCE(c.cntrb_deleted, 0) = 0
+		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion)
+}
+
+func loginHistoryFromContributorsSQL() string {
+	return fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
+			(cntrb_id, platform_id, login, source, tool_version)
+		 SELECT DISTINCT c.cntrb_id, i.platform_id, c.cntrb_login, 'backfill', '%s'
+		 FROM aveloxis_data.contributors c
+		 JOIN aveloxis_data.contributor_identities i USING (cntrb_id)
+		 WHERE COALESCE(c.cntrb_login, '') != ''
+		   AND COALESCE(c.cntrb_deleted, 0) = 0
+		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion)
+}
+
 // migrateStage9DataQuality — languages, vulnerability lifecycle, login history, matview-era fixes (v0.23.x–v0.26.x).
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
@@ -1775,7 +1805,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		`CREATE INDEX IF NOT EXISTS idx_user_repo_stars_repo ON aveloxis_ops.user_repo_stars (repo_id)`)
 	// v0.29.77: the v0.27.4 (repo_id, created_at) indexes become covering —
 	// INCLUDE the author column — so the top-contributors issue and PR arms
-	// are index-only (kate 2026-10-07, repo 94609: 505K PR rows and 58K
+	// are index-only (a production fleet 2026-10-07, repo 94609: 505K PR rows and 58K
 	// issue rows read one heap page each; the plan is in the ledger). The
 	// same leading columns still serve the home tab's 90-day probes, so
 	// the plain forms are dropped once the covering ones exist. New names
@@ -1938,23 +1968,9 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// execMigrationStep doesn't take SQL parameters; we inline the
 	// literal directly into the SQL string.
 	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from identities",
-		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
-			(cntrb_id, platform_id, login, source, tool_version)
-		 SELECT i.cntrb_id, i.platform_id, i.login, 'backfill', '%s'
-		 FROM aveloxis_data.contributor_identities i
-		 JOIN aveloxis_data.contributors c USING (cntrb_id)
-		 WHERE COALESCE(i.login, '') != ''
-		   AND COALESCE(c.cntrb_deleted, 0) = 0
-		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
+		loginHistoryFromIdentitiesSQL())
 	runOnceStep(ctx, pg, logger, errs, "v0.23.0 backfill contributor_login_history from contributors.cntrb_login",
-		fmt.Sprintf(`INSERT INTO aveloxis_data.contributor_login_history
-			(cntrb_id, platform_id, login, source, tool_version)
-		 SELECT DISTINCT c.cntrb_id, i.platform_id, c.cntrb_login, 'backfill', '%s'
-		 FROM aveloxis_data.contributors c
-		 JOIN aveloxis_data.contributor_identities i USING (cntrb_id)
-		 WHERE COALESCE(c.cntrb_login, '') != ''
-		   AND COALESCE(c.cntrb_deleted, 0) = 0
-		 ON CONFLICT (cntrb_id, platform_id, login) DO NOTHING`, ToolVersion))
+		loginHistoryFromContributorsSQL())
 
 	// v0.25.5 — index pair (idx_contributors_cntrb_canonical,
 	// idx_contributors_canonical_eq_email) was added here to accelerate
@@ -2092,7 +2108,7 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 	// join contributors ON c.cntrb_id = co.cmt_ght_author_id. Without
 	// an index on the commits side, the planner seqscans 381 GB and
 	// hash-aggregates ~434M rows before touching contributors — observed
-	// as a 2+ day stalled rebuild on aveloxis_large (2026-06-02).
+	// as a 2+ day stalled rebuild on the larger production database (2026-06-02).
 	//
 	// Partial predicate mirrors the WHERE clause in the matview's commit
 	// branch: only the ~92% of commit rows with a resolved author UUID
@@ -2128,6 +2144,16 @@ func migrateStage9DataQuality(ctx context.Context, pg *PostgresStore, logger *sl
 		)`)
 }
 
+// autovacuumInsertTables are the insert-heavy tables given a lower
+// autovacuum insert threshold (v0.29.77).
+var autovacuumInsertTables = []string{"commits", "issues", "pull_requests", "pull_request_reviews", "messages"}
+
+// autovacuumInsertFactorSQL is the statement for the i-th of them.
+func autovacuumInsertFactorSQL(i int) string {
+	tbl := autovacuumInsertTables[i]
+	return `ALTER TABLE aveloxis_data.` + tbl + ` SET (autovacuum_vacuum_insert_scale_factor = 0.01)`
+}
+
 // migrateStage10RecentReleases — repo_labor history, msg-ref metadata, lockfiles, v0.27.x steps.
 // Split from the former 1,570-line RunMigrations (v0.27.42, summary/18
 // Phase 4); step ORDER across stages is load-bearing and unchanged.
@@ -2149,7 +2175,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// dead tuples behind — plain VACUUM won't return the space to the
 	// OS; use pg_repack or VACUUM FULL on aveloxis_data.repo_labor in
 	// a maintenance window (docs/architecture/analysis.md).
-	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on kate.
+	// Ledgered (v0.28.4): 2,829 no-op windows per re-run on a production fleet.
 	runOnce(ctx, pg, logger, errs,
 		"v0.27.7 rotate non-latest repo_labor snapshots to repo_labor_history",
 		func(errs *[]error) {
@@ -2179,7 +2205,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// See msg_ref_metadata.go.
 	// Ledgered (v0.28.4): the dedup's ROW_NUMBER() pass alone scans
 	// the 10.5M-row bridge table every re-run; the data_source +
-	// inline-comment keyset walks measured ~37-45 min on kate.
+	// inline-comment keyset walks measured ~37-45 min on a production fleet.
 	runOnce(ctx, pg, logger, errs,
 		"v0.27.15 msg_ref bridge repairs (dedup + data_source + inline-comment backfills)",
 		func(errs *[]error) {
@@ -2400,7 +2426,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// UpdateRepoMetadata keeps the flag current in both directions.
 	// 0.29.140: a gone-stamped row is left alone — SidelineRepo set its
 	// flag, and its snapshot predates its disappearance, so this step
-	// un-archived 426 gone repositories on kate (2026-11-05) into the
+	// un-archived 426 gone repositories on a production fleet (2026-11-05) into the
 	// stranded class (non-archived, no queue row) at every deploy; the 469
 	// "stranded" repositories reconcile-repos then walked.
 	execMigrationStep(ctx, pg, logger, errs,
@@ -2428,7 +2454,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// deliberately stay the empty string — scope vocabulary does not apply to a
 	// project's own advisories. Idempotent by predicate.
 	// v0.29.71: ledgered. It scanned the whole table on every migrate
-	// (7–61 s on kate) because the rule lived in the callers; the store now
+	// (7–61 s on a production fleet) because the rule lived in the callers; the store now
 	// applies it on every write (storedFindingScope), so no empty-scope row can
 	// reappear and one run is enough.
 	runOnceStep(ctx, pg, logger, errs,
@@ -2459,7 +2485,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_contributors_canonical_lookup
 		 ON aveloxis_data.contributors (cntrb_canonical)`)
 
-	// v0.29.71 (O11, operator go-ahead 2026-09-30; measured on kate,
+	// v0.29.71 (O11, operator go-ahead 2026-09-30; measured on a production fleet,
 	// summary/43 §2 item 9): the API's per-repository windowed reads. The
 	// top-contributors messages arm read every message row of a repository
 	// to keep the window's (pytorch: 1.24M rows for 347k, 788k buffers), the
@@ -2467,7 +2493,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// index-only. The weekly merged/closed series read every PR/issue row of
 	// the repository; the partial indexes hold only merged/closed rows.
 	// Fleet-scale tables: CONCURRENTLY, migration-only (SR-2); new names
-	// (SR-4). Sizes on kate: messages 143M rows (~5-6 GB), reviews 49M
+	// (SR-4). Sizes on a production fleet: messages 143M rows (~5-6 GB), reviews 49M
 	// (~2 GB), the two partials under 1 GB each.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
 		"aveloxis_data", "idx_messages_repo_ts_cntrb",
@@ -2489,7 +2515,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// v0.29.77: an index-only scan is only as good as the visibility map,
 	// and these tables are insert-mostly, so the default insert trigger
 	// (20% growth) leaves the newest pages — exactly the ones a freshly
-	// collected repository's rows sit in — unmarked for months (kate
+	// collected repository's rows sit in — unmarked for months (a production fleet
 	// 2026-10-07: messages 48% of pages all-visible, issues 50%, PRs 66%,
 	// reviews 81%, commits 89%; the covering reviews/messages indexes
 	// fetched 1.99M of 1.85M rows from the heap). The factor is derived
@@ -2498,9 +2524,9 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	// about once per such collection. Idempotent; a storage parameter
 	// survives dumps and restores. The ladder runs one manual VACUUM per
 	// table to catch up.
-	for _, tbl := range []string{"commits", "issues", "pull_requests", "pull_request_reviews", "messages"} {
+	for i, tbl := range autovacuumInsertTables {
 		execMigrationStep(ctx, pg, logger, errs, "v0.29.77 autovacuum insert factor "+tbl,
-			`ALTER TABLE aveloxis_data.`+tbl+` SET (autovacuum_vacuum_insert_scale_factor = 0.01)`)
+			autovacuumInsertFactorSQL(i))
 	}
 
 	// v0.27.57: GitHub contribution-activity classification columns
@@ -2675,7 +2701,7 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 	//
 	// Migration-only (SR-2): NOT declared in schema.sql, because the base
 	// DDL runs first and would block-build these on fleet-scale tables
-	// (aveloxis_large: 23.0M pull_requests, 9.6M issues) during startup
+	// (the larger production database: 23.0M pull_requests, 9.6M issues) during startup
 	// migrate. Operators can pre-create by hand — the step then no-ops via
 	// IF NOT EXISTS.
 	execCreateIndexConcurrently(ctx, pg, logger, errs,
@@ -2868,6 +2894,84 @@ func migrateStage10RecentReleases(ctx context.Context, pg *PostgresStore, logger
 			logger.Info("cleared the star counts the GitHub REST fallback stored as watcher_count before 0.29.143",
 				"history_snapshots", history, "current_snapshots", current)
 		})
+
+	// v0.29.147 (summary/70, 4.1.1): the libyear rotation copies by column
+	// name, so the history table must have every column it names. Depends on
+	// stage 1's adds of license and purl to the current table only in
+	// subject; it reads neither.
+	// v0.29.160 (summary/70, 4.7): the manifest a dependency was declared in,
+	// which a failed manifest's rows are carried by. Onto the current table
+	// and, in the same step, the history table (ensureLibyearHistoryColumns).
+	ensureLibyearHistoryColumns(ctx, pg, logger, errs)
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "manifest_path", "TEXT DEFAULT ''")
+	// v0.29.161 (summary/70, 4.7): the scan half of the coverage record. The
+	// table was created by 0.29.159 without these, so a fleet that ran that
+	// release gains them here (schema.sql's CREATE is a no-op there).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "last_scan_attempt_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_outcome", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_partial", "BOOLEAN")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_sent", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_dropped", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "dependencies_unknown", "BOOLEAN")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "first_scan_at", "TIMESTAMPTZ")
+	// v0.29.162 (summary/70, 4.2): why a row has a libyear or lacks one. The
+	// history table's copy is added by ensureLibyearHistoryColumns above,
+	// which adds every column the rotation copies.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "libyear_status", "TEXT")
+	// v0.29.165 (summary/70, section 3): why a finding closed, when the
+	// closure is not a fix. NULL on an open finding, on a closure with no
+	// reason, and on every row closed before that release.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "closed_reason", "TEXT")
+	// v0.29.166 (summary/70, 4.3): when a finding entered exposure. No
+	// backfill: the digest reads first detection where it is NULL.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "entered_exposure_at", "TIMESTAMPTZ")
+	// v0.29.172 (summary/70, 4.2): the package key on the inventory and the
+	// lockfile packages, and a lookup index on each. The columns come first
+	// (SR-8: an existing fleet no-ops the CREATE TABLE, so the index's
+	// column needs its own guard ahead of it); the indexes are built
+	// CONCURRENTLY here and are not in schema.sql (SR-2).
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "package_key", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_lockfile_packages", "package_key", "TEXT")
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_libyear_package_key",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_libyear_package_key
+		 ON aveloxis_data.repo_deps_libyear (package_key)`)
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_lockfile_packages_package_key",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_lockfile_packages_package_key
+		 ON aveloxis_data.repo_lockfile_packages (package_key)`)
+	// v0.29.171 (summary/70, 4.2 and 5.4): the decision guards. No backfill:
+	// NULL means "never decided under the rule", and any answer acts.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "decided_asked_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_vulnerabilities", "decided_targets_at", "TIMESTAMPTZ")
+	// v0.29.168 (summary/70, 4.2 and 4.7): what a scan could not get an
+	// answer for, and what it left open because of that.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_rejected", "INTEGER")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_closures_held", "INTEGER")
+	// v0.29.181 (summary/70, 4.5): why a Maven dependency has no version.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_reason", "TEXT")
+	// v0.29.177 (summary/70, 4.3): where an inventory row's version came from.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_source", "TEXT")
+	// v0.29.185 (summary/70, 4.5, D14): which hosts a version and a tree
+	// depend on.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear", "version_hosts", "TEXT[]")
+	// v0.29.187: "which rows came through this host?" is asked by the
+	// administrator's page over the whole inventory. Partial (most rows
+	// have no hosts) and migration-owned (SR-2).
+	execCreateIndexConcurrently(ctx, pg, logger, errs, "aveloxis_data", "idx_repo_deps_libyear_version_hosts",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_repo_deps_libyear_version_hosts
+		 ON aveloxis_data.repo_deps_libyear USING GIN (version_hosts)
+		 WHERE version_hosts IS NOT NULL`)
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "maven_tree_hosts", "JSONB")
+	// v0.29.183 (summary/70, 4.5): Maven trees not read whole.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "maven_trees_not_whole", "JSONB")
+	// v0.29.176 (summary/70, 4.3): lockfiles that failed and kept their rows.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_failed", "JSONB")
+	// v0.29.169: targets whose OSV answer was longer than the page cap.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "scan_targets_truncated", "INTEGER")
+	// v0.29.214: when the lockfiles were last read, and why the last
+	// reading did not finish. No backfill: NULL is "not known since this
+	// release", and the first lockfile phase after the deploy writes them.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_read_at", "TIMESTAMPTZ")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_dependency_coverage", "lockfiles_unread_reason", "TEXT")
 }
 
 // MigrateAdvisoryLockID is the postgres advisory-lock id used by
@@ -2899,7 +3003,7 @@ const MigrateAdvisoryLockID int64 = 0x4156454C4F584953
 // schema-qualifies the operator class with this value so it resolves
 // regardless of the session search_path — pg_trgm's objects frequently
 // live in a schema (e.g. public) that isn't on the connecting role's
-// path (observed on kate 2026-06-13, SQLSTATE 42704). Returns "" on
+// path (observed on a production fleet 2026-06-13, SQLSTATE 42704). Returns "" on
 // query error or when the opclass is absent (extension not actually
 // installed), which the caller treats as warn-and-skip.
 func ginTrgmOpsSchema(ctx context.Context, pg *PostgresStore) string {
@@ -2922,7 +3026,15 @@ func ginTrgmOpsSchema(ctx context.Context, pg *PostgresStore) string {
 // embedded double quotes, so it is safe to interpolate into DDL. Used to
 // qualify the gin_trgm_ops operator class with its discovered schema.
 func quoteIdent(ident string) string {
-	return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+	return pgx.Identifier{ident}.Sanitize() // the same text, by the one quoter the write-policy reader knows (0.29.211)
+}
+
+// dropInvalidIndexSQL drops the INVALID index an interrupted CONCURRENTLY
+// build left. The names are quoted (0.29.212): until then they stood in
+// the text as given, which every caller's lower-case name made the same
+// statement.
+func dropInvalidIndexSQL(schema, indexName string) string {
+	return `DROP INDEX IF EXISTS ` + pgx.Identifier{schema, indexName}.Sanitize()
 }
 
 func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, schema, indexName, sql string) {
@@ -2949,7 +3061,7 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 		if err == nil && isInvalid {
 			logger.Warn("dropping invalid index from prior interrupted CONCURRENT build",
 				"index", schema+"."+indexName)
-			if _, derr := pg.pool.Exec(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS %s.%s`, schema, indexName)); derr != nil {
+			if _, derr := pg.pool.Exec(ctx, dropInvalidIndexSQL(schema, indexName)); derr != nil {
 				return fmt.Errorf("drop invalid %s: %w", indexName, derr)
 			}
 		}
@@ -2973,12 +3085,15 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 	// statistics are what make the index usable at all).
 	analyzeLabel := "analyze for index " + indexName
 	err = retryOnDeadlock(ctx, logger, analyzeLabel, func() error {
-		table, err := expressionIndexTableWithoutStatistics(ctx, pg, schema, indexName)
-		if err != nil || table == "" {
+		tableSchema, tableName, err := expressionIndexTableWithoutStatistics(ctx, pg, schema, indexName)
+		if err != nil || tableName == "" {
 			return err
 		}
+		// The name as the log and the error have always shown it (the
+		// statement quotes it; a reader of the log does not need the quotes).
+		table := tableSchema + "." + tableName
 		start := time.Now()
-		if _, err := pg.pool.Exec(ctx, `ANALYZE `+table); err != nil {
+		if _, err := pg.pool.Exec(ctx, analyzeTableSQL(tableSchema, tableName)); err != nil {
 			return fmt.Errorf("analyze %s: %w", table, err)
 		}
 		logger.Info("analyzed a table for its expression index", "index", schema+"."+indexName, "table", table, "duration", time.Since(start).Round(time.Millisecond))
@@ -2997,16 +3112,15 @@ func execCreateIndexConcurrently(ctx context.Context, pg *PostgresStore, logger 
 // caller's error). PostgreSQL gathers an expression's statistics only when
 // the table is analyzed, never when the index is built, and until then the
 // planner prices every lookup at 0.5% of the table (0.29.142: aveloxis-cve's
-// lower(email) joins scanned a kate-shaped contributors table, 7.1 s, with
+// lower(email) joins scanned a production-shaped contributors table, 7.1 s, with
 // the 0.29.141 indexes valid; 0.5 s one ANALYZE later). pg_stats shows an
 // index's rows to its table's owner, which the migrate is; a role that cannot
 // see them reads "none" and analyzes, the safe direction. An empty table
 // never gets statistics, so its expression index is analyzed at every
 // migrate, which costs nothing.
-func expressionIndexTableWithoutStatistics(ctx context.Context, pg *PostgresStore, schema, indexName string) (string, error) {
-	var table string
-	err := pg.pool.QueryRow(ctx, `
-		SELECT quote_ident(tn.nspname) || '.' || quote_ident(t.relname)
+func expressionIndexTableWithoutStatistics(ctx context.Context, pg *PostgresStore, schema, indexName string) (tableSchema, tableName string, err error) {
+	err = pg.pool.QueryRow(ctx, `
+		SELECT tn.nspname, t.relname
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -3015,14 +3129,21 @@ func expressionIndexTableWithoutStatistics(ctx context.Context, pg *PostgresStor
 		WHERE n.nspname = $1 AND c.relname = $2
 		  AND i.indisvalid AND i.indexprs IS NOT NULL
 		  AND NOT EXISTS (SELECT 1 FROM pg_stats s WHERE s.schemaname = $1 AND s.tablename = $2)`,
-		schema, indexName).Scan(&table)
+		schema, indexName).Scan(&tableSchema, &tableName)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("probe %s.%s for missing expression statistics: %w", schema, indexName, err)
+		return "", "", fmt.Errorf("probe %s.%s for missing expression statistics: %w", schema, indexName, err)
 	}
-	return table, nil
+	return tableSchema, tableName, nil
+}
+
+// analyzeTableSQL analyzes the table the catalog named. The names are
+// quoted here (0.29.212): until then the database quoted them, with
+// quote_ident, and the statement took that text as it came.
+func analyzeTableSQL(schema, table string) string {
+	return `ANALYZE ` + pgx.Identifier{schema, table}.Sanitize()
 }
 
 // watchBlockers periodically polls pg_stat_activity for aveloxis
@@ -3363,6 +3484,15 @@ func seedCapacitySettings(ctx context.Context, pg *PostgresStore, logger *slog.L
 		WHERE s.id = 1 AND q.name = 'token_requests_per_hour' AND s.default_rate_limit_per_hour IS DISTINCT FROM q.allowed`)
 }
 
+// seedAPITokenSettingsSQL inserts the one settings row, with the shipped
+// limits as numbers.
+func seedAPITokenSettingsSQL() string {
+	return fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days)
+		VALUES (1, COALESCE((SELECT allowed FROM aveloxis_ops.capacity_quotas WHERE name = 'token_requests_per_hour'), %d), %d)
+		ON CONFLICT (id) DO NOTHING`,
+		capacity.Shipped[capacity.QuotaTokenRequestsPerHour].Allowed, DefaultAPITokenLifetimeDays)
+}
+
 // seedAPITokenSettings (v0.29.82) seeds the API-token defaults' one row —
 // since 0.29.89 only the lifetime (30 days) is decided here; the
 // allowances are quotas. Never overwrites an edit.
@@ -3384,10 +3514,7 @@ func seedAPITokenSettings(ctx context.Context, pg *PostgresStore, logger *slog.L
 	// with the shipped value was wrong until the next migrate), the shipped
 	// value only when the quota row is absent.
 	execMigrationStep(ctx, pg, logger, errs, "v0.29.82 seed api_token_settings",
-		fmt.Sprintf(`INSERT INTO aveloxis_ops.api_token_settings (id, default_rate_limit_per_hour, default_lifetime_days)
-		VALUES (1, COALESCE((SELECT allowed FROM aveloxis_ops.capacity_quotas WHERE name = 'token_requests_per_hour'), %d), %d)
-		ON CONFLICT (id) DO NOTHING`,
-			capacity.Shipped[capacity.QuotaTokenRequestsPerHour].Allowed, DefaultAPITokenLifetimeDays))
+		seedAPITokenSettingsSQL())
 }
 
 // execMigrationStep runs a schema-changing SQL statement, logging the
@@ -3957,6 +4084,14 @@ func toolVersionDefaultExpr(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "''") + "'::text"
 }
 
+// toolVersionDefaultSQL sets the tool_version default of one table the
+// catalog names; the names are quoted.
+func toolVersionDefaultSQL(schema, name string) string {
+	return fmt.Sprintf(
+		`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT %s`,
+		quotedIdentifier(schema, name), toolVersionDefaultExpr(ToolVersion))
+}
+
 // setToolVersionDefaults updates the DEFAULT for every tool_version column to
 // the current ToolVersion. This way new INSERTs that omit tool_version
 // automatically get the correct value without needing it in every INSERT list.
@@ -3965,7 +4100,7 @@ func toolVersionDefaultExpr(v string) string {
 func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	expectedDefault := toolVersionDefaultExpr(ToolVersion)
 	rows, err := pg.pool.Query(ctx, `
-		SELECT table_schema || '.' || table_name
+		SELECT table_schema, table_name
 		FROM information_schema.columns
 		WHERE column_name = 'tool_version'
 		  AND table_schema IN ('aveloxis_data', 'aveloxis_ops')
@@ -3979,14 +4114,15 @@ func setToolVersionDefaults(ctx context.Context, pg *PostgresStore, logger *slog
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
+		var schema, name string
+		if err := rows.Scan(&schema, &name); err != nil {
 			logger.Warn("tool_version default sweep: scan failed", "error", err)
 			continue
 		}
-		if _, err := pg.pool.Exec(ctx, fmt.Sprintf(
-			`ALTER TABLE %s ALTER COLUMN tool_version SET DEFAULT %s`,
-			table, toolVersionDefaultExpr(ToolVersion))); err != nil {
+		// The catalog's names, quoted as identifiers (0.29.211: they were
+		// put into the statement as they came).
+		table := schema + "." + name
+		if _, err := pg.pool.Exec(ctx, toolVersionDefaultSQL(schema, name)); err != nil {
 			logger.Warn("tool_version default sweep: alter failed", "table", table, "error", err)
 		}
 	}
@@ -4289,16 +4425,68 @@ func ensureRepoGitCaseInsensitiveUnique(ctx context.Context, pg *PostgresStore, 
 	logger.Info("created case-insensitive unique index uq_repos_repo_git_ci — case-variant duplicate repos are now blocked at the database level")
 }
 
+// ensureLibyearHistoryColumns adds to repo_deps_libyear_history every column
+// the libyear rotation copies (libyearRotatedColumns). The history table was
+// created `LIKE repo_deps_libyear INCLUDING ALL`, which follows no later ALTER:
+// `license` and `purl` reached the current table through addColumnIfMissing
+// and never the history table, so a deployment whose history table predates
+// them lacks both, and a rotation that names its columns would fail there.
+// A history copy of a column is a plain column: it carries no key, constraint
+// or sequence beyond what LIKE gave the table when it was created. The calls
+// are written out, one per column, so the step-order golden sees each
+// (it reads literal call sites); the old-shape test fails if one is missing.
+// Idempotent; runs on every migrate.
+func ensureLibyearHistoryColumns(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "repo_deps_libyear_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "repo_id", "BIGINT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "name", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "requirement", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "type", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "package_manager", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "current_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "latest_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "current_release_date", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "latest_release_date", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "libyear", "FLOAT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "license", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "purl", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "tool_source", "TEXT DEFAULT 'aveloxis'")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "tool_version", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_source", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "data_collection_date", "TIMESTAMPTZ DEFAULT NOW()")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "manifest_path", "TEXT DEFAULT ''")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "libyear_status", "TEXT")
+	// v0.29.172: through rotation only. No index, no fill; older rows NULL.
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "package_key", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_source", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_reason", "TEXT")
+	addColumnIfMissing(ctx, pg, logger, errs, "aveloxis_data.repo_deps_libyear_history", "version_hosts", "TEXT[]")
+}
+
+// addColumnSQL is addColumnIfMissing's statement. Every caller passes
+// compiler constants, which the write-policy check reads and runs this with.
+func addColumnSQL(table, column, colType string) string {
+	return fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType)
+}
+
+// apiTokenDailyLimitColumnType is the type of api_tokens.rate_limit_per_day
+// (v0.29.89): its default is the shipped token_requests_per_day quota. A
+// function, so that the write-policy check runs it where it reads the
+// constants every other caller of addColumnIfMissing passes.
+func apiTokenDailyLimitColumnType() string {
+	return fmt.Sprintf("INT NOT NULL DEFAULT %d CHECK (rate_limit_per_day > 0)", capacity.Shipped[capacity.QuotaTokenRequestsPerDay].Allowed)
+}
+
 // addColumnIfMissing runs ALTER TABLE ... ADD COLUMN IF NOT EXISTS for
 // the given table/column/type. Pre-v0.19.4 this helper used the
 // `_, _ = pg.pool.Exec(...)` discard-everything pattern, which made
 // every failure silent — that's how the v0.19.0 user_groups status/
-// approved_by/approved_at columns went missing on chaoss.tv even
+// approved_by/approved_at columns went missing on a production fleet even
 // though `aveloxis migrate` had completed successfully. The fixed
 // helper logs at ERROR and appends to the collector so the run
 // surfaces every failure, and so RunMigrations can fail closed.
 func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, table, column, colType string) {
-	stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, column, colType)
+	stmt := addColumnSQL(table, column, colType)
 	label := fmt.Sprintf("add column %s.%s (%s)", table, column, colType)
 	// An ALTER TABLE takes ACCESS EXCLUSIVE and deadlocks like any other
 	// step; through the one retry (worklist item 37).
@@ -4326,6 +4514,15 @@ func addColumnIfMissing(ctx context.Context, pg *PostgresStore, logger *slog.Log
 func addCommitDailyCompleteColumn(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
 	addColumnWithOneTimeStamp(ctx, pg, logger, errs, "aveloxis_data", "repos", "commit_daily_complete_at", "TIMESTAMPTZ", stampCommitDailyCompleteWhereFilledSQL)
 }
+
+// sessionTokenTagSteps tag the stored token hashes with their scheme.
+var sessionTokenTagSteps = []struct{ name, sql string }{
+	{"tag session token hashes", tagSessionTokenHashesSQL},
+	{"tag API token hashes", `UPDATE aveloxis_ops.api_tokens SET token_hash = 'sha256$' || token_hash WHERE token_hash NOT LIKE 'sha256$%'`},
+}
+
+// sessionTokenTagStepSQL is the statement of the i-th of them.
+func sessionTokenTagStepSQL(i int) string { return sessionTokenTagSteps[i].sql }
 
 // addSessionTokenHashedColumn adds user_session_tokens.token_hashed and, in
 // the same transaction and only on the run that adds it, replaces every
@@ -4382,11 +4579,8 @@ func addSessionTokenHashedColumn(ctx context.Context, pg *PostgresStore, logger 
 	// N5): marked session rows (hashes; the unmarked ones were just
 	// removed) with their refresh rows, and API tokens (never stored raw).
 	// Idempotent: a tagged value is never matched again.
-	for _, step := range []struct{ name, sql string }{
-		{"tag session token hashes", tagSessionTokenHashesSQL},
-		{"tag API token hashes", `UPDATE aveloxis_ops.api_tokens SET token_hash = 'sha256$' || token_hash WHERE token_hash NOT LIKE 'sha256$%'`},
-	} {
-		if _, err := pg.pool.Exec(ctx, step.sql); err != nil {
+	for i, step := range sessionTokenTagSteps {
+		if _, err := pg.pool.Exec(ctx, sessionTokenTagStepSQL(i)); err != nil {
 			logger.Error("schema migration error", "step", step.name, "error", err)
 			*errs = append(*errs, fmt.Errorf("%s: %w", step.name, err))
 			return
@@ -4467,6 +4661,12 @@ const stampCommitDailyCompleteWhereFilledSQL = `
 		WHERE r.commit_daily_complete_at IS NULL
 		  AND EXISTS (SELECT 1 FROM aveloxis_data.repo_commit_daily d WHERE d.repo_id = r.repo_id)`
 
+// dropSupersededIndexSQL drops the index a valid replacement supersedes.
+// Its inputs are the constants the callers pass.
+func dropSupersededIndexSQL(old string) string {
+	return `DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.` + old
+}
+
 // dropIndexOnceReplacementIsValid drops the superseded index old ONLY when
 // its replacement exists and is valid: a CONCURRENTLY build that failed
 // (a cancelled statement, a full disk, an exhausted deadlock retry) leaves
@@ -4494,7 +4694,7 @@ func dropIndexOnceReplacementIsValid(ctx context.Context, pg *PostgresStore, log
 		return
 	}
 	execMigrationStep(ctx, pg, logger, errs, "drop the superseded index "+old,
-		`DROP INDEX CONCURRENTLY IF EXISTS aveloxis_data.`+old)
+		dropSupersededIndexSQL(old))
 }
 
 // addColumnWithOneTimeStamp adds schema.table.column and, on the run that
@@ -4536,6 +4736,12 @@ func addColumnWithOneTimeStamp(ctx context.Context, pg *PostgresStore, logger *s
 	}
 }
 
+// addQualifiedColumnSQL is addColumnWithOneTimeStampTx's ALTER. Its inputs
+// are the constants the callers of addColumnWithOneTimeStamp pass.
+func addQualifiedColumnSQL(schema, table, column, colType string) string {
+	return fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, schema, table, column, colType)
+}
+
 // addColumnWithOneTimeStampTx is the transactional body: returns the rows
 // the stamp touched and whether this call added the column.
 func addColumnWithOneTimeStampTx(ctx context.Context, tx pgx.Tx, schema, table, column, colType, stampSQL string) (int64, bool, error) {
@@ -4548,7 +4754,7 @@ func addColumnWithOneTimeStampTx(ctx context.Context, tx pgx.Tx, schema, table, 
 	if exists {
 		return 0, false, nil
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s`, schema, table, column, colType)); err != nil {
+	if _, err := tx.Exec(ctx, addQualifiedColumnSQL(schema, table, column, colType)); err != nil {
 		return 0, false, fmt.Errorf("add column: %w", err)
 	}
 	tag, err := tx.Exec(ctx, stampSQL)
@@ -4658,82 +4864,88 @@ func dedupeUsers(ctx context.Context, pg *PostgresStore, logger *slog.Logger) {
 	}
 }
 
+// badTimestampFixes are the timestamp columns cleanupBadTimestamps repairs.
+// Each entry: table, column, useNow (false = SET NULL, true = SET to NOW()).
+var badTimestampFixes = []struct {
+	table  string
+	column string
+	useNow bool // if true, replace with NOW() instead of NULL (for NOT NULL columns)
+}{
+	// repos
+	{"aveloxis_data.repos", "created_at", false},
+	{"aveloxis_data.repos", "updated_at", false},
+
+	// issues
+	{"aveloxis_data.issues", "created_at", false},
+	{"aveloxis_data.issues", "updated_at", false},
+	{"aveloxis_data.issues", "closed_at", false},
+
+	// pull_requests
+	{"aveloxis_data.pull_requests", "created_at", false},
+	{"aveloxis_data.pull_requests", "updated_at", false},
+	{"aveloxis_data.pull_requests", "closed_at", false},
+	{"aveloxis_data.pull_requests", "merged_at", false},
+
+	// messages
+	{"aveloxis_data.messages", "msg_timestamp", false},
+
+	// issue_events
+	{"aveloxis_data.issue_events", "created_at", false},
+
+	// pull_request_events
+	{"aveloxis_data.pull_request_events", "created_at", false},
+
+	// pull_request_reviews
+	{"aveloxis_data.pull_request_reviews", "submitted_at", false},
+
+	// pull_request_commits
+	{"aveloxis_data.pull_request_commits", "pr_cmt_timestamp", false},
+
+	// releases
+	{"aveloxis_data.releases", "created_at", false},
+	{"aveloxis_data.releases", "published_at", false},
+	{"aveloxis_data.releases", "updated_at", false},
+
+	// repo_info
+	{"aveloxis_data.repo_info", "last_updated", false},
+
+	// commits
+	{"aveloxis_data.commits", "cmt_committer_timestamp", false},
+	{"aveloxis_data.commits", "cmt_author_timestamp", false},
+	{"aveloxis_data.commits", "cmt_date_attempted", true},
+
+	// contributors
+	{"aveloxis_data.contributors", "cntrb_created_at", false},
+
+	// collection_status
+	{"aveloxis_ops.collection_status", "core_data_last_collected", false},
+	{"aveloxis_ops.collection_status", "secondary_data_last_collected", false},
+	{"aveloxis_ops.collection_status", "facade_data_last_collected", false},
+	{"aveloxis_ops.collection_status", "ml_data_last_collected", false},
+}
+
+// badTimestampFixSQL is the repair of the i-th of them.
+func badTimestampFixSQL(i int) string {
+	f := badTimestampFixes[i]
+	replacement := "NULL"
+	if f.useNow {
+		replacement = "NOW()"
+	}
+	return fmt.Sprintf(
+		`UPDATE %s SET "%s" = %s WHERE "%s" IS NOT NULL AND EXTRACT(YEAR FROM "%s") < 1970`,
+		f.table, f.column, replacement, f.column, f.column,
+	)
+}
+
 // cleanupBadTimestamps nullifies any timestamp columns that have garbage values
 // (e.g., year 0001 BC from Go zero time.Time). These occur when a struct's
 // time fields were not populated before being passed to an INSERT.
 //
 // A timestamp is considered garbage if its year is before 1970.
 func cleanupBadTimestamps(ctx context.Context, pg *PostgresStore, logger *slog.Logger) error {
-	// Each entry: table, column, nullable (true = SET NULL, false = SET to NOW()).
-	fixes := []struct {
-		table  string
-		column string
-		useNow bool // if true, replace with NOW() instead of NULL (for NOT NULL columns)
-	}{
-		// repos
-		{"aveloxis_data.repos", "created_at", false},
-		{"aveloxis_data.repos", "updated_at", false},
-
-		// issues
-		{"aveloxis_data.issues", "created_at", false},
-		{"aveloxis_data.issues", "updated_at", false},
-		{"aveloxis_data.issues", "closed_at", false},
-
-		// pull_requests
-		{"aveloxis_data.pull_requests", "created_at", false},
-		{"aveloxis_data.pull_requests", "updated_at", false},
-		{"aveloxis_data.pull_requests", "closed_at", false},
-		{"aveloxis_data.pull_requests", "merged_at", false},
-
-		// messages
-		{"aveloxis_data.messages", "msg_timestamp", false},
-
-		// issue_events
-		{"aveloxis_data.issue_events", "created_at", false},
-
-		// pull_request_events
-		{"aveloxis_data.pull_request_events", "created_at", false},
-
-		// pull_request_reviews
-		{"aveloxis_data.pull_request_reviews", "submitted_at", false},
-
-		// pull_request_commits
-		{"aveloxis_data.pull_request_commits", "pr_cmt_timestamp", false},
-
-		// releases
-		{"aveloxis_data.releases", "created_at", false},
-		{"aveloxis_data.releases", "published_at", false},
-		{"aveloxis_data.releases", "updated_at", false},
-
-		// repo_info
-		{"aveloxis_data.repo_info", "last_updated", false},
-
-		// commits
-		{"aveloxis_data.commits", "cmt_committer_timestamp", false},
-		{"aveloxis_data.commits", "cmt_author_timestamp", false},
-		{"aveloxis_data.commits", "cmt_date_attempted", true},
-
-		// contributors
-		{"aveloxis_data.contributors", "cntrb_created_at", false},
-
-		// collection_status
-		{"aveloxis_ops.collection_status", "core_data_last_collected", false},
-		{"aveloxis_ops.collection_status", "secondary_data_last_collected", false},
-		{"aveloxis_ops.collection_status", "facade_data_last_collected", false},
-		{"aveloxis_ops.collection_status", "ml_data_last_collected", false},
-	}
-
 	totalFixed := 0
-	for _, f := range fixes {
-		replacement := "NULL"
-		if f.useNow {
-			replacement = "NOW()"
-		}
-		query := fmt.Sprintf(
-			`UPDATE %s SET "%s" = %s WHERE "%s" IS NOT NULL AND EXTRACT(YEAR FROM "%s") < 1970`,
-			f.table, f.column, replacement, f.column, f.column,
-		)
-		tag, err := pg.pool.Exec(ctx, query)
+	for i, f := range badTimestampFixes {
+		tag, err := pg.pool.Exec(ctx, badTimestampFixSQL(i))
 		if err != nil {
 			// v0.28.4: only the TYPED definitive absences skip —
 			// 42P01 undefined_table / 42703 undefined_column mean
@@ -4803,6 +5015,49 @@ func ensureRepoLaborNaturalKeyUnique(ctx context.Context, pg *PostgresStore, log
 	}
 }
 
+// repoGroupRepointTables are the tables whose repo_group_id is repointed to the canonical group.
+var repoGroupRepointTables = []string{
+	"aveloxis_data.repo_groups_list_serve",
+	"aveloxis_data.email_message",
+	"aveloxis_data.email_message_ref",
+	"aveloxis_data.repo_group_insights",
+	// v0.28.18: no FK, but DrainList reads the first staged row's
+	// repo_group_id as the LIST's identity (GetPrimaryRepoForGroup) —
+	// a row still stamped with a deleted loser group wedges the drain
+	// of the whole list ("no repo for group, leaving staged").
+	"aveloxis_ops.mailing_list_staging",
+}
+
+// repoGroupRepointSQL is the statement for the i-th of them.
+func repoGroupRepointSQL(i int) string {
+	tbl := repoGroupRepointTables[i]
+	return `UPDATE ` + tbl + ` t SET repo_group_id = c.canon
+			 FROM aveloxis_data.repo_groups g,
+			      (SELECT rg_name, MIN(repo_group_id) AS canon
+			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			 WHERE g.repo_group_id = t.repo_group_id
+			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`
+}
+
+// repoGroupLoserRowTables are the aggregate tables whose rows of consolidated loser groups are deleted.
+var repoGroupLoserRowTables = []string{
+	"aveloxis_data.dm_repo_group_annual",
+	"aveloxis_data.dm_repo_group_monthly",
+	"aveloxis_data.dm_repo_group_weekly",
+}
+
+// repoGroupLoserRowsDeleteSQL is the statement for the i-th of them.
+func repoGroupLoserRowsDeleteSQL(i int) string {
+	tbl := repoGroupLoserRowTables[i]
+	return `DELETE FROM ` + tbl + ` t
+			 WHERE EXISTS (
+			   SELECT 1 FROM aveloxis_data.repo_groups g
+			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
+			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
+			     ON c.rg_name = g.rg_name
+			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`
+}
+
 // consolidateRepoGroups is the v0.27.17 repo_groups consolidation,
 // extracted (v0.28.16) so RunMigrations (via migrateStage10RecentReleases) can gate it
 // on repoGroupFKIndexesReady. Body unchanged from v0.27.17.
@@ -4832,25 +5087,10 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 		       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
 		 WHERE g.repo_group_id = r.repo_group_id
 		   AND g.rg_name = c.rg_name AND r.repo_group_id <> c.canon`)
-	for _, tbl := range []string{
-		"aveloxis_data.repo_groups_list_serve",
-		"aveloxis_data.email_message",
-		"aveloxis_data.email_message_ref",
-		"aveloxis_data.repo_group_insights",
-		// v0.28.18: no FK, but DrainList reads the first staged row's
-		// repo_group_id as the LIST's identity (GetPrimaryRepoForGroup) —
-		// a row still stamped with a deleted loser group wedges the drain
-		// of the whole list ("no repo for group, leaving staged").
-		"aveloxis_ops.mailing_list_staging",
-	} {
+	for i, tbl := range repoGroupRepointTables {
 		execMigrationStep(ctx, pg, logger, errs,
 			"v0.27.17 repoint "+tbl+".repo_group_id to canonical group",
-			`UPDATE `+tbl+` t SET repo_group_id = c.canon
-			 FROM aveloxis_data.repo_groups g,
-			      (SELECT rg_name, MIN(repo_group_id) AS canon
-			       FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			 WHERE g.repo_group_id = t.repo_group_id
-			   AND g.rg_name = c.rg_name AND t.repo_group_id <> c.canon`)
+			repoGroupRepointSQL(i))
 	}
 	// Copilot round 8: the repoints above are execMigrationStep, which
 	// ACCUMULATES a failure and continues. mailing_list_staging has no
@@ -4865,20 +5105,10 @@ func consolidateRepoGroups(ctx context.Context, pg *PostgresStore, logger *slog.
 			"failed_steps", len(*errs)-errsBeforeRepoint)
 		return
 	}
-	for _, tbl := range []string{
-		"aveloxis_data.dm_repo_group_annual",
-		"aveloxis_data.dm_repo_group_monthly",
-		"aveloxis_data.dm_repo_group_weekly",
-	} {
+	for i, tbl := range repoGroupLoserRowTables {
 		execMigrationStep(ctx, pg, logger, errs,
 			"v0.27.17 drop "+tbl+" rows of consolidated loser groups (weekly rebuild recomputes)",
-			`DELETE FROM `+tbl+` t
-			 WHERE EXISTS (
-			   SELECT 1 FROM aveloxis_data.repo_groups g
-			   JOIN (SELECT rg_name, MIN(repo_group_id) AS canon
-			         FROM aveloxis_data.repo_groups GROUP BY rg_name) c
-			     ON c.rg_name = g.rg_name
-			   WHERE g.repo_group_id = t.repo_group_id AND g.repo_group_id <> c.canon)`)
+			repoGroupLoserRowsDeleteSQL(i))
 	}
 	execMigrationStep(ctx, pg, logger, errs,
 		"v0.27.17 delete consolidated loser repo_groups rows",
@@ -4918,11 +5148,14 @@ func applySupplyChainViewMode(ctx context.Context, pg *PostgresStore, logger *sl
 	if pg.supplyChainMode == MatviewsRebuild {
 		// Round 2 finding 1: a re-create that did not run (a probe
 		// error) or did not land (rolled back) leaves the PREVIOUS views
-		// served; `aveloxis migrate` is the only path that applies a
+		// in place; `aveloxis migrate` is the only path that applies a
 		// changed definition, so this is an ERROR the deploy checklist
 		// greps for ("supply-chain view") AND the migrate's own failure
-		// (round 3: the exit code tells the truth too).
-		logger.Error("supply-chain view re-create had errors — the previous views (if any) are still served; fix the cause and re-run `aveloxis migrate`", "error", err)
+		// (round 3: the exit code tells the truth too). "In place" is not
+		// "served": a previous view that lacks a column this build reads
+		// cannot answer, and its readers aggregate live until the
+		// re-create lands (fleetViewCannotAnswer, 0.29.208).
+		logger.Error("supply-chain view re-create had errors — the previous views (if any) stay in place, and a reader the previous definition cannot answer aggregates live (slower); fix the cause and re-run `aveloxis migrate`", "error", err)
 		return fmt.Errorf("supply-chain views: %w", err)
 	}
 	logger.Warn("supply-chain view creation had errors — the API aggregates live for the absent view until a migrate builds it", "error", err)

@@ -466,7 +466,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 	// waits for the earliest reset when none has budget. A rotation hands
 	// its attempt back, bounded by the key count so every key is considered
 	// before the retry budget is spent: the GraphQL client's round-24 rule.
-	// On chaoss.tv one URL spent all ten attempts on one refused key while
+	// On a production fleet one URL spent all ten attempts on one refused key while
 	// 53 others were idle.
 	maxRotations := c.keys.Len()
 	rotations := 0
@@ -574,7 +574,7 @@ func (c *HTTPClient) Get(ctx context.Context, path string) (*http.Response, erro
 		c.keys.UpdateFromResponse(key, resp)
 		// A headerless 403 whose BODY says rate limit is GitHub's secondary
 		// limit with no Retry-After to size a rest by (worklist 67; the
-		// v0.29.9 decision rule was met on kate: 18.1% of retry
+		// v0.29.9 decision rule was met on a production fleet: 18.1% of retry
 		// opportunities reused the SAME key against a ~1.9% baseline).
 		// Its body is read here, under the lease, so the key rests for
 		// GitHub's documented floor before any waiter can re-lease it; the

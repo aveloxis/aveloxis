@@ -187,7 +187,7 @@ func TestDataVerifyFailsOnAnInvalidIndex(t *testing.T) {
 	if r.Severity != "FAIL" || !strings.Contains(r.Detail, table+"_u") {
 		t.Errorf("an INVALID index FAILs and is named: %+v", r)
 	}
-	// The advice holds for an index the migrate does not own (0.29.144: kate's
+	// The advice holds for an index the migrate does not own (0.29.144: a production fleet's
 	// idx_contributor_repo_repo_git, a hand-run build, which no migrate
 	// touches): drop it concurrently, and the migrate rebuilds only its own.
 	for _, want := range []string{"DROP INDEX CONCURRENTLY", "pg_stat_progress_create_index", "rebuilds"} {

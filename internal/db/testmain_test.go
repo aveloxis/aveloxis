@@ -20,6 +20,11 @@ import (
 // written here because that package imports this one; both call the same
 // PrepareTestDeployment and VerifyFailures, and
 // TestVerifyThisPackageFailsOnAFAILFinding drives the verify hook itself.
+//
+// testdb.Main also installs the write-policy judge (internal/testdb/writejudge)
+// on every pool the store builds, as it does for every DB-tier package, and
+// fails the run on what the judge holds against a statement production code
+// sent.
 func TestMain(m *testing.M) {
 	os.Exit(testdb.Main(m, prepareThisPackage, verifyThisPackage))
 }

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // TestVulnerabilityWritersStoreTheScopeWord — v0.29.71 (the 2026-09-28
@@ -40,13 +42,13 @@ func TestVulnerabilityWritersStoreTheScopeWord(t *testing.T) {
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repo_deps_vulnerabilities WHERE repo_id = $1`, repoID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
-	row := func(id, purl, kind string) *VulnerabilityRow {
-		return &VulnerabilityRow{VulnID: id, PackageName: "p", PackagePurl: purl, Ecosystem: "npm", DependencyKind: kind, DependencyScope: ""}
+	row := func(id, purl, kind string) *model.VulnerabilityRow {
+		return &model.VulnerabilityRow{VulnID: id, PackageName: "p", PackagePurl: purl, Ecosystem: "npm", DependencyKind: kind, DependencyScope: ""}
 	}
 	if err := store.InsertVulnerability(ctx, repoID, row("GHSA-single", "pkg:npm/p@1.0.0", "direct")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{
 		row("GHSA-batch", "pkg:npm/p@1.0.0", "transitive"),
 		row("GHSA-self", "pkg:npm/p@1.0.0", "self"),
 	}); err != nil {

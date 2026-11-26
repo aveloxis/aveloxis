@@ -6,7 +6,7 @@
 // a stalled aveloxis-analytics build-network-gi run, 2026-09-12):
 //
 //  1. Declared without a PARALLEL marker, so Postgres defaulted it to
-//     PARALLEL UNSAFE (proparallel = 'u', confirmed on both chaoss.tv
+//     PARALLEL UNSAFE (proparallel = 'u', confirmed on both production
 //     databases) and every query calling it ran single-threaded.
 //  2. Its list-address EXISTS compared lower(rgls_email) with no index
 //     on that expression, so every call sequentially scanned the ~800
@@ -277,7 +277,7 @@ func TestAutomationEmailParallelSafeAndIndexedLive(t *testing.T) {
 		t.Errorf("with debug_parallel_query = on a parallel-safe query gets a Gather node; none in:\n%s(is_automation_email is still forcing a serial plan)", plan)
 	}
 
-	// Production-shaped list table: ~800 rows (chaoss.tv holds 795 and
+	// Production-shaped list table: ~800 rows (the production tables hold 795 and
 	// 813), ANALYZEd, and NO enable_* overrides — the assertion is that
 	// the planner CHOOSES the expression index at production size, not
 	// that it can be forced onto it. On an empty table any index-only

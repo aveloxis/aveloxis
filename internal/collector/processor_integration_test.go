@@ -23,8 +23,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestProcessorEndToEnd(t *testing.T) {
@@ -45,7 +43,7 @@ func TestProcessorEndToEnd(t *testing.T) {
 
 	// Independent raw connection for seeding cleanup + assertions — the
 	// test verifies DB state without trusting the store under test.
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

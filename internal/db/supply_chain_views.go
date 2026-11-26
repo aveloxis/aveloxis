@@ -32,17 +32,17 @@ import (
 //     (RefreshSupplyChainViews) and by `aveloxis refresh-views` (--set
 //     supply-chain or all), never by the weekly 8Knot rebuild.
 
-// SupplyChainViewNames are the two Aveloxis-owned materialized views, bare
+// supplyChainViewNames are the two Aveloxis-owned materialized views, bare
 // (schema aveloxis_data). The ONE list: the builder, the probe, the refresh,
 // the deploy checklist's count query (SupplyChainViewNamesSQLList) and the
 // tests that keep matviews.sql and matviewNames free of them all read it.
-var SupplyChainViewNames = []string{"explorer_package_exposure", "explorer_package_advisory"}
+var supplyChainViewNames = []string{"explorer_package_exposure", "explorer_package_advisory"}
 
 // SupplyChainViewNamesSQLList renders the pair for an SQL IN list:
 // 'explorer_package_exposure', 'explorer_package_advisory'.
 func SupplyChainViewNamesSQLList() string {
-	quoted := make([]string, 0, len(SupplyChainViewNames))
-	for _, n := range SupplyChainViewNames {
+	quoted := make([]string, 0, len(supplyChainViewNames))
+	for _, n := range supplyChainViewNames {
 		quoted = append(quoted, "'"+n+"'")
 	}
 	return strings.Join(quoted, ", ")
@@ -56,29 +56,58 @@ type supplyChainView struct {
 
 func supplyChainViewDefs() []supplyChainView {
 	return []supplyChainView{
-		{SupplyChainViewNames[0], PackageExposureMatviewSQL(), "(ecosystem, package_name)"},
-		{SupplyChainViewNames[1], PackageAdvisoryMatviewSQL(), "(ecosystem, package_name, vuln_id)"},
+		{supplyChainViewNames[0], PackageExposureMatviewSQL(), "(ecosystem, package_name)"},
+		{supplyChainViewNames[1], PackageAdvisoryMatviewSQL(), "(ecosystem, package_name, vuln_id)"},
 	}
+}
+
+// The three statements that (re-)create the i-th of supplyChainViewDefs:
+// functions of the index, so that the write-policy check runs them for
+// every view.
+func supplyChainViewDropSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.%s CASCADE", v.name)
+}
+
+func supplyChainViewCreateSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("CREATE MATERIALIZED VIEW aveloxis_data.%s AS %s", v.name, v.body)
+}
+
+func supplyChainViewIndexSQL(i int) string {
+	v := supplyChainViewDefs()[i]
+	return fmt.Sprintf("CREATE UNIQUE INDEX idx_%s_pkg ON aveloxis_data.%s %s", v.name, v.name, v.index)
+}
+
+// The two refresh statements for the i-th of supplyChainViewNames.
+func supplyChainRefreshConcurrentlySQL(i int) string {
+	name := "aveloxis_data." + supplyChainViewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", name)
+}
+
+func supplyChainRefreshSQL(i int) string {
+	name := "aveloxis_data." + supplyChainViewNames[i]
+	return fmt.Sprintf("REFRESH MATERIALIZED VIEW %s", name)
 }
 
 // createSupplyChainView drops and re-creates one view with its unique
 // index in ONE transaction, so a failing CREATE leaves the previous view
 // and its data in place (the 8Knot batch has the same property for the
 // opposite reason: one statement batch, all or nothing).
-func createSupplyChainView(ctx context.Context, pg *PostgresStore, v supplyChainView) error {
+func createSupplyChainView(ctx context.Context, pg *PostgresStore, dropSQL, createSQL, indexSQL string) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
-	for _, stmt := range []string{
-		fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS aveloxis_data.%s CASCADE", v.name),
-		fmt.Sprintf("CREATE MATERIALIZED VIEW aveloxis_data.%s AS %s", v.name, v.body),
-		fmt.Sprintf("CREATE UNIQUE INDEX idx_%s_pkg ON aveloxis_data.%s %s", v.name, v.name, v.index),
-	} {
-		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(ctx, dropSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, createSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, indexSQL); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -93,12 +122,12 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 		return fmt.Errorf("probing for supply-chain views: %w", err)
 	}
 	var failed []error
-	for _, v := range supplyChainViewDefs() {
+	for i, v := range supplyChainViewDefs() {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		start := time.Now()
-		if err := createSupplyChainView(ctx, pg, v); err != nil {
+		if err := createSupplyChainView(ctx, pg, supplyChainViewDropSQL(i), supplyChainViewCreateSQL(i), supplyChainViewIndexSQL(i)); err != nil {
 			logCreateFailure(logger, v.name, present[v.name], err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
@@ -111,11 +140,13 @@ func CreateSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slog
 // logCreateFailure says what a failed (re-)create leaves behind, by path
 // (review round 1 finding 3): the transaction rolled back, so a view that
 // EXISTED keeps its previous definition and data — the API keeps serving
-// it, not "live" — and a view that did not exist is still absent, which
-// the API answers with the live aggregate.
+// it where it can answer, and aggregates live where the reader selects a
+// column the previous definition lacks (fleetViewCannotAnswer) — and a
+// view that did not exist is still absent, which the API answers with the
+// live aggregate.
 func logCreateFailure(logger *slog.Logger, name string, existed bool, err error, took time.Duration) {
 	if existed {
-		logger.Error("supply-chain view re-create failed — the PREVIOUS definition and its data are kept and still served; fix the cause and re-run `aveloxis migrate`",
+		logger.Error("supply-chain view re-create failed — the PREVIOUS definition and its data are kept. A reader it can still answer is served from it; a reader that needs a column this build added aggregates live. Fix the cause and re-run `aveloxis migrate`",
 			"view", name, "error", err, "duration", took.Truncate(time.Millisecond))
 		return
 	}
@@ -138,7 +169,7 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 	}
 	builtCount := 0
 	var failed []error
-	for _, v := range supplyChainViewDefs() {
+	for i, v := range supplyChainViewDefs() {
 		if present[v.name] {
 			continue
 		}
@@ -146,7 +177,7 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 			return false, ctx.Err()
 		}
 		start := time.Now()
-		if err := createSupplyChainView(ctx, pg, v); err != nil {
+		if err := createSupplyChainView(ctx, pg, supplyChainViewDropSQL(i), supplyChainViewCreateSQL(i), supplyChainViewIndexSQL(i)); err != nil {
 			logCreateFailure(logger, v.name, false, err, time.Since(start))
 			failed = append(failed, fmt.Errorf("view %s: %w", v.name, err))
 			continue
@@ -158,13 +189,13 @@ func CreateSupplyChainViewsIfMissing(ctx context.Context, pg *PostgresStore, log
 		logger.Info("supply-chain views already exist, left alone at startup (their data refreshes on collection.supply_chain_refresh_hours; a changed definition lands on the next `aveloxis migrate`)",
 			"views", len(present))
 	}
-	return builtCount == len(SupplyChainViewNames), errors.Join(failed...)
+	return builtCount == len(supplyChainViewNames), errors.Join(failed...)
 }
 
 // supplyChainViewsPresentSet names the members of the pair that exist.
 func supplyChainViewsPresentSet(ctx context.Context, pg *PostgresStore) (map[string]bool, error) {
 	rows, err := pg.pool.Query(ctx,
-		`SELECT matviewname FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, SupplyChainViewNames)
+		`SELECT matviewname FROM pg_matviews WHERE schemaname = 'aveloxis_data' AND matviewname = ANY($1)`, supplyChainViewNames)
 	if err != nil {
 		return nil, err
 	}
@@ -196,11 +227,11 @@ func RefreshSupplyChainViews(ctx context.Context, pg *PostgresStore, logger *slo
 		return nil
 	}
 	var failed []error
-	for _, name := range SupplyChainViewNames {
+	for i, name := range supplyChainViewNames {
 		if !present[name] {
 			continue
 		}
-		if err := refreshMatview(ctx, pg, logger, "aveloxis_data."+name); err != nil {
+		if err := refreshMatview(ctx, pg, logger, "aveloxis_data."+name, supplyChainRefreshConcurrentlySQL(i), supplyChainRefreshSQL(i)); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

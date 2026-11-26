@@ -39,7 +39,7 @@ type ContributorRepoRow struct {
 // [1-frac, 1+frac] × cooldown (mean exactly 1.0, so the configured
 // cadence is preserved in expectation).
 //
-// Why (v0.27.55, diagnosed 2026-07-29 on aveloxis_large): a hard
+// Why (v0.27.55, diagnosed 2026-07-29 on the larger production database): a hard
 // cooldown cliff makes each day's eligible supply an exact echo of the
 // marks one cooldown-period earlier — cohorts bunched by history (the
 // v0.27.8 backlog chew produced 560K-mark days; pre-v0.27.8 famines

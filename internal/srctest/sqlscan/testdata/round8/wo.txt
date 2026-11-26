@@ -1,0 +1,16 @@
+@@ W04 cast inside
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1::text)
+@@ W09 one of the four
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') = ''
+@@ W37 qualified in subselect
+UPDATE aveloxis_data.repos r SET ar = (SELECT o.ar FROM aveloxis_data.other o WHERE o.id = r.repo_id)
+@@ W37b qualified, table without alias
+UPDATE aveloxis_data.repos r SET ar = (SELECT other.ar FROM aveloxis_data.other WHERE other.id = r.repo_id)
+@@ W54 FROM item with named outputs for another column
+UPDATE aveloxis_data.repos r SET ar = s.m FROM (SELECT x.repo_id, max(x.g)::text AS m FROM aveloxis_data.repos x GROUP BY x.repo_id) s WHERE s.repo_id = r.repo_id
+@@ W54b FROM item, unqualified cols
+UPDATE aveloxis_data.repos r SET ar = s.m FROM (SELECT repo_id, fe AS m FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ W54c FROM item named output via CTE
+WITH s AS (SELECT repo_id, fe AS m FROM aveloxis_data.repos) UPDATE aveloxis_data.repos r SET ar = s.m FROM s WHERE s.repo_id = r.repo_id
+@@ W54d FROM item where the same-named-other col output name is ar (count(*) AS ar)
+UPDATE aveloxis_data.repos r SET ar = s.ar FROM (SELECT repo_id, count(*)::text AS ar FROM aveloxis_data.repos GROUP BY repo_id) s WHERE s.repo_id = r.repo_id

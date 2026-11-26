@@ -257,29 +257,211 @@ instead of ad-hoc regexes:
   list or UPDATE SET left-hand side; WHERE/RETURNING/RHS appearances do NOT
   count — the v0.27.116 contract, fixtures moved wholesale).
 - `Stmt.SetExprs(col)` — the depth-counting, quote-aware RHS extractor the
-  Phase 3 write-policy matchers classify.
+  Phase 3 write-policy matchers classify. `Stmt.SetExprsOf(table, col)` keeps
+  the assignments that belong to a write of `table`: one statement can write
+  two tables (a data-modifying CTE and the statement proper). A column written
+  by its quoted name (`SET "col" = …`) is that column.
+- `sqlscan.StrictArguments(root, files, env)` (v0.29.212; shrunk in v0.29.213)
+  — every SQL argument of a package, found by type (a call of a
+  database-library function that runs SQL, by object) and classified. There is
+  no evaluator of Go: an argument is read only as a compiler constant; a listed
+  pure function on compiler constants, by calling it (`strings.Join/Repeat/
+  Replace/ReplaceAll/TrimSpace/TrimPrefix/TrimSuffix`, `+`, and `fmt.Sprintf`
+  with `%s`, `%d` and `%%` only); text built by one of the store's own
+  functions on constants, by running that function (`Env`); or a helper's
+  parameter handed on untouched, read at its callers. Text with a gap in it (a
+  number, a parameter) is NOT read: it is a hole.
+- `sqlscan.CheckSites(args, sites, pins, tests)` — every hole must be
+  registered, which means run. A registration names the store's builder
+  function and its inputs, and the check runs the real builder for each input:
+  the whole of a finite domain (with the test showing an input outside it gives
+  no statement), or, for an open one, representative inputs, where what varies
+  may reach the text only through `pgx.Identifier{...}.Sanitize()`, a
+  registered quoting function, or (a number) `%d` and base-ten `strconv`.
+  An open builder may choose its text by its input in ONE place only (one
+  comparison of a parameter with a constant, both sides taken by the
+  registered inputs; the cases of one switch count as one), and a count may
+  only repeat a fragment (`if i > 0` for the separator is the one condition a
+  counted loop may hold). An index or map lookup by a parameter, a
+  `for cond {}` on one, or a return inside a counted loop is refused
+  (v0.29.215): give such a builder a finite domain.
+  Nothing is registered on a person's reading alone.
+- **The run-time judge** (`internal/testdb/writejudge`, v0.29.213; as of
+  v0.29.215) decides. It is a pgx tracer that `testdb.Main` installs for EVERY
+  DB-tier package, with no code in the package. Every statement PRODUCTION code
+  sends is parsed and judged by the same `CheckIn`, policies and Exceptions, in
+  the test database's own catalog, and a violation fails the package after its
+  tests.
+  - **One file opens every pool and connection**: `internal/db/open.go`
+    (`db.OpenPool`, `db.OpenPoolConfig`, `db.OpenConn`, `db.OpenConnConfig`).
+    Each hands its configuration to the seam `internal/db/stmttrace.Wrap`
+    (nil in every binary, so nothing changes outside tests), and puts the seam
+    back after a caller's `BeforeConnect` hook. `scripts/pool_openers_test.go`
+    fails on a pgx, pgxpool, pgconn, `stdlib` or `database/sql` constructor in
+    any other non-test file, on one in a DB-tier package's test files outside
+    its reviewed list, on a dot-import of those packages, and on non-test code
+    that gives a `Tracer` field a value anywhere but `open.go` and the store's
+    logging tracer. **A test that needs a pool of its own opens it with
+    `db.OpenPool` or `db.OpenPoolConfig`**, never with the library: a pool
+    opened with the library carries no judge, and what production sends on it
+    is not seen.
+  - **Whose statement it is** (`writejudge.Origin`) is read from the shape of
+    the stack. Only test frames: the test sent it, a fixture, not judged.
+    Production code anywhere on the stack: production's, judged. That includes
+    test code that stands between production and the library: a test's
+    closure run by a production retry or transaction helper, and a test's
+    stand-in for a transaction that hands on what production gave it, in any
+    spelling. The finding then names the test code it came through. A test
+    that really sends its OWN text through a production helper registers
+    itself, with the reason, in `writejudge.FixtureSenders` (file and
+    declaration); the list is empty. No frame of the module at all (a bare
+    `go pool.Exec(...)`): production's.
+  - **A re-executed test binary is judged.** A test that runs `os.Args[0]`
+    again as a child (a subprocess under test) needs nothing extra: the child's
+    `testdb.Main` installs a judge that appends each record, one write per
+    statement, to a file in a directory its ancestor named in
+    `AVELOXIS_WRITE_JUDGE_CHILD_DIR`, and the ancestor's verdict includes them.
+    A child that calls `os.Exit` or is killed has already handed over what it
+    sent. Do not clear that variable from a child's environment: a child
+    that sends a production statement without it fails and says so when its
+    tests return (a child that opens no pool, such as a subprocess under test
+    started with an environment the test built, is unaffected). A child that
+    calls `os.Exit` itself is not caught by that check: without the variable
+    nothing judges what it sent.
+  - A statement sent with a `pgx.QueryRewriter` among its arguments
+    (`pgx.NamedArgs` included; nothing in the module uses one) is held against
+    production, because the tracer sees the text before the rewriter runs.
+  - **The registry** is `internal/testdb/writejudge/registry.go`:
+    `writejudge.Policies`, `writejudge.Exceptions`, and `writejudge.TempTables`
+    (the temporary tables production declares). The judge and the store's
+    static check read the same one.
+- **The coverage requirement** is per call site, and it is checked by
+  `scripts/skip-census.sh` (the closing suite) over the union of what every
+  DB-tier package recorded (`AVELOXIS_STATEMENT_SITES_DIR`, set by the script).
+  **An ordinary `go test ./internal/db/` judges what it sends but does not run
+  this check**: one package cannot know what the others reach, so a new
+  library call with no test passes every ordinary command and fails only
+  `scripts/skip-census.sh`. Run that script (with `AVELOXIS_TEST_DB` exported)
+  before calling a change to the store done.
+  - Every call in `internal/db` of a library function that takes SQL
+    (`sqlscan.RunnerCalls`) must have had a statement sent through it, or stand
+    on `internal/db/testdata/unexecuted_statement_sites.txt`
+    (`TestTheSuiteReachesEveryStatementSite`). That list is empty and only
+    shrinks.
+  - **When the closing suite says a new call site is unreached**, do not add
+    the site to the list. Write a DB-tier test, in any package, that reaches
+    the call on the store's pool (or one opened through `db.OpenPool` /
+    `db.OpenPoolConfig`) and asserts what the statement did: seed what it
+    reads, call the function, check the rows. If a test does call the function
+    and the site is still unreached, the call sits on a branch the test does
+    not take (an error arm, a retry, a conflict): drive that branch.
+  - A site is reached by ANY one statement sent through it. A place that sends
+    many texts (a builder, a list of migration steps, a loop) is covered when
+    a test sends one of them; the judge does not say each of them ran.
+    **What the count therefore does not see:** a new statement whose text is
+    handed to an existing wrapper inside the package (`execMigrationStep`,
+    `execCreateIndexConcurrently`, `runKeysetWindows`, the time-series
+    helpers) adds no library call of its own, so it is covered as soon as any
+    test reaches the wrapper's call, whether or not a test sends the new
+    text. The same holds for `rowBatch.queue`, the one `Queue` call of the
+    streaming lockfile replace, which stands for three statements
+    (`openQueueSites` in `internal/db/statement_sites_test.go` is the
+    reviewed list of such `Queue` calls). A new statement of that kind needs
+    its own test by review, not by this count. The
+    three listings whose text depends on a sort key and filters are covered
+    variant by variant by their own tests instead
+    (`internal/db/listing_orders_db_test.go`: every key of each allowlist, both
+    directions, and every filter; the leaderboard's search folds case and
+    finds a term inside a name, a key outside its allowlist is the order by
+    repositories, and a member of a group with no queue row is listed). A
+    test that demands an order between two rows must seed them unequal on
+    some key the statement orders by, or the plan decides and not the
+    statement. What those tests hold of the later keys of an order, found by
+    removing or redirecting each one (review round 12):
+
+    - The queue page's last key, the repository id: pinned.
+    - The package leaderboard's last key, the package's name, for the keys
+      `repos`, `unresolved`, `cvss`, `transitive`, `versions` and `days`:
+      pinned, by three seeded packages equal on every other key. For `repos`
+      this holds only while the plan does not hand the three back in name
+      order of itself; under a sorted aggregate the missing key is not seen.
+    - The leaderboard's `name` key, whose last key is the ecosystem: its
+      direction is pinned, its presence is not.
+    - The second key of `days` and of `transitive`: held against being
+      dropped or reversed, not against being pointed at another column that
+      orders the fixture's rows the same way.
+    - The repository listing's last key, the repository id: not pinned. Its
+      rows come by id from the plan whether or not the statement orders by
+      it.
+
+    A new listing built from
+    an allowlist needs a test of that shape.
+  - The closing suite prints `statement sites: N library calls that take SQL in
+    internal/db; 0 not reached by any DB-tier package`. To see what a run did
+    not reach, point `AVELOXIS_STATEMENT_SITES_CHECK` at the folder of records
+    and set `AVELOXIS_STATEMENT_SITES_OUT=file`.
+- `sqlscan.ParseWrites(sql)` — the writes of a statement, read from the
+  parse tree PostgreSQL's own parser gives (`pgread.go`; the parser is
+  `github.com/wasilibs/go-pgquery`, the server's grammar compiled to
+  WebAssembly, linked into tests only). `sqlscan.Check`
+  judges with it and denies by default: a statement not read to its end, a
+  target with no schema that assigns a registered column's name, and a write
+  through a view over a registered table are violations.
+- `sqlscan.StrictReferences(root, files)` — references to something that runs
+  SQL which no reading of arguments covers (a runner taken as a value, rows
+  written with no text, a library type that carries SQL arriving from or
+  leaving to other code, a query rewriter among a call's arguments, the several
+  results of one call as a runner's arguments, a returned SQL-running function
+  that is held, a helper method of a generic type).
 - `Stmt.WhereGuardsEmpty(col)` — recognizes the guarded fill-empty shape
   (`SET col = $N ... WHERE COALESCE(col, '') = ''` / `col IS NULL`).
 
-Known blind spots are documented in the package doc (concatenated SQL is
-invisible; tagged dollar-quotes untracked). The flagship consumer is
+What the two checks are for, and what is out of scope (Go written to get
+around them), is stated in `internal/srctest/sqlscan/doc.go`. The text matchers above (`Statements`,
+`FindWrites`, `WritesColumn`, `SetExprs`) remain for the other source
+tripwires, whose flagship consumer is
 `internal/db/column_writer_tripwire_test.go`; port verified behavior-identical
 (same zero-violation pass on the real corpus; fake-column and stale-allowlist
 mutations flag identically).
 
 ### Column write-policy registry (v0.27.126)
 
-`internal/db/column_write_policy_test.go` declares each protected column's ONE
-write policy (`FillEmptyOnly` / `PreferNonemptyIncoming` /
+`internal/testdb/writejudge/registry.go` declares each protected column's ONE
+write policy in `writejudge.Policies`, which the static test
+`internal/db/column_write_policy_test.go` and the run-time judge both read
+(`FillEmptyOnly` / `PreferNonemptyIncoming` /
 `PreferNonNullIncoming` / `GreatestNonNull` / `AlwaysRefresh` / `InsertOnly`);
 the sqlscan policy engine verifies every UPDATE SET assignment in the store
 corpus conforms. Matchers are ORDER-SENSITIVE — the verbatim shipped round-11
 bug (`COALESCE(NULLIF(EXCLUDED.platform_repo_id, ''), repos.platform_repo_id)`,
 incoming-first where fill-empty-only was intended) is a permanent canary
 fixture in the engine's suite, and re-red-verified against the live registry.
+**No SQL in the store goes unread (v0.29.203; every statement since v0.29.210).**
+An SQL argument of a call that runs SQL in `internal/db` (reads included) is
+read whole by the check, or it is registered, or `TestNoProtectedWriteGoesUnread`
+fails. Nothing decides that an unread part "cannot matter". Triage, in this
+order: write the statement as a constant (a value belongs in a placeholder) |
+build it with one named function of the store from string constants, and add
+that function to `columnWriteEnv` | register the function in
+`columnWriteBuilders` with its inputs: the index of each member of a fixed
+list (`indexedBuilders`), every key of a map it looks its input up in
+(`keyedBuilders`), every combination of its bools (`boolBuilders`), or the
+constants its callers pass. A registration with nothing run fails the test,
+and an Exception names the file AND the function its statement stands in.
+Source pins elsewhere in `internal/db`
+hold some statements' text in place (the page-cache writer registry, the
+shutdown and dedup pins): moving such text into a builder means re-anchoring
+that pin in the same change.
+An exported function that hands a parameter to a statement call is refused:
+SQL does not enter the store from outside it.
+
 Triage protocol for a red run (in the failure message; never weaken a
 matcher): fix the SQL | correct the registered policy | add an `Exception`
-WITH a reason. Exceptions that suppress nothing are reported STALE and fail
+WITH a reason. An `Exception` is for ONE statement, whole: its `Statement`
+field is the statement's entire text (required for every kind), so it ends with
+any change to the statement; `InBody` says the statement stands inside a DO
+block or a function's body, and an Exception of the one kind does not excuse
+the same statement of the other. Exceptions that suppress nothing are reported STALE and fail
 the run. New schema columns with a meaningful write discipline register at
 introduction (schema-migrations.md checklist step 7).
 
@@ -307,13 +489,30 @@ prose, not a property.
 paired with a test that DRIVES its loop to done:
 
 - The scanner sweeps every non-test source in `cmd/` + `internal/` +
-  `scripts/` for the marker phrases; every hit must be registered in
-  `convergenceContracts` with at least one **driving test**, or carry a
-  reviewed exemption with a reason.
+  `scripts/` for the marker phrases, in comments and in string literals (a
+  command's help text). Each hit belongs to a **declaration**: the function,
+  method, variable, constant or type whose doc comment or body holds it, or,
+  for a comment outside every declaration, the declaration that follows it.
+  Every such declaration must be registered in `convergenceContracts` with at
+  least one **driving test**, or carry a reviewed exemption with a reason.
+- A row is `{Pkg: "internal/db", Decl: "PostgresStore.FillPackageKeysStep",
+  DrivingTests: ...}`: the package directory and the declaration, never a
+  file name. A row that named its file was a by-name read of a production
+  source file, which the file-reads ratchet forbids adding, so until 0.29.202
+  no new contract could be registered. Keyed by declaration, a row survives
+  its file being split and still fails when the contract is renamed, moved to
+  another package or reworded.
+- A phrase in a file that has no declaration at all is a failure that no row
+  can excuse: state the contract on the function or command that implements
+  it. And a row covers ONE file's declaration of that name unless it says
+  `Files: n` (same-named declarations in files built for different
+  platforms); a second file carrying the phrase on that name fails until the
+  row is reviewed and its count raised. Both rules exist so that a new
+  contract can never be covered by an older contract's row.
 - Driving tests are verified as real test FuncDecls via `go/parser`
   (never a source regex — the round-22 lesson).
-- Staleness both ways: a registered/exempt file that stops carrying a
-  marker fails until the row is removed.
+- Staleness both ways: a registered or exempt declaration that stops
+  carrying a marker fails until the row is removed.
 
 **Registering a site is not the work — the driving test is.** A driving
 test performs the unit of work, applies the SAME completion stamp the
@@ -467,6 +666,7 @@ Patterns to follow:
 
 - **Negative repo IDs** (or no explicit id at all) for fixture rows: an explicit id a sequence-backed table's sequence will reach collides with the next row the code creates (see "Each package gets a database of its own").
 - **`t.Cleanup`** to delete fixtures even if the test fails mid-run, registered right after the fixture's first write.
+- **A neighbour row.** A statement with a `WHERE` is tested against at least one row it must leave alone, asserted unchanged (or, for a read, not returned). Seed the neighbour where a statement without its predicate would prefer it: before the row under test, with the newer date, with the same number in another repository. A test whose table holds only the rows it names cannot tell `WHERE repo_id = $1` from no `WHERE` at all.
 - **Pre-cleanup** at the top of tests that reuse fixed fixture ids: the package's database persists across its own tests and across `-count` repetitions within one run, so a test that failed earlier in the run can leave rows that break a later one (a new run starts from a fresh database).
 - **Materialized views**: the package's database is prepared without them, and a store's zero-value `MatviewMode` is `MatviewsOff`, so a test that migrates again builds none unless it asks (v0.29.57 — the views are optional; `serve` and `migrate` set the mode from `collection.materialized_views`). A test of view behavior calls `store.SetMatviewMode(MatviewsRebuild)` (`db.MatviewsRebuild` from another package; `MatviewsIfMissing` to test serve's startup behaviour) before `RunMigrations`. `TestRunMigrationsOnFreshDB` checks that every view builds on an empty database.
 
@@ -612,7 +812,7 @@ GitHub Actions runs:
 - `lint.yml`: `go vet` → `staticcheck` → `golangci-lint` (pinned version), all blocking.
 - `codeql.yml`: security scanning.
 - `cifuzz.yml`: ClusterFuzzLite over the 7 native Go fuzz targets.
-- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`), and real-tool checks: the latest scancode and the pinned scc, and the official SBOM validators (`pyspdxtools` and `cyclonedx-python-lib`, via `AVELOXIS_TEST_SBOM_TOOLS`, which names a Python with both installed; the test skips when it is unset). To run the SBOM check locally, see the comment on `TestSBOMsPassTheOfficialValidators`.
+- `network-canary.yml`: weekly live-API contract checks (`AVELOXIS_TEST_NETWORK=1`), and real-tool checks: the pinned scc and the latest scorecard and scancode, installed with `aveloxis install-tools`, and the official SBOM validators (`pyspdxtools` and `cyclonedx-python-lib`, via `AVELOXIS_TEST_SBOM_TOOLS`, which names a Python with both installed; the test skips when it is unset). To run the SBOM check locally, see the comment on `TestSBOMsPassTheOfficialValidators`.
 - `docs.yml`: `sphinx-build -W --keep-going` over `docs/` — every Sphinx/MyST warning (unknown fence language, block that does not lex, dead cross-reference) is an error.
 
 The first four plus `docs.yml` must pass for a PR to merge — a Sphinx warning fails the docs job the same way a lint finding fails `lint.yml`. The maintainers can override but rarely do.

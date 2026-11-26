@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestUpsertContributorBatchUpdatesCanonical pins that
@@ -37,14 +39,24 @@ func TestUpsertContributorBatchUpdatesCanonical(t *testing.T) {
 	if end < 0 {
 		t.Fatal("cannot find end of UpsertContributorBatch")
 	}
-	body := rest[:end+1]
+	// Comments removed before the match (0.29.234, review round 18): the
+	// statement's own comment discusses the column, and a commented-out
+	// copy of the expression must not satisfy the check.
+	body := srctest.StripGoComments(rest[:end+1])
 
-	// The DO UPDATE clause must include cntrb_canonical with the same
-	// COALESCE / NULLIF preserve-existing pattern used for the other
-	// fields. Pre-v0.19.8 the column was set on INSERT only.
-	if !strings.Contains(body, "cntrb_canonical = COALESCE") {
+	// The DO UPDATE clause must set cntrb_canonical INCOMING first: a
+	// non-empty incoming address replaces the stored one and an empty one
+	// never clears it. Pre-v0.19.8 the column was set on INSERT only. The
+	// other fields are stored-first (fill-only); this column is the one
+	// recorded exception, for the reason at the statement (0.29.218).
+	// 0.29.233 (Copilot on PR #263): the check accepted any COALESCE and
+	// its message named the stored-first expression of 0.29.216 and
+	// 0.29.217, which 0.29.218 took back out of the statement and left
+	// here. The whole expression is required now and the message names it.
+	const want = "cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical)"
+	if !strings.Contains(body, want) {
 		t.Error("UpsertContributorBatch's ON CONFLICT DO UPDATE clause must " +
-			"include `cntrb_canonical = COALESCE(NULLIF(EXCLUDED.cntrb_canonical, ''), contributors.cntrb_canonical)` " +
+			"include `" + want + "` " +
 			"so runEnrichment's per-tick re-enrichment of existing thin " +
 			"contributors actually backfills the canonical email instead of " +
 			"silently dropping it. Without this, the v0.19.7 removal of the " +

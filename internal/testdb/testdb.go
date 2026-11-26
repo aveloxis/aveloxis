@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/aveloxis/aveloxis/internal/testdb/writejudge"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -97,6 +98,34 @@ func start(runTests func() int, base, prefix string, prepare, verify func(ctx co
 	return run(runTests, base, prepare, verify)
 }
 
+// unjudgedChild is a re-executed test binary's exit status: its own, or 1
+// when it sent production statements with nowhere to hand them (the
+// directory's variable was cleared from its environment, so its ancestor's
+// verdict will not include them: round 9, such a child passed in silence).
+// A child that sent none is as it was: most re-executed binaries are a
+// subprocess under test that opens no pool, started with an environment
+// of the test's own making.
+//
+// It is asked when the child's tests RETURN. A child that calls os.Exit
+// itself never comes here, so one that does and has no directory is not
+// caught: nothing judges what it sent.
+func unjudgedChild(child *writejudge.Judge, dir string, code int) int {
+	if dir != "" {
+		return code
+	}
+	sent := child.Statements()
+	if len(sent) == 0 {
+		return code
+	}
+	at := sent[0].Frames[0]
+	fmt.Fprintf(os.Stderr, "testdb: this re-executed test binary sent %d production statements (the first from %s:%d) and %s is not in its environment, so the write-policy judge of the run that started it never sees them. Start it with the parent's environment, or keep that variable in the one you build.\n",
+		len(sent), at.File, at.Line, writejudge.ChildDirEnv)
+	if code == 0 {
+		return 1
+	}
+	return code
+}
+
 // sweepCalls counts this process's sweeps, for the test that pins where
 // they happen (TestSweepsOnlyWhereMainStarts).
 var sweepCalls atomic.Int64
@@ -107,11 +136,47 @@ var sweepCalls atomic.Int64
 var originalBase string
 
 func run(runTests func() int, base string, prepare, verify func(ctx context.Context, dsn string) error) int {
-	if base == "" || ownedByAncestor(base) {
+	if base == "" {
 		return runTests()
+	}
+	if ownedByAncestor(base) {
+		// A re-executed test binary runs against its ancestor's database
+		// and is judged with it (0.29.215: it ran with no judge, so a
+		// production statement sent there was neither judged nor counted).
+		// It records and hands on; the ancestor gives the verdict.
+		child := writejudge.InstallChild()
+		code := runTests()
+		return unjudgedChild(child, os.Getenv(writejudge.ChildDirEnv), code)
 	}
 	originalBase = base
 	ctx := context.Background()
+	// The write-policy judge (0.29.213): on every pool and connection the
+	// module opens from here on (internal/db's openers), the preparation's
+	// included. Every DB-tier package gets it here, with no code of its
+	// own.
+	judge := writejudge.Install()
+	// Where this run's re-executed test binaries leave what they sent.
+	children, err := os.MkdirTemp("", "aveloxis-judge-children-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: a directory for re-executed test binaries' statements: %v\n", err)
+		return 1
+	}
+	// The variable is put back as it was when this run ends: a run started
+	// inside another (testdb's own tests do) must not leave the outer one's
+	// children writing into a directory that is gone.
+	before, had := os.LookupEnv(writejudge.ChildDirEnv)
+	defer func() {
+		_ = os.RemoveAll(children)
+		if had {
+			_ = os.Setenv(writejudge.ChildDirEnv, before)
+		} else {
+			_ = os.Unsetenv(writejudge.ChildDirEnv)
+		}
+	}()
+	if err := os.Setenv(writejudge.ChildDirEnv, children); err != nil {
+		fmt.Fprintf(os.Stderr, "testdb: naming %s: %v\n", children, err)
+		return 1
+	}
 	d, err := Create(ctx, base)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testdb: %v\n", err)
@@ -133,6 +198,14 @@ func run(runTests func() int, base string, prepare, verify func(ctx context.Cont
 	if code == 0 && verify != nil {
 		if err := verify(ctx, d.DSN); err != nil {
 			fmt.Fprintf(os.Stderr, "testdb: the tests passed but left %s failing verification: %v\n", d.Name, err)
+			code = 1
+		}
+	}
+	if code == 0 {
+		// What production code sent while the tests ran, judged against
+		// the column write policies in the database's own catalog.
+		if err := judge.Verdict(ctx, d.DSN); err != nil {
+			fmt.Fprintf(os.Stderr, "testdb: the tests passed, and %v\n", err)
 			code = 1
 		}
 	}

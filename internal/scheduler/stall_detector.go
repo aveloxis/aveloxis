@@ -7,7 +7,7 @@ package scheduler
 // woken, so a whole-process stall can be told apart from workers waiting
 // on the database.
 //
-// Two hours of the 2026-09-17 chaoss.tv log had 194 gaps of 4 seconds or
+// Two hours of the 2026-09-17 production log had 194 gaps of 4 seconds or
 // more while 70 workers were busy, with unrelated workers resuming in the
 // same millisecond, and four pauses where the DB probe failed three times
 // running. Afterwards the cause could not be established: the WAL was

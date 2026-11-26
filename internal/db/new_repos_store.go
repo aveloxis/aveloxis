@@ -58,6 +58,12 @@ WHERE r.added_at >= $1
 ORDER BY r.added_at DESC, r.repo_id DESC
 LIMIT $2`
 
+// newReposArmStatement is one arm's statement: predicate is one of the two
+// GetNewRepos writes at its calls.
+func newReposArmStatement(predicate string) string {
+	return fmt.Sprintf(newReposArmSQL, predicate)
+}
+
 // GetNewRepos returns the two "New Repositories" feed arms for userID:
 // fleet (admin-registered orgs) and mine (the caller's own orgs), each
 // newest-first and capped at limit rows. A repo under an org that is
@@ -69,8 +75,7 @@ func (s *PostgresStore) GetNewRepos(ctx context.Context, userID int, since time.
 	}
 
 	run := func(predicate string, args ...any) ([]NewRepo, error) {
-		sql := fmt.Sprintf(newReposArmSQL, predicate)
-		rows, err := s.pool.Query(ctx, sql, args...)
+		rows, err := s.pool.Query(ctx, newReposArmStatement(predicate), args...)
 		if err != nil {
 			return nil, fmt.Errorf("GetNewRepos query: %w", err)
 		}

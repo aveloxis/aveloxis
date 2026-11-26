@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Collection Pipeline &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>Collection Pipeline &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1973,8 +2016,8 @@ restored repository is re-enqueued on its own</p></li>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">REPO_URL</span><span class="o">=</span>https://github.com/augurlabs/augur
 <span class="nv">CLONE_PATH</span><span class="o">=</span>/data/aveloxis-repos/augurlabs-augur.git
 git<span class="w"> </span>clone<span class="w"> </span>--bare<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$REPO_URL</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w">   </span><span class="c1"># first time</span>
-<span class="c1"># subsequent runs — an explicit refspec, because `git clone --bare`</span>
-<span class="c1"># writes no fetch refspec: a bare `git fetch --all` downloads objects</span>
+<span class="c1"># subsequent runs — an explicit refspec, because git clone --bare</span>
+<span class="c1"># writes no fetch refspec: a bare git fetch --all downloads objects</span>
 <span class="c1"># but never advances refs/heads/*, leaving the clone permanently stale</span>
 git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CLONE_PATH</span><span class="s2">&quot;</span><span class="w"> </span>fetch<span class="w"> </span>origin<span class="w"> </span><span class="s1">&#39;+refs/heads/*:refs/heads/*&#39;</span><span class="w"> </span><span class="s1">&#39;+refs/tags/*:refs/tags/*&#39;</span><span class="w"> </span>--prune
 </pre></div>
@@ -2040,7 +2083,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</sp
 <hr class="docutils" />
 <section id="periodic-contributor-enrichment-and-canonical-emails">
 <h2>Periodic: Contributor enrichment and canonical emails<a class="headerlink" href="#periodic-contributor-enrichment-and-canonical-emails" title="Link to this heading"></a></h2>
-<p>On a periodic scheduler ticker (default 30 minutes, <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> — moved out of the per-job path in v0.18.29), <code class="docutils literal notranslate"><span class="pre">EnrichThinContributors</span></code> calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code> for contributors with missing profile data (empty company and location). This populates company, location, email, name, created_at, and sets <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> from the public email (filtering noreply addresses).</p>
+<p>On a periodic scheduler ticker (default 30 minutes, <code class="docutils literal notranslate"><span class="pre">enrich_interval_minutes</span></code> — moved out of the per-job path in v0.18.29), <code class="docutils literal notranslate"><span class="pre">EnrichThinContributors</span></code> calls <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/users/{login}</span></code> for contributors with missing profile data (empty company and location). This sets company, location and name from the profile when the profile has them, fills <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> with the public email only when the column is empty (the first address observed stays, 0.29.216), fills an empty created_at, and sets <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> from the public email (filtering noreply addresses; the profile’s address replaces a stored canonical, an empty one clears nothing). It asks GitHub only; GitLab profiles are not enriched.</p>
 <p><strong>Token efficiency (v0.14.4+)</strong>: Contributors are tracked via <code class="docutils literal notranslate"><span class="pre">cntrb_last_enriched_at</span></code> to prevent re-enriching users with genuinely empty GitHub profiles on every collection pass. They are retried after 30 days. (The separate <code class="docutils literal notranslate"><span class="pre">ResolveEmailsToCanonical</span></code> pass that older docs describe had not run since v0.19.7 and was removed in v0.29.68.)</p>
 </section>
 <hr class="docutils" />
@@ -2099,7 +2142,7 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</sp
 </section>
 <section id="libyear-calculation">
 <h3>Libyear calculation<a class="headerlink" href="#libyear-calculation" title="Link to this heading"></a></h3>
-<p>For each versioned dependency, queries its package registry to compare the current version against the latest — 12 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases). Examples:</p>
+<p>For each versioned dependency, queries its package registry to compare the current version against the latest — 13 registries: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases), CRAN (via crandb). Examples:</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Registry</p></th>
@@ -2145,8 +2188,10 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</sp
 <h3>ScanCode Toolkit (license and copyright detection)<a class="headerlink" href="#scancode-toolkit-license-and-copyright-detection" title="Link to this heading"></a></h3>
 <p>After SCC, <a class="reference external" href="https://github.com/aboutcode-org/scancode-toolkit">ScanCode Toolkit</a> runs against the temporary checkout to detect per-file licenses, copyrights, and packages. ScanCode is a Python tool that provides precise, line-level attribution of licenses and copyright holders.</p>
 <p><strong>Invocation:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">OUTPUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123.json<span class="w">   </span><span class="c1"># the JSON the worker ingests</span>
-<span class="nv">CHECKOUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123<span class="w">      </span><span class="c1"># the temporary clone</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># The JSON the worker ingests</span>
+<span class="nv">OUTPUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123.json
+<span class="c1"># The temporary clone</span>
+<span class="nv">CHECKOUT</span><span class="o">=</span>/tmp/aveloxis-scancode/repo_123
 scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<span class="w"> </span>--json<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OUTPUT</span><span class="s2">&quot;</span><span class="w"> </span>--quiet<span class="w"> </span>--timeout<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$CHECKOUT</span><span class="s2">&quot;</span>
 </pre></div>
 </div>
@@ -2205,7 +2250,7 @@ scancode<span class="w"> </span>-clpi<span class="w"> </span>--only-findings<spa
 <li><p><strong>SBOMs</strong>: CycloneDX includes <code class="docutils literal notranslate"><span class="pre">evidence.licenses</span></code> and <code class="docutils literal notranslate"><span class="pre">evidence.copyright</span></code> on the root component. SPDX uses the aggregated SPDX expression for <code class="docutils literal notranslate"><span class="pre">licenseConcluded</span></code> (vs. <code class="docutils literal notranslate"><span class="pre">licenseDeclared</span></code> from the registry) and includes <code class="docutils literal notranslate"><span class="pre">copyrightText</span></code>.</p></li>
 <li><p><strong>Web dashboard</strong>: The repo detail page shows a “Source Code Licenses” section with per-license file counts, OSI compliance, and a copyright holders list.</p></li>
 </ul>
-<p>If ScanCode is not installed, this phase is silently skipped. Install it with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code> or <code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">scancode-toolkit-mini</span></code>.</p>
+<p>If ScanCode is not installed, this phase is silently skipped. Install it with <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">install-tools</span></code>.</p>
 </section>
 <section id="openssf-scorecard-remote-first-local-fallback">
 <h3>OpenSSF Scorecard (remote-first, local fallback)<a class="headerlink" href="#openssf-scorecard-remote-first-local-fallback" title="Link to this heading"></a></h3>

@@ -9,6 +9,9 @@
 #
 # The scan and vulnerability answers.
 repo_deps_vulnerabilities
+# The coverage record (0.29.197): the coverage state on the vulnerability
+# list and the statistics answers.
+repo_dependency_coverage
 repo_deps_scorecard
 scancode_file_results
 scancode_scans

@@ -254,7 +254,7 @@ type ghContentsEntry struct {
 // v0.25.0 added Julia (Project.toml, JuliaProject.toml), R/CRAN
 // (DESCRIPTION), and conda (meta.yaml) recognition after a
 // 2026-05-23 production diagnostic showed every distribution-scan
-// failure on the chaoss.tv aveloxis fleet was a Julia or R repo —
+// failure on one production fleet was a Julia or R repo —
 // repos whose manifests existed in the GitHub Contents listing but
 // were dropped on the floor because classifyManifestFilename
 // returned "" for them. Pre-v0.25.0 these ecosystems had no working

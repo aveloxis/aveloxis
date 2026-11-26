@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// showSettingSQL reads one server setting: name is one of the constants
+// ServerConnectionBudget writes at its calls.
+func showSettingSQL(name string) string { return "SHOW " + name }
 
 // ServerConnectionBudget reports the server's max_connections and the
 // connections a normal role cannot use — superuser_reserved_connections
@@ -22,14 +25,14 @@ import (
 // returned, never guessed (SR-5): the caller sizes from demand alone and
 // says so.
 func ServerConnectionBudget(ctx context.Context, connString string) (maxConns, reserved int, err error) {
-	conn, err := pgx.Connect(ctx, connString)
+	conn, err := OpenConn(ctx, connString)
 	if err != nil {
 		return 0, 0, fmt.Errorf("connecting for the connection budget: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
 	show := func(name string) (int, error) {
 		var raw string
-		if err := conn.QueryRow(ctx, "SHOW "+name).Scan(&raw); err != nil {
+		if err := conn.QueryRow(ctx, showSettingSQL(name)).Scan(&raw); err != nil {
 			return 0, fmt.Errorf("SHOW %s: %w", name, err)
 		}
 		n, perr := strconv.Atoi(raw)

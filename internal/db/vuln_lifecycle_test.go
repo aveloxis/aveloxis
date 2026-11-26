@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -44,7 +45,7 @@ func TestVulnUpsertRefreshesLifecycle(t *testing.T) {
 	src := mustReadFileStr(t, "vulnerability_store.go")
 	// The upsert (one spelling since PR #226) must un-resolve a reappearing
 	// vuln and stamp last_seen.
-	upsert := srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch(")
+	upsert := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) InsertVulnerabilityBatch("))
 	if !strings.Contains(upsert, "last_seen_at = NOW()") || !strings.Contains(upsert, "resolved_at = NULL") {
 		t.Error("the vulnerability upsert must SET last_seen_at = NOW(), resolved_at = NULL on conflict — a reappearing vuln is current again")
 	}
@@ -60,20 +61,16 @@ func TestVulnUpsertRefreshesLifecycle(t *testing.T) {
 }
 
 func TestScanMarksStaleResolved(t *testing.T) {
-	src, err := os.ReadFile("../collector/vulnerability.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := strings.Count(string(src), "MarkStaleVulnerabilitiesResolved(")
-	if n < 2 {
-		t.Errorf("ScanVulnerabilities must call MarkStaleVulnerabilitiesResolved after a complete scan AND on the zero-purl path (deps table is current truth); found %d call sites", n)
-	}
-	// The marking must come AFTER the OSV query error return — a partial
-	// view must never resolve anything. Pin by order: the queryOSVBatch
-	// error return appears before the seen-keys loop.
-	s := string(src)
-	if strings.Index(s, "OSV batch query failed") > strings.Index(s, "seen := make") {
-		t.Error("resolved-marking must happen after the OSV query succeeded, never on the error path")
+	// The closing calls are internal/linking's since 0.29.155 (its tests
+	// drive both: after answers, and with nothing to scan). What this pins is
+	// that the scan asks OSV BEFORE it links: a partial view must never close
+	// anything, so a failed query has to return ahead of linking.WithAnswers.
+	scan := srctest.StripGoComments(srctest.PackageFunc(t, "internal/collector", "func ScanVulnerabilities("))
+	// 0.29.168: the query, with its failure return, is fetchOSVQueryAnswers.
+	query := strings.Index(scan, "fetchOSVQueryAnswers(")
+	link := strings.Index(scan, "linking.WithAnswers(")
+	if query < 0 || link < 0 || query > link {
+		t.Errorf("the OSV query's error return (at %d) must come before linking.WithAnswers (at %d)", query, link)
 	}
 }
 
@@ -105,19 +102,19 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM aveloxis_data.repos WHERE repo_id = $1`, repoID)
 	})
 
-	mk := func(id, purl, sev string, score float64) *VulnerabilityRow {
-		return &VulnerabilityRow{VulnID: id, PackageName: "p", PackagePurl: purl,
+	mk := func(id, purl, sev string, score float64) *model.VulnerabilityRow {
+		return &model.VulnerabilityRow{VulnID: id, PackageName: "p", PackagePurl: purl,
 			Severity: sev, CVSSScore: score, Source: "osv.dev"}
 	}
 	// Scan 1: two findings.
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{
 		mk("GHSA-aaaa", "pkg:npm/a@1", "CRITICAL", 9.8),
 		mk("GHSA-bbbb", "pkg:npm/b@1", "LOW", 2.0),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Scan 2 reports only GHSA-aaaa → GHSA-bbbb resolves.
-	n, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, []string{"GHSA-aaaa|pkg:npm/a@1"}, nil)
+	n, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, []string{"GHSA-aaaa|pkg:npm/a@1"}, nil, false, nil, model.DecisionGuard{})
 	if err != nil || n != 1 {
 		t.Fatalf("expected exactly 1 resolved, got n=%d err=%v", n, err)
 	}
@@ -136,7 +133,7 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 		t.Error("GHSA-bbbb must carry resolved_at")
 	}
 	// Scan 3: GHSA-bbbb reappears → the upsert un-resolves it.
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{
 		mk("GHSA-bbbb", "pkg:npm/b@1", "LOW", 2.0),
 	}); err != nil {
 		t.Fatal(err)
@@ -150,13 +147,13 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 	// v0.28.8 (Copilot round 4): findings for deps the scan could NOT
 	// adjudicate (purl-less — never sent to OSV) are PRESERVED via
 	// preserveNames even though they're absent from the seen-set.
-	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*VulnerabilityRow{
+	if err := store.InsertVulnerabilityBatch(ctx, repoID, []*model.VulnerabilityRow{
 		{VulnID: "GHSA-cccc", PackageName: "purlless-dep", PackagePurl: "pkg:npm/purlless-dep@1",
 			Severity: "HIGH", CVSSScore: 8.0, Source: "osv.dev"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, []string{"purlless-dep"}); err != nil {
+	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, []string{"purlless-dep"}, false, nil, model.DecisionGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ = store.GetRepoVulnerabilities(ctx, repoID)
@@ -170,7 +167,7 @@ func TestVulnLifecycleEndToEnd(t *testing.T) {
 	}
 
 	// Empty scan (no preserves) resolves everything.
-	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, nil); err != nil {
+	if _, err := store.MarkStaleVulnerabilitiesResolved(ctx, repoID, nil, nil, false, nil, model.DecisionGuard{}); err != nil {
 		t.Fatal(err)
 	}
 	total, _, _ = store.CountRepoVulnerabilities(ctx, repoID)

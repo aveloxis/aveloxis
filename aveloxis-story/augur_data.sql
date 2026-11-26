@@ -4,7 +4,7 @@
  Source Server         : postgres-17
  Source Server Type    : PostgreSQL
  Source Server Version : 170009
- Source Host           : chaoss.tv:5434
+ Source Host           : (a production host)
  Source Catalog        : augur
  Source Schema         : augur_data
 

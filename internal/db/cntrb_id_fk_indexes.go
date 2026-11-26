@@ -14,8 +14,8 @@ import (
 // make v0.22.1's ON UPDATE CASCADE tractable.
 //
 // Without these indexes every cntrb_id rewrite cascades into
-// sequential scans of the child tables. On the production
-// aveloxis_large DB this kept `aveloxis migrate-cntrb-ids` stuck
+// sequential scans of the child tables. On the
+// larger production database this kept `aveloxis migrate-cntrb-ids` stuck
 // on batch 1 for 17+ hours with zero committed progress: 5,000
 // batch rows × 15 unindexed child tables (some 50M+ rows) =
 // 75,000 sequential scans per batch attempt.
@@ -53,6 +53,16 @@ var cntrbIDFKIndexes = []cntrbIDFKIndex{
 	{"pull_requests", "author_id", "idx_pull_requests_author_id"},
 }
 
+// cntrbIDFKIndexSQL is the CREATE INDEX statement for the i-th of cntrbIDFKIndexes: a function of the
+// index, so that the write-policy check runs it for every member.
+func cntrbIDFKIndexSQL(i int) string {
+	idx := cntrbIDFKIndexes[i]
+	return fmt.Sprintf(
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
+		idx.indexName, idx.table, idx.column,
+	)
+}
+
 // ensureCntrbIDFKIndexes is the v0.22.6 migration step that adds
 // a btree index on every unindexed FK column pointing at
 // aveloxis_data.contributors(cntrb_id). Uses
@@ -68,18 +78,14 @@ var cntrbIDFKIndexes = []cntrbIDFKIndex{
 // fail-closed contract — serve startup refuses to proceed if any
 // index build fails.
 //
-// Build durations vary widely by table size. On the production
-// fleet's aveloxis_large DB, the messages and pull_request_commits
+// Build durations vary widely by table size. On the larger
+// production database, the messages and pull_request_commits
 // indexes are the long pole (each table holds tens of millions of
 // rows). Operators can run `aveloxis migrate` and let it run; the
 // CONCURRENTLY flag prevents the build from blocking writes.
 func ensureCntrbIDFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range cntrbIDFKIndexes {
-		sql := fmt.Sprintf(
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
-			idx.indexName, idx.table, idx.column,
-		)
+	for i, idx := range cntrbIDFKIndexes {
 		execCreateIndexConcurrently(ctx, pg, logger, errs,
-			"aveloxis_data", idx.indexName, sql)
+			"aveloxis_data", idx.indexName, cntrbIDFKIndexSQL(i))
 	}
 }

@@ -13,7 +13,7 @@ import (
 // aveloxis_data.contributors(cntrb_id) must be backed by a btree
 // index on the child table. Without indexes, ON UPDATE CASCADE
 // (added in v0.22.1) seq-scans every child table for every cntrb_id
-// being rewritten. On the production aveloxis_large DB this kept
+// being rewritten. On the larger production database this kept
 // `aveloxis migrate-cntrb-ids` stuck on batch 1 for 17+ hours with
 // zero committed progress: 5,000 batch rows × 15 unindexed child
 // tables (some 50M+ rows) = 75,000 sequential scans per batch.
@@ -87,7 +87,7 @@ func TestSchemaDeclaresIndexesOnAllCntrbIDFKChildColumns(t *testing.T) {
 				"Without it, v0.22.1's ON UPDATE CASCADE on cntrb_id rewrites "+
 				"seq-scans aveloxis_data.%s for every cntrb_id update — the "+
 				"root cause of the 17-hour stall on aveloxis migrate-cntrb-ids "+
-				"observed on the aveloxis_large production DB on 2026-05-17.",
+				"observed on the larger production database on 2026-05-17.",
 				needle, idx.table)
 		}
 	}

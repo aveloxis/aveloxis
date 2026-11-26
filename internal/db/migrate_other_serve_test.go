@@ -154,7 +154,7 @@ func TestServeStartupMigrateRefusesBesideAnotherServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
-	otherServe, err := pgxpool.NewWithConfig(ctx, cfg)
+	otherServe, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestOtherServeConfirmationReSnapshotsOwnPIDs(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
 	cfg.MaxConns = 1
-	fake, err := pgxpool.NewWithConfig(ctx, cfg)
+	fake, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestServeStartupCanceledInsideListingIsNotARefusal(t *testing.T) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = ServeApplicationName
 	cfg.MaxConns = 1
-	fake, err := pgxpool.NewWithConfig(ctx, cfg)
+	fake, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +981,7 @@ func TestAllowSecondServeIsWiredAndNarrow(t *testing.T) {
 	}
 
 	main := srctest.Read(t, "cmd/aveloxis/main.go")
-	serveBody := srctest.FuncBody(t, main, "func runServe(")
+	serveBody := srctest.StripGoComments(srctest.FuncBody(t, main, "func runServe("))
 	if !strings.Contains(serveBody, "SetAllowSecondServe(allowSecondServe)") {
 		t.Error("runServe must pass the --allow-second-serve flag through to the store, or the flag " +
 			"is inert and an operator who genuinely wants two serves cannot start one")
@@ -1007,7 +1007,7 @@ func TestAllowSecondServeIsWiredAndNarrow(t *testing.T) {
 			"arm). A second read means the override has spread — most dangerously onto "+
 			"startupMigrateRefusal, which guards a FULL migration beside a live fleet.", uses)
 	}
-	refusal := srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func startupMigrateRefusal(")
+	refusal := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/db/migrate.go"), "func startupMigrateRefusal("))
 	if strings.Contains(refusal, "allowSecondServe") || strings.Contains(refusal, "ErrSecondServeRefused") {
 		t.Error("startupMigrateRefusal must not know about the second-serve override or its sentinel. " +
 			"It refuses a serve that would run a full migration beside a live fleet — the 2026-09-09 " +

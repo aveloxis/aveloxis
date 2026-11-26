@@ -1,0 +1,314 @@
+@@v01 fe nullif of another column
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(repo_name, ''), $1)
+@@v02 fe coalesce other-table col FROM
+UPDATE aveloxis_data.repos r SET fe = COALESCE(s.fe, $1) FROM s.stg s WHERE s.id = r.id
+@@v03 fe nullif other-table col
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(s.fe, ''), $1) FROM s.stg s WHERE s.id = r.id
+@@v04 pnn stored from other table
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($1, s.pnn) FROM s.stg s WHERE s.id = r.id
+@@v05 pn stored from other table
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF($1, ''), s.pn) FROM s.stg s WHERE s.id = r.id
+@@v06 g stored from other table
+UPDATE aveloxis_data.repos r SET g = GREATEST(COALESCE($1, s.g), COALESCE(s.g, $1)) FROM s.stg s WHERE s.id = r.id
+@@v07 e stored from other table
+UPDATE aveloxis_data.repos r SET e = LEAST(s.e, $1) FROM s.stg s WHERE s.id = r.id
+@@v08 k result from other table
+UPDATE aveloxis_data.repos r SET k = CASE WHEN TRUE THEN s.k ELSE NOW() END FROM s.stg s WHERE s.id = r.id
+@@v09 merge fe source col as stored
+MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = COALESCE(s.fe, 'x')
+@@v10 plpgsql record var as stored
+DO $$ DECLARE r record; BEGIN FOR r IN SELECT * FROM s.stg LOOP UPDATE aveloxis_data.repos SET fe = COALESCE(r.fe, 'x') WHERE id = r.id; END LOOP; END $$
+@@v11 sql function param qualified by fn name
+CREATE FUNCTION f(fe text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET fe = COALESCE(f.fe, 'x') $$
+@@v12 plpgsql variable_conflict use_variable
+CREATE FUNCTION f(fe text) RETURNS void LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, 'x'); END $$
+@@v13 fe guard bare incoming with guard on OR
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL OR id = 1
+@@v14 fe guard under NOT
+UPDATE aveloxis_data.repos SET fe = $1 WHERE NOT (fe IS NULL)
+@@v15 fe guard in case
+UPDATE aveloxis_data.repos SET fe = $1 WHERE CASE WHEN fe IS NULL THEN TRUE ELSE TRUE END
+@@v16 fe guard on other table's col
+UPDATE aveloxis_data.repos r SET fe = $1 FROM s.stg s WHERE s.fe IS NULL
+@@v17 fe guard in join condition
+UPDATE aveloxis_data.repos r SET fe = $1 FROM s.stg s JOIN s.o o ON r.fe IS NULL WHERE s.id = r.id
+@@v18 fe guard with alias but table-qualified (invalid PG)
+UPDATE aveloxis_data.repos r SET fe = $1 WHERE repos.fe IS NULL
+@@v19 fe guard tautology coalesce of const
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE('', '') = ''
+@@v20 fe guard IS NOT DISTINCT FROM NULL (true guard; maybe refused - fine)
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS DISTINCT FROM NULL
+@@v21 fe guard row IS NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE ROW(fe, id) IS NULL
+@@v22 fe guard row compare
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe, id) = (NULL, 1)
+@@v23 fe guard quoted other name
+UPDATE aveloxis_data.repos SET fe = $1 WHERE "FE" IS NULL
+@@v24 fe guard coalesce = '' with op other schema
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') OPERATOR(myschema.=) ''
+@@v25 fe guard = ANY
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') = ANY('{a,b}')
+@@v26 fe guard reversed
+UPDATE aveloxis_data.repos SET fe = $1 WHERE '' = COALESCE(fe, '')
+@@v27 fe guard coalesce with x''
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, 'x') = 'x'
+@@v28 fe guard precedence: IS NULL binds a = b
+UPDATE aveloxis_data.repos SET fe = $1 WHERE fe = fe IS NULL
+@@v29 fe guard in subquery
+UPDATE aveloxis_data.repos SET fe = $1 WHERE EXISTS (SELECT 1 FROM s.stg WHERE fe IS NULL)
+@@v30 fe guard in cte update's outer
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT 1 FROM u WHERE fe IS NULL
+@@v31 fe guard on conflict but index predicate
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) WHERE fe IS NULL DO UPDATE SET fe = $2
+@@v32 fe guard excluded col
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET fe = EXCLUDED.fe WHERE EXCLUDED.fe IS NULL
+@@v33 fe target alias named excluded
+UPDATE aveloxis_data.repos AS excluded SET fe = 'x' || excluded.fe WHERE id = 1
+@@v34 ar alias excluded refs stored
+UPDATE aveloxis_data.repos AS excluded SET ar = excluded.ar || 'x'
+@@v35 ar whole-row field ref
+UPDATE aveloxis_data.repos r SET ar = (r).ar || 'x'
+@@v36 ar to_jsonb whole row
+UPDATE aveloxis_data.repos r SET ar = (to_jsonb(r)->>'ar') || 'x'
+@@v37 ar subquery with renamed column alias list
+UPDATE aveloxis_data.repos r SET ar = (SELECT q.z FROM aveloxis_data.repos AS q(id, z) WHERE q.id = r.id)
+@@v38 ar star subquery
+UPDATE aveloxis_data.repos r SET ar = (SELECT (q.*)::text FROM aveloxis_data.repos q WHERE q.id = r.id)
+@@v39 ar plain ref stored
+UPDATE aveloxis_data.repos SET ar = ar + 1
+@@v40 ar quoted ref
+UPDATE aveloxis_data.repos SET ar = "ar" + 1
+@@v41 ar upper ref
+UPDATE aveloxis_data.repos SET ar = AR + 1
+@@v42 ar U& ref
+UPDATE aveloxis_data.repos SET ar = U&"\0061r" + 1
+@@v43 io assigned
+UPDATE aveloxis_data.repos SET io = $1
+@@v44 io assigned default
+UPDATE aveloxis_data.repos SET io = DEFAULT
+@@v45 fe set default
+UPDATE aveloxis_data.repos SET fe = DEFAULT
+@@v46 fe multi set row
+UPDATE aveloxis_data.repos SET (fe, x) = ($1, $2)
+@@v47 fe multi set subquery
+UPDATE aveloxis_data.repos SET (x, fe) = (SELECT 1, 2)
+@@v48 fe multi single
+UPDATE aveloxis_data.repos SET (fe) = ROW($1)
+@@v49 fe quoted target
+UPDATE aveloxis_data.repos SET "fe" = $1
+@@v50 fe upper target
+UPDATE AVELOXIS_DATA.REPOS SET FE = $1
+@@v51 fe U& target
+UPDATE aveloxis_data.repos SET U&"f\0065" = $1
+@@v52 fe U& table
+UPDATE U&"aveloxis_d\0061ta".U&"\0072epos" SET fe = $1
+@@v53 fe ONLY
+UPDATE ONLY aveloxis_data.repos SET fe = $1
+@@v54 fe star
+UPDATE aveloxis_data.repos * SET fe = $1
+@@v55 fe ONLY parens
+UPDATE ONLY (aveloxis_data.repos) SET fe = $1
+@@v56 fe db-qualified
+UPDATE mydb.aveloxis_data.repos SET fe = $1
+@@v57 fe unqualified
+UPDATE repos SET fe = $1
+@@v58 fe cte in insert select
+INSERT INTO s.o WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT id FROM u
+@@v59 fe cte in delete
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) DELETE FROM s.o USING u WHERE o.id = u.id
+@@v60 fe cte in merge
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) MERGE INTO s.o o USING u ON o.id = u.id WHEN MATCHED THEN DELETE
+@@v61 fe cte in update
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) UPDATE s.o SET a = 1
+@@v62 fe nested cte
+WITH a AS (WITH b AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT * FROM b) SELECT * FROM a
+@@v63 fe cte in copy to
+COPY (WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT * FROM u) TO STDOUT
+@@v64 fe cte in create view? (invalid at analysis but parse ok)
+CREATE VIEW s.v AS WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT * FROM u
+@@v65 fe cte in create matview
+CREATE MATERIALIZED VIEW s.mv AS WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT * FROM u
+@@v66 fe in explain analyze verbose
+EXPLAIN (ANALYZE, VERBOSE) UPDATE aveloxis_data.repos SET fe = $1
+@@v67 fe prepare
+PREPARE p(text) AS UPDATE aveloxis_data.repos SET fe = $1
+@@v68 fe in txn
+BEGIN; SAVEPOINT a; UPDATE aveloxis_data.repos SET fe = $1; RELEASE a; COMMIT
+@@v69 fe after comment tricks
+/* UPDATE x */ UPDATE /* c */ aveloxis_data . repos -- c
+SET fe /* c */ = $1
+@@v70 fe select into w/ cte
+WITH u AS (UPDATE aveloxis_data.repos SET fe = $1 RETURNING id) SELECT id INTO s.newt FROM u
+@@v71 fe merge update
+MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = s.x
+@@v72 fe merge not matched by source
+MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN NOT MATCHED BY SOURCE THEN UPDATE SET fe = 'x'
+@@v73 fe merge with guard (not read)
+MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED AND t.fe IS NULL THEN UPDATE SET fe = $1
+@@v74 fe merge ONLY
+MERGE INTO ONLY aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = $1
+@@v75 fe merge in cte (pg17)
+WITH m AS (MERGE INTO aveloxis_data.repos t USING s.stg s ON t.id = s.id WHEN MATCHED THEN UPDATE SET fe = $1 RETURNING t.id) SELECT * FROM m
+@@v76 fe on conflict on constraint
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT ON CONSTRAINT pk DO UPDATE SET fe = EXCLUDED.fe
+@@v77 fe on conflict coalesce reversed
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(EXCLUDED.fe, repos.fe)
+@@v78 fe on conflict nullif reversed
+INSERT INTO aveloxis_data.repos (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET fe = COALESCE(NULLIF(EXCLUDED.fe, ''), repos.fe)
+@@v79 fe insert default values on conflict
+INSERT INTO aveloxis_data.repos DEFAULT VALUES ON CONFLICT (id) DO UPDATE SET fe = 'x'
+@@v80 fe insert overriding
+INSERT INTO aveloxis_data.repos (id) OVERRIDING SYSTEM VALUE VALUES (1) ON CONFLICT (id) DO UPDATE SET fe = 'x'
+@@v81 fe case mixed arms
+UPDATE aveloxis_data.repos SET fe = CASE WHEN id = 1 THEN COALESCE(fe, $1) ELSE $1 END
+@@v82 fe coalesce 3 args
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, NULL, $1) || 'x'
+@@v83 fe coalesce then concat (precedence)
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1) || 'x'
+@@v84 fe cast around
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1)::text
+@@v85 fe nullif wrong const
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, 'x'), $1)
+@@v86 fe nullif of nullif reversed
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF('', fe), $1)
+@@v87 fe coalesce stored incoming w/ stored in incoming
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, fe || $1)
+@@v88 fe greatest
+UPDATE aveloxis_data.repos SET fe = GREATEST(fe, $1)
+@@v89 fe subselect
+UPDATE aveloxis_data.repos SET fe = (SELECT COALESCE(fe, $1))
+@@v90 fe user fn named coalesce
+UPDATE aveloxis_data.repos SET fe = myschema.coalesce(fe, $1)
+@@v91 fe quoted "coalesce" fn
+UPDATE aveloxis_data.repos SET fe = "coalesce"(fe, $1)
+@@v92 pn reversed
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(pn, ''), $1)
+@@v93 pn stored other col
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, ''), repo_name)
+@@v94 pn nullif space
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1, ' '), pn)
+@@v95 pn bare
+UPDATE aveloxis_data.repos SET pn = $1
+@@v96 pnn reversed
+UPDATE aveloxis_data.repos SET pnn = COALESCE(pnn, $1)
+@@v97 pnn incoming is other stored col
+UPDATE aveloxis_data.repos SET pnn = COALESCE(repo_name, pnn)
+@@v98 g same order twice
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($1, g), COALESCE($1, g))
+@@v99 g least
+UPDATE aveloxis_data.repos SET g = LEAST(COALESCE($1, g), COALESCE(g, $1))
+@@v100 g plain greatest (null semantics ok in PG but refused shape)
+UPDATE aveloxis_data.repos SET g = GREATEST(g, $1) - interval '1 day'
+@@v101 g three args
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($1, g), COALESCE(g, $1), NULL) - 1
+@@v102 g user fn greatest
+UPDATE aveloxis_data.repos SET g = s.greatest(COALESCE($1, g), COALESCE(g, $1))
+@@v103 g bare
+UPDATE aveloxis_data.repos SET g = $1
+@@v104 e greatest
+UPDATE aveloxis_data.repos SET e = GREATEST(e, $1)
+@@v105 e least with two incoming
+UPDATE aveloxis_data.repos SET e = LEAST($1, $2)
+@@v106 e least 3
+UPDATE aveloxis_data.repos SET e = LEAST(e, $1, NULL)
+@@v107 e least minus
+UPDATE aveloxis_data.repos SET e = LEAST(e, $1) - interval '1 day'
+@@v108 k case with operand
+UPDATE aveloxis_data.repos SET k = CASE id WHEN 1 THEN k ELSE NOW() END
+@@v109 k no else
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k END
+@@v110 k arm const
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE '1970-01-01' END
+@@v111 k arm now() - interval
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE NOW() - interval '1 day' END
+@@v112 k arm other fn named now with args
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE now(1) END
+@@v113 k arm schema now
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE evil.now() END
+@@v114 k arm double cast
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k::date::timestamptz ELSE NOW() END
+@@v115 k arm null
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN NULL ELSE NOW() END
+@@v116 k arm other col
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN created_at ELSE NOW() END
+@@v117 k arm nested case
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN CASE WHEN TRUE THEN '1970-01-01'::timestamptz ELSE k END ELSE NOW() END
+@@v118 k bare
+UPDATE aveloxis_data.repos SET k = '1970-01-01'
+@@v119 k arm stored lossy cast
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k::date ELSE NOW() END
+@@v120 k arm cast of const
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN '1970-01-01'::timestamptz ELSE NOW() END
+@@v121 k arm quoted "NOW"
+UPDATE aveloxis_data.repos SET k = CASE WHEN id = 1 THEN k ELSE "NOW"() END
+@@v122 copy from
+COPY aveloxis_data.repos FROM STDIN
+@@v123 copy cols
+COPY aveloxis_data.repos (id, fe) FROM '/tmp/x' WITH (FORMAT csv)
+@@v124 copy unqualified
+COPY repos (id) FROM STDIN
+@@v125 copy program
+COPY aveloxis_data.repos FROM PROGRAM 'cat x'
+@@v126 alter type
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe TYPE int USING 1
+@@v127 alter drop
+ALTER TABLE IF EXISTS ONLY aveloxis_data.repos DROP COLUMN IF EXISTS fe CASCADE
+@@v128 alter rename col
+ALTER TABLE aveloxis_data.repos RENAME fe TO fe2
+@@v129 alter rename col TO registered (another column takes the name)
+ALTER TABLE aveloxis_data.repos RENAME zz TO fe
+@@v130 alter table rename away
+ALTER TABLE aveloxis_data.repos RENAME TO repos_old
+@@v131 alter set schema away
+ALTER TABLE aveloxis_data.repos SET SCHEMA other
+@@v132 rename away then write
+ALTER TABLE aveloxis_data.repos RENAME TO r2; UPDATE aveloxis_data.r2 SET fe = 'x'
+@@v133 rename other TO registered
+ALTER TABLE aveloxis_data.zz RENAME TO repos
+@@v134 set schema other INTO registered
+ALTER TABLE other.repos SET SCHEMA aveloxis_data
+@@v135 drop table
+DROP TABLE aveloxis_data.repos
+@@v136 drop table quoted
+DROP TABLE "aveloxis_data"."repos" CASCADE
+@@v137 drop schema cascade
+DROP SCHEMA aveloxis_data CASCADE
+@@v138 drop column via alter on unqualified
+ALTER TABLE repos DROP COLUMN fe
+@@v139 alter attach partition
+ALTER TABLE aveloxis_data.repos ATTACH PARTITION s.p FOR VALUES IN (1)
+@@v140 create partition of
+CREATE TABLE s.p PARTITION OF aveloxis_data.repos FOR VALUES IN (1)
+@@v141 partition then write through partition
+CREATE TABLE s.p PARTITION OF aveloxis_data.repos DEFAULT; UPDATE s.p SET fe = 'x'
+@@v142 create inherits then write child
+CREATE TABLE s.c () INHERITS (aveloxis_data.repos); UPDATE s.c SET fe = 'x'
+@@v143 alter child inherit
+ALTER TABLE s.c INHERIT aveloxis_data.repos
+@@v144 attach registered AS partition of another
+ALTER TABLE s.parent ATTACH PARTITION aveloxis_data.repos DEFAULT
+@@v145 alter add fk on update cascade
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (fe) REFERENCES s.o (id) ON UPDATE CASCADE ON DELETE SET NULL
+@@v146 alter add fk on delete set null (col)
+ALTER TABLE aveloxis_data.repos ADD FOREIGN KEY (x) REFERENCES s.o (id) ON DELETE SET NULL (fe)
+@@v147 alter column set default then set default
+ALTER TABLE aveloxis_data.repos ALTER COLUMN ar SET DEFAULT 'x'
+@@v148 alter col set expression
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe SET EXPRESSION AS (lower(x))
+@@v149 alter col add generated identity
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe ADD GENERATED ALWAYS AS IDENTITY
+@@v150 alter view rename col
+ALTER VIEW aveloxis_data.repos RENAME COLUMN fe TO z
+@@v151 alter foreign table
+ALTER FOREIGN TABLE aveloxis_data.repos DROP COLUMN fe
+@@v152 alter type of composite attr (table rowtype?)
+ALTER TYPE aveloxis_data.repos ALTER ATTRIBUTE fe TYPE int
+@@v153 truncate
+TRUNCATE aveloxis_data.repos
+@@v154 rule action
+CREATE RULE r AS ON UPDATE TO s.o DO ALSO UPDATE aveloxis_data.repos SET fe = NEW.x
+@@v155 rule on registered instead
+CREATE RULE r AS ON UPDATE TO aveloxis_data.repos DO INSTEAD UPDATE aveloxis_data.repos SET fe = NEW.fe WHERE id = OLD.id
+@@v156 rule multiple
+CREATE RULE r AS ON DELETE TO s.o DO INSTEAD (DELETE FROM s.z; UPDATE aveloxis_data.repos SET fe = 'x')

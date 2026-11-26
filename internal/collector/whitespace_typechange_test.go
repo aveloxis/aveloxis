@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// TestWhitespaceTypeChangeKeepsFilesAligned — v0.29.71 (the kate log,
+// TestWhitespaceTypeChangeKeepsFilesAligned — v0.29.71 (the production log,
 // 2026-09-30: LadybirdBrowser/ladybird's whitespace phase refused "1 of
 // 431553 stats matched no stored commit row"). A file whose type changes
 // (a symlink replaced by a regular file) is ONE numstat line but TWO patch

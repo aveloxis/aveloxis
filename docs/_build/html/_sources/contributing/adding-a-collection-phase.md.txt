@@ -111,7 +111,7 @@ If the phase produces a NEW entity type, you'll need to:
 
 ### "Per-repo, runs after facade (needs git clone)"
 
-Goes in `internal/collector/analysis.go` or alongside it as a sibling file. Pattern:
+Goes in `internal/collector/analysis.go` or alongside it as a sibling file (a reader for a manifest format goes in `internal/manifest`, with one entry in its roster, `roster.go`; both dependency walks then read it). Pattern:
 
 ```go
 // internal/collector/my_analysis.go

@@ -22,6 +22,31 @@ func TestLoadConfigWiresTheOutboundPolicy(t *testing.T) {
 	if n := strings.Count(body, "collector.SetOutboundPolicy(outboundPolicyFor(cfg, logger))"); n != 2 {
 		t.Errorf("loadConfig installs the outbound-address rule on both arms (file loaded, defaults), found %d", n)
 	}
+	// 0.29.168: the vulnerability scan's cap on refused OSV queries is
+	// installed on both arms too. The collector's zero value isolates none,
+	// so a command that skipped this would fail a scan on its first refused
+	// query. (Here, not in a function of its own: the pin below reads every
+	// test body that names loadConfig as one that runs it.)
+	if n := strings.Count(body, "collector.SetOSVRejectedQueryCap(cfg.Collection.OSVRejectedQueryCap())"); n != 2 {
+		t.Errorf("loadConfig installs the refused-query cap from the configuration's effective value on both arms, found %d", n)
+	}
+	// 0.29.169: and its page cap (zero reads the first page only).
+	if n := strings.Count(body, "collector.SetOSVPagesPerQuery(cfg.Collection.OSVPagesPerQueryOrDefault())"); n != 2 {
+		t.Errorf("loadConfig installs the page cap from the configuration's effective value on both arms, found %d", n)
+	}
+	// 0.29.180: the configured Maven repositories, and the hosts in use
+	// logged where they are installed (hosts only: a URL may hold a secret).
+	if n := strings.Count(body, "collector.SetMavenRepositories(cfg.Collection.MavenRepositoryList())"); n != 2 {
+		t.Errorf("loadConfig installs the Maven repositories from the configuration's effective list on both arms, found %d", n)
+	}
+	if n := strings.Count(body, `cfg.Collection.MavenRepositoryHosts()`); n != 2 {
+		t.Errorf("loadConfig logs the Maven repository HOSTS on both arms, found %d", n)
+	}
+	// 0.29.184: whether declared repositories are fetched from (off before
+	// it is installed), with the effective value logged.
+	if n := strings.Count(body, "collector.SetDeclaredRepositoryFetch(cfg.Collection.DeclaredRepositoryFetchValue())"); n != 2 {
+		t.Errorf("loadConfig installs collection.declared_repository_fetch on both arms, found %d", n)
+	}
 	helper := srctest.StripGoComments(srctest.PackageFunc(t, "cmd/aveloxis", "func outboundPolicyFor("))
 	if !strings.Contains(helper, "cfg.OutboundPolicy()") || !strings.Contains(helper, "p.Allow()") || !strings.Contains(helper, "collector.ProxyHosts()") {
 		t.Error("outboundPolicyFor builds the rule from the configuration and logs the effective trust and the configured proxies")

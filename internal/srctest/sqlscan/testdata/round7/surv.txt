@@ -1,0 +1,12 @@
+@@ S36 flip: non-temp unqualified create then write
+CREATE TABLE IF NOT EXISTS repos (io int); UPDATE repos SET io = 2
+@@ S53 flip: child of unqualified registered parent
+CREATE TABLE aveloxis_data.repos_2026 PARTITION OF repos FOR VALUES FROM (1) TO (2)
+@@ S53b inherits
+CREATE TABLE aveloxis_data.repos_c () INHERITS (repos)
+@@ S20 flip (invalid in PG): alias excluded
+INSERT INTO aveloxis_data.repos AS excluded (repo_id, pnn) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET ar = excluded.ar
+@@ S24 flip (invalid in PG): 3-part with alias
+UPDATE aveloxis_data.repos r SET fe = COALESCE(aveloxis_data.repos.fe, $1)
+@@ S13: case without else
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN k END

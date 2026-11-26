@@ -13,7 +13,7 @@ import (
 )
 
 // TestReconcileOrgRepoLinksKeyedJoinKeepsItsResult — v0.29.71: the join
-// gained a host/owner key (a hash join; 0.7 s instead of 330 s on kate)
+// gained a host/owner key (a hash join; 0.7 s instead of 330 s on a production fleet)
 // with starts_with kept as the exact test, so the result must be exactly
 // the prefix rule's: a GitLab subgroup's direct and nested projects, a case
 // variant, an org URL with a trailing slash, and NOT a sibling org whose

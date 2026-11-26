@@ -1,0 +1,6 @@
+@@ S21 flip for m21: whole row carried through a scalar sub-select output
+UPDATE aveloxis_data.repos r SET ar = (s.v).ar FROM (SELECT x.repo_id, (SELECT t FROM aveloxis_data.repos t WHERE t.repo_id = x.repo_id) AS v FROM aveloxis_data.repos x) s WHERE s.repo_id = r.repo_id
+@@ S34b flip for m34b: CASE with an operand
+UPDATE aveloxis_data.repos SET fe = CASE false WHEN fe IS NULL THEN $1 ELSE fe END
+@@ S53 flip for m53 (catalog: lone defined, repos declared only)
+TRUNCATE aveloxis_data.lone CASCADE

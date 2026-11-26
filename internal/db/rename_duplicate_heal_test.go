@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,7 +28,23 @@ import (
 // DEFERRABLE, so the violation surfaces at COMMIT — both Exec and
 // Commit must route through the check).
 func TestHealRenamedDuplicateShape(t *testing.T) {
-	body := extractFunctionBody(t, "rename_duplicate_heal.go", "HealRenamedDuplicate")
+	// Comments removed from the body too (0.29.228, Copilot on PR #263): the
+	// loop or its Exec left in a comment satisfied the wiring check, with the
+	// step list still supplying every needle.
+	fn := srctest.StripGoComments(extractFunctionBody(t, "rename_duplicate_heal.go", "HealRenamedDuplicate"))
+	// 0.29.212: the heal's statements are the list renameHealSteps, which
+	// the function runs in order through renameHealStepSQL (so that the
+	// write-policy check runs each). The pieces pinned are the same, read
+	// in the function's body together with that list.
+	src, err := os.ReadFile("rename_duplicate_heal.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := srctest.PackageValues(t, srctest.StripGoComments(string(src)))["renameHealSteps"]
+	if steps == "" || !strings.Contains(fn, "for i, st := range renameHealSteps {") || !strings.Contains(fn, "tx.Exec(ctx, renameHealStepSQL(i), args...)") {
+		t.Fatal("HealRenamedDuplicate must run every step of renameHealSteps, in the list's order, on its transaction")
+	}
+	body := fn + "\n" + steps
 	for _, needle := range []string{
 		"last_collected IS NOT NULL", // never-collected gate
 		"user_repo_stars",

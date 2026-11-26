@@ -1,0 +1,329 @@
+a1.txt	A01 lateral subselect carries r2.ar	assign
+a1.txt	A02 lateral function unnest(ARRAY[r2.ar])	assign
+a1.txt	A03 lateral function no colnames	assign
+a1.txt	A04 lateral subselect, comma	assign
+a1.txt	A05 lateral subselect whole row	assign
+a1.txt	A06 join alias	assign
+a1.txt	A07 join USING merged col, qualified by other side	assign
+a1.txt	A08 natural join other-qualified	assign
+a1.txt	A09 subselect: ar renamed via alias in nested other-name: SELECT ar AS x	assign
+a1.txt	A10 subselect: other col (R26-like deliberately passes)	assign
+a1.txt	A11 subselect: colnames rename	assign
+a1.txt	A12 subselect: positional rename via outer colnames on self	assign
+a1.txt	A13 subselect output aggregated without name: max(ar)	assign
+a1.txt	A14 subselect output via window named	assign
+a1.txt	A15 subselect: value moved through WHERE-correlated other alias: SELECT x.fe AS ar (ok: other col)	assign
+a1.txt	A16 subselect: alias chain inside same select (PG disallows ref to output alias in select list)	assign
+a1.txt	A17 cte referenced	assign
+a1.txt	A18 cte other col	assign
+a1.txt	A19 cte with column list	assign
+a1.txt	A20 cte with column list renaming: fe column named b holds ar	assign
+a1.txt	A21 cte aliased in FROM	assign
+a1.txt	A22 cte via second cte	assign
+a1.txt	A23 recursive cte	assign
+a1.txt	A24 cte data-modifying RETURNING old	assign
+a1.txt	A25 matview in FROM	assign
+a1.txt	A26 view over view in FROM	assign
+a1.txt	A27 unknown relation in FROM	assign
+a1.txt	A28 unqualified relation in FROM named like a view	assign
+a1.txt	A29 table function in FROM	assign
+a1.txt	A30 ONLY	assign
+a1.txt	A31 subselect in value over a view	assign
+a1.txt	A32 subselect in value over matview, other col name	assign
+a1.txt	A33 subselect in value over unknown table	assign
+a1.txt	A34 values joined to target in derived table	assign
+a1.txt	A35 set op in derived	assign
+a1.txt	A36 TABLE cmd	assign
+a1.txt	A37 subselect star	assign
+a1.txt	A38 subselect row json	assign
+a1.txt	A39 subselect whole row unnamed alias: SELECT x FROM repos x  (column named x)	assign
+a1.txt	A40 subselect whole row by table name without alias	assign
+a1.txt	A41 whole item row to json	assign
+a1.txt	A42 bare name from item	assign
+a1.txt	A43 scalar subselect over FROM item (correlated)	assign
+a1.txt	A44 scalar subselect over cte	assign
+a1.txt	A45 subselect over cte with other alias	assign
+a1.txt	A46 conflict-update with cte	assign
+a1.txt	A47 conflict-update: excluded other col	pass
+a1.txt	A48 merge using target	assign
+a1.txt	A49 merge using lateral	assign
+a1.txt	A50 subselect in FROM: partition child name unknown to catalog	assign
+a1.txt	A51 FROM item reads target via subselect inside function arg	assign
+a1.txt	A52 FROM subselect with scalar subselect output named	assign
+a1.txt	A53 FROM subselect with target only in WHERE (other col out)	pass
+a1.txt	A54 ar from other table col ar where other is a table (ok)	pass
+a1.txt	A55 jsonb_to_recordset lateral over r2 row	assign
+a1.txt	A56 lateral subselect star	assign
+a2.txt	A60 insert-select from same table, conflict excluded (dedup move style)	assign
+a2.txt	A61 schema-qualified whole row in derived	assign
+a2.txt	A62 nested lateral inside derived	assign
+a2.txt	A63 house-style dedup: winner takes loser's stamp via CROSS JOIN LATERAL	assign
+a2.txt	A64 json_table lateral	assign
+a2.txt	A65 conflict excluded from VALUES containing subselect over target	assign
+a2.txt	A66 merge source lateral	assign
+a2.txt	A67 cte column list via self	assign
+a2.txt	A68 cte column list partial (only first col renamed)	assign
+a2.txt	A69 fe fill reading stored through lateral (incoming side must not read stored of THIS row)	assign
+a2.txt	A70 pnn with lateral 'incoming' = stored of other row via incomingQuery bare col	assign
+a2.txt	A71 g with lateral bare	assign
+a2.txt	A72 fe guarded bare "incoming" lateral constant-ish	assign
+a3.txt	A80 bare item column inside a scalar sub-select of the value	assign
+a3.txt	A81 bare item column inside a sub-select with its own FROM	assign
+a3.txt	A82 bare view column inside sub-select (every column of a view counts)	assign
+a3.txt	A83 control: bare outside sub-select	assign
+a3.txt	A84 item whole row bare in sub-select	assign
+a3.txt	A85 item star in sub-select	assign
+a3.txt	A86 3-part ref to a view item inside sub-select	assign
+a3.txt	A87 item qualified in sub-select whose FROM has same alias for another table (shadow correct)	pass
+a3.txt	A88 shadowing claimed but alias is in a SIBLING sub-select (not enclosing)	assign
+a3.txt	A89 shadow by alias in nested FROM subselect (not in scope at the reference)	assign
+a3.txt	A90 stored r.ar with shadow via nested-FROM alias r (not in scope at the reference)	assign
+a3.txt	A91 fe incoming side reads stored through nested-alias shadow	assign
+a3.txt	A92 pnn "incoming" unaffected; fe: mentionsStored with join-alias in sub	assign
+a4.txt	M15 flip: a WITH query named like the target's table, target self-joined by its schema-qualified name	assign
+b1.txt	B01 base batch pnn	pass
+b1.txt	B02 unnest WITH ORDINALITY	pass
+b1.txt	B03 ordinality col as value (a counter, not handed in)	pass
+b1.txt	B04 jsonb_to_recordset	assign
+b1.txt	B05 generate_series	assign
+b1.txt	B06 VALUES with subselect	assign
+b1.txt	B07 VALUES with column ref (lateral not allowed, but const)	assign
+b1.txt	B08 VALUES with NOW()	assign
+b1.txt	B09 derived joining placeholders to real table	assign
+b1.txt	B10 unnest(ARRAY(SELECT from target))	assign
+b1.txt	B11 unnest of ARRAY[$1,$2]	assign
+b1.txt	B12 lateral unnest of stored (not incoming)	assign
+b1.txt	B13 derived SELECT unnest with WHERE	pass
+b1.txt	B14 derived SELECT unnest and expression	assign
+b1.txt	B15 derived SELECT DISTINCT ON	assign
+b1.txt	B16 incoming item qualifier same as target alias (shadow)	pass
+b1.txt	B17 bare column from incoming item (unqualified)	assign
+b1.txt	B18 incoming item id column used as value (wrong column of the batch)	pass
+b1.txt	B19 incoming whole row	assign
+b1.txt	B20 unnest schema-qualified myschema.unnest	assign
+b1.txt	B21 unnest no alias	pass
+b1.txt	B22 ROWS FROM	assign
+b1.txt	B23 ROWS FROM unnest + unnest	pass
+b1.txt	B24 fe guarded bare from batch	pass
+b1.txt	B25 g from batch	pass
+b1.txt	B26 TABLESAMPLE / unnest with cast of cast	pass
+b1.txt	B27 unnest VARIADIC? unnest($1) FILTER n/a; unnest(DISTINCT)	assign
+b1.txt	B28 derived placeholders-only (ok)	pass
+b1.txt	B29 derived of incoming nested with bare col that is lateral ref to r2? (bare 1-part col in incoming query, no FROM)	assign
+b1.txt	B30 same, qualified r2.pnn inside lateral incoming query	assign
+b1.txt	G01 greatest plain	pass
+b1.txt	G02 greatest 3 args	assign
+b1.txt	G03 greatest const	assign
+b1.txt	G04 greatest other column stored	assign
+b1.txt	G05 greatest from r2	assign
+b1.txt	G06 greatest stored cast	assign
+b1.txt	G07 greatest incoming cast lossy	pass
+b1.txt	G08 greatest excluded other column	assign
+b1.txt	G09 pnn excluded other column	assign
+b1.txt	G10 greatest(stored, stored)	assign
+b1.txt	G11 greatest(incoming, incoming)	assign
+b1.txt	G12 pnn from self-join r2.pnn as incoming	assign
+b1.txt	G13 least e three	assign
+b1.txt	T01 nullif trim	pass
+b1.txt	T02 btrim chars	assign
+b1.txt	T03 ltrim	assign
+b1.txt	T04 trim both x from	assign
+b1.txt	T05 trim leading	assign
+b1.txt	T06 lower	assign
+b1.txt	T07 trim(trim)	assign
+b1.txt	T08 trim cast inside and outside	pass
+b1.txt	T09 trim of stored in incoming position	assign
+b1.txt	T10 user schema btrim	assign
+b1.txt	T11 trim excluded	pass
+b1.txt	T12 trim excluded other col	assign
+b1.txt	T13 nullif with ' '	assign
+b1.txt	T14 nullif E''	pass
+b1.txt	T15 fe with trim incoming	pass
+b1.txt	T16 btrim named arg / variadic	assign
+b1.txt	K01 coalesce($n, now())	pass
+b1.txt	K02 current_timestamp	pass
+b1.txt	K03 transaction_timestamp	pass
+b1.txt	K04 clock_timestamp	assign
+b1.txt	K05 statement_timestamp	assign
+b1.txt	K06 now - interval	assign
+b1.txt	K07 current_date	assign
+b1.txt	K08 localtimestamp	assign
+b1.txt	K09 'now'::timestamptz	assign
+b1.txt	K10 timeofday	assign
+b1.txt	K11 current_timestamp(0)	assign
+b1.txt	K12 coalesce(now(), $n)	assign
+b1.txt	K13 coalesce($n, k) / coalesce(k, now())	assign
+b1.txt	K14 myschema.now()	assign
+b1.txt	K15 pg_catalog.now()	assign
+b1.txt	K16 "NOW"() quoted uppercase	assign
+b1.txt	K17 now() cast	assign
+b1.txt	K18 coalesce(excluded.other, now())	assign
+b1.txt	K19 bare value not CASE	assign
+b1.txt	K20 other-row k through FROM	assign
+b1.txt	C01 fill as CASE	pass
+b1.txt	C02 CASE else other	assign
+b1.txt	C03 CASE when on other column	assign
+b1.txt	C04 CASE not-null inverted	assign
+b1.txt	C05 CASE no else	assign
+b1.txt	C06 nested CASE result	assign
+b1.txt	C07 CASE with OR in condition	assign
+b1.txt	C08 CASE with AND in condition	assign
+b1.txt	C09 CASE guard (fe IS NULL OR fe = '')	pass
+b1.txt	C10 CASE guard fe IS NULL OR pn = ''	assign
+b1.txt	C11 CASE guard NOT(fe IS NULL)	assign
+b1.txt	C12 CASE guard coalesce(fe,'x')=''	assign
+b1.txt	C13 CASE guard '' = fe only (misses null? no: non-null empty only, fine) / fe = ' '	assign
+b1.txt	C14 CASE guard fe IS NULL OR fe <> ''	assign
+b1.txt	C15 guard commuted '' = COALESCE(fe,'')	pass
+b1.txt	C16 guard IS NOT DISTINCT FROM NULL	assign
+b1.txt	C17 guard OR'd	assign
+b1.txt	C18 guard on r2 (other row empty)	assign
+b1.txt	C19 guard (fe IS NULL OR fe = '') with other op	assign
+b1.txt	C20 guard fe IS NULL OR fe = 'x'	assign
+b1.txt	C21 guard NULLIF(fe, 'x') IS NULL	assign
+b1.txt	C22 guard coalesce(fe, '') = '' with ANY op: coalesce(fe,'') LIKE ''	assign
+b1.txt	C23 guard with 3-arg coalesce	assign
+b1.txt	C24 guard in a NOT	assign
+b1.txt	C25 guard pg operator schema-qualified OPERATOR(myschema.=)	assign
+b1.txt	C26 guard (fe IS NULL OR fe = '') three-way OR	assign
+b1.txt	C27 guard fe IS NULL OR '' = fe	pass
+b1.txt	C28 guard = ANY	assign
+b1.txt	C29 guard col = '' alone (not null-covering; still only empties)	assign
+b1.txt	C30 fe coalesce three args	assign
+b1.txt	C31 fe COALESCE(NULLIF(fe,''), stored other col)	pass
+b1.txt	C32 fe guarded, merge-update with guard in ON	assign
+b1.txt	C33 merge WHEN MATCHED AND guard	assign
+d1.txt	D01 add fk not valid set null on registered col	fk-action
+d1.txt	D02 validate	pass
+d1.txt	D03 add column with references set null (Q7-3)	fk-action
+d1.txt	D04 on update set default	fk-action
+d1.txt	D05 fk on referencing side new table -> repos cascade (does not write repos)	pass
+d1.txt	D06 fk on delete cascade FROM repos to other (deletes repos rows)	pass
+d1.txt	D07 fk multi-col with set null (col list) other col only	fk-action
+d1.txt	D08 fk multi-col set null col list ar	pass
+d1.txt	D09 truncate kid's parent cascade: lone (no refs) CASCADE	truncate
+d1.txt	D10 truncate other (Table()-declared only) cascade	truncate
+d1.txt	D11 truncate kid cascade	truncate
+d1.txt	D12 truncate table then registered refs added in same text	truncate+unknown-target
+d1.txt	D13 truncate restart identity cascade w/ ONLY	truncate
+d1.txt	D14 drop table parent cascade where registered inherits? (drop other cascade)	pass
+d1.txt	D15 drop table of partitioned parent whose partition is... registered is child: CREATE repos as partition recorded?	pass
+d1.txt	D16 detach concurrently	partition
+d1.txt	D17 no inherit	partition
+d1.txt	D18 other no inherit repos	partition
+d1.txt	D19 cluster / vacuum full / reindex	pass
+d1.txt	D20 alter constraint deferrable	pass
+d1.txt	D21 drop type cascade	drop-type
+d1.txt	D22 drop type restrict	pass
+d1.txt	D23 drop domain cascade	drop-type
+d1.txt	D24 drop extension cascade (drops columns of its types)	drop-type
+d1.txt	D25 drop function cascade (drops generated cols/defaults/triggers)	drop-type
+d1.txt	D26 drop sequence cascade	drop-type
+d1.txt	D27 drop collation cascade (drops columns with that collation)	drop-type
+d1.txt	D28 alter schema rename	rename-schema
+d1.txt	D29 alter schema other rename onto	rename-schema
+d1.txt	D30 drop owned	owned
+d1.txt	D31 reassign owned	owned
+d1.txt	D32 temp same text	pass
+d1.txt	D33 temp named repos shadows registered: unqualified write	pass
+d1.txt	D34 temp after write	unqualified-target
+d1.txt	D35 temp dropped before write	unqualified-target
+d1.txt	D36 temp in other statement text	unqualified-target
+d1.txt	D37 pg_temp.x undeclared	unknown-target
+d1.txt	D38 temp ON COMMIT DROP then commit in same text	unqualified-target
+d1.txt	D39 CREATE TEMP IF NOT EXISTS (may not be the one made: a permanent tmp_x on search path? no: temp first)	pass
+d1.txt	D40 temp rolled back	unqualified-target
+d1.txt	D41 temp renamed away then written	unqualified-target
+d1.txt	D42 temp created AS SELECT / INTO TEMP	pass
+d1.txt	D43 temp view over registered then written (view is not table kind)	unqualified-target
+d1.txt	D44 temp table INHERITS registered	unqualified-target
+d1.txt	D45 temp table partition of registered	unqualified-target
+d1.txt	D46 temp created in DO, written at top	unqualified-target
+d1.txt	D47 temp table LIKE registered, ar AlwaysRefresh from itself (fine)	pass
+d1.txt	D48 temp explicit schema pg_temp create then bare write	pass
+d1.txt	D49 temp with schema-qualified aveloxis_data.tmp? cannot. temp set then set search_path	pass
+d1.txt	D50 temp, then ATTACH it as partition to registered	partition
+d1.txt	D51 temp, then ALTER tk INHERIT registered	unqualified-target
+d1.txt	D52 temp then FROM temp reading target for AR	assign
+d1.txt	D53 unlogged table as scratch copy for AR (catalog knows)	assign
+d1.txt	D54 INSERT SELECT * from target into registered	pass
+d1.txt	D55 alter table add constraint fk on kid referencing repos ON UPDATE CASCADE (writes kid, not registered)	pass
+d1.txt	D56 partition of with FK col action	pass
+d1.txt	D57 alter table repos alter column ar set default / add generated	pass
+d1.txt	D58 alter table repos alter column ar set not null (no write)	pass
+d1.txt	D59 alter table ALTER COLUMN ar SET DATA TYPE	alter-column
+d1.txt	D60 drop table if exists registered, cascade	drop
+d1.txt	D61 drop view cascade (drops dependent views only)	pass
+d1.txt	D62 alter table set access method / rewrite (no value change)	pass
+d1.txt	D63 alter type rename attribute cascade / alter type ... alter attribute type cascade	pass
+d1.txt	D64 alter domain set default/ drop constraint	pass
+d1.txt	D65 alter table ... add column generated stored referencing ar (no write of ar)	pass
+d1.txt	D66 alter table drop column other cascade	pass
+d1.txt	D67 alter table rename constraint / set (fillfactor) / disable trigger all	pass
+d1.txt	D68 alter table enable replica trigger; alter trigger rename;	pass
+d1.txt	D69 create trigger on other that updates repos inside function elsewhere	pass
+d1.txt	D70 alter table repos split/merge partitions (pg17 none) ; ALTER TABLE ... OF type	pass
+d1.txt	D71 lock / comment / security label	pass
+d1.txt	D72 alter table set schema of other onto registered schema name collision n/a; ALTER TABLE x RENAME TO repos in other schema	pass
+d1.txt	D73 alter table aveloxis_data.other rename to repos (takes name? exists)	rename-table
+d1.txt	D74 alter view rename to registered name	rename-table
+d1.txt	D75 alter table public.repos set schema aveloxis_data	rename-table
+d1.txt	D76 alter sequence / matview rename	rename-table
+d1.txt	D77 alter index rename to repos (index names share the namespace; exists -> error)	pass
+d1.txt	D78 create table repos in pg_temp explicitly then write qualified pg_temp.repos	pass
+d2.txt	P01 drop partition child of registered	child-target
+d2.txt	P02 truncate partition child	child-target
+d2.txt	P03 drop ancestor cascade (drops registered child)	child-target
+d2.txt	P04 truncate ancestor (truncates children too, no CASCADE needed)	child-target
+d2.txt	P05 update ancestor (updates registered child's rows; only ancestor's columns)	child-target
+d2.txt	P06 delete from ancestor (deletes registered rows)	child-target
+d2.txt	P07 child no inherit	child-target+partition
+d2.txt	P08 alter ancestor alter column type (rewrites children)	child-target
+d2.txt	P09 alter child partition drop column / alter type ar	child-target
+d2.txt	P10 rename partition child / set schema	child-target
+d2.txt	P11 ar from partition child in FROM	assign
+d2.txt	P12 ar from ancestor in FROM (ancestor shows only its own columns: ok)	assign
+d2.txt	P13 trigger on partition child	child-target
+d2.txt	P14 rule on child	child-target
+d2.txt	P15 copy into child	child-target
+d2.txt	P16 fk on child col	child-target
+q1.txt	Q01 two variable_conflict lines, last use_column: fe is the column -> stored -> fill ok	pass
+q1.txt	Q02 two lines, last use_variable: fe is variable -> COALESCE(var, 'x') not stored -> must be refused	assign
+q1.txt	Q03 variable_conflict inside a comment after the real one	pass
+q1.txt	Q04 variable_conflict in a string	pass
+q1.txt	Q05 nested block declares the variable (inner DECLARE)	assign
+q1.txt	Q06 EXECUTE static inherits no vars: ar is column -> AR violation	assign
+q1.txt	Q07 EXECUTE with USING	assign
+q1.txt	Q08 EXECUTE computed	unparsed
+q1.txt	Q09 EXECUTE format	unparsed
+q1.txt	Q10 loop record holds stored (documented not followed)	assign
+q1.txt	Q11 AR with variable named ar, use_variable	assign
+q1.txt	Q12 sql function param named ar: yields to column -> stored	assign
+q1.txt	Q13 sql function param qualified f.ar	assign
+q1.txt	Q14 sql function $1	assign
+q1.txt	Q15 plpgsql function param qualified by function name where FROM item has same name	assign
+q1.txt	Q16 block label qualifies variable; label same as FROM alias?	assign
+q1.txt	Q17 block label qualifies variable (no FROM)	assign
+q1.txt	Q18 trigger assign	trigger-assign
+q1.txt	Q19 trigger assign conforming for ar (NEW.ar := 'x') still reported for every registered col named ar?	trigger-assign
+q1.txt	Q20 function BEGIN ATOMIC	assign
+q1.txt	Q21 CREATE PROCEDURE plpgsql	assign
+q1.txt	Q22 CALL / SELECT function (documented)	pass
+q1.txt	Q23 with ctes shadow: CTE named like the target used in FROM, reads other	pass
+q1.txt	Q24 two CTEs of one name in different subselects, one reads target	assign
+q1.txt	Q25 nested WITH name reuse: outer c harmless, FROM item c is inner?	assign
+q1.txt	Q26 conflict-update AR referencing target in RETURNING only	pass
+q1.txt	Q27 update set from sub-select multi-assign (ROW)	assign
+q1.txt	Q28 update set from sub-select multi-assign subquery	assign
+q1.txt	Q29 UPDATE SET ar = DEFAULT	assign
+sv.txt	S21 flip for m21: whole row carried through a scalar sub-select output	assign
+sv.txt	S34b flip for m34b: CASE with an operand	assign
+sv.txt	S53 flip for m53 (catalog: lone defined, repos declared only)	truncate
+wo.txt	W04 cast inside	pass
+wo.txt	W09 one of the four	pass
+wo.txt	W37 qualified in subselect	pass
+wo.txt	W37b qualified, table without alias	pass
+wo.txt	W54 FROM item with named outputs for another column	assign
+wo.txt	W54b FROM item, unqualified cols	assign
+wo.txt	W54c FROM item named output via CTE	assign
+wo.txt	W54d FROM item where the same-named-other col output name is ar (count(*) AS ar)	assign

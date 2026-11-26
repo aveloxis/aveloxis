@@ -15,7 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestAnnotateSPDXWithVulnsAttachesSecurityRefs(t *testing.T) {
@@ -34,14 +35,14 @@ func TestAnnotateSPDXWithVulnsAttachesSecurityRefs(t *testing.T) {
 	  ]
 	}`)
 	resolved := time.Now()
-	vulns := []*db.VulnerabilityRow{
+	vulns := []*model.VulnerabilityRow{
 		{VulnID: "GHSA-live-1", PackageName: "flask", PackagePurl: "pkg:pypi/flask@2.0.0"},
 		// Resolved-historical: must not attach.
 		{VulnID: "GHSA-old-1", PackageName: "flask", PackagePurl: "pkg:pypi/flask@2.0.0", ResolvedAt: &resolved},
 		// Self-advisory: must not attach.
 		{VulnID: "GHSA-self-1", PackageName: "app", PackagePurl: "pkg:pypi/app", DependencyKind: "self"},
 	}
-	out, err := annotateSPDXWithVulns(sbom, vulns)
+	out, err := collector.AnnotateSPDXWithVulns(sbom, vulns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +105,10 @@ func TestAnnotateSPDXWithVulnsFallsBackToNameMatch(t *testing.T) {
 	                     "referenceType": "purl",
 	                     "referenceLocator": "pkg:npm/lodash"}]}
 	]}`)
-	vulns := []*db.VulnerabilityRow{
+	vulns := []*model.VulnerabilityRow{
 		{VulnID: "GHSA-x", PackageName: "lodash", PackagePurl: "pkg:npm/lodash@4.17.20"},
 	}
-	out, err := annotateSPDXWithVulns(sbom, vulns)
+	out, err := collector.AnnotateSPDXWithVulns(sbom, vulns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestAnnotateSPDXWithVulnsFallsBackToNameMatch(t *testing.T) {
 
 // TestSBOMHandlerScopeAndSPDXVulns pins the handler wiring: the
 // ?scope= parameter routes through GenerateSBOMWithOptions, SPDX
-// vulns=1 goes through annotateSPDXWithVulns (the old 400 is GONE),
+// vulns=1 goes through collector.AnnotateSPDXWithVulns (the old 400 is GONE),
 // and filenames gain the -runtime / -with-vulns markers.
 func TestSBOMHandlerScopeAndSPDXVulns(t *testing.T) {
 	src, err := os.ReadFile("server.go")
@@ -129,7 +130,7 @@ func TestSBOMHandlerScopeAndSPDXVulns(t *testing.T) {
 	for _, needle := range []string{
 		`Get("scope")`,
 		"GenerateSBOMWithOptions(",
-		"annotateSPDXWithVulns(",
+		"collector.AnnotateSPDXWithVulns(",
 		"-runtime.spdx.json",
 		"-with-vulns.spdx.json",
 	} {
@@ -198,7 +199,10 @@ func TestSnapshotHeadlineIsRuntimeOnly(t *testing.T) {
 	}
 	code := string(store)
 	for _, needle := range []string{
-		`FILTER (WHERE COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))`,
+		// The runtime half of the split, as the statement spells it since
+		// 0.29.198 (the libyear condition moved into each FILTER). The
+		// behaviour is held by db's TestDependencyRowsCarryStatusScopeAndUnknowns.
+		`FILTER (WHERE libyear IS NOT NULL AND COALESCE(type, '') NOT IN ('dev','test','build','optional','peer'))`,
 		`"dev_count"`,
 		`"total_count"`,
 		`"dev_median_libyear"`,

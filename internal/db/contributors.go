@@ -265,6 +265,12 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 		// us to the same deterministic cntrb_id, where the two logins are
 		// normally identical anyway; when they are not, the stored one
 		// wins (2026-09-11, F4).
+		//
+		// cntrb_email is STORED first too, in both arms (0.29.216;
+		// operator, 2026-11-21; SR-11 fill-only): the address on the row
+		// is the first one observed, and a later one never replaces it.
+		// Both arms preferred the incoming one before. The incoming one is
+		// not kept elsewhere by this path (0.29.217; chunk 2 work).
 		if userID > 0 {
 			err = tx.QueryRow(ctx, `
 				INSERT INTO aveloxis_data.contributors
@@ -272,7 +278,7 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 				VALUES ($1, $2, $3, $4, $5)
 				ON CONFLICT (cntrb_id) DO UPDATE SET
 					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
-					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
+					cntrb_email = COALESCE(NULLIF(contributors.cntrb_email,''), EXCLUDED.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
 					data_collection_date = NOW()
 				RETURNING cntrb_id::text`,
@@ -285,7 +291,7 @@ func (r *ContributorResolver) Resolve(ctx context.Context, platformID int16, use
 				VALUES ($1, $2, $3, $4, $5)
 				ON CONFLICT (cntrb_login) WHERE cntrb_login != ''
 				DO UPDATE SET
-					cntrb_email = COALESCE(NULLIF(EXCLUDED.cntrb_email,''), contributors.cntrb_email),
+					cntrb_email = COALESCE(NULLIF(contributors.cntrb_email,''), EXCLUDED.cntrb_email),
 					cntrb_full_name = COALESCE(NULLIF(EXCLUDED.cntrb_full_name,''), contributors.cntrb_full_name),
 					data_collection_date = NOW()
 				RETURNING cntrb_id::text`,

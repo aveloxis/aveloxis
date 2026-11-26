@@ -104,7 +104,7 @@ Then run migrations:
 aveloxis migrate
 ```
 
-This creates 165 tables (109 in `aveloxis_data`, 52 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
+This creates 173 tables (113 in `aveloxis_data`, 56 in `aveloxis_ops`, 4 in `aveloxis_scan`) with full parity to Augur's schema. All DDL uses `CREATE ... IF NOT EXISTS` and `ON CONFLICT DO NOTHING`, so `migrate` is safe to run repeatedly.
 
 ### OAUTH App Setup
 You will need a github OAUTH application for login to work on the web view. And there's nothing available without login. You can also use GitLab's OAUTH, or configure both. 
@@ -336,7 +336,7 @@ aveloxis add-repo https://github.com/chaoss/augur https://gitlab.com/fdroid/fdro
 aveloxis start all
 
 # Open http://localhost:8082 (the web GUI; the first account to sign in is the admin)
-# and http://127.0.0.1:5555 (the scheduler's monitor) to watch collection progress.
+# and http://127.0.0.1:5555 (the monitor of the scheduler) to watch collection progress.
 # A public host: docs/getting-started/deployment.md
 ```
 
@@ -545,9 +545,9 @@ Combine with `aveloxis prioritize <url>` if you want the re-collection to start 
 aveloxis migrate
 ```
 
-Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, on every deployment, the two supply-chain views the GUI reads:
-- **`aveloxis_data`** (109 tables + 22 materialized views) — all collected data plus analytics views
-- **`aveloxis_ops`** (52 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
+Creates 173 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, on every deployment, the two supply-chain views the GUI reads:
+- **`aveloxis_data`** (113 tables + 22 materialized views) — all collected data plus analytics views
+- **`aveloxis_ops`** (56 tables) — operational tables: collection queue, JSONB staging store, collection status, API credentials, users/auth, config, worker state
 - **`aveloxis_scan`** (4 tables) — scancode per-file license/copyright results and history
 - **`aveloxis_augur_data`** (6 views) — Augur compatibility layer for 8Knot. Contains views that alias Aveloxis column names to Augur conventions (e.g., `star_count` → `stars_count`, `pr_number` → `pr_src_number`). Only tables with column name differences have views here; identical tables resolve via search_path fallback to `aveloxis_data`.
 
@@ -575,11 +575,11 @@ Installs all optional third-party tools used by Aveloxis. Each tool is independe
 |---|---|---|
 | [scc](https://github.com/boyter/scc) | `go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a` | Code complexity analysis — populates `repo_labor` with lines of code, comments, blanks, and complexity per file per language. Pinned to the version Aveloxis validates (scc's master at commit 62ac0b03, which reports `4.2.0 (beta)`); each row records the scc that produced it in `data_source` (`scc 4.2.0 (beta)`; `scc` for rows written before 0.29.144) |
 | [scorecard](https://github.com/ossf/scorecard) | `go install github.com/ossf/scorecard/v5/cmd/scorecard@latest` | OpenSSF Scorecard — evaluates security practices (Code-Review, Maintained, Vulnerabilities, etc.) and populates `repo_deps_scorecard` |
-| [scancode](https://github.com/aboutcode-org/scancode-toolkit) | `pipx install scancode-toolkit-mini` (+ `pipx inject scancode-toolkit-mini typecode-libmagic`) | Per-file license and copyright detection — populates `aveloxis_scan.scancode_file_results` with SPDX license expressions, copyrights, holders, and package data. Runs on its own decoupled worker pool every 180 days per repo (`scancode_cadence_days`). Requires Python 3.10+ and libmagic (`brew install libmagic` on macOS, `apt-get install libmagic1` on Debian/Ubuntu). |
+| [scancode](https://github.com/aboutcode-org/scancode-toolkit) | `pipx install scancode-toolkit-mini` (+ `pipx inject --force scancode-toolkit-mini 'pluggy<1.7'` and `pipx inject scancode-toolkit-mini typecode-libmagic`) | Per-file license and copyright detection — populates `aveloxis_scan.scancode_file_results` with SPDX license expressions, copyrights, holders, and package data. Runs on its own decoupled worker pool every 180 days per repo (`scancode_cadence_days`). Requires Python 3.10+ and libmagic (`brew install libmagic` on macOS, `apt-get install libmagic1` on Debian/Ubuntu). |
 
-Tools that are already installed are skipped. The command verifies each tool is on PATH after installation.
+Tools that are already installed are skipped. The command verifies each tool is on PATH after installation, and that scancode starts (`scancode --version`), whether it was just installed or already there; it exits non-zero if either check fails.
 
-**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it updates each installed tool (the pinned `go install` above for scc, so every host runs the validated version, the latest release tarball for scorecard, `pipx upgrade` + libmagic re-inject for scancode). Only tools already on PATH are updated — missing tools are not auto-installed. `aveloxis upgrade-tools` runs the same update pass on demand. The check timestamp is stored at `~/.aveloxis-tool-check`.
+**Automatic updates:** On scheduler startup, Aveloxis checks if it has been more than 30 days since the last tool update. If so, it updates each installed tool (the pinned `go install` above for scc, so every host runs the validated version, the latest release tarball for scorecard, `pipx upgrade` + the `pluggy<1.7` bound + libmagic re-inject for scancode). Only tools already on PATH are updated — missing tools are not auto-installed. `aveloxis upgrade-tools` runs the same update pass on demand. The check timestamp is stored at `~/.aveloxis-tool-check`.
 
 ### `aveloxis start` — Start background processes
 
@@ -641,7 +641,7 @@ Flags:
 
 Both formats support `?scope=runtime` (only the shipped surface) and `?vulns=1` (annotate with the repo's current unresolved findings — CycloneDX via its native vulnerabilities array, SPDX via SECURITY/advisory external references).
 
-**License capture** from 12 package registries:
+**License capture** from 13 package registries:
 
 | Registry | Ecosystem | License source |
 |---|---|---|
@@ -657,6 +657,7 @@ Both formats support `?scope=runtime` (only the shipped surface) and `?vulns=1` 
 | pub.dev | Dart/Flutter | From pub.dev API |
 | Hackage | Haskell | Upload time from hackage.haskell.org |
 | GitHub Releases | Swift (SwiftPM) | Via GitHub releases API (no central registry) |
+| CRAN (via crandb) | R | `License` field of the latest version, from crandb.r-pkg.org (CRAN has no JSON interface); CRAN's licence names are given their SPDX form where one is not in doubt |
 
 **Package URLs (purl)** are generated for each dependency following the [purl spec](https://github.com/package-url/purl-spec): `pkg:npm/express@4.18.0`, `pkg:pypi/flask@2.3.0`, `pkg:golang/github.com/spf13/cobra@1.8.1`, `pkg:cargo/serde@1.0`, `pkg:gem/rails@7.0`, `pkg:maven/junit/junit@4.13`, `pkg:composer/laravel/framework@10.0`, `pkg:hex/phoenix@1.7.0`, `pkg:nuget/Newtonsoft.Json@13.0.3`, `pkg:pub/http@0.13.6`, `pkg:hackage/aeson@2.0`.
 
@@ -797,7 +798,7 @@ For repos with **>10,000 commits** (detected from repo_info metadata), steps 3-5
 **Phase 4 — Analysis (on-demand full clone):** A temporary full checkout is created from the bare clone (local, no network). Five analysis phases run against it, then the checkout is retained for scorecard before deletion:
 
 1. **Dependency scanning** (`repo_dependencies`): walks the checkout for manifest files across 14 ecosystems — JavaScript (package.json), Python (requirements.txt, pyproject.toml, Pipfile), Go (go.mod), Rust (Cargo.toml), Ruby (Gemfile), Java/Kotlin (pom.xml, build.gradle, build.gradle.kts), PHP (composer.json), Elixir (mix.exs), Swift (Package.swift), Dart (pubspec.yaml), Scala (build.sbt), .NET (packages.config), Haskell (package.yaml), C/C++ (Makefile, CMakeLists.txt). Extracts dependency names and counts. Additionally, 19 lockfile formats (package-lock, yarn incl. berry, pnpm, poetry, Cargo.lock, Gemfile.lock, composer.lock, and more) are parsed for locked versions, the **transitive dependency closure**, and parent→child dependency edges (`vuln_scan_transitive`, default on since v0.27.136) — feeding exact-version vulnerability matching, `introduced_by` chains, and real dependency graphs in SBOMs.
-2. **Libyear** (`repo_deps_libyear`): for each versioned dependency, queries its package registry (npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM/GitHub) to compare the current version against the latest. Calculates libyear = (latest_release_date - current_release_date) / 365.
+2. **Libyear** (`repo_deps_libyear`): for each versioned dependency, queries its package registry (npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, CRAN, SwiftPM/GitHub) to compare the current version against the latest. Calculates libyear = (latest_release_date - current_release_date) / 365.
 3. **Code complexity** (`repo_labor`): if `scc` is installed, runs `scc -f json --by-file` to get per-file metrics — programming language, total lines, code lines, comment lines, blank lines, and complexity. Install via `aveloxis install-tools`.
 4. **ScanCode license/copyright detection** (`aveloxis_scan.scancode_file_results`): runs on its **own decoupled worker pool** (v0.21.0), not inside the per-repo pipeline — each repo is scanned from a fresh shallow clone every 180 days (`scancode_cadence_days`), with crash recovery, adaptive timeouts, and failure backoff. Detects per-file licenses (SPDX expressions), copyrights, holders, and packages; results stored in the dedicated `aveloxis_scan` schema with history rotation. Install via `aveloxis install-tools` (requires Python 3.10+).
 5. **OpenSSF Scorecard** (`repo_deps_scorecard`): if the `scorecard` binary is installed, GitHub repos run **remote-first** (`--repo`, 18 checks, multi-token round-robin) with automatic fallback to `--local` against the checkout; GitLab and generic-git repos run local-only (11 checks). Each check (Code-Review, Maintained, Vulnerabilities, etc.) is stored with its score, reason, and details as JSONB. Previous results are rotated to `repo_deps_scorecard_history`. Install via `aveloxis install-tools`.
@@ -818,7 +819,7 @@ For each resolved commit author:
 
 **Phase 6 — Canonical Email Enrichment:** For contributors that have `gh_login` but no `cntrb_canonical`, calls `GET /users/{login}` to get their profile email and sets `cntrb_canonical`.
 
-**Phase 7 — SBOM Generation:** Both CycloneDX 1.7 and SPDX 2.3 SBOMs are generated from the `repo_deps_libyear` data and stored in `repo_sbom_scans` with format metadata. SBOMs include dependency names, versions, licenses, and package URLs from all 12 registries. Available for download via the web GUI or REST API.
+**Phase 7 — SBOM Generation:** Both CycloneDX 1.7 and SPDX 2.3 SBOMs are generated from the `repo_deps_libyear` data and stored in `repo_sbom_scans` with format metadata. SBOMs include dependency names, versions, licenses, and package URLs from all 13 registries. Available for download via the web GUI or REST API.
 
 **Phase 8 — Vulnerability Scanning (OSV.dev):** All dependencies with package URLs (purls) are batch-queried against the [OSV.dev](https://osv.dev) API to identify known vulnerabilities. Findings carry three distinguishing labels: `dependency_kind` (a problem in the project's own releases, in a direct dependency, or anywhere in the transitive lockfile closure), `dependency_scope` (shipped runtime code vs dev/test/build tooling), and `version_resolution` (whether the exact affected version is known or only a declared range floor — a finding is never presented as more certain than the evidence supports). OSV aggregates data from NVD (CVEs), GitHub Advisory Database (GHSA), PyPI advisories, RustSec, Go Vulnerability Database, and OSS-Fuzz — providing comprehensive coverage across all supported ecosystems. Results are stored in `repo_deps_vulnerabilities` with:
 - Vulnerability ID (GHSA, PYSEC, RUSTSEC, GO, etc.) and CVE cross-reference
@@ -960,8 +961,8 @@ Two further materialized views, `explorer_package_exposure` and `explorer_packag
 
 Four schemas in PostgreSQL: two with full parity to Augur's `augur_data` and `augur_operations`, a dedicated schema for ScanCode results, and one carrying the Augur-compatibility views:
 
-- **`aveloxis_data`** (109 tables + 22 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility and the two supply-chain views.
-- **`aveloxis_ops`** (52 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
+- **`aveloxis_data`** (113 tables + 22 materialized views) — All collected data: repos, issues, PRs, commits (per-file), commit parents, commit messages, messages, events, releases, contributors, contributor identities/aliases/affiliations, dependencies/SBOM, sentiment/NLP analysis, LSTM anomaly detection, topic modeling, Facade aggregates (dm_repo_annual/monthly/weekly, dm_repo_group_annual/monthly/weekly), repo labor/complexity, DEI badging, CHAOSS metrics, network analysis, repo insights, and more. Plus 20 materialized views for 8Knot compatibility and the two supply-chain views.
+- **`aveloxis_ops`** (56 tables) — Operational tables: collection queue, JSONB staging store, collection status (tracks core/secondary/facade/ML phases independently), API credentials, users/auth/sessions, config, worker history/jobs, network weighted tables.
 - **`aveloxis_scan`** (4 tables) — ScanCode per-file license and copyright detection: `scancode_scans` (scan metadata), `scancode_file_results` (per-file SPDX license, copyrights, holders, packages as JSONB), plus `_history` tables for both.
 - **`aveloxis_augur_data`** (views only, no tables) — Augur-compatibility views for 8Knot: `repo`, `repo_info`, `issues`, `pull_requests`, `releases`, `message`. Only the entities whose column names differ from Augur's need a view; 8Knot reads with `search_path = aveloxis_augur_data,aveloxis_data` so everything else resolves straight through to the real tables.
 
@@ -1067,7 +1068,7 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | Facade Aggregates | Computed from commits table | Same | `dm_repo_annual/monthly/weekly` |
 | Commit Author Resolution | Noreply parse + Commits API + Search API (GitHub only) | N/A (GitLab identity from API) | `contributors` + `contributor_aliases` |
 | Dependencies | File scan: 14 ecosystems (package.json, go.mod, pom.xml, Cargo.toml, etc.) | Same | `repo_dependencies` |
-| Libyear | 12 registries (npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM) | Same | `repo_deps_libyear` |
+| Libyear | 13 registries (npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM, CRAN) | Same | `repo_deps_libyear` |
 | Code Complexity | `scc --by-file` (if installed) | Same | `repo_labor` |
 | OpenSSF Scorecard | remote-first `--repo` (18 checks), `--local` fallback | local mode (11 checks) | `repo_deps_scorecard` (latest) + `repo_deps_scorecard_history` |
 | ScanCode License/Copyright | `scancode -clpi` per file (decoupled worker, every 180 days) | Same | `aveloxis_scan.scancode_scans` + `scancode_file_results` + history |
@@ -1078,7 +1079,7 @@ Both platforms collect the same data types. Most fields have full parity; known 
 | PR/MR Fork Repos | `head.repo` / `base.repo` in PR response | `/projects/{id}` per source/target | `pull_request_repo` |
 | Contributor Affiliations | Auto-populated from email domains + `cntrb_company` | Same | `contributor_affiliations` |
 | Contributor Breadth | `GET /users/{login}/events` (15-min cycles, 7-day cooldown) | — | `contributor_repo` |
-| Canonical Email Enrichment | `GET /users/{login}` for profile email | Same | `contributors.cntrb_canonical` |
+| Canonical Email Enrichment | `GET /users/{login}` for profile email | Not run for GitLab (planned) | `contributors.cntrb_canonical` |
 
 ### GitHub vs GitLab — Known Data Gaps
 
@@ -1086,8 +1087,10 @@ The following fields differ between the two forges — most are available from G
 
 | Field | GitHub | GitLab | Notes |
 |---|---|---|---|
+| Contributor profile enrichment (`cntrb_company`, `cntrb_location`, the profile's address in `cntrb_canonical`) | Periodic `GET /users/{login}` for thin contributors | Not run | Not an API limitation: GitLab's `/users` has the data and nothing asks for it yet (planned) |
 | Community profile files (CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY) | GraphQL file detection | `/repository/tree` file detection (v0.12.2) | Full parity |
 | `repo_info.commit_count` | REST `/repos/{o}/{r}` — accurate | `GET /projects/:id?statistics=true` → often 0 for mirrored or private-low-scope projects | v0.16.9+ backfills from facade's `git log` count after a successful clone so the monitor/web "Metadata commits" column matches reality |
+| Contributor login rename (`contributors.gh_login` / `gl_username`) | A rename updates `gh_login` and records the new login in `contributor_login_history`; the replaced login is there only if it was observed earlier (recording it at replacement is planned work) | `gl_username` is filled once and is not updated when a GitLab user renames | Planned work, not a GitLab API limitation. `contributor_identities.login` and the login history follow a rename on both forges |
 | Watcher count (`repo_info`) | GraphQL `watchers.totalCount` | Not available | GitLab has no public "watchers" API; `star_count` is the closest analog |
 | Clone statistics (`repo_clones`) | `/traffic/clones` (requires push access) | `/projects/{id}/statistics` (at least the Reporter role) | GitLab counts HTTP clones and pulls together for the last 30 days, not SSH, and no unique cloners, so `unique_clones` is NULL for GitLab rows |
 | Traffic (`repo_views`, `repo_traffic_paths`, `repo_traffic_referrers`, `repo_traffic_windows`, `repo_traffic_weeks`) | `/traffic/views` (daily and weekly), `/traffic/clones?per=week`, `/traffic/popular/paths`, `/traffic/popular/referrers` (push access with a classic token, or the "Administration" repository permission set to read with a fine-grained token) | Not available | GitLab has no API for page views, popular paths, referrers or unique visitors and cloners, so GitLab repositories have no rows in these tables |
@@ -1122,16 +1125,16 @@ Review bodies are stored in both `pull_request_reviews.review_body` (for quick a
 | Monitoring | Flower (separate service) | Built-in dashboard with gathered vs metadata count columns |
 | Testing | Lags development due to long history. | Test first programming from birth. | 
 | REST API | Flask/Gunicorn with Beaker cache | Separate `aveloxis api` with repo stats, batch stats, SBOM download |
-| GitLab support | Partial (missing releases, repo info, review comments, contributor enrichment) | Full parity with GitHub — all features work on both platforms |
+| GitLab support | Partial (missing releases, repo info, review comments, contributor enrichment) | Near parity with GitHub; the known gaps (contributor profile enrichment among them) are listed under "GitHub vs GitLab — Known Data Gaps" above |
 | Repo info | GitHub Only | GitHub: GraphQL for all counts + community profile files. GitLab: REST + `/issues_statistics` + MR counts via `X-Total`. Historical snapshots in `repo_info_history`. |
 | Contributor model | `gh_*`/`gl_*` columns mixed on one table | Separate `contributor_identities` table |
 | DB write pattern | Individual upserts during collection | JSONB staging → bulk batch processing (`pgx.Batch` for deps, libyear, labor, breadth). Significantly lower database contention for the contributors table. |
 | Repo redirect handling | Not proactively handled | Prelim phase detects renames/transfers, deduplicates, updates URLs + bulk-fixes all stored URLs regularly |
 | Dependency scanning | Custom Python parsers for 12 languages | Go parsers for 14 ecosystems + 19 lockfile formats (transitive closure + dependency edges), on-demand full clone |
-| Libyear | npm + PyPI only | 12 registries: npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM |
+| Libyear | npm + PyPI only | 13 registries: npm, PyPI, Go, Cargo, RubyGems, Maven, Packagist, Hex, NuGet, pub.dev, Hackage, SwiftPM, CRAN |
 | Code complexity (scc) | Requires manual scc install + separate worker | `aveloxis install-tools` + automatic per-repo analysis |
 | OpenSSF Scorecard | Runs `scorecard` binary against GitHub repos. | Runs `scorecard` binary against GitHub AND GitLab repos. Results in `repo_deps_scorecard` with history. |
-| SBOM generation | Not supported | CycloneDX 1.7 + SPDX 2.3 with license capture from 12 registries. Download via web GUI or REST API. |
+| SBOM generation | Not supported | CycloneDX 1.7 + SPDX 2.3 with license capture from 13 registries. Download via web GUI or REST API. |
 | Review messages | Review bodies live only on the review row — no unified text store | Review body stored in `messages` with the `pull_request_review_message_ref` bridge (same pattern as issue/PR comments) — one table for ALL conversation text |
 | History tracking | Fills repo_info on each run, grows infinitely. | `repo_info_history` and `repo_deps_scorecard_history` preserve all previous snapshots |
 | Scheduling | Celery Beat + collection_status table (opaque) | Priority queue — fills ALL worker slots per tick (not one per tick) |

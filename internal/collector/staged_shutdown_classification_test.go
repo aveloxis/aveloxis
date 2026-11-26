@@ -33,8 +33,6 @@ import (
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // doneUnobservedCtx is a ctx the shutdown has cancelled (Err) whose
@@ -150,7 +148,7 @@ func TestContributorBatchFailureUnderShutdownIsNotWarned(t *testing.T) {
 	if err := db.RunMigrations(ctx, store, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	raw, err := pgxpool.New(ctx, dsn)
+	raw, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

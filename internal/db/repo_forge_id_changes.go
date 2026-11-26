@@ -286,18 +286,7 @@ func (s *PostgresStore) adoptForgeIDInTx(ctx context.Context, tx pgx.Tx, repoID 
 // adoptable first, then superseded (marked), then adopted, newest
 // observation first within each.
 func (s *PostgresStore) ListForgeIDChanges(ctx context.Context, pendingOnly bool) ([]ForgeIDChange, error) {
-	return s.queryForgeIDChanges(ctx, func(visibility string) string {
-		return `
-		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
-		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, COALESCE(r.repo_git, ''),
-		       (c.adopted_at IS NULL AND c.old_forge_id IS DISTINCT FROM r.platform_repo_id) AS superseded,
-		       ` + visibility + `
-		  FROM aveloxis_data.repo_forge_id_changes c
-		  JOIN aveloxis_data.repos r USING (repo_id)
-		 WHERE NOT $1 OR (c.adopted_at IS NULL AND c.old_forge_id = r.platform_repo_id)
-		 ORDER BY (c.adopted_at IS NOT NULL), (c.old_forge_id IS DISTINCT FROM r.platform_repo_id),
-		          c.last_observed_at DESC, c.change_id DESC`
-	}, func(rows pgx.Rows, c *ForgeIDChange) error {
+	return s.queryForgeIDChanges(ctx, forgeIDChangesListSQL(forgeIDChangeVisibilityColumn), forgeIDChangesListSQL(forgeIDChangeVisibilityUnknown), func(rows pgx.Rows, c *ForgeIDChange) error {
 		return rows.Scan(&c.RepoID, &c.OldForgeID, &c.NewForgeID, &c.FirstObservedAt, &c.LastObservedAt,
 			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.RepoGit, &c.Superseded, &c.ObservedPrivate)
 	}, pendingOnly)
@@ -312,6 +301,32 @@ const (
 	forgeIDChangeVisibilityUnknown = "NULL::boolean AS observed_private"
 )
 
+// forgeIDChangesListSQL is the listing of forge-ID changes, with the visibility column as
+// it is given (the column itself, or NULL on a database that predates it).
+func forgeIDChangesListSQL(visibility string) string {
+	return `
+		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
+		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, COALESCE(r.repo_git, ''),
+		       (c.adopted_at IS NULL AND c.old_forge_id IS DISTINCT FROM r.platform_repo_id) AS superseded,
+		       ` + visibility + `
+		  FROM aveloxis_data.repo_forge_id_changes c
+		  JOIN aveloxis_data.repos r USING (repo_id)
+		 WHERE NOT $1 OR (c.adopted_at IS NULL AND c.old_forge_id = r.platform_repo_id)
+		 ORDER BY (c.adopted_at IS NOT NULL), (c.old_forge_id IS DISTINCT FROM r.platform_repo_id),
+		          c.last_observed_at DESC, c.change_id DESC`
+}
+
+// forgeIDChangesAdoptedSQL is the adopted forge-ID changes of a set of repositories, with the visibility column as
+// it is given (the column itself, or NULL on a database that predates it).
+func forgeIDChangesAdoptedSQL(visibility string) string {
+	return `
+		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
+		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, ` + visibility + `
+		  FROM aveloxis_data.repo_forge_id_changes c
+		 WHERE c.repo_id = ANY($1) AND c.adopted_at IS NOT NULL
+		 ORDER BY c.repo_id, c.adopted_at, c.change_id`
+}
+
 // queryForgeIDChanges runs a forge-ID change projection and, when the
 // 0.29.140 column does not exist yet (42703: an api or web process started
 // before the migrate — Copilot PR #252, seventh review), runs it again with
@@ -321,9 +336,9 @@ const (
 // projection names no column but the one the migrate adds, so a typo
 // elsewhere fails both runs. The fallback is logged: the operator's cue is
 // the migrate.
-func (s *PostgresStore) queryForgeIDChanges(ctx context.Context, sql func(visibility string) string, scan func(pgx.Rows, *ForgeIDChange) error, args ...any) ([]ForgeIDChange, error) {
-	run := func(visibility string) ([]ForgeIDChange, error) {
-		rows, err := s.pool.Query(ctx, sql(visibility), args...)
+func (s *PostgresStore) queryForgeIDChanges(ctx context.Context, withVisibility, withoutVisibility string, scan func(pgx.Rows, *ForgeIDChange) error, args ...any) ([]ForgeIDChange, error) {
+	run := func(stmt string) ([]ForgeIDChange, error) {
+		rows, err := s.pool.Query(ctx, stmt, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -338,10 +353,10 @@ func (s *PostgresStore) queryForgeIDChanges(ctx context.Context, sql func(visibi
 		}
 		return out, rows.Err()
 	}
-	out, err := run(forgeIDChangeVisibilityColumn)
+	out, err := run(withVisibility)
 	if err != nil && isUndefinedColumn(err) {
 		s.logger.Error("forge-ID changes: repo_forge_id_changes.observed_private does not exist — run aveloxis migrate; the listing's visibility is unknown until then", "error", err)
-		return run(forgeIDChangeVisibilityUnknown)
+		return run(withoutVisibility)
 	}
 	return out, err
 }
@@ -357,14 +372,7 @@ func isUndefinedColumn(err error) bool {
 // reader it replaced had no other caller): per repository, in adoption
 // order. An id without changes is absent from the map.
 func (s *PostgresStore) repoForgeIDChangesAdoptedBatch(ctx context.Context, repoIDs []int64) (map[int64][]ForgeIDChange, error) {
-	changes, err := s.queryForgeIDChanges(ctx, func(visibility string) string {
-		return `
-		SELECT c.repo_id, c.old_forge_id, c.new_forge_id, c.first_observed_at, c.last_observed_at,
-		       c.forge_created_at, c.adopted_at, c.adopted_by, c.note, ` + visibility + `
-		  FROM aveloxis_data.repo_forge_id_changes c
-		 WHERE c.repo_id = ANY($1) AND c.adopted_at IS NOT NULL
-		 ORDER BY c.repo_id, c.adopted_at, c.change_id`
-	}, func(rows pgx.Rows, c *ForgeIDChange) error {
+	changes, err := s.queryForgeIDChanges(ctx, forgeIDChangesAdoptedSQL(forgeIDChangeVisibilityColumn), forgeIDChangesAdoptedSQL(forgeIDChangeVisibilityUnknown), func(rows pgx.Rows, c *ForgeIDChange) error {
 		return rows.Scan(&c.RepoID, &c.OldForgeID, &c.NewForgeID, &c.FirstObservedAt, &c.LastObservedAt,
 			&c.ForgeCreatedAt, &c.AdoptedAt, &c.AdoptedBy, &c.Note, &c.ObservedPrivate)
 	}, repoIDs)

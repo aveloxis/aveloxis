@@ -77,14 +77,18 @@ func SaveAPIKey(ctx context.Context, pool *pgxpool.Pool, name, token, platform s
 	return err
 }
 
-func loadKeysFromTable(ctx context.Context, pool *pgxpool.Pool, table, platform string) ([]APIKeyRow, error) {
-	// Can't parameterize table names, but these are hardcoded internal values.
-	query := fmt.Sprintf(`
+// loadKeysSQL reads one key table. A table name cannot be a placeholder;
+// the two names are constants written at LoadAPIKeys, which the
+// write-policy check runs this builder for.
+func loadKeysSQL(table string) string {
+	return fmt.Sprintf(`
 		SELECT oauth_id, COALESCE(name, ''), access_token FROM %s
 		WHERE platform = $1 AND access_token != ''
 		ORDER BY oauth_id`, table)
+}
 
-	rows, err := pool.Query(ctx, query, platform)
+func loadKeysFromTable(ctx context.Context, pool *pgxpool.Pool, table, platform string) ([]APIKeyRow, error) {
+	rows, err := pool.Query(ctx, loadKeysSQL(table), platform)
 	if err != nil {
 		return nil, err
 	}

@@ -48,7 +48,7 @@ For every string that crosses a subsystem boundary (ecosystem names,
 package names, URLs, logins): **does BOTH the producer and the
 consumer go through the same named normalizer function?** A second
 inline spelling of an existing key — even a correct one — is a defect,
-because the two copies WILL drift. Exemplar: `db.LockfileGraphKey`.
+because the two copies WILL drift. Exemplar: `pkgid.Key` (`db.LockfileGraphKey` until 0.29.149).
 
 ## L4 — Who enforces the invariant? (SR-18)
 

@@ -9,7 +9,7 @@ package collector
 // calcLibyear returns 0 when EITHER release date is missing or unparseable,
 // and nothing set NoLibyear for it, so "we could not work this out" was
 // stored as "this dependency is perfectly up to date". Measured on
-// chaoss.tv on 2026-09-17: of 3,196,143 rows carrying a libyear number,
+// a production fleet on 2026-09-17: of 3,196,143 rows carrying a libyear number,
 // 1,704,902 had a missing date — 53%. Of every row reading libyear = 0,
 // 87% meant unknown. The fleet average read 1.335 years where the honest
 // figure was 2.861, and the median read 0.
@@ -29,40 +29,40 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 func TestLibyearIsUnknownWhenADateIsMissing(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
-		row        db.LibyearRow
+		row        model.LibyearRow
 		wantNoLib  bool
 		wantReason string
 	}{
 		{
 			name:      "both dates present: a real zero survives",
-			row:       db.LibyearRow{CurrentReleaseDate: "2024-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z", Libyear: 0},
+			row:       model.LibyearRow{CurrentReleaseDate: "2024-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z", Libyear: 0},
 			wantNoLib: false,
 		},
 		{
 			name:      "both dates present and stale",
-			row:       db.LibyearRow{CurrentReleaseDate: "2022-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z", Libyear: 2},
+			row:       model.LibyearRow{CurrentReleaseDate: "2022-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z", Libyear: 2},
 			wantNoLib: false,
 		},
 		{
 			name:      "no current release date",
-			row:       db.LibyearRow{LatestReleaseDate: "2024-01-01T00:00:00Z"},
+			row:       model.LibyearRow{LatestReleaseDate: "2024-01-01T00:00:00Z"},
 			wantNoLib: true,
 		},
 		{
 			name:      "no latest release date",
-			row:       db.LibyearRow{CurrentReleaseDate: "2024-01-01T00:00:00Z"},
+			row:       model.LibyearRow{CurrentReleaseDate: "2024-01-01T00:00:00Z"},
 			wantNoLib: true,
 		},
 		{
 			name:      "neither date",
-			row:       db.LibyearRow{},
+			row:       model.LibyearRow{},
 			wantNoLib: true,
 		},
 		{
@@ -70,18 +70,18 @@ func TestLibyearIsUnknownWhenADateIsMissing(t *testing.T) {
 			// without this case the "unknown rows carry no number"
 			// assertion below can never fire.
 			name:      "a number alongside a missing date is cleared",
-			row:       db.LibyearRow{Libyear: 3.4, LatestReleaseDate: "2024-01-01T00:00:00Z"},
+			row:       model.LibyearRow{Libyear: 3.4, LatestReleaseDate: "2024-01-01T00:00:00Z"},
 			wantNoLib: true,
 		},
 		{
 			name:      "an already-unknown row stays unknown",
-			row:       db.LibyearRow{NoLibyear: true, CurrentReleaseDate: "2024-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z"},
+			row:       model.LibyearRow{NoLibyear: true, CurrentReleaseDate: "2024-01-01T00:00:00Z", LatestReleaseDate: "2024-01-01T00:00:00Z"},
 			wantNoLib: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := tc.row
-			markUnknownLibyear(&row)
+			settleLibyear(model.LibyearDep{Manager: "npm", Version: "1.0.0"}, &row)
 			if row.NoLibyear != tc.wantNoLib {
 				t.Errorf("NoLibyear = %v, want %v", row.NoLibyear, tc.wantNoLib)
 			}
@@ -99,12 +99,12 @@ func TestLibyearIsUnknownWhenADateIsMissing(t *testing.T) {
 // remember. This pins that the analysis path calls it.
 func TestAnalysisAppliesTheUnknownLibyearRule(t *testing.T) {
 	src := srctest.StripGoComments(srctest.Read(t, "internal/collector/analysis.go"))
-	idx := strings.Index(src, "InsertRepoLibyear(ctx, repoID, lb)")
+	idx := strings.Index(src, "rows = append(rows, lb)")
 	if idx < 0 {
-		t.Fatal("cannot find the libyear insert")
+		t.Fatal("cannot find where a resolved row joins the in-memory inventory")
 	}
-	if mark := strings.Index(src, "markUnknownLibyear(lb)"); mark < 0 || mark > idx {
-		t.Error("markUnknownLibyear must run on every resolved row BEFORE it is stored — applying it per resolver is how a dozen sites drift apart")
+	if mark := strings.Index(src, "settleLibyear(dep, lb)"); mark < 0 || mark > idx {
+		t.Error("settleLibyear must run on every resolved row BEFORE it is stored — applying it per resolver is how a dozen sites drift apart")
 	}
 }
 
@@ -123,8 +123,8 @@ func TestUnparseableDateIsUnknownNotZero(t *testing.T) {
 	// fetchRegistryLastModified re-formatting a mirror's Last-Modified.
 	for _, bad := range []string{"not-a-date", "0000-00-00", "2024/01/01", "1704067200",
 		"0001-01-01T00:00:00Z", "0001-01-01T00:00:00", "0001-01-01 00:00:00"} {
-		row := db.LibyearRow{CurrentReleaseDate: bad, LatestReleaseDate: good, Libyear: 0}
-		markUnknownLibyear(&row)
+		row := model.LibyearRow{CurrentReleaseDate: bad, LatestReleaseDate: good, Libyear: 0}
+		settleLibyear(model.LibyearDep{Manager: "npm", Version: "1.0.0"}, &row)
 		if !row.NoLibyear {
 			t.Errorf("current date %q is unparseable but the row was stored as a measurement", bad)
 		}
@@ -137,8 +137,8 @@ func TestUnparseableDateIsUnknownNotZero(t *testing.T) {
 	}
 	// A date calcLibyear CAN read must not be called unknown.
 	for _, ok := range []string{good, "2024-01-01T00:00:00", "2024-01-01 00:00:00"} {
-		row := db.LibyearRow{CurrentReleaseDate: ok, LatestReleaseDate: good}
-		markUnknownLibyear(&row)
+		row := model.LibyearRow{CurrentReleaseDate: ok, LatestReleaseDate: good}
+		settleLibyear(model.LibyearDep{Manager: "npm", Version: "1.0.0"}, &row)
 		if row.NoLibyear {
 			t.Errorf("date %q is parseable but was called unknown", ok)
 		}

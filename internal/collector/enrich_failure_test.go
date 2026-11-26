@@ -11,7 +11,7 @@ import (
 )
 
 // TestEnrichThinContributorsMarksFailuresOnlyWhenDefinitive is the wiring
-// pin for chaoss.tv 2026-09-17: ~500 GET /users/{login} lookups failed with
+// pin for the production log of 2026-09-17: ~500 GET /users/{login} lookups failed with
 // "exhausted 10 retries … transient" and EnrichThinContributors stamped every
 // one enriched (30-day cooldown, no data, Debug only). The error arm must
 // consult platform.IsDefinitiveAnswer (its behaviour is pinned by

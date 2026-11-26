@@ -1,0 +1,373 @@
+@@ E00 identical
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E01 case/space/comment
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+update  aveloxis_data.repos /* c */ set io=$1 where repo_id=$2 and io is null -- x
+@@ E02 OR for AND
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 OR io IS NULL
+@@ E03 conjunct order
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE io IS NULL AND repo_id = $2
+@@ E04 params swapped
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $2 WHERE repo_id = $1 AND io IS NULL
+@@ E05 where param other
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $3 AND io IS NULL
+@@ E06 ONLY
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE ONLY aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E07 alias
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos r SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E08 quoted ident same
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE "aveloxis_data"."repos" SET "io" = $1 WHERE "repo_id" = $2 AND "io" IS NULL
+@@ E09 unicode-escaped ident U&
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE U&"repo\005fid" = $2 AND io IS NULL
+@@ E10 parens
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = ($1) WHERE (repo_id = $2) AND (io IS NULL)
+@@ E11 double parens nested AND
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE (repo_id = $2 AND io IS NULL)
+@@ E12 cast added
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2::int AND io IS NULL
+@@ E13 RETURNING added
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL RETURNING repo_id
+@@ E14 trailing second statement
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; UPDATE aveloxis_data.repos SET io = $1
+@@ E15 leading second statement
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1; UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E16 same statement twice
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E17 second SET added
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1, fe = COALESCE(fe, $3) WHERE repo_id = $2 AND io IS NULL
+@@ E18 IS NOT NULL
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NOT NULL
+@@ E19 isnull spelling
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io ISNULL
+@@ E20 operator != vs = 
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id <> $2 AND io IS NULL
+@@ E21 OPERATOR(pg_catalog.=)
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id OPERATOR(pg_catalog.=) $2 AND io IS NULL
+@@ E22 wrapped in explain
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+EXPLAIN UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E23 wrapped in WITH
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+WITH x AS (UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL RETURNING 1) SELECT 1
+@@ E24 wrapped in WITH prefix
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+WITH x AS (SELECT 1) UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E25 in DO block
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+DO $do$ BEGIN UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; END $do$
+@@ E26 in DO block under inverted IF
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+DO $do$ BEGIN IF false THEN NULL; ELSE UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; END IF; END $do$
+@@ E27 in DO loop
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+DO $do$ BEGIN LOOP UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; END LOOP; END $do$
+@@ E28 in sql function body
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+CREATE FUNCTION aveloxis_data.f() RETURNS void LANGUAGE sql AS $f$ UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL $f$
+@@ E29 in PREPARE
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+PREPARE p AS UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E30 FROM added
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 FROM aveloxis_data.other WHERE repo_id = $2 AND io IS NULL
+@@ E31 schema dropped
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E32 WHERE CURRENT OF
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE CURRENT OF c
+@@ E33 const in string different escape
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E34 in DO with EXECUTE static
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+DO $do$ BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL'; END $do$
+@@ E35 in create rule
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+CREATE RULE r AS ON INSERT TO aveloxis_data.other DO ALSO UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@@ E36 DO: FOR loop over all rows w/ dynamic vars
+$1
+@=
+UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL
+@=
+DO $do$ DECLARE r record; BEGIN FOR r IN SELECT 1 LOOP UPDATE aveloxis_data.repos SET io = $1 WHERE repo_id = $2 AND io IS NULL; END LOOP; END $do$
+@@ L00 identical
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@@ L01 E'' escape
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = E'it\'s'
+@@ L02 dollar quote
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = $q$it's$q$
+@@ L03 numeric 01
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 01 AND fe = 'it''s'
+@@ L04 numeric 1.0
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1.0 AND fe = 'it''s'
+@@ L05 numeric 0x1
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 0x1 AND fe = 'it''s'
+@@ L06 numeric 0 (default-omitted?)
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 0 AND fe = 'it''s'
+@@ L07 string 'A' case
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'A' WHERE repo_id = 1 AND fe = 'it''s'
+@@ L08 typed literal text 'a'
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = text 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@@ L09 string continuation
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it'
+'s'
+@@ L10 -1 vs - 1 n/a: +1
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = +1 AND fe = 'it''s'
+@@ L11 TRUE appended
+'a'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s'
+@=
+UPDATE aveloxis_data.repos SET io = 'a' WHERE repo_id = 1 AND fe = 'it''s' OR TRUE
+@@ Z00 identical
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z01 int4 alias
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::int4 WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z02 int alias
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::int WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z03 CAST()
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = CAST($1 AS integer) WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z04 false->'f'
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = 'f' AND n IS NOT DISTINCT FROM NULL
+@@ Z05 0 -> NULL
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = NULL AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z06 0 -> 00
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 00 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z07 0 -> -0
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = -0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z08 false -> FALSE::bool
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = FALSE AND n IS NOT DISTINCT FROM NULL
+@@ Z09 $1 -> $0?
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL LIMIT 0
+@@ Z10 false->true
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = true AND n IS NOT DISTINCT FROM NULL
+@@ Z11 0 -> 0.0
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0.0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@@ Z12 0 -> ''
+$1::integer
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = 0 AND flag = false AND n IS NOT DISTINCT FROM NULL
+@=
+UPDATE aveloxis_data.repos SET io = $1::integer WHERE repo_id = '' AND flag = false AND n IS NOT DISTINCT FROM NULL

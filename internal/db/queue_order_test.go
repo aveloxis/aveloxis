@@ -19,29 +19,23 @@ import (
 	"os"
 	"strings"
 	"testing"
-)
 
-// extractFn returns just the body of the named method from queue.go.
-func extractFn(t *testing.T, src, marker string) string {
-	t.Helper()
-	idx := strings.Index(src, marker)
-	if idx < 0 {
-		t.Fatalf("cannot find %q", marker)
-	}
-	body := src[idx:]
-	end := strings.Index(body[1:], "\nfunc ")
-	if end > 0 {
-		body = body[:end+1]
-	}
-	return body
-}
+	"github.com/aveloxis/aveloxis/internal/srctest"
+)
 
 func TestListQueuePageOrderByIncludesRepoIDTiebreaker(t *testing.T) {
 	data, err := os.ReadFile("queue.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := extractFn(t, string(data), "func (s *PostgresStore) ListQueuePage")
+	// 0.29.212: the page's two statements are built by queuePageSQL (so that
+	// the write-policy check runs them for every sort). What is pinned is
+	// unchanged, and read where the text now stands: ListQueuePage runs
+	// that builder's statements, and the builder's body has the shape.
+	builtByQueuePageSQL(t)
+	// Comments are taken out first (Copilot on PR #263, third review): the
+	// append kept only in a comment satisfied the check below.
+	body := srctest.StripGoComments(srctest.FuncBody(t, string(data), "func queuePageSQL("))
 	// v0.29.0 re-anchor (review 2026-08-31 #1): the function's FIRST
 	// textual ORDER BY is now the repo_info latest-pick inside the meta
 	// join literal, which disarmed this pin silently — it happily

@@ -12,6 +12,11 @@ on:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch: {}
 
+# 0.29.227 (CodeQL on PR #263): no job here writes to the repository; the
+# token is read-only, as in test.yml and integration.yml.
+permissions:
+  contents: read
+
 jobs:
   canary:
     runs-on: ubuntu-latest
@@ -64,6 +69,12 @@ jobs:
           # GitHub's actual schema).
           go test ./internal/collector/ -run TestLivePyPIForFlask -count=1 -v
           go test ./internal/collector/ -run TestLiveGoProxyForCobra -count=1 -v
+          # 0.29.220 (Copilot on PR #263): three canaries that existed
+          # and were never scheduled. No other workflow sets the network
+          # flag they need, so they ran nowhere.
+          go test ./internal/collector/ -run TestLiveGoProxyForUppercaseModulePath -count=1 -v
+          go test ./internal/collector/ -run TestLiveCrandbForCommonmark -count=1 -v
+          go test ./internal/collector/ -run TestLiveOSVMatchesAVersionSentWithAName -count=1 -v
           go test ./internal/collector/ -run TestLiveMavenForCommonsLang -count=1 -v
           go test ./internal/platform/ecosystems/ -run TestLiveEcosystemsLookupForSeaborn -count=1 -v
           go test ./internal/platform/gitlab/ -run TestLiveGitLabRepoInfoForGitLabRunner -count=1 -v
@@ -87,17 +98,89 @@ jobs:
           # scheduled: the unit test serves a body we wrote, so only
           # this sees GitHub rename or drop the field.
           go test ./internal/platform/github/ -run TestLiveRESTRepoInfoReadsSubscribers -count=1 -v
+          # 0.29.222: three more that existed and ran nowhere (review
+          # round 14 read every test that needs the network flag, not
+          # only the TestLive names). The two GitHub ones need the
+          # token above and skip, visibly, without it.
+          go test ./internal/collector/ -run TestNuGetResolverLiveCanary -count=1 -v
+          go test ./internal/platform/github/ -run TestLiveRootTreeAcceptsHEAD -count=1 -v
+          go test ./internal/platform/github/ -run TestLiveFetchContributorActivity -count=1 -v
+
+  # 0.29.222: the real-clone facade canary (v0.27.97) needs the network
+  # flag AND a database, and no job gave it both: its own comment said
+  # it rode this workflow, and it never had. A job of its own, so the
+  # service container is not started for the canaries above. The
+  # database is a base: the package's test main creates, migrates and
+  # drops one of its own from it (internal/testdb), as in
+  # integration.yml.
+  facade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aveloxis_test
+          POSTGRES_PASSWORD: aveloxis_test
+          POSTGRES_DB: aveloxis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the real-clone facade canary
+        env:
+          AVELOXIS_TEST_NETWORK: "1"
+          AVELOXIS_TEST_DB: postgres://aveloxis_test:aveloxis_test@localhost:5432/aveloxis_test?sslmode=disable
+        run: go test ./internal/collector/ -run TestFacadeRealRepoEndToEnd -count=1 -v -timeout 15m
+
+  # 0.29.226, 0.29.227: internal/manifest has eight tests that do less
+  # under the race detector, and every other job runs that package under
+  # it, so their full form ran on a developer's machine only. Three judge
+  # reading SPEED only without the detector (the Gemfile line, the repeated
+  # units, the build-file readers); one has a tighter time bound without it
+  # (the statement that does not end); four compare more generated cases
+  # (Gemfile lines: 400,000 against 60,000; the pom tree and the two Gradle
+  # tree comparisons). Here they run once a week WITHOUT it: about a minute
+  # and a half on two processors. Weekly and in a job of its own, not on
+  # every push, because a judgement of time on a shared runner can be
+  # noisy: a failure here means "look at the readers", and is not a
+  # registry or forge problem, whatever this workflow's name says. No
+  # network is needed.
+  manifest-speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the manifest readers' full-form tests (no race detector)
+        run: go test ./internal/manifest/ -run '^(TestAGemfileLineOfManyStatementsIsReadInLinearTime|TestNoRepeatedUnitIsReadInSuperLinearTime|TestAStatementThatDoesNotEndIsNotReadAgainForEveryLineOfIt|TestBuildFileReadersScaleLinearly|TestGemLogicalLinesAnswersAsThePatternsDo|TestThePomTreeAnswersAsTheNaiveReaderDoes|TestTheGradleTreeAnswersAsTheNaiveReaderDoes|TestTheGradleTreeAnswersAsTheIndependentReferenceDoes)$' -count=1 -v -timeout 20m
 
   # v0.27.30 — REAL-BINARY tool canaries (audit G1: scancode is the
   # likeliest next silent-dark incident — unpinned monthly auto-upgrade
   # + self-authored parse fixtures + zero-findings-without-error). The
-  # job installs what production's monthly updater installs: the
-  # CURRENT latest scancode and the PINNED scc (0.29.144,
-  # collector.SCCInstallCmd; TestSCCPinIsTheSameEverywhere keeps this
-  # file on the same pin), and runs the installed binaries through our
-  # REAL parse structs. A new tool version failing the allowlist is the
-  # alert doing its job: eyeball the run, extend the allowlist in
-  # tool_output_canary_test.go (for scc, move the pin with it).
+  # job installs the tools the way an operator does, with
+  # `aveloxis install-tools` from a binary built from this checkout
+  # (0.29.231; until then it carried its own pipx and go install lines,
+  # a copy that stayed unpinned and red from 2026-10-19 to 0.29.230
+  # and could not show a fault in the binary's install). So it gets
+  # what a new host gets: the PINNED scc (collector.SCCInstallCmd), the
+  # CURRENT latest scorecard and scancode, scancode with pluggy held at
+  # collector.scancodePluggyPin. It then runs the installed binaries
+  # through our REAL parse structs. A new tool version failing the
+  # allowlist is the alert doing its job: eyeball the run, extend the
+  # allowlist in tool_output_canary_test.go (for scc, move the pin with
+  # it). TestCanaryToolsJobInstallsThroughTheBinary holds this job to
+  # the one install command.
   tools:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -106,24 +189,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install analysis tools (as production's updater does - scc pinned, the others latest)
+      - name: Install the analysis tools as an operator does (aveloxis install-tools)
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q pipx libmagic1
-          pipx install scancode-toolkit-mini
-          pipx inject scancode-toolkit-mini typecode-libmagic
-          go install github.com/boyter/scc/v4@v4.1.1-0.20261108043418-62ac0b03d79a
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          # install-tools exits non-zero when a tool fails to install or
+          # lands off PATH, so each line stands alone: nothing may
+          # swallow that status. The runner image carries pipx and
+          # libmagic, the two things install-tools expects of a host.
+          go build -o "$RUNNER_TEMP/aveloxis" ./cmd/aveloxis
+          "$RUNNER_TEMP/aveloxis" install-tools
       - name: Run tool-output canaries
         env:
           AVELOXIS_TEST_TOOLS: "1"
         run: |
           go test ./internal/collector/ -run TestLiveScancodeOutputShape -count=1 -v -timeout 15m
           go test ./internal/collector/ -run 'TestLiveSCCOutputShape|TestLiveSCCStreamingDecodeMatchesUnmarshal' -count=1 -v
-          # scorecard's release-tarball install is exercised by
-          # `aveloxis install-tools` in production; here the canary
-          # skips if absent — the scancode + scc coverage is the
-          # automatic-upgrade risk this job exists for.
+          # 0.29.231: install-tools installs scorecard too (its newest
+          # release tarball), so this canary runs here now; before, it
+          # skipped because the job never installed scorecard.
           go test ./internal/collector/ -run TestLiveScorecardOutputShape -count=1 -v
 
   # v0.29.67 (worklist 53): the SPDX project's validator (pyspdxtools) and

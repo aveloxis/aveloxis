@@ -35,7 +35,7 @@ WITH candidates AS (
          ci.platform_id,
          ci.platform_user_id,
          (lpad(to_hex(ci.platform_id::int), 2, '0') ||
-          lpad(to_hex(ci.platform_user_id::bigint::int), 8, '0') ||
+          lpad(to_hex(ci.platform_user_id::bigint), 8, '0') ||
           '0000000000000000000000')::uuid AS new_id
   FROM aveloxis_data.contributors c
   JOIN aveloxis_data.contributor_identities ci ON c.cntrb_id = ci.cntrb_id

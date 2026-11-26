@@ -1,0 +1,20 @@
+package collector
+
+import (
+	"context"
+	"encoding/json"
+	"os/exec"
+)
+
+// The scanSCC shape: the package's own swept pipe, decoded whole.
+func PinEvasionSWEPTJSON(ctx context.Context, dir string) int {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-files")
+	swept, err := startSweptCommand(cmd)
+	if err != nil {
+		return 0
+	}
+	defer swept.Close()
+	var all []map[string]any
+	_ = json.NewDecoder(swept.Stdout).Decode(&all)
+	return len(all)
+}

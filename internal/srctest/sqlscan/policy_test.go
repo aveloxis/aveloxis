@@ -35,6 +35,10 @@ func TestExprConformsFillEmptyOnly(t *testing.T) {
 		{"bare-param-without-guard", plain, `$2`, false},
 		{"bare-param-with-guard", stmtFor(`UPDATE aveloxis_data.repos SET platform_repo_id = $2 WHERE repo_id = $1 AND COALESCE(platform_repo_id, '') = ''`), `$2`, true},
 		{"unrecognized-shape", plain, `some_function(repos.platform_repo_id)`, false},
+		// NULLIF against anything but the empty string keeps a stored blank
+		// and lets a stored 'x' be overwritten.
+		{"nullif-of-another-value", plain, `COALESCE(NULLIF(repos.platform_repo_id, 'x'), $7)`, false},
+		{"nullif-of-a-parameter", plain, `COALESCE(NULLIF(repos.platform_repo_id, $8), $7)`, false},
 	}
 	for _, c := range cases {
 		got, detail := exprConforms(c.stmt, c.expr, col, FillEmptyOnly)
@@ -75,12 +79,27 @@ func TestExprConformsGreatestNonNull(t *testing.T) {
 	if ok, _ := exprConforms(plain, excluded, col, GreatestNonNull); !ok {
 		t.Error("the EXCLUDED-flavored GREATEST pair must conform")
 	}
+	if ok, _ := exprConforms(plain, `LEAST(COALESCE($9, repos.updated_at), COALESCE(repos.updated_at, $9))`, col, GreatestNonNull); ok {
+		t.Error("LEAST of the pair moves the value DOWN: it is not GreatestNonNull")
+	}
 	sameOrder := `GREATEST(COALESCE($9, repos.updated_at), COALESCE($9, repos.updated_at))`
 	if ok, _ := exprConforms(plain, sameOrder, col, GreatestNonNull); ok {
 		t.Error("same-order-twice is NOT the nil-safe pair — one side loses its fallback")
 	}
-	if ok, _ := exprConforms(plain, `GREATEST($9, repos.updated_at)`, col, GreatestNonNull); ok {
-		t.Error("plain GREATEST without the COALESCE pair is not nil-safe (NULL poisons GREATEST? no — but the registered shape is the pair; unrecognized must fail closed)")
+	// Round 7: plain GREATEST(stored, incoming), in either order, IS the
+	// shape: PostgreSQL's GREATEST ignores a NULL argument and is NULL only
+	// when every argument is (confirmed on PostgreSQL 18), so the COALESCE
+	// pair adds nothing to it. A third argument, or two of one kind, is not.
+	for _, expr := range []string{`GREATEST($9, repos.updated_at)`, `GREATEST(repos.updated_at, $9)`, `GREATEST(updated_at, $9::timestamptz)`} {
+		if ok, why := exprConforms(plain, expr, col, GreatestNonNull); !ok {
+			t.Errorf("%s must conform: %s", expr, why)
+		}
+	}
+	for _, expr := range []string{`GREATEST($9, $8)`, `GREATEST(repos.updated_at, repos.updated_at)`, `GREATEST($9, repos.updated_at, NOW())`,
+		`GREATEST($9, repos.created_at)`, `LEAST($9, repos.updated_at)`, `GREATEST($9, repos.updated_at + interval '1 day')`} {
+		if ok, _ := exprConforms(plain, expr, col, GreatestNonNull); ok {
+			t.Errorf("%s must NOT conform", expr)
+		}
 	}
 }
 
@@ -105,7 +124,7 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: InsertOnly, Reason: "fleet-entry stamp"}}
 
 	// Without an exception: the migrate backfill is a violation.
-	rep := Check(stmts, reg, nil)
+	rep := fixtureCheck(stmts, reg, nil)
 	if len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
 		t.Fatalf("want 1 InsertOnly violation attributed to migrate.go, got %#v", rep.Violations)
 	}
@@ -114,9 +133,9 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	}
 
 	// With the exception: suppressed, and the exception is not stale.
-	exc := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", File: "migrate.go",
-		Match: "SET added_at = COALESCE(data_collection_date", Reason: "one-shot backfill"}}
-	rep = Check(stmts, reg, exc)
+	exc := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "migrate.go",
+		Fragment: "COALESCE(data_collection_date, created_at, NOW())", Statement: stmts[1].SQL, Reason: "one-shot backfill"}}
+	rep = fixtureCheck(stmts, reg, exc)
 	if len(rep.Violations) != 0 {
 		t.Fatalf("exception must suppress the violation, got %#v", rep.Violations)
 	}
@@ -125,9 +144,9 @@ func TestCheckInsertOnlyAndExceptions(t *testing.T) {
 	}
 
 	// A never-matching exception is STALE (allowlist-rot reverse check).
-	exc = append(exc, Exception{Table: "aveloxis_data.repos", Column: "added_at", File: "gone.go",
-		Match: "nonexistent needle", Reason: "rotted"})
-	rep = Check(stmts, reg, exc)
+	exc = append(exc, Exception{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "gone.go",
+		Fragment: "nonexistent_needle", Reason: "rotted"})
+	rep = fixtureCheck(stmts, reg, exc)
 	if len(rep.StaleExceptions) != 1 || rep.StaleExceptions[0].File != "gone.go" {
 		t.Fatalf("the never-matching exception must be reported stale, got %#v", rep.StaleExceptions)
 	}
@@ -142,7 +161,7 @@ func TestCheckUnwrittenAndViolationDetail(t *testing.T) {
 		{Table: "aveloxis_data.repos", Column: "platform_repo_id", Policy: FillEmptyOnly, Reason: "forge ID never changes"},
 		{Table: "aveloxis_data.repos", Column: "ghost_col", Policy: FillEmptyOnly, Reason: "registry rot probe"},
 	}
-	rep := Check(stmts, reg, nil)
+	rep := fixtureCheck(stmts, reg, nil)
 	if len(rep.Violations) != 1 {
 		t.Fatalf("the shipped-bug shape must violate FillEmptyOnly, got %#v", rep.Violations)
 	}
@@ -169,12 +188,12 @@ func TestCheckFailsClosedOnAMultipleColumnAssignment(t *testing.T) {
 	}
 	for _, pol := range []Policy{InsertOnly, AlwaysRefresh, FillEmptyOnly} {
 		reg := []Registered{{Table: "aveloxis_data.repos", Column: "added_at", Policy: pol, Reason: "r"}}
-		rep := Check(stmts, reg, nil)
+		rep := fixtureCheck(stmts, reg, nil)
 		if len(rep.Violations) != 1 || rep.Violations[0].File != "b.go" || !strings.Contains(rep.Violations[0].Detail, "multiple-column") {
 			t.Errorf("%v: want one multiple-column violation in b.go (c.go only reads the column), got %#v", pol, rep.Violations)
 		}
-		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", File: "b.go", Match: "SET (added_at", Reason: "reviewed"}}
-		if rep := Check(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
+		ex := []Exception{{Table: "aveloxis_data.repos", Column: "added_at", Kind: KindAssign, File: "b.go", Fragment: "(NOW(), $1)", Statement: stmts[1].SQL, Reason: "reviewed"}}
+		if rep := fixtureCheck(stmts, reg, ex); len(rep.Violations) != 0 || len(rep.StaleExceptions) != 0 {
 			t.Errorf("%v: a reviewed exception must take it: %#v / stale %#v", pol, rep.Violations, rep.StaleExceptions)
 		}
 	}
@@ -198,7 +217,7 @@ func TestCheckFailsClosedOnEveryListSpelling(t *testing.T) {
 		`UPDATE aveloxis_data.repos SET (repo_name, "ADDED_AT") = ($1, NOW())`:                                                                            0,
 		`UPDATE aveloxis_data.repos SET (a, b) = (added_at, $1)`:                                                                                          0,
 	} {
-		if rep := Check([]Stmt{{File: "x.go", SQL: sql}}, reg, nil); len(rep.Violations) != want {
+		if rep := fixtureCheck([]Stmt{{File: "x.go", SQL: sql}}, reg, nil); len(rep.Violations) != want {
 			t.Errorf("%s: want %d fail-closed violations, got %#v", sql, want, rep.Violations)
 		}
 	}
@@ -213,7 +232,86 @@ func TestCheckFailsClosedOnAListInADoBlock(t *testing.T) {
 		{File: "a.go", SQL: `UPDATE aveloxis_data.repos SET repo_git = $1 WHERE repo_id = $2`},
 		{File: "migrate.go", SQL: `DO $$ BEGIN UPDATE aveloxis_data.repos SET (a, repo_git) = (1, repos.repo_git) WHERE x = 1; END $$`},
 	}
-	if rep := Check(stmts, reg, nil); len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
+	if rep := fixtureCheck(stmts, reg, nil); len(rep.Violations) != 1 || rep.Violations[0].File != "migrate.go" {
 		t.Errorf("want one fail-closed violation in migrate.go's DO block, got %#v", rep.Violations)
 	}
+}
+
+func TestExprConformsEarliestOfStoredAndIncoming(t *testing.T) {
+	plain := stmtFor(`UPDATE aveloxis_data.repo_deps_vulnerabilities SET x = 1`)
+	const col = "first_detected_at"
+	for _, ok := range []string{
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at)`,
+		`LEAST(EXCLUDED.first_detected_at, repo_deps_vulnerabilities.first_detected_at)`,
+		`LEAST(first_detected_at, $3)`,
+	} {
+		if conforms, _ := exprConforms(plain, ok, col, EarliestOfStoredAndIncoming); !conforms {
+			t.Errorf("%s must conform", ok)
+		}
+	}
+	for _, bad := range []string{
+		`EXCLUDED.first_detected_at`, // incoming overwrites
+		`GREATEST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at)`,          // moves later
+		`LEAST(EXCLUDED.first_detected_at, EXCLUDED.first_detected_at)`,                              // ignores the stored value
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, repo_deps_vulnerabilities.last_seen_at)`, // not the incoming value
+		`LEAST(repo_deps_vulnerabilities.first_detected_at, EXCLUDED.first_detected_at, NOW())`,
+		`NOW()`,
+	} {
+		if conforms, _ := exprConforms(plain, bad, col, EarliestOfStoredAndIncoming); conforms {
+			t.Errorf("%s must NOT conform", bad)
+		}
+	}
+}
+
+func TestExprConformsKeepCarryOrNow(t *testing.T) {
+	plain := stmtFor(`UPDATE aveloxis_data.repo_deps_vulnerabilities SET x = 1`)
+	const col = "entered_exposure_at"
+	for _, ok := range []string{
+		`CASE WHEN NOT (COALESCE(EXCLUDED.dependency_kind, '') <> 'self') THEN repo_deps_vulnerabilities.entered_exposure_at
+		      WHEN repo_deps_vulnerabilities.resolved_at IS NULL AND (x) THEN repo_deps_vulnerabilities.entered_exposure_at
+		      WHEN $22::boolean THEN $23::timestamptz ELSE NOW() END`,
+		`CASE WHEN a THEN entered_exposure_at ELSE now() END`,
+		// A keyword inside parentheses is part of a condition, not structure.
+		`CASE WHEN (CASE WHEN a THEN b ELSE c END) THEN entered_exposure_at ELSE NOW() END`,
+	} {
+		if conforms, _ := exprConforms(plain, ok, col, KeepCarryOrNow); !conforms {
+			t.Errorf("%s must conform", ok)
+		}
+	}
+	for _, bad := range []string{
+		`NOW()`, // unconditional: every re-observation would move it
+		`CASE WHEN a THEN entered_exposure_at END`,                               // no ELSE: NULLs the rest
+		`CASE WHEN a THEN EXCLUDED.first_detected_at ELSE NOW() END`,             // another column's value
+		`CASE WHEN a THEN repo_deps_vulnerabilities.last_seen_at ELSE NOW() END`, // another stored column
+		`CASE WHEN a THEN NULL ELSE NOW() END`,
+		`CASE WHEN a THEN CASE WHEN b THEN NOW() ELSE NULL END ELSE NOW() END`, // nested result
+		`COALESCE(CASE WHEN a THEN entered_exposure_at ELSE NOW() END, NOW())`,
+		`CASE a WHEN 1 THEN entered_exposure_at ELSE NOW() END`,                  // a CASE with an operand
+		`CASE WHEN a THEN entered_exposure_at ELSE now(1) END`,                   // not NOW()
+		`CASE WHEN a THEN entered_exposure_at ELSE pg_catalog.now() END`,         // another spelling is another shape
+		`CASE WHEN a THEN entered_exposure_at::text::timestamptz ELSE NOW() END`, // two casts
+	} {
+		if conforms, _ := exprConforms(plain, bad, col, KeepCarryOrNow); conforms {
+			t.Errorf("%s must NOT conform", bad)
+		}
+	}
+}
+
+// exprConforms reports whether one SET RHS, given as text, conforms to the
+// policy for col, as the value assigned by an INSERT ... ON CONFLICT DO
+// UPDATE of the table stmt's first write names (so that both the stored
+// value and EXCLUDED's can be named), under that write's WHERE. Text
+// PostgreSQL's parser does not read as one expression does not conform.
+func exprConforms(stmt Stmt, expr, col string, want Policy) (bool, string) {
+	val, err := exprTree(expr)
+	if err != nil {
+		return false, "the value is not read as one expression: " + err.Error()
+	}
+	ws, err := ParseWrites(stmt.SQL)
+	if err != nil || len(ws) == 0 {
+		return false, "the statement the value stands in is not read"
+	}
+	w := ws[0]
+	w.Kind = "conflict-update"
+	return valueConforms(&w, val, col, want)
 }

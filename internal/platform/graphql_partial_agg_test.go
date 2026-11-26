@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestPartialErrorsAreAggregated (chaoss.tv log, 2026-09-05): a too-expensive
+// TestPartialErrorsAreAggregated (production log, 2026-09-05): a too-expensive
 // contributionsCollection query emits hundreds of per-path INTERNAL errors —
 // ~470 such queries produced 87,728 WARNs in 90 minutes. parseGraphQLResponse
 // must log ONE aggregate line per response, not one per failed path.

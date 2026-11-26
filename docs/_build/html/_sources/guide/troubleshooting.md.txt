@@ -870,12 +870,12 @@ systemctl list-timers --all | grep -iE "apt|postgres|backup"
 sudo crontab -l; ls -la /etc/cron.d /etc/cron.daily
 # Ubuntu auto-updates + needrestart (a common culprit — needrestart restarts
 # services whose shared libs, e.g. openssl/libc, were patched, WITHOUT changing
-# postgres's own version):
+# the version of postgres itself):
 cat /var/log/unattended-upgrades/unattended-upgrades.log
 grep -i restart /etc/needrestart/needrestart.conf
 ```
 
-Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on the chaoss.tv host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
+Typical culprits on Ubuntu 24.04: `unattended-upgrades` + `needrestart` restarting the service after a security update (the confirmed cause on one production host — `apt-daily-upgrade.timer` fires ~06:1x UTC, upgrades `systemd` → a `daemon-reexec`, and `needrestart` then restarts every service linked to the patched libraries, including `postgresql@17-main`), or a custom backup/maintenance cron that does `systemctl restart postgresql`.
 
 **Fix (on the host)**
 
@@ -889,14 +889,15 @@ sudo sed -i "s/^#\?\$nrconf{restart}.*/\$nrconf{restart} = 'l';/" /etc/needresta
 #    (or, to keep auto-restart for everything EXCEPT postgresql, add a blacklist
 #     entry instead:  $nrconf{override_rc} = { qr(^postgresql) => 0 };  )
 
-# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC):
+# B. Or move the unattended-upgrade window to a true idle time (default ~06:00 UTC;
+#    09:00 below stands for whatever is genuinely low-traffic for your fleet):
 sudo systemctl edit apt-daily-upgrade.timer
 #    [Timer]
 #    OnCalendar=
-#    OnCalendar=*-*-* 09:00      # whatever is genuinely low-traffic for your fleet
+#    OnCalendar=*-*-* 09:00
 #    RandomizedDelaySec=30m
 
-# C. Or, if you don't want unattended security upgrades restarting anything at all:
+# C. Or, if you do not want unattended security upgrades restarting anything at all:
 sudo dpkg-reconfigure -plow unattended-upgrades   # disable, and patch on your own schedule
 
 # Verify nothing restarts postgresql automatically afterward:
@@ -1140,7 +1141,7 @@ The output groups by `collecting` first, then `queued`. Within each group, the r
 
 If rows are stuck in `status = 'collecting'` and not making progress, the worker that locked them may have died.
 
-Worker IDs are generated at scheduler startup as `<hostname>-<HHMMSS>` (`internal/scheduler/scheduler.go`). So `kate-200608` means a scheduler started at 20:06:08 on host `kate`.
+Worker IDs are generated at scheduler startup as `<hostname>-<HHMMSS>` (`internal/scheduler/scheduler.go`). So `myhost-200608` means a scheduler started at 20:06:08 on host `myhost`.
 
 #### Compare to the currently-running scheduler
 
@@ -1681,7 +1682,7 @@ aveloxis deploy-checklist --pending # first: the deploy steps not done yet, if a
                                     # (the migrate creates the LOWER(repo_git)
                                     # lookup index and WARNs + skips the unique
                                     # index while dups remain; with no checklist,
-                                    # `stop all`, `migrate --skip-views`, `start all`)
+                                    # stop all, migrate --skip-views, start all)
 aveloxis stop serve                 # optional — dedup-repos skips mid-flight
                                     # pairs, but a quiet window drains all in one run
 aveloxis dedup-repos --dry-run      # review the plan
@@ -1749,7 +1750,7 @@ SELECT pid, state, application_name, client_addr,
        age(now(), backend_start) AS conn_age,
        age(now(), query_start) AS query_age, left(query, 100) AS query
 FROM pg_stat_activity
-WHERE datname = 'aveloxis_large'   -- substitute your DB name
+WHERE datname = 'aveloxis'   -- substitute your DB name
   AND state = 'active'
   AND query_start < now() - interval '5 minutes'
 ORDER BY query_start;
@@ -1904,7 +1905,7 @@ SELECT pid, state, application_name,
        age(now(), query_start) AS query_age,
        left(query, 100) AS query
 FROM pg_stat_activity
-WHERE datname = 'aveloxis_large'
+WHERE datname = 'aveloxis'   -- substitute your DB name
   AND state = 'active'
   AND query_start < now() - interval '5 minutes';
 ```
@@ -2013,6 +2014,68 @@ fail-closed contract.
 Note the boundary: DDL (tables, columns, indexes, views) is never
 ledgered. A hand-dropped index or view still heals on the next
 explicit `aveloxis migrate` with no ledger surgery needed.
+
+## A repository's dependency analysis is stopped at a limit (`manifest_read_cpu_limit`, `manifest_read_memory_limit`)
+
+Since 0.29.213 a repository's manifests and lockfiles are read by a child process with a processor-time limit and a memory limit ([how it works](../architecture/analysis.md)). When the reading passes one, the analysis logs it with the repository and the limit's value, and what was stored before stays as it was. One case does store part of a reading (0.29.215): a lockfile too large for the memory limit is left unread on its own, and the other lockfiles are read and stored.
+
+**What you see.** In `aveloxis.log`, a WARN or ERROR naming `repo_id`, the cause and the limit. On the repository's page, either the dependency coverage line says the last analysis attempt failed, with the reason in words ("reading the manifests took more memory than allowed"), or, when only the lockfiles could not be read, a caution: "Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date." (or "Lockfiles could not be read (...). Transitive dependencies are not checked." when no lockfile row is stored for the repository; or, since 0.29.216, "Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date." when the others were read at that analysis). While a caution is up the page does not say that the repository has no vulnerabilities, although the count is still shown (0.29.216).
+
+**Which repositories.**
+
+```sql
+SELECT c.repo_id, c.last_attempt_result, c.last_attempt_at, c.lockfiles_unread_reason,
+       c.lockfiles_read_at AS last_reading_that_finished,
+       (SELECT MAX(l.data_collection_date) FROM aveloxis_data.repo_lockfiles l
+         WHERE l.repo_id = c.repo_id) AS stored_lockfile_rows_written
+  FROM aveloxis_data.repo_dependency_coverage c
+ WHERE c.last_attempt_result LIKE 'manifest_read_%'
+    OR c.lockfiles_unread_reason IS NOT NULL
+ ORDER BY c.last_attempt_at DESC NULLS LAST;
+```
+
+`lockfiles_read_at` alone does not say what the page says: it is empty for rows stored before 0.29.214, and it is kept when the lockfiles it dates are later removed. The page's date is `lockfiles_read_at` when lockfile rows are stored and it is set, else the date the stored rows were written, and there is no date when no row is stored. `lockfiles_unread_reason` is one of the four `manifest_read_*` values, `root_unreadable`, `lockfiles_not_reached` (0.29.215: the reader was stopped while it read the manifests, before it began on the lockfiles) or `lockfiles_too_large` (0.29.216: the case of the first item below).
+
+**What to do.**
+
+- *Memory, and the repository has a very large lockfile.* This is the ordinary case. A lockfile is read only when its size times its format's cost fits in `collection.manifest_read_memory_mb` ([the configuration page](../getting-started/configuration.md) lists the costs and the largest file of each format the default reads; since 0.29.216 `pubspec.lock`, `stack.yaml.lock` and `pnpm-lock.yaml` cost the most among lockfiles, 52, 51 and 46 times their size, so the default, 2048 since 0.29.217, reads one of about 40 MiB). A larger one is not read: the log says "lockfiles too large for the memory left to read them in were not read" with the repository, the other lockfiles are read, the previous rows of the unread one are kept, and the caution stays on the page (reason `lockfiles_too_large` since 0.29.216; 0.29.215 recorded `manifest_read_memory_limit`). Raise the setting and restart `serve`; every largest size rises in proportion.
+- *The log says "the lockfile snapshot has more rows than are kept for one repository".* Since 0.29.216 a repository's lockfiles may store at most 4,000,000 rows in all (lockfiles, packages, edges, the Go module closure): four times the largest repository of the fleets the number was sized on. A reading over it is refused whole. The repository keeps its previous lockfile rows, the reason recorded is `lockfiles_too_large`, and the caution stays on the page. There is no setting for this limit. Please report the repository's URL: the limit is provisional.
+- *A manifest too large for the memory left.* That file alone is not read; the log names it, and it shows as one manifest that could not be read. The rest of the repository is read.
+- *After an upgrade: is the reader working?* At start `serve` logs `manifest reader ok` with the program, its version and build, and the limits. That line is logged at INFO, so with `"log_level": "warn"` or `"error"` it is not written: at those levels the check is that the log does NOT have `manifest reader self-test FAILED`, which is logged at ERROR and says why and what to do. At `info` or `debug`, a log with neither line means the start did not reach the test. The `ok` line says the reader started and answered at this version; it is not proof that the file on disk was replaced by the upgrade (`aveloxis version` is). The self-test has 30 seconds; a reader that does not answer in that time fails it with "the reader did not answer about an empty directory within 30s", and `serve` goes on.
+- *Processor time.* The largest honest builds measured use about a second of the 180, and the largest lockfiles tested about 34 seconds. A repository that reaches the limit has files built to be slow to read, or a shape the readers handle badly: please report it with the repository's URL. Raising `collection.manifest_read_cpu_seconds` is safe (the limit is per analysis) but is rarely the answer.
+- *`manifest_read_failed`.* The child could not be started, crashed, or sent something the analysis refused. The log line carries the detail. On a system other than Linux, the commonest cause is an `aveloxis` file replaced on disk while `serve` was running: the child is started from the file on disk and refuses a request from another version. The log then says once, at ERROR: "the manifest reader is another version of aveloxis — no repository's manifests or lockfiles are read until serve is restarted". Restart `serve`. The same refusal follows a change of the file's time alone (a `touch`, or a copy of the same build over itself): on these systems the reader takes the file's length and time as its build, so restart `serve` after it. On Linux the child is started from the running program itself, and neither replacing the file nor a `touch` has any effect until the restart.
+
+The reading is tried again at the repository's next collection. A repository that is stopped every time holds one worker for at most the clock allowance (one minute plus four times the processor limit: 13 minutes at the default, plus the time spent answering its requests for remote poms) once per collection.
+
+## After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data
+
+These releases changed what is stored for Maven, Gradle and lockfiles, and how much could not be estimated before a fleet ran them. Both queries are read-only; run them after one full collection cycle.
+
+Counts can FALL after 0.29.215, and that is the release working: a Maven or Gradle dependency that had a version before can have none now, with one of three new reasons, and a finding that rested on the withheld version closes. `profile_managed`: in 0.29.215, a Maven profile of the build manages the dependency; since 0.29.216 only a profile that is active by default and declares the dependency itself with a version gives this reason (since 0.29.217 only in the pom that holds the profile), so most rows that had it get their version back. `platforms_disagree`: Gradle; more than one platform gives it a version and they do not agree in a way that can be settled. `value_not_read`: Gradle; the version is written with, or managed through, a value that is not read: an expression too long to be read whole, or (0.29.217) a variable or property the build sets in a way that is not read (a computed value, under a condition, more than once), including a property through which a Spring-imported BOM manages the dependency, and since 0.29.218 a property that is the version of a BOM that BOM imports. The same reason is given to what a BOM imported after that one would manage, and to a dependency that nothing manages, because which BOM answers for a dependency is not known while one of them is not read. The first query counts them with the older reasons (Gradle rows are stored under `maven` too). 0.29.216 moves counts both ways: versions withheld behind an inactive profile return; a parent or BOM that 0.29.215 took from a pom of the repository outside the build (a fixture, an example) is now the published pom or `inherited_not_found`; and a Gradle platform is never read from a pom of the repository.
+
+**Maven and Gradle dependencies with no version, by the reason recorded.** 0.29.213 and 0.29.214 withhold a version when a parent or BOM that would be consulted first is not known: its lookup failed (`inherited_lookup_failed`), its repository is refused (`inherited_repository_refused`), or it was never asked for (`inherited_not_found`: a snapshot, a version range, a coordinate that cannot be resolved). The same reasons were recorded before for a dependency no pom managed at all, so compare the counts with the ones from before the upgrade if you have them.
+
+```sql
+SELECT COALESCE(NULLIF(version_reason, ''), '(no reason)') AS version_reason,
+       COUNT(*) AS maven_rows_with_no_version,
+       COUNT(DISTINCT repo_id) AS repositories
+  FROM aveloxis_data.repo_deps_libyear
+ WHERE package_manager = 'maven' AND COALESCE(current_version, '') = ''
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+
+**Repositories whose lockfiles could not be read at the last analysis,** by reason, and whether lockfile rows are stored for them (the page then says "Lockfiles last read ...", or "Some lockfiles could not be read ..." for `lockfiles_too_large`) or none is ("Lockfiles could not be read ...", for `lockfiles_too_large` too since 0.29.217). Since 0.29.216 none of these repositories is described as having no vulnerabilities while its reason is set.
+
+```sql
+SELECT c.lockfiles_unread_reason,
+       EXISTS (SELECT 1 FROM aveloxis_data.repo_lockfiles l WHERE l.repo_id = c.repo_id) AS lockfile_rows_stored,
+       COUNT(*) AS repositories
+  FROM aveloxis_data.repo_dependency_coverage c
+ WHERE c.lockfiles_unread_reason IS NOT NULL
+ GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+What to do about a repository in the second list is in the section above.
 
 ## Next steps
 

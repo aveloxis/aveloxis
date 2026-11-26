@@ -1,0 +1,19 @@
+package collector
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+)
+
+func PinEvasionOSPIPE(dir string) int {
+	pr, pw, _ := os.Pipe()
+	cmd := exec.Command("git", "-C", dir, "ls-files")
+	cmd.Stdout = pw
+	_ = cmd.Start()
+	pw.Close()
+	var b bytes.Buffer
+	_, _ = b.ReadFrom(pr)
+	_ = cmd.Wait()
+	return b.Len()
+}

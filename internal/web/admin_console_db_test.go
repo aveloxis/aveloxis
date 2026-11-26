@@ -27,6 +27,7 @@ type consoleFixture struct {
 	adminID int
 	userID  int
 	h       http.Handler
+	srv     *Server
 }
 
 func newConsoleFixture(t *testing.T) *consoleFixture {
@@ -68,7 +69,7 @@ func newConsoleFixture(t *testing.T) *consoleFixture {
 	s := New(store, config.WebConfig{DevMode: true}, "", logger)
 	plantSession(t, s, "admin-tok", &Session{UserID: adminID, LoginName: tag + "-admin", ExpiresAt: time.Now().Add(time.Hour)})
 	plantSession(t, s, "user-tok", &Session{UserID: userID, LoginName: tag + "-user", ExpiresAt: time.Now().Add(time.Hour)})
-	return &consoleFixture{store: store, adminID: adminID, userID: userID, h: s.Handler()}
+	return &consoleFixture{store: store, adminID: adminID, userID: userID, h: s.Handler(), srv: s}
 }
 
 func (f *consoleFixture) get(path, tok string) *httptest.ResponseRecorder {

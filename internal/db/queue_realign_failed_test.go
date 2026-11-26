@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestRealignLeavesAFailedRowsDueDate (worklist 68, the 2026-09-28 kate log):
+// TestRealignLeavesAFailedRowsDueDate (worklist 68, the 2026-09-28 production log):
 // a failure sets due_at = NOW() + interval and leaves last_collected at the
 // last SUCCESS, so the startup realign's last_collected + interval put a
 // failed row back in the past — eight repositories failed within seconds of

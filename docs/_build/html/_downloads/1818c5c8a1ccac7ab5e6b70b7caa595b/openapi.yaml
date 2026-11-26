@@ -546,6 +546,15 @@ paths:
                     type: string
                     enum: [all, runtime]
                     description: The scope in effect.
+                  left_out:
+                    type: integer
+                    description: |
+                      Dependencies outside the table under the same scope
+                      because the registry did not answer for them and nothing
+                      gave them a licence (0.29.198). They are not part of the
+                      `Unknown` row, which is a licence looked for and not
+                      found. GitHub Actions rows are not counted. Absent when
+                      the count could not be read: not known, not zero.
                   licenses:
                     type: array
                     items:
@@ -1758,6 +1767,8 @@ paths:
                     description: The last vulnerability scan; `null` when never scanned (an empty list then means "not scanned", not "no findings").
                   lockfile_certainty:
                     $ref: '#/components/schemas/LockfileCertainty'
+                  coverage:
+                    $ref: '#/components/schemas/Coverage'
                   counts:
                     type: object
                     required: [current, resolved, critical, direct, transitive, dev, runtime, self, unknown_version, unknown_version_critical]
@@ -1782,6 +1793,24 @@ paths:
                         type: integer
                       unknown_version_critical:
                         type: integer
+                      resolved_unlabelled:
+                        type: integer
+                        description: Closed findings with no `closed_reason`, which are the ones resolved in the ordinary sense. With the `resolved_<reason>` keys it sums to `resolved`.
+                      resolved_superseded:
+                        type: integer
+                      resolved_version_determined:
+                        type: integer
+                      resolved_version_lost:
+                        type: integer
+                      resolved_version_changed:
+                        type: integer
+                      resolved_never_applied:
+                        type: integer
+                      resolved_unsendable:
+                        type: integer
+                      resolved_other_reason:
+                        type: integer
+                        description: Closed findings that carry a reason this release does not name (written by a later one). Never a fix. Always present; 0 when there is none.
         "304":
           $ref: '#/components/responses/NotModified'
         "400":
@@ -7375,6 +7404,8 @@ components:
         vulnerabilities_version_unknown:
           type: integer
           description: Findings matched against an unpinned version.
+        coverage:
+          $ref: '#/components/schemas/Coverage'
         archived:
           type: boolean
           description: Single-repository answer only. The forge reports the repository as archived (read-only). The batch answer (`/repos/stats`) does not read it and always says `false`.
@@ -7742,7 +7773,7 @@ components:
           description: '`matview` reads the refreshed supply-chain views (fleet scope); `live` computes over the scope''s repositories.'
     PackageExposure:
       type: object
-      required: [ecosystem, package_name, cohort_repos, repos_unresolved, findings, findings_unresolved, pct_unresolved, pct_transitive, median_days_open, worst_severity, max_cvss, n_advisories, distinct_versions_in_use, modal_version, modal_version_share_pct, lead_advisory, lead_cve, lead_severity, lead_fixed_version, lead_advisory_repos, repos_with_known_versions]
+      required: [ecosystem, package_name, cohort_repos, repos_unresolved, findings, findings_unresolved, pct_unresolved, pct_transitive, median_days_open, worst_severity, max_cvss, n_advisories, distinct_versions_in_use, modal_version, modal_version_share_pct, lead_advisory, lead_cve, lead_severity, lead_fixed_version, lead_advisory_repos, repos_with_known_versions, closed_with_reason]
       properties:
         ecosystem:
           type: string
@@ -7787,6 +7818,9 @@ components:
           type: integer
         repos_with_known_versions:
           type: integer
+        closed_with_reason:
+          type: integer
+          description: Findings on this package that closed for a reason other than a fix (the package's version was worked out, lost or changed, or its purl can no longer be sent to OSV). Since 0.29.167 they are in no other figure of this object, and a package with only such findings is not listed.
     PackageAdvisory:
       type: object
       required: [vuln_id, cve_id, severity, max_cvss, fixed_version, repos, repos_unresolved, first_seen, advisory_url]
@@ -8039,8 +8073,40 @@ components:
     Vulnerability:
       type: object
       description: One vulnerability finding (`vulnJSON`).
-      required: [vuln_id, package_name, severity, cvss_score, summary, source, advisory_url, first_detected_at, last_seen_at]
+      required: [vuln_id, package_name, severity, cvss_score, summary, source, advisory_url, first_detected_at, last_seen_at, class]
       properties:
+        class:
+          type: string
+          enum: [closed, self, version_not_determined, exposure]
+          description: |
+            The finding's one class, decided by the server (0.29.196).
+            `closed`: no longer reported (see `closed_reason`). `self`: an
+            advisory against a package the repository publishes.
+            `version_not_determined`: the dependency declares no version, so
+            every advisory for the package is listed. `exposure`: affected at
+            a version in use or at the lowest a declared range allows. A
+            client should key on this field; a later release adds values, and
+            a value a client does not know is not exposure.
+        evidence:
+          type: string
+          enum: [in_use, lowest_allowed, floating_ref, not_classified]
+          description: |
+            Present on `exposure` findings only: how sure the version is.
+            `in_use`: from a lockfile, an exact declaration or the build's
+            management. `lowest_allowed`: the lowest version a declared range
+            allows; the version in use may be a later one. `floating_ref`: a
+            GitHub Actions ref that moves. `not_classified`: a row written
+            before the resolution was stored.
+        closed_reason:
+          type: string
+          description: |
+            Present on a `closed` finding that did not close because of a
+            fix: `superseded` (now tracked at a known version),
+            `version_determined` (does not affect the version in use),
+            `version_lost` (version no longer known), `version_changed` (now
+            tracked at another version), `never_applied` (on a managed entry
+            nothing used), `unsendable` (its package name could not be sent).
+            Absent: the dependency moved past the advisory or was removed.
         vuln_id:
           type: string
           description: The OSV id (GHSA, PYSEC, GO, ...).
@@ -8128,6 +8194,127 @@ components:
           items:
             type: string
           description: The packages from `root` to the vulnerable one.
+    Coverage:
+      type: object
+      description: |
+        What is known about whether the repository's dependencies were read
+        and checked (0.29.197), decided by one function for every answer that
+        carries it. Draw `state` in words; show a count of findings blank when
+        `count_blank` is true; say "no vulnerabilities" only when
+        `clean_result` is true. When the object is absent (an input could not
+        be read, or the server is older) show "coverage not known": a count of
+        zero is then blank, never 0 and never "not yet scanned". A `state` you
+        do not know is "coverage not known" too.
+      required: [state, partial, last_completed_scan_at, last_scan_attempt_at, analysed_at, last_analysis_attempt, manifests_failed, manifests_carried, lockfiles_carried, dependencies_without_row, second_line, dependencies_unknown, clean_result, count_blank, lockfiles_unread]
+      properties:
+        state:
+          type: string
+          enum: [scanned_partial, scanned, nothing_to_scan, nothing_sendable, no_answer, scan_failed, not_analysed, analysed_not_scanned, scan_history_undated, not_scanned]
+          description: |
+            `scanned_partial`: scanned; some packages not fully checked.
+            `scanned`: scanned. `nothing_to_scan`: nothing to scan.
+            `nothing_sendable`: no dependency could be sent for checking.
+            `no_answer` (0.29.208): sent for checking; no complete answer
+            came back.
+            `scan_failed`: scan failed. `not_analysed`: not yet analysed.
+            `analysed_not_scanned`: analysed, not yet scanned.
+            `scan_history_undated`: findings present, no completed scan
+            recorded. `not_scanned`: not yet scanned.
+        partial:
+          type: boolean
+          description: True exactly for `scanned_partial`.
+        last_completed_scan_at:
+          type: [string, "null"]
+          format: date-time
+          description: The last scan that completed. Shown beside any state when set.
+        last_scan_attempt_at:
+          type: [string, "null"]
+          format: date-time
+          description: The last scan attempt, whatever its outcome.
+        analysed_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the dependency inventory now stored was written whole. Null for a repository analysed only before 0.29.159; its stored rows are still its inventory.
+        last_analysis_attempt:
+          type: [object, "null"]
+          description: The last analysis that did not replace the inventory.
+          required: [at, reason]
+          properties:
+            at:
+              type: string
+              format: date-time
+            reason:
+              type: string
+              enum: [clone_unavailable, root_unreadable, replace_failed, manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed]
+        manifests_failed:
+          type: integer
+          description: Manifests that could not be read or parsed.
+        manifests_carried:
+          type: integer
+          description: Of those, the ones whose earlier rows were kept.
+        lockfiles_carried:
+          type: integer
+          description: Lockfiles that could not be read and whose earlier rows were kept.
+        dependencies_without_row:
+          type: object
+          description: Declared dependencies with no inventory row, counted by the kind of reason (`non_registry`, `managed_unused`, `name_rejected`, `lookup_failed`, `no_namespace`).
+          additionalProperties:
+            type: integer
+        second_line:
+          type: string
+          enum: ["", analysis_attempt_failed, no_inventory_recorded, inventory_older_than_attempt]
+          description: Which second line applies, shown beside the state and never in its place. Empty for none.
+        dependencies_unknown:
+          type: boolean
+          description: Nothing has ever said what the repository depends on.
+        clean_result:
+          type: boolean
+          description: True only when the state is `scanned` or `nothing_to_scan`, the dependencies are known, there is no current exposure finding and (since 0.29.216) `lockfiles_unread` is null. It speaks of exposure at a known version only. While the lockfiles are unread it is false and the counts are unchanged, so a count of 0 is shown as 0 with the caution beside it, and no "no vulnerabilities" sentence.
+        count_blank:
+          type: boolean
+          description: A count of findings is shown blank, because a 0 would claim a check that did not happen.
+        manifest_paths_failed:
+          type: array
+          description: The vulnerability list answer only. The paths behind `manifests_failed`.
+          items:
+            type: string
+        manifest_paths_carried:
+          type: array
+          description: The vulnerability list answer only. The paths behind `manifests_carried`.
+          items:
+            type: string
+        lockfiles_unread:
+          type: [object, "null"]
+          description: |
+            A caution beside the state (0.29.214). Null except when the
+            repository's lockfiles went unread at the last analysis. With
+            `last_read_at` set, lockfile rows are stored and the exact
+            versions and transitive dependencies are as old as that time;
+            with it null, no lockfile row is stored, so transitive
+            dependencies are not checked. `last_read_at` is always sent
+            (null, never absent). Since 0.29.215 it is the date of the
+            lockfile rows that are stored, whichever reading stored them,
+            and null when none is. Absent on an older server: show nothing.
+            With the reason `lockfiles_too_large` (0.29.216) the analysis
+            did replace the stored rows: every lockfile but the ones too
+            large was read then, and those keep their previous rows. No one
+            date is true of the rows, so show none when `last_read_at` is
+            set. With `last_read_at` null no lockfile row is stored: show
+            the "could not be read" sentence, as for any other reason
+            (0.29.217). The same reason is given when the repository's lockfiles
+            would store more rows than are kept for one repository
+            (4,000,000): that reading is refused whole and every stored row
+            is the previous reading's. While the object is set,
+            `clean_result` is false (0.29.216).
+          required: [reason, last_read_at]
+          properties:
+            reason:
+              type: string
+              description: Why the latest reading did not finish. `lockfiles_not_reached` (0.29.215) means the reader was stopped before it reached the lockfiles. `lockfiles_too_large` (0.29.216) means some lockfiles would have taken more memory to read than allowed (the others were read), or the repository's lockfiles would store more rows than are kept for one repository. A value a client does not know should be shown as written.
+              enum: [manifest_read_cpu_limit, manifest_read_memory_limit, manifest_read_timed_out, manifest_read_failed, root_unreadable, lockfiles_not_reached, lockfiles_too_large]
+            last_read_at:
+              type: [string, "null"]
+              format: date-time
     LockfileCertainty:
       type: object
       description: How much of the repository's dependency set a lockfile pins (`db.LockfileCertainty`).
@@ -8880,7 +9067,7 @@ components:
     AugurDependencyRow:
       type: object
       description: One dependency with its libyear (`db.DepRow`).
-      required: [name, requirement, dep_type, package_manager, current_version, latest_version, libyear]
+      required: [name, requirement, dep_type, package_manager, current_version, latest_version, libyear, libyear_status, scope]
       properties:
         name:
           type: string
@@ -8897,8 +9084,71 @@ components:
         latest_version:
           type: string
         libyear:
-          type: number
-          description: Years between the used version's release and the latest's; 0 when unknown.
+          type: [number, "null"]
+          description: |
+            Years between the used version's release and the latest's. Null
+            when it is not known (0.29.198; until then 0); `libyear_status`
+            says why. A 0 is a number and means the latest version.
+        libyear_status:
+          type: string
+          enum: ["", resolved, no_version, no_release_date, not_on_registry, cannot_be_asked, lookup_failed, no_timeline]
+          description: |
+            Why the row has a libyear or lacks one. `resolved`: it has one.
+            `no_version`: no version determined. `no_release_date`: no release
+            date for this version. `not_on_registry`: the registry has no such
+            package. `cannot_be_asked`: the registry cannot be asked about it.
+            `lookup_failed`: no answer this cycle; it is asked again.
+            `no_timeline`: not applicable (a GitHub Action). Empty for a row
+            written before 0.29.162. A row is an unknown when `libyear` is
+            null and the status is not `no_timeline`.
+        scope:
+          type: string
+          enum: [runtime, dev, test, build, optional, peer]
+          description: The dependency's scope, in the vocabulary every answer that names a dependency uses. An empty or unrecognised stored `dep_type` is `runtime`.
+        version_source:
+          type: string
+          description: How the version was worked out when it was not simply declared (`locked`, `locked-several`, `managed`). Absent otherwise.
+        version_reason:
+          type: string
+          enum: [inherited_not_found, inherited_lookup_failed, inherited_repository_refused, profile_managed, platforms_disagree, value_not_read]
+          description: |
+            Why there is no version, when the build file names none that can
+            be relied on. Absent otherwise. A value a client does not know
+            should be shown as written.
+            `inherited_not_found`, `inherited_lookup_failed`,
+            `inherited_repository_refused`: a parent pom or BOM that might
+            have supplied it could not be obtained.
+            `inherited_not_found`: the parent or BOM is on no repository
+            that is read, or was never asked for (a snapshot, a version
+            range, a coordinate a request cannot be built from).
+            `inherited_lookup_failed`: it is not known whether a repository
+            has it (one did not answer, or declared repositories were left
+            unconsulted).
+            `inherited_repository_refused`: the repository that holds it may
+            not be fetched from.
+            `profile_managed` (0.29.215): Maven; a profile that is active by
+            default in the pom itself declares the dependency with a
+            version, so the pom's own declaration with no version is not
+            given a managed version. (0.29.215 gave this reason behind any
+            profile that managed the dependency; since 0.29.216 only a
+            default-active profile's own declaration does, and since
+            0.29.217 only in the pom that holds the profile.)
+            `platforms_disagree` (0.29.215): Gradle; more than one platform
+            (or a platform and Spring's dependency-management plugin) gives
+            the dependency a version, and they do not agree in a way that
+            can be settled.
+            `value_not_read` (0.29.215): Gradle; the version is written
+            with, or managed through, a value that is not read: an
+            expression too long to be read whole; or (0.29.217) a variable
+            or property the build sets in a way that is not read (a computed
+            value, under a condition, more than once), including a property
+            through which a BOM imported by Spring's dependency-management
+            plugin manages the dependency (0.29.216 sent no reason there),
+            and (0.29.218) a property that is the version of a BOM that BOM
+            imports. The same reason is given to what a BOM imported after
+            that one would manage, and to a dependency that nothing manages,
+            because which BOM answers for a dependency is not known while
+            one of them is not read.
         license:
           type: string
           description: The license as the registry reported it (not normalized). Absent when unknown.

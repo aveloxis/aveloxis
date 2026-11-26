@@ -15,12 +15,12 @@ import (
 // collectionCache caches /compare's per-entity series under the
 // repositories' collection generation (db.CollectionGeneration: a digest of
 // every member's queue row, updated_at and last_collected, and its
-// data_changed_at), O11 option 4 (v0.29.71; measured on kate: summary/43 §2
+// data_changed_at), O11 option 4 (v0.29.71; measured on a production fleet: summary/43 §2
 // item 9). A job that ends over any member, or a writer outside a job that
 // stamps one, changes the key, so an answer is not served past it. It has no
 // age limit (D6, 0.29.120, summary/63: durable until recollection; the
 // enrichment-interval TTL it had made every chart recompute every 17 minutes
-// on kate).
+// on a production fleet).
 type collectionCache struct {
 	mu sync.Mutex
 	m  map[string]collectionCacheEntry

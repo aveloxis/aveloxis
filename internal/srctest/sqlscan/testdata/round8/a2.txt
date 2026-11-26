@@ -1,0 +1,26 @@
+@@ A60 insert-select from same table, conflict excluded (dedup move style)
+INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT $2, l.ar FROM aveloxis_data.repos l WHERE l.repo_id = $1 ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ A61 schema-qualified whole row in derived
+UPDATE aveloxis_data.repos r SET ar = s.j->>'ar' FROM (SELECT repo_id, to_jsonb(aveloxis_data.repos) AS j FROM aveloxis_data.repos) s WHERE s.repo_id = r.repo_id
+@@ A62 nested lateral inside derived
+UPDATE aveloxis_data.repos r SET ar = s.v FROM (SELECT x.repo_id, l.v FROM aveloxis_data.repos x, LATERAL (SELECT x.ar AS v) l) s WHERE s.repo_id = r.repo_id
+@@ A63 house-style dedup: winner takes loser's stamp via CROSS JOIN LATERAL
+UPDATE aveloxis_data.repos w SET ar = k.prev FROM aveloxis_data.repos l CROSS JOIN LATERAL (SELECT l.ar AS prev) k WHERE l.repo_id = $2 AND w.repo_id = $1
+@@ A64 json_table lateral
+UPDATE aveloxis_data.repos r SET ar = jt.v FROM aveloxis_data.repos r2, JSON_TABLE(to_jsonb(r2), '$' COLUMNS (v text PATH '$.ar')) AS jt WHERE r2.repo_id = r.repo_id
+@@ A65 conflict excluded from VALUES containing subselect over target
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, (SELECT ar FROM aveloxis_data.repos WHERE repo_id = $2)) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ A66 merge source lateral
+MERGE INTO aveloxis_data.repos r USING (aveloxis_data.repos l CROSS JOIN LATERAL (SELECT l.ar AS prev) k) ON l.repo_id = r.repo_id + 1 WHEN MATCHED THEN UPDATE SET ar = k.prev
+@@ A67 cte column list via self
+WITH old(id, prev) AS (SELECT repo_id, ar FROM aveloxis_data.repos WHERE repo_id = $2) UPDATE aveloxis_data.repos w SET ar = old.prev FROM old WHERE w.repo_id = $1
+@@ A68 cte column list partial (only first col renamed)
+WITH old(id) AS (SELECT repo_id, ar FROM aveloxis_data.repos) UPDATE aveloxis_data.repos w SET ar = old.ar FROM old WHERE w.repo_id = old.id
+@@ A69 fe fill reading stored through lateral (incoming side must not read stored of THIS row)
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, k.v) FROM aveloxis_data.repos r2 CROSS JOIN LATERAL (SELECT r2.fe AS v) k WHERE r2.repo_id = r.repo_id
+@@ A70 pnn with lateral 'incoming' = stored of other row via incomingQuery bare col
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM aveloxis_data.repos r2, LATERAL (SELECT pnn AS c FROM unnest($1::int[]) AS t(id)) v WHERE r2.repo_id = r.repo_id + 1
+@@ A71 g with lateral bare
+UPDATE aveloxis_data.repos r SET g = GREATEST(r.g, v.c) FROM aveloxis_data.repos r2, LATERAL (SELECT e AS c FROM unnest($1::int[]) AS t(id)) v WHERE r2.repo_id = r.repo_id
+@@ A72 fe guarded bare "incoming" lateral constant-ish
+UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(v.c, ''), r.pn) FROM aveloxis_data.other o, LATERAL (SELECT secret AS c FROM unnest($1::int[]) AS t(id)) v WHERE o.id = r.repo_id

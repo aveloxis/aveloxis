@@ -2,7 +2,7 @@
 --
 -- Fixes the hourly mailing-list sender-resolve candidates query
 -- (GetMailingListSenderResolveCandidates) observed running 30-50 min
--- occupying 5 backends on aveloxis_large (2026-07-29): the NOT EXISTS
+-- occupying 5 backends on a production database (2026-07-29): the NOT EXISTS
 -- against contributors plans as a nested-loop anti-join that seq-scans
 -- the 9.4 GB contributors heap once per outer row, because
 -- contributors.cntrb_email and cntrb_canonical have no indexes.
@@ -21,7 +21,7 @@
 -- IF NOT EXISTS, so hand-creating them now is the v0.25.34 pattern.
 --
 -- Run with:
---   CFG=/path/to/aveloxis.chaoss.tv.json
+--   CFG=/path/to/aveloxis.json
 --   PGPASSWORD=$(jq -r .database.password "$CFG") psql \
 --     -h $(jq -r .database.host "$CFG") -p $(jq -r .database.port "$CFG") \
 --     -U $(jq -r .database.user "$CFG") -d $(jq -r .database.dbname "$CFG") \

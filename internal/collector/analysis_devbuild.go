@@ -11,7 +11,7 @@
 // [dev-packages], setup.py tests_require/extras_require, setup.cfg
 // [options.extras_require]. Everything here is gated on
 // collection.dev_build_deps (default FALSE — the findings-volume
-// driver; canary on the small chaoss.tv DB before any default flip,
+// driver; canary on the smaller production database before any default flip,
 // per the v0.27.19 first-wave lesson). Knob off = the walk's
 // pre-v0.27.45 row set, byte-identical.
 //
@@ -19,402 +19,45 @@
 // only relabels already-collected go.mod deps (test-only modules →
 // test scope), adding no rows and no findings volume — the same
 // posture as the P1 relabels.
+//
+// 0.29.214: it reads the clone's .go files, so it runs in the child that
+// reads the clone (readManifestDeclarations), not in the worker. Until then
+// the worker itself parsed every .go file whole, with no limit (review
+// round 7: a 128 MiB .go file cost it 12 GiB).
 
 package collector
 
 import (
-	"go/parser"
+	"go/scanner"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aveloxis/aveloxis/internal/model"
 )
 
-// requirementsFileScope classifies a requirements-variant filename
-// into a dependency scope. ok=false means the file is not a
-// requirements variant (or is the exact "requirements.txt", which the
-// walk's dedicated case already handles as runtime). Classification
-// is by the ecosystem's own filename convention (open decision #6,
-// operator-accepted): test → test; dev/lint/doc → dev;
-// build/ci/release → build; bare/prod/base → runtime.
-func requirementsFileScope(base, path string) (string, bool) {
-	lower := strings.ToLower(base)
-	if !strings.HasSuffix(lower, ".txt") {
-		return "", false
-	}
-	if lower == "requirements.txt" {
-		return "", false // the walks' requirements.txt case owns this, in any letter case (canonicalManifestName)
-	}
-	stem := strings.TrimSuffix(lower, ".txt")
-	inRequirementsDir := filepath.Base(filepath.Dir(path)) == "requirements"
-	isVariant := strings.HasPrefix(stem, "requirements") ||
-		strings.HasSuffix(stem, "-requirements") ||
-		strings.HasSuffix(stem, "_requirements")
-	if !isVariant && !inRequirementsDir {
-		return "", false
-	}
-	// Token classification on the stem with the requirements part
-	// stripped: "requirements-dev" → "dev", "test_requirements" →
-	// "test", requirements/ci.txt → "ci".
-	token := strings.Trim(strings.ReplaceAll(strings.ReplaceAll(stem, "requirements", ""), "_", "-"), "-")
-	switch {
-	case strings.Contains(token, "test"):
-		return model.ScopeTest, true
-	case strings.Contains(token, "dev"), strings.Contains(token, "lint"), strings.Contains(token, "doc"):
-		return model.ScopeDev, true
-	case strings.Contains(token, "build"), strings.Contains(token, "ci"), strings.Contains(token, "release"):
-		return model.ScopeBuild, true
-	default:
-		// bare requirements/foo.txt, requirements-prod.txt, base…
-		return "runtime", true
-	}
-}
+// goImportPrefixBytes is how much of a .go file is read to find its
+// imports. A Go file's imports come before its first declaration, after the
+// package clause and whatever comments stand above it, so they are in the
+// first few kilobytes of any file a person wrote; a mebibyte is that with
+// room for a generated file's licence header. PROVISIONAL (summary/71,
+// section 8). A file whose imports are not all inside the prefix is not
+// guessed at (goImports's cutShort).
+const goImportPrefixBytes = 1 << 20
 
-// parseRequirementsTxtVersionsScoped parses a requirements-variant
-// file and stamps every dep with the filename-derived scope.
-func parseRequirementsTxtVersionsScoped(path, scope string) []libyearDep {
-	deps := parseRequirementsTxtVersions(path)
-	for i := range deps {
-		deps[i].Type = scope
-	}
-	return deps
-}
-
-// parsePyprojectDevBuildVersions extracts the NON-runtime pyproject
-// sections the base parser deliberately skips:
-//
-//   - [build-system] requires = [...]            → build
-//   - [project.optional-dependencies] k = [...]  → optional
-//   - [dependency-groups] k = [...] (PEP 735)    → test when the
-//     group name mentions test, else dev
-//   - [tool.poetry.group.<g>.dependencies]       → test when g
-//     mentions test, else dev
-//   - [tool.poetry.dev-dependencies] (legacy)    → dev
-//
-// Returned deps are ADDITIVE to parsePyprojectVersionsFromContent's
-// runtime set; the caller appends both.
-func parsePyprojectDevBuildVersions(content string) []libyearDep {
-	var deps []libyearDep
-	// Poetry's group tables (`[tool.poetry.group.<g>.dependencies]`,
-	// `[tool.poetry.dev-dependencies]`) go through the shared table reader
-	// (pythonTOMLDeps; worklist items 42 and 43 — the line reader below
-	// lost a multi-line table's version); the PEP 508 arrays stay with the
-	// line reader, since an array is not a table.
-	deps = append(deps, pythonTOMLDeps(content, poetryGroupSections(content))...)
-	// arrayScope: non-empty while inside a section whose values are
-	// PEP 508 requirement arrays. kvScope: non-empty while inside a
-	// poetry-style key = "version" section — read above, skipped here.
-	arrayScope := ""
-	kvScope := ""
-	inArray := false
-	// arrayItemScope: the scope the open array's key chose, kept for the
-	// item lines inside it (they carry no key of their own).
-	arrayItemScope := ""
-	// tableDepth: >0 while a multi-line inline table is open. Its
-	// continuation lines are the TABLE's keys, read by pythonTOMLDeps over
-	// scanTOMLDepTables; this branch only skips them.
-	tableDepth := 0
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if tableDepth > 0 {
-			// A table that never closed must not swallow the rest of the
-			// file: a section header ends it, since no inline table can
-			// span one (v0.29.57 — before the depth tracking, such a file
-			// recovered here, and it still does).
-			if tomlSectionHeader(trimmed) {
-				tableDepth = 0
-			} else {
-				tableDepth += bracketDelta(stripHashComment(trimmed))
-				if tableDepth < 0 {
-					tableDepth = 0
-				}
-				continue
-			}
-		}
-		// A table header may carry a trailing comment (v0.29.57).
-		if header, ok := pyprojectHeader(trimmed); ok {
-			section := strings.Trim(header, "[]")
-			arrayScope, kvScope, inArray, arrayItemScope = "", "", false, ""
-			switch {
-			case section == "build-system":
-				arrayScope = model.ScopeBuild
-			case section == "project.optional-dependencies":
-				arrayScope = model.ScopeOptional
-			case section == "dependency-groups":
-				arrayScope = model.ScopeDev
-			case strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"):
-				group := strings.TrimSuffix(strings.TrimPrefix(section, "tool.poetry.group."), ".dependencies")
-				if strings.Contains(group, "test") {
-					kvScope = model.ScopeTest
-				} else {
-					kvScope = model.ScopeDev
-				}
-			case section == "tool.poetry.dev-dependencies":
-				kvScope = model.ScopeDev
-			}
-			continue
-		}
-		switch {
-		case arrayScope != "":
-			// Inside a multiline array the item lines carry no key, so the
-			// scope chosen when the array opened is the one they keep
-			// (Copilot on PR #210: a multiline PEP 735 `test` group was
-			// emitting dev).
-			//
-			// DECLINED, with the reason here rather than a fix: on MALFORMED
-			// input — an array that never closes — this now stamps later
-			// groups with the unclosed group's scope, where the older code
-			// used the section default. Both are wrong for a file no TOML
-			// parser accepts, and the shape that is worth getting right is
-			// the well-formed one. A section header does not rescue it the
-			// way it rescues an inline table, because an array item is a
-			// bare string and `[x]` inside one is indistinguishable from a
-			// header without the charset rule tomlSectionHeader applies.
-			scope := arrayScope
-			if inArray && arrayItemScope != "" {
-				scope = arrayItemScope
-			}
-			// [build-system] has non-array keys too (build-backend);
-			// only the requires key opens an array there.
-			if arrayScope == model.ScopeBuild && !inArray && !strings.HasPrefix(trimmed, "requires") {
-				continue
-			}
-			// PEP 735 test-named groups are test deps.
-			if arrayScope == model.ScopeDev && !inArray {
-				if key, _, found := strings.Cut(trimmed, "="); found && strings.Contains(strings.ToLower(key), "test") {
-					scope = model.ScopeTest
-				}
-			}
-			// Brackets inside a string or a comment are not array syntax:
-			// `"pytest[all]>=7.0"]` closes the array without opening one.
-			// The ITEMS come off the same stripped line, or a commented-out
-			// requirement inside the array is collected as a dependency.
-			code := stripHashComment(trimmed)
-			opensArray, closesArray := listBrackets(code)
-			if !inArray {
-				arrayItemScope = scope
-			}
-			if inArray || opensArray {
-				for _, d := range extractQuotedPyVersionDeps(code) {
-					d.Type = scope
-					deps = append(deps, d)
-				}
-			}
-			if opensArray && !closesArray {
-				inArray = true
-			}
-			if inArray && closesArray && !opensArray {
-				inArray = false
-			}
-		case kvScope != "" && strings.Contains(trimmed, "=") && !strings.HasPrefix(trimmed, "#"):
-			// Read by pythonTOMLDeps above; only the inline-table depth is
-			// tracked here so a table's continuation lines are not mistaken
-			// for array items or headers.
-			if d := bracketDelta(strings.TrimSpace(stripHashComment(trimmed))); d > 0 {
-				tableDepth = d
-			}
-		}
-	}
-	return deps
-}
-
-// poetryGroupSections maps every Poetry group table header in content to
-// the scope its dependencies take: a group named like a test group is test,
-// every other group and the legacy dev-dependencies table is dev.
-//
-// The headers are found with the line reader's own test (pyprojectHeader),
-// not the bare-key tomlSectionHeader: a group whose name needs quoting
-// (`[tool.poetry.group."docs-x".dependencies]`) failed the bare-key test
-// and its dependencies were dropped (PR #218 review A1).
-func poetryGroupSections(content string) map[string]string {
-	out := map[string]string{}
-	for _, raw := range strings.Split(content, "\n") {
-		header, ok := pyprojectHeader(raw)
-		if !ok {
-			continue
-		}
-		section := strings.Trim(header, "[]")
-		switch {
-		case strings.HasPrefix(section, "tool.poetry.group.") && strings.HasSuffix(section, ".dependencies"):
-			group := strings.TrimSuffix(strings.TrimPrefix(section, "tool.poetry.group."), ".dependencies")
-			if strings.Contains(group, "test") {
-				out[header] = model.ScopeTest
-			} else {
-				out[header] = model.ScopeDev
-			}
-		case section == "tool.poetry.dev-dependencies":
-			out[header] = model.ScopeDev
-		}
-	}
-	return out
-}
-
-// pyprojectHeader reports whether a pyproject.toml line is a table header —
-// a `[`...`]` line, trailing comment removed, carrying no `=` — and returns
-// the header as scanTOMLDepTables keys its sections. The one header test for
-// both readers of this file (the section list above and the line reader in
-// parsePyprojectDevBuildVersions), so they cannot disagree about a quoted
-// group name (PR #218 review A1).
-func pyprojectHeader(line string) (string, bool) {
-	header := strings.TrimSpace(stripHashComment(line))
-	if strings.HasPrefix(header, "[") && strings.HasSuffix(header, "]") && !strings.Contains(header, "=") {
-		return header, true
-	}
-	return "", false
-}
-
-// parsePipfileDevPackages extracts the [dev-packages] section the
-// base Pipfile parser deliberately skips. Same value grammar as
-// [packages]; every dep is dev-scoped.
-func parsePipfileDevPackages(content string) []libyearDep {
-	// Reuse the [packages] parser by SWAPPING the two headers and handing
-	// it the whole file. Isolating the section by hand meant a second
-	// section splitter, and it had the ordering this release fixed
-	// everywhere else — a continuation line beginning with `[` ended the
-	// section, dropping the rest of [dev-packages] before the delegate's
-	// own table tracking could see it (v0.29.57). Delegating the whole file
-	// leaves exactly one reader of this grammar.
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		switch {
-		case tomlHeaderIs(line, "packages"):
-			// Any header the delegate does not read. It must not be a
-			// plausible dev section either.
-			lines[i] = "[packages-runtime-not-read-here]"
-		case tomlHeaderIs(line, "dev-packages"):
-			lines[i] = "[packages]"
-		}
-	}
-	deps := parsePipfileVersions(strings.Join(lines, "\n"))
-	for i := range deps {
-		deps[i].Type = model.ScopeDev
-	}
-	return deps
-}
-
-// parseSetupPyDevBuildVersions extracts setup.py's tests_require
-// (→ test) and extras_require (→ optional) argument lists, which the
-// base parser (install_requires only) skips. extras_require is a
-// dict — the quoted KEYS must not be mistaken for dep names, so
-// lines containing a ':' have everything through the key stripped
-// before quoted-string extraction.
-func parseSetupPyDevBuildVersions(content string) []libyearDep {
-	var deps []libyearDep
-	collect := func(marker, scope string) {
-		in := false
-		depth := 0
-		for _, line := range strings.Split(content, "\n") {
-			// A commented-out requirement is not one, and brackets inside a
-			// quoted requirement are not nesting (v0.29.57 — the same two
-			// rules the install_requires readers apply).
-			trimmed := stripHashComment(strings.TrimSpace(line))
-			if !in && strings.Contains(trimmed, marker) && strings.ContainsAny(trimmed, "[{") {
-				in = true
-				if idx := strings.Index(trimmed, marker); idx >= 0 {
-					trimmed = trimmed[idx+len(marker):]
-				}
-			}
-			if !in {
-				continue
-			}
-			depth += bracketDelta(trimmed)
-			// Dict entries: drop the quoted KEYS so extras names don't parse
-			// as deps. Cutting at the first ':' only handled the multi-line
-			// form, one key per line; on a single-line dict
-			// (`{'test': [...], 'dev': [...]}`) every later key was left in
-			// and became a package of its own (v0.29.57).
-			payload := trimmed
-			if scope == model.ScopeOptional {
-				payload = dropDictKeys(payload)
-			}
-			for _, d := range extractQuotedPyVersionDeps(payload) {
-				d.Type = scope
-				deps = append(deps, d)
-			}
-			if depth <= 0 {
-				in = false
-				depth = 0
-			}
-		}
-	}
-	collect("tests_require", model.ScopeTest)
-	collect("extras_require", model.ScopeOptional)
-	return deps
-}
-
-// dropDictKeys blanks the quoted KEYS of a Python dict literal — the runs
-// that sit between a `{` or `,` and the `:` that follows — leaving the values
-// for the requirement extractor. A `:` inside a quoted requirement (a URL, a
-// PEP 508 marker) is not a key separator, so the scan is quote-aware.
-func dropDictKeys(line string) string {
-	out := []byte(line)
-	keyStart := -1 // where the current candidate key began, -1 when none
-	scanOutsideStrings(line, func(i int, c byte) bool {
-		switch c {
-		case '"', '\'':
-			if keyStart < 0 {
-				keyStart = i
-			}
-		case '{', ',':
-			keyStart = -1
-		case ':':
-			if keyStart >= 0 {
-				for j := keyStart; j < i; j++ {
-					out[j] = ' '
-				}
-			}
-			keyStart = -1
-		case '[':
-			// Inside a value; anything quoted from here is a requirement.
-			keyStart = -1
-		}
-		return true
-	})
-	return string(out)
-}
-
-// parseSetupCfgExtrasVersions extracts the [options.extras_require]
-// ini section (→ optional): each key is an extra name whose value is
-// an inline requirement or an indented multi-line list.
-func parseSetupCfgExtrasVersions(content string) []libyearDep {
-	var deps []libyearDep
-	in := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") {
-			in = trimmed == "[options.extras_require]"
-			continue
-		}
-		if !in || trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		payload := trimmed
-		// "test =" key lines: inline value after '=', or nothing
-		// (deps follow indented). Indented continuation lines are the
-		// requirement themselves.
-		if strings.Contains(trimmed, "=") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			payload = strings.TrimSpace(parts[1])
-			if payload == "" {
-				continue
-			}
-		}
-		if d := parsePyRequirement(payload); d != nil {
-			d.Type = model.ScopeOptional
-			deps = append(deps, *d)
-		}
-	}
-	return deps
-}
+// maxGoFilesClassified is a pathology bound on the classifier's walk; past
+// it nothing is relabelled (deps keep runtime).
+const maxGoFilesClassified = 50000
 
 // classifyGoModTestOnlyDeps is the Go C1 classifier (operator
 // decision #7: "since we are Go", the go.mod honesty gap gets a real
 // fix, not a doc note). go.mod cannot distinguish test-only deps
 // structurally, but the repo's own source can: a module whose
 // packages are imported ONLY from _test.go files is test-scope.
-// Static import scan via go/parser ImportsOnly — no toolchain, no
+// A static scan of each file's import declarations — no toolchain, no
 // subprocess, no module downloads. Modules never imported at all
 // (indirect deps, tool deps) honestly stay runtime: absence of
 // evidence is not test evidence, and unknown scopes present as
@@ -422,23 +65,28 @@ func parseSetupCfgExtrasVersions(content string) []libyearDep {
 //
 // NOT gated on dev_build_deps: this relabels existing rows without
 // adding any (the P1 posture).
-func classifyGoModTestOnlyDeps(workDir string, deps []libyearDep) []libyearDep {
-	hasGoDeps := false
+//
+// What it costs is bounded by what it reads (0.29.214): at most
+// goImportPrefixBytes of each file, and one map lookup for each prefix of
+// each import path (until then every module was compared with every import,
+// 21 s for 40,000 of each). When a non-test file's imports could not be read
+// to their end, NOTHING is relabelled: that file may hold the one import
+// that makes a module a runtime dependency.
+func classifyGoModTestOnlyDeps(workDir string, deps []model.LibyearDep) []model.LibyearDep {
+	// The modules that could be relabelled, by name.
+	type usage struct{ nonTest, test bool }
+	modules := map[string]*usage{}
 	for _, d := range deps {
-		if d.Manager == "go" {
-			hasGoDeps = true
-			break
+		if d.Manager == "go" && model.IsRuntimeScope(d.Type) {
+			modules[d.Name] = &usage{}
 		}
 	}
-	if !hasGoDeps {
+	if len(modules) == 0 {
 		return deps
 	}
 
-	type usage struct{ nonTest, test bool }
-	imports := map[string]*usage{}
-	fset := token.NewFileSet()
-	const maxGoFiles = 50000 // pathology bound; beyond it, skip silently (deps keep runtime)
 	seen := 0
+	unknown := false // a non-test file's imports are not all known
 	_ = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -453,49 +101,165 @@ func classifyGoModTestOnlyDeps(workDir string, deps []libyearDep) []libyearDep {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") {
+		if !strings.HasSuffix(path, ".go") || !info.Mode().IsRegular() {
 			return nil
 		}
 		seen++
-		if seen > maxGoFiles {
+		if seen > maxGoFilesClassified {
+			unknown = true
 			return filepath.SkipAll
 		}
-		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-		if perr != nil || f == nil {
-			return nil
-		}
 		isTest := strings.HasSuffix(path, "_test.go")
-		for _, imp := range f.Imports {
-			p := strings.Trim(imp.Path.Value, `"`)
-			u := imports[p]
-			if u == nil {
-				u = &usage{}
-				imports[p] = u
-			}
-			if isTest {
-				u.test = true
-			} else {
-				u.nonTest = true
+		imports, cutShort := goImports(path)
+		if cutShort && !isTest {
+			unknown = true
+			return filepath.SkipAll
+		}
+		for _, p := range imports {
+			// The module an import path belongs to is the path itself or
+			// one of its prefixes at a slash: one lookup each.
+			for q := p; ; {
+				if u := modules[q]; u != nil {
+					if isTest {
+						u.test = true
+					} else {
+						u.nonTest = true
+					}
+				}
+				cut := strings.LastIndexByte(q, '/')
+				if cut < 0 {
+					break
+				}
+				q = q[:cut]
 			}
 		}
 		return nil
 	})
-
+	if unknown {
+		return deps
+	}
 	for i := range deps {
 		if deps[i].Manager != "go" || !model.IsRuntimeScope(deps[i].Type) {
 			continue
 		}
-		mod := deps[i].Name
-		anyTest, anyNonTest := false, false
-		for p, u := range imports {
-			if p == mod || strings.HasPrefix(p, mod+"/") {
-				anyTest = anyTest || u.test
-				anyNonTest = anyNonTest || u.nonTest
-			}
-		}
-		if anyTest && !anyNonTest {
+		if u := modules[deps[i].Name]; u != nil && u.test && !u.nonTest {
 			deps[i].Type = model.ScopeTest
 		}
 	}
 	return deps
+}
+
+// goImports reads the import paths a .go file declares, from at most its
+// first goImportPrefixBytes. cutShort: the file is longer than that and its
+// imports had not ended where the prefix did (a comment of a hundred
+// mebibytes above the package clause, say), so what was found is not all of
+// them. A file that is not Go as far as its imports go yields what was read
+// before it stopped being Go, as go/parser's ImportsOnly did.
+func goImports(path string) (imports []string, cutShort bool) {
+	src, whole, err := readCloneFilePrefix(path, goImportPrefixBytes)
+	if err != nil {
+		return nil, false
+	}
+
+	fset := token.NewFileSet()
+	var sc scanner.Scanner
+	file := fset.AddFile(path, -1, len(src))
+	sc.Init(file, src, func(token.Position, string) {}, 0)
+	next := func() (token.Token, string) {
+		pos, tok, lit := sc.Scan()
+		if !whole && tok != token.EOF {
+			// The prefix ends wherever a mebibyte does: in the middle of
+			// a word, as likely as not, and "impor" would read as the
+			// first declaration. A token that reaches the end of the
+			// prefix is not known to be whole: it is the end.
+			n := len(lit)
+			if n == 0 {
+				n = len(tok.String())
+			}
+			if file.Offset(pos)+n >= len(src) {
+				return token.EOF, ""
+			}
+		}
+		return tok, lit
+	}
+	add := func(lit string) {
+		if p, err := strconv.Unquote(lit); err == nil {
+			imports = append(imports, p)
+		}
+	}
+	tok, _ := next()
+	if tok != token.PACKAGE {
+		return nil, tok == token.EOF && !whole
+	}
+	if tok, _ = next(); tok != token.IDENT {
+		return nil, tok == token.EOF && !whole
+	}
+	for {
+		tok, _ := next()
+		switch tok {
+		case token.SEMICOLON:
+			continue
+		case token.IMPORT:
+			tok, lit := next()
+			if tok == token.LPAREN {
+				for {
+					tok, lit = next()
+					if tok == token.STRING {
+						add(lit)
+					}
+					if tok == token.RPAREN {
+						break
+					}
+					if tok == token.EOF {
+						return imports, !whole
+					}
+				}
+				continue
+			}
+			// import "p", import name "p", import . "p", import _ "p"
+			if tok == token.IDENT || tok == token.PERIOD {
+				tok, lit = next()
+			}
+			if tok == token.STRING {
+				add(lit)
+				continue
+			}
+			return imports, tok == token.EOF && !whole
+		case token.EOF:
+			// The prefix ended where another import could have begun.
+			return imports, !whole
+		default:
+			return imports, false // the first declaration: the imports are done
+		}
+	}
+}
+
+// readCloneFilePrefix reads at most max bytes of a file of the clone. whole:
+// that is all of the file.
+func readCloneFilePrefix(path string, max int) (data []byte, whole bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 0, 4096)
+	for len(buf) < max {
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), min(2*cap(buf), max))
+			copy(grown, buf)
+			buf = grown
+		}
+		n, rerr := f.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if rerr == io.EOF {
+			return buf, true, nil
+		}
+		if rerr != nil {
+			return nil, false, rerr
+		}
+	}
+	// max bytes read: is there more?
+	var one [1]byte
+	n, _ := f.Read(one[:])
+	return buf, n == 0, nil
 }

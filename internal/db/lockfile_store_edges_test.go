@@ -55,11 +55,11 @@ func TestLockfileEdgesSnapshotRoundTrip(t *testing.T) {
 		// duplicate of the first — the arbiter must fold it
 		{Ecosystem: "npm", LockfilePath: "package-lock.json", ParentName: "express", ParentVersion: "4.18.2", ChildName: "body-parser", ChildConstraint: "1.20.1"},
 	}
-	pkgs := []*RepoLockfilePackage{
+	pkgs := []*model.RepoLockfilePackage{
 		{Ecosystem: "npm", PackageName: "express", ResolvedVersion: "4.18.2", LockfilePath: "package-lock.json", Direct: true},
 		{Ecosystem: "npm", PackageName: "qs", ResolvedVersion: "6.11.0", LockfilePath: "package-lock.json", Direct: false},
 	}
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, pkgs, edges); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, pkgs, edges, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.GetRepoLockfileEdges(ctx, repoID)
@@ -71,7 +71,7 @@ func TestLockfileEdgesSnapshotRoundTrip(t *testing.T) {
 	}
 
 	// Replace semantics: a re-scan with fewer edges leaves exactly those.
-	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, pkgs, edges[:1]); err != nil {
+	if err := store.ReplaceRepoLockfileSnapshot(ctx, repoID, nil, pkgs, edges[:1], nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err = store.GetRepoLockfileEdges(ctx, repoID)

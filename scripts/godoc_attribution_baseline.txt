@@ -27,7 +27,6 @@ internal/api/portal.go::homeReposMaxLimit<-homeCacheKey
 internal/collector/distribution/manifest_parser.go::kvStringPattern<-extractKVString
 internal/collector/prelim.go::ResolveRedirectTarget<-resolveRedirects
 internal/collector/scancode_worker.go::checkOwnLocks<-recoverOrphans
-internal/collector/vulnerability.go::stampVulnScanComplete<-ScanVulnerabilities
 internal/config/config.go::ActivityHistoryWindowDaysOrDefault<-MatviewRebuildWeekday
 internal/config/config.go::RecollectAfterDuration<-EnrichIntervalDuration
 internal/config/config.go::jiraCadenceMaxHours<-JiraCadenceDuration

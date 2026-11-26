@@ -149,9 +149,11 @@ func TestRotateRepoRowsToHistoryHelperIsAllowlisted(t *testing.T) {
 	// refuse-then-interpolate, in that order, inside the helper body.
 	body := extractPlainFunctionBody(t, "history.go", "rotateRepoRowsToHistory")
 	guard := strings.Index(body, "historyRotationAllowlist")
-	interp := strings.Index(body, "fmt.Sprintf")
-	if guard < 0 || interp < 0 {
-		t.Fatal("rotateRepoRowsToHistory must consult historyRotationAllowlist and build SQL via fmt.Sprintf")
+	// 0.29.213: the two statements are built by historyRotateInsertSQL and
+	// historyRotateDeleteSQL; the first of them is the interpolation.
+	interp := strings.Index(body, "historyRotateInsertSQL(")
+	if guard < 0 || interp < 0 || !strings.Contains(body, "historyRotateDeleteSQL(") {
+		t.Fatal("rotateRepoRowsToHistory must consult historyRotationAllowlist and build its two statements with historyRotateInsertSQL and historyRotateDeleteSQL")
 	}
 	if guard > interp {
 		t.Error("rotateRepoRowsToHistory must check the allowlist BEFORE interpolating table names into SQL — the allowlist is the injection guard")

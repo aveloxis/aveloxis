@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Security &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>Security &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -2116,6 +2159,140 @@ operator’s (logrotate). The security-relevant lines (ASVS V16.1.1):</p>
 </table>
 <p>User-supplied strings are scrubbed before they are logged; tokens, passwords
 and e-mail addresses from commit metadata never are.</p>
+</section>
+<section id="requests-to-package-registries">
+<h2>Requests to package registries<a class="headerlink" href="#requests-to-package-registries" title="Link to this heading"></a></h2>
+<p>To measure how old a dependency is, the analysis asks that dependency’s package registry
+about it. These are the hosts it asks: <code class="docutils literal notranslate"><span class="pre">registry.npmjs.org</span></code>, <code class="docutils literal notranslate"><span class="pre">pypi.org</span></code>,
+<code class="docutils literal notranslate"><span class="pre">proxy.golang.org</span></code>, <code class="docutils literal notranslate"><span class="pre">crates.io</span></code>, <code class="docutils literal notranslate"><span class="pre">rubygems.org</span></code>, <code class="docutils literal notranslate"><span class="pre">repo1.maven.org</span></code>, <code class="docutils literal notranslate"><span class="pre">repo.packagist.org</span></code>,
+<code class="docutils literal notranslate"><span class="pre">hex.pm</span></code>, <code class="docutils literal notranslate"><span class="pre">api.nuget.org</span></code>, <code class="docutils literal notranslate"><span class="pre">pub.dev</span></code>, <code class="docutils literal notranslate"><span class="pre">hackage.haskell.org</span></code> and <code class="docutils literal notranslate"><span class="pre">crandb.r-pkg.org</span></code> (R: CRAN
+itself has no JSON interface; crandb is the R-hub project’s database of it). What is sent is a package
+name and version from a repository’s manifests; nothing about the repository itself.</p>
+<p>For Maven the hosts are the ones in <code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code> (0.29.180): by default
+<code class="docutils literal notranslate"><span class="pre">repo1.maven.org</span></code> and <code class="docutils literal notranslate"><span class="pre">repo.jenkins-ci.org</span></code>. Since 0.29.182 they are also asked for parent
+poms and BOMs that a repository’s own poms name and do not contain; what is sent is the
+pom’s coordinates (group, artifact, version). A host you add there is asked about every
+Maven dependency the earlier repositories in the list do not have, so it learns which
+Maven artifacts your repositories use.</p>
+<p>Since 0.29.179 every such request is made under the same outbound-address rule as a
+repository clone (see <code class="docutils literal notranslate"><span class="pre">collection.private_network_hosts</span></code> in
+<a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc">Configuration</span></a>):</p>
+<ul class="simple">
+<li><p>The registries above are trusted by name, as a configured forge host is: they may
+resolve to any address except a link-local one, so a registry mirror on your own network
+works. Link-local addresses (the cloud metadata address among them) are never reached.</p></li>
+<li><p>A redirect is followed only when its target is an <code class="docutils literal notranslate"><span class="pre">http</span></code> or <code class="docutils literal notranslate"><span class="pre">https</span></code> URL with no
+credentials in it, whose host the rule permits; at most ten in a chain. A registry
+cannot send the collector to a host on your private network.</p></li>
+<li><p>The connection is made to the address that was checked, so a name cannot resolve to one
+address for the check and another for the connection.</p></li>
+<li><p>A response is read up to a bound and no further.</p></li>
+<li><p>A registry host that fails ten times in a row is not asked again for a minute. The
+dependencies it would have answered for keep their rows, with no age.</p></li>
+</ul>
+<section id="hosts-that-collected-repositories-choose">
+<h3>Hosts that collected repositories choose<a class="headerlink" href="#hosts-that-collected-repositories-choose" title="Link to this heading"></a></h3>
+<p>A build file can name the repositories its dependencies live on: a pom’s
+<code class="docutils literal notranslate"><span class="pre">&lt;repositories&gt;</span></code>, and from 0.29.195 a Gradle <code class="docutils literal notranslate"><span class="pre">repositories</span> <span class="pre">{</span> <span class="pre">}</span></code> block, where <code class="docutils literal notranslate"><span class="pre">google()</span></code>
+stands for <code class="docutils literal notranslate"><span class="pre">dl.google.com</span></code>, <code class="docutils literal notranslate"><span class="pre">mavenCentral()</span></code> for <code class="docutils literal notranslate"><span class="pre">repo1.maven.org</span></code> and
+<code class="docutils literal notranslate"><span class="pre">gradlePluginPortal()</span></code> for <code class="docutils literal notranslate"><span class="pre">plugins.gradle.org</span></code>. A Gradle build’s repositories are asked
+only for the BOM of a <code class="docutils literal notranslate"><span class="pre">platform(...)</span></code> it uses. Since 0.29.184, when <code class="docutils literal notranslate"><span class="pre">collection.declared_repository_fetch</span></code> is on (the
+default), such a repository is asked for a parent pom or BOM that the repositories in
+<code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code> do not have. <strong>These hosts are chosen by the repositories
+you collect, not by you.</strong> What they are sent: an identifying User-Agent and the
+coordinates (group, artifact, version) of the pom asked for.</p>
+<p>What limits it:</p>
+<ul class="simple">
+<li><p>A declared host is never trusted, by name or by address range. It is reached only at a
+public address; a host that resolves to a private, loopback or link-local address is
+refused. The hosts and ranges you trust for your own forge instances, mirrors and
+<code class="docutils literal notranslate"><span class="pre">collection.private_network_hosts</span></code> do not apply to it: until 0.29.208 they did, so a
+build file that named one of your trusted internal hosts was fetched from. Its
+requests also use connections of their own, never one opened to a repository you
+configured at the same host and port.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">https</span></code> only, on the first request and on every redirect.</p></li>
+<li><p>Never an address that carries credentials (it is recorded without them, and not
+asked), one built from a variable that cannot be read, or a plugin repository.</p></li>
+<li><p>The configured repositories are asked first; a declared one is asked only for what
+they do not have.</p></li>
+<li><p>A repository that answers 401 or 403 is recorded as refusing, and nothing is stored
+from it. It is asked again at the next analysis that needs that pom.</p></li>
+<li><p>Addresses inside a fetched pom are not followed.</p></li>
+<li><p>A group, artifact or version that is not made of letters, digits and <code class="docutils literal notranslate"><span class="pre">.</span> <span class="pre">_</span> <span class="pre">+</span> <span class="pre">-</span></code> is not
+asked for (0.29.208): the three become the path of the request.</p></li>
+<li><p>A redirect to a host you have distrusted is not followed (0.29.208).</p></li>
+<li><p>One analysis waits on declared repositories for five minutes in all (0.29.208; since
+0.29.209 a request already under way is cut off when the five minutes end). Past
+that, none is asked for the rest of that analysis: what is already stored is used, and
+a version that depended on an answer is recorded as not known, never as absent. The
+log line <code class="docutils literal notranslate"><span class="pre">maven:</span> <span class="pre">this</span> <span class="pre">analysis</span> <span class="pre">waited</span> <span class="pre">on</span> <span class="pre">the</span> <span class="pre">repositories</span> <span class="pre">its</span> <span class="pre">build</span> <span class="pre">files</span> <span class="pre">declare</span> <span class="pre">for</span> <span class="pre">as</span> <span class="pre">long</span> <span class="pre">as</span> <span class="pre">it</span> <span class="pre">may</span></code> gives the <code class="docutils literal notranslate"><span class="pre">repo_id</span></code> of the collected repository when it happens.</p></li>
+<li><p>One lookup consults at most 32 of the repositories a build declares, nearest file
+first (0.29.209). With more declared, the rest are neither asked nor looked up among
+stored answers, the version is recorded as not known, and the log line <code class="docutils literal notranslate"><span class="pre">maven:</span> <span class="pre">a</span> <span class="pre">build</span> <span class="pre">declares</span> <span class="pre">more</span> <span class="pre">repositories</span> <span class="pre">than</span> <span class="pre">one</span> <span class="pre">lookup</span> <span class="pre">consults</span></code> gives the <code class="docutils literal notranslate"><span class="pre">repo_id</span></code>. This holds
+with <code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> off too, when none is asked and stored answers are
+all that is read.</p></li>
+<li><p>A distrust covers a host on one port. <code class="docutils literal notranslate"><span class="pre">repo.example</span></code> and <code class="docutils literal notranslate"><span class="pre">repo.example:8443</span></code> are two
+hosts on the Repository hosts page, and each is distrusted on its own.</p></li>
+</ul>
+<p>Every declared repository is recorded in <code class="docutils literal notranslate"><span class="pre">repo_declared_repositories</span></code>, asked or not, so
+you can see which hosts these are:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">host</span><span class="p">,</span><span class="w"> </span><span class="n">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">repo_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">repositories</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">aveloxis_data</span><span class="mf">.</span><span class="n">repo_declared_repositories</span>
+<span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">not_fetched_reason</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span>
+<span class="w"> </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">host</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">repositories</span><span class="w"> </span><span class="k">DESC</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>To contact none of them, set <code class="docutils literal notranslate"><span class="pre">&quot;declared_repository_fetch&quot;:</span> <span class="pre">false</span></code>. Poms already obtained
+from such hosts stay stored and in use, so switching it off changes no dependency’s
+version.</p>
+</section>
+<section id="the-repository-host-check">
+<h3>The repository host check<a class="headerlink" href="#the-repository-host-check" title="Link to this heading"></a></h3>
+<p>Since 0.29.189 <code class="docutils literal notranslate"><span class="pre">serve</span></code> looks at each of those hosts once every
+<code class="docutils literal notranslate"><span class="pre">collection.repository_host_check_hours</span></code> (24 by default; <code class="docutils literal notranslate"><span class="pre">0</span></code> turns the check off): the
+configured Maven repositories and, when <code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> is on, the declared
+hosts that have answered. A look resolves the host’s name and completes one TLS handshake
+with it on the port it is fetched from (443 when the repository URL names none). Nothing is
+requested and nothing is sent beyond the handshake. The name is resolved and its address
+judged by the outbound-address rule before any connection, the connection is made to the
+address that was judged, and a link-local address is never dialed. A configured
+repository is looked at under your trust, as it is fetched; a declared host under none
+(0.29.208). At most one host is
+looked at per second. With <code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> off, declared hosts are not
+contacted by the check either. A distrusted host is not contacted at all.</p>
+<p>Since 0.29.190 the check also asks when each host’s domain was registered
+(<code class="docutils literal notranslate"><span class="pre">collection.repository_host_registration_check</span></code>, on by default). A registration later
+than Aveloxis’s first fetch from the host is the direct sign of a name that lapsed and
+was registered by someone else. The date comes from the registries’ public
+registration-data service (RDAP), and this part contacts two kinds of host that are
+neither fixed registries nor configured by you:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">data.iana.org</span></code>, for IANA’s bootstrap file, which names the registration-data server of
+each top-level domain. It is fetched once per pass and discloses nothing.</p></li>
+<li><p>the server that file names for the domain’s top-level domain, asked about the
+registrable domain (<code class="docutils literal notranslate"><span class="pre">example.com</span></code> for <code class="docutils literal notranslate"><span class="pre">repo.example.com</span></code>). A domain is therefore
+disclosed only to the registry that already holds it. Each domain is asked once per
+pass.</p></li>
+</ul>
+<p>Because those servers are not a fixed list, none is trusted by name: every request is
+https, every redirect stays on https, every hop’s address is judged by the
+outbound-address rule, and each body is bounded at 4 MiB. The repository host itself is
+not contacted by this part, so it covers every host that has answered whatever
+<code class="docutils literal notranslate"><span class="pre">declared_repository_fetch</span></code> says. Set <code class="docutils literal notranslate"><span class="pre">&quot;repository_host_registration_check&quot;:</span> <span class="pre">false</span></code> to
+contact none of them.</p>
+<p>Since 0.29.191 the check also downloads a public list of host names reported as
+malicious (<code class="docutils literal notranslate"><span class="pre">collection.repository_host_threat_list_url</span></code>; by default the Phishing.Database
+project’s list of active domains, served from <code class="docutils literal notranslate"><span class="pre">raw.githubusercontent.com</span></code>), once per
+pass, and matches the repository hosts against it on your machine. No repository host is
+sent anywhere: the one request is the download, over https under the outbound-address
+rule, bounded at 128 MiB. A match is a hint and never a verdict, since such lists also
+name shared hosting. An empty setting turns it off.</p>
+<p>What the check sees (the name no longer resolves, it resolves to an address Aveloxis does
+not reach, the certificate is not valid, the domain was registered after the first fetch,
+the host is on the threat list) is listed on the administrator’s Repository hosts
+page. It is a reason to look and never a verdict: the check does not distrust a host or
+change any collected data.</p>
+</section>
 </section>
 <section id="why-the-web-process-has-no-request-limiter-of-its-own">
 <h2>Why the web process has no request limiter of its own<a class="headerlink" href="#why-the-web-process-has-no-request-limiter-of-its-own" title="Link to this heading"></a></h2>

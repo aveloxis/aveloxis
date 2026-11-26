@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 // The v0.27.19 background, pinned here so it never regresses:
@@ -48,7 +50,7 @@ func TestResolveNPMLibyearUsesHTTPRegistry(t *testing.T) {
 	defer func() { npmRegistryBase = orig }()
 
 	ctx := context.Background()
-	lb, err := resolveNPMLibyear(ctx, libyearDep{Name: "lodash", Version: "4.17.20", Requirement: "^4.17.20", Type: "runtime", Manager: "npm"})
+	lb, err := resolveNPMLibyear(ctx, model.LibyearDep{Name: "lodash", Version: "4.17.20", Requirement: "^4.17.20", Type: "runtime", Manager: "npm"})
 	if err != nil {
 		t.Fatalf("plain name: %v", err)
 	}
@@ -62,7 +64,7 @@ func TestResolveNPMLibyearUsesHTTPRegistry(t *testing.T) {
 		t.Errorf("purl: %q", lb.Purl)
 	}
 
-	lb2, err := resolveNPMLibyear(ctx, libyearDep{Name: "@babel/core", Version: "7.0.0", Manager: "npm"})
+	lb2, err := resolveNPMLibyear(ctx, model.LibyearDep{Name: "@babel/core", Version: "7.0.0", Manager: "npm"})
 	if err != nil {
 		t.Fatalf("scoped name: %v", err)
 	}
@@ -124,11 +126,9 @@ func TestLibyearResolveFailuresAreLogged(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLiveNPMRegistryForLodash(t *testing.T) {
-	if os.Getenv("AVELOXIS_TEST_NETWORK") == "" {
-		t.Skip("set AVELOXIS_TEST_NETWORK=1 to enable live npm registry canary")
-	}
+	skipUnlessNetwork(t)
 	lb, err := resolveNPMLibyear(context.Background(),
-		libyearDep{Name: "lodash", Version: "4.17.20", Manager: "npm"})
+		model.LibyearDep{Name: "lodash", Version: "4.17.20", Manager: "npm"})
 	if err != nil {
 		t.Fatalf("live npm resolve failed: %v", err)
 	}
@@ -137,17 +137,15 @@ func TestLiveNPMRegistryForLodash(t *testing.T) {
 	}
 	// Scoped names exercise the path-escaping against the REAL router.
 	if _, err := resolveNPMLibyear(context.Background(),
-		libyearDep{Name: "@babel/core", Version: "7.23.0", Manager: "npm"}); err != nil {
+		model.LibyearDep{Name: "@babel/core", Version: "7.23.0", Manager: "npm"}); err != nil {
 		t.Errorf("live scoped npm resolve failed: %v", err)
 	}
 }
 
 func TestLiveCratesIOForSerde(t *testing.T) {
-	if os.Getenv("AVELOXIS_TEST_NETWORK") == "" {
-		t.Skip("set AVELOXIS_TEST_NETWORK=1 to enable live crates.io canary")
-	}
+	skipUnlessNetwork(t)
 	lb, err := resolveCargoLibyear(context.Background(),
-		libyearDep{Name: "serde", Version: "1.0.100", Manager: "cargo"})
+		model.LibyearDep{Name: "serde", Version: "1.0.100", Manager: "cargo"})
 	if err != nil {
 		t.Fatalf("live crates.io resolve failed (User-Agent regression? crates.io 403s default UAs): %v", err)
 	}

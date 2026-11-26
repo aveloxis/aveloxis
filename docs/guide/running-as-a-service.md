@@ -109,7 +109,7 @@ sudo systemctl restart aveloxis.target     # all three
 
 # Graceful stop until the next reboot. The units were enabled, and
 # aveloxis.target is WantedBy=multi-user.target, so a reboot starts
-# them again — `stop` does not persist:
+# them again — a stop does not persist:
 sudo systemctl stop aveloxis.target
 
 # Stop AND keep it stopped across reboots:
@@ -146,13 +146,14 @@ by hand and start the target last:
 
 ```bash
 # as the service user (sudo -iu aveloxis); the two systemctl lines need an account with sudo
-CFG=/etc/aveloxis/aveloxis.json         # the units' config; the checkout has no aveloxis.json
+# The config of the units; the checkout has no aveloxis.json
+CFG=/etc/aveloxis/aveloxis.json
 AVELOXIS_SRC=/home/aveloxis/aveloxis
 cd "$AVELOXIS_SRC" && go install ./cmd/aveloxis && aveloxis version
 aveloxis deploy-checklist --pending -c "$CFG"   # read it now; it names the migrate step 3 runs
 sudo systemctl stop aveloxis.target             # nothing runs against the schema while it changes
 aveloxis migrate --skip-views -c "$CFG"         # or the plain form when the checklist asks for it
-# ... the checklist's checks and heals, oldest first, each aveloxis command with -c "$CFG" ...
+# ... the checks and heals of the checklist, oldest first, each aveloxis command with -c "$CFG" ...
 aveloxis ack-deploy -c "$CFG"
 sudo systemctl start aveloxis.target
 ```

@@ -114,13 +114,38 @@ func TestShippedSnapshotInputsLoad(t *testing.T) {
 	if must < 5 {
 		t.Errorf("the 0.29.141 rules require the release's five changes (ledger, gone history, visibility column, earlier era, cache stamp): %d must-differ rules", must)
 	}
-	for _, shape := range []string{"testdata/shape-provisional.json", "testdata/shape-kate-20261108.json"} {
+	// 0.29.207's (the vulnerability program's first part, 0.29.147 to
+	// 0.29.207): eight tables created empty with their indexes and
+	// constraints, the columns added to four tables, three indexes built
+	// concurrently. Written from the catalogs of two scratch databases (the
+	// last release's migrate, and this build's migrate on a clone of it) and
+	// checked against them with the diff the snapshot run uses.
+	raw, err = os.ReadFile("testdata/expect-0.29.207.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err = db.LoadContentExpectations(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables, must := map[string]bool{}, 0
+	for _, r := range e.Rules {
+		tables[r.Table] = true
+		if r.Mode == "must-differ" {
+			must++
+		}
+	}
+	// Eight new tables, four changed ones and the schema stamp.
+	if len(tables) != 13 || must != 24 {
+		t.Errorf("the 0.29.207 rules name %d tables with %d must-differ rules; want 13 tables and 24 (two per new table, six for the added columns, two for the new indexes on existing tables)", len(tables), must)
+	}
+	for _, shape := range []string{"testdata/shape-provisional.json", "testdata/shape-fleet-20261108.json"} {
 		if _, err := loadSeedShape(shape); err != nil {
 			t.Fatalf("%s: %v", shape, err)
 		}
 	}
-	if settings, err := loadSnapshotSettings("testdata/settings-kate-20261108.json"); err != nil || settings["work_mem"] != "128MB" {
-		t.Fatalf("kate's planner settings load: %v %v", settings, err)
+	if settings, err := loadSnapshotSettings("testdata/settings-fleet-20261108.json"); err != nil || settings["work_mem"] != "128MB" {
+		t.Fatalf("the measured fleet's planner settings load: %v %v", settings, err)
 	}
 }
 

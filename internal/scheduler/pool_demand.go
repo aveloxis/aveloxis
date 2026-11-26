@@ -44,6 +44,8 @@ var backgroundDBLoops = []string{
 	"drain-heartbeat",        // db.StartDrainHeartbeat: the drain's lease heartbeat, alive for its whole run (review round 5)
 	"org-refresh",            // refreshOrgs (startup + ticker; single-flight since review round 5)
 	"repo-metadata-backfill", // runRepoMetadataBackfill
+	"repository-host-check",  // repositoryHostCheck.run (0.29.189): one connection, briefly, per host of a pass (a host a second), once an interval
+	"package-key-fill",       // runPackageKeyFill (0.29.173): one connection for a step a second, until the fill is complete
 	"db-health-monitor",      // runDBHealthMonitor (Ping goes through the pool)
 	"stall-detector",         // runStallDetector
 	"staging-cleanup",        // runStagingCleanup (single-flight since review round 5)

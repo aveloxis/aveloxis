@@ -14,15 +14,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
 
 // TestCommitResolutionLinesCarryTheirCost (AVELOXIS_TEST_DB) — worklist
 // items 75 and 76 (Stage 1, observation only): the unresolved-commit query
-// and the author-ID backfill ran up to 1,146 s and 4,034 s on kate with no
+// and the author-ID backfill ran up to 1,146 s and 4,034 s on a production fleet with no
 // duration or repo on any line, and the completion line did not say how
 // many email searches a repository cost or how long they took (the ~7 h
 // kernel-fork runs). The start line carries the unresolved query's time;
@@ -36,7 +34,7 @@ func TestCommitResolutionLinesCarryTheirCost(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
 	lg := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

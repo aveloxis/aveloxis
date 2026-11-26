@@ -108,6 +108,16 @@ func (s *PostgresStore) FindLoginByEmail(ctx context.Context, email string) (str
 func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, login string, ghUserID int64, commitEmail string) (bool, string, error) {
 	var created bool
 	actualID := cntrbID
+	// The forge's numeric ID as every arm below sends it: NULL when the
+	// caller has none. gh_user_id is fill-only and NULL is its one empty
+	// value (SR-11), so a 0 sent to COALESCE(gh_user_id, $n) was stored,
+	// and nothing could fill the column after it (review round 9: the
+	// mailing-list link by login alone sends 0). Enforced here, where the
+	// statements are, so that no caller can write it (SR-18).
+	var ghID any
+	if ghUserID > 0 {
+		ghID = ghUserID
+	}
 	err := s.withRetry(ctx, func(ctx context.Context) error {
 		// Check by cntrb_id first. The probe fetches cntrb_login rather
 		// than a bare 1 so the row-exists branch below can REPORT a
@@ -134,7 +144,7 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 					    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical,''), $4),
 					    data_collection_date = NOW()
 					WHERE cntrb_id = $1::uuid`,
-					existingID, ghUserID, login, commitEmail)
+					existingID, ghID, login, commitEmail)
 				created = false
 				return err
 			}
@@ -152,6 +162,13 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 			// same deterministic cntrb_id, where the logins are normally
 			// identical; when they differ, the stored one wins
 			// (2026-09-11, F4).
+			//
+			// gh_user_id is the same way since 0.29.215: STORED first. It
+			// is the forge's numeric ID, the identity cntrb_id is computed
+			// from; every other writer filled it only when empty, this arm
+			// alone let an incoming value replace an established one, and
+			// the column had no write policy to say so (review round 8).
+			// On the race this arm exists for the two values are equal.
 			_, insertErr := s.pool.Exec(ctx, `
 				INSERT INTO aveloxis_data.contributors
 					(cntrb_id, cntrb_login, gh_login, gh_user_id, cntrb_canonical,
@@ -161,8 +178,8 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 				ON CONFLICT (cntrb_id) DO UPDATE SET
 					gh_login = COALESCE(NULLIF(EXCLUDED.gh_login,''), contributors.gh_login),
 					cntrb_login = COALESCE(NULLIF(contributors.cntrb_login,''), EXCLUDED.cntrb_login),
-					gh_user_id = COALESCE(EXCLUDED.gh_user_id, contributors.gh_user_id)`,
-				cntrbID, login, ghUserID, commitEmail)
+					gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)`,
+				cntrbID, login, ghID, commitEmail)
 			if insertErr != nil {
 				// Race: another worker inserted this login. Look it up.
 				//
@@ -239,7 +256,7 @@ func (s *PostgresStore) UpsertContributorFull(ctx context.Context, cntrbID, logi
 			    cntrb_canonical = COALESCE(NULLIF(cntrb_canonical,''), $4),
 			    data_collection_date = NOW()
 			WHERE cntrb_id = $1::uuid`,
-			cntrbID, login, ghUserID, commitEmail)
+			cntrbID, login, ghID, commitEmail)
 		if err == nil && storedLogin != "" && storedLogin != login {
 			// The rename stays visible to operators — as one ordinary
 			// observation, not as a recovered Postgres ERROR logged at
@@ -438,12 +455,12 @@ func (s *PostgresStore) FindContributorIDByLogin(ctx context.Context, login stri
 // the display case ("NitishT") while the contributors row was inserted
 // under a lowercased login from a different endpoint ("nitisht"), or
 // vice versa. A case-sensitive equality silently drops those commits
-// into a perpetual NULL-author state. Production diagnostic on the
-// live aveloxis_large DB showed 1,919 additional commits recoverable
+// into a perpetual NULL-author state. A diagnostic on the
+// live larger production database showed 1,919 additional commits recoverable
 // under the case-insensitive comparison.
 //
 // v0.27.25 — two fixes after a live 2-day-2-hour orphaned run of this
-// statement on aveloxis_large (2026-07-20 diagnostic):
+// statement on the larger production database (2026-07-20 diagnostic):
 //
 //  1. BOTH sides now exclude empty strings. Postgres "" = "" is TRUE
 //     (the v0.25.6 explorer_new_contributors lesson), and production

@@ -40,7 +40,12 @@ func TestQueueSortsAllowlist(t *testing.T) {
 			t.Errorf("queueSorts must offer %s", key)
 		}
 	}
-	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) ListQueuePage("))
+	// 0.29.212: the page's two statements are built by queuePageSQL (so that
+	// the write-policy check runs them for every sort). What is pinned is
+	// unchanged, and read where the text now stands: ListQueuePage runs
+	// that builder's statements, and the builder's body has the shape.
+	builtByQueuePageSQL(t)
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func queuePageSQL("))
 	if !strings.Contains(body, "queueSorts[") {
 		t.Fatal("ListQueuePage must resolve the sort through the allowlist")
 	}

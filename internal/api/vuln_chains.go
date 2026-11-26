@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // vulnChainJSON is one attribution: the direct root plus one shortest
@@ -69,7 +70,7 @@ func buildChainIndex(edges []db.RepoLockfileEdge, sets db.DirectPackageSets) *ch
 			g = map[string][]string{}
 			idx.graphs[e.LockfilePath] = g
 		}
-		key := db.LockfileGraphKey(e.Ecosystem, e.ChildName)
+		key := pkgid.Key(e.Ecosystem, e.ChildName)
 		dedup := e.LockfilePath + "\x00" + key + "<" + e.ParentName
 		if seen[dedup] {
 			continue
@@ -128,13 +129,13 @@ func walkChainGraph(parents map[string][]string, lockfileDirect, declared map[st
 		if len(n.path) > maxChainDepth {
 			continue
 		}
-		for _, parent := range parents[db.LockfileGraphKey(ecosystem, n.name)] {
+		for _, parent := range parents[pkgid.Key(ecosystem, n.name)] {
 			if visited[parent] {
 				continue
 			}
 			visited[parent] = true
 			path := append(append([]string{}, n.path...), parent)
-			key := db.LockfileGraphKey(ecosystem, parent)
+			key := pkgid.Key(ecosystem, parent)
 			if lockfileDirect[key] || declared[key] {
 				// v0.27.152 (round 31): rootSeen is keyed by the SAME
 				// normalized graph key the lookups fold through — the

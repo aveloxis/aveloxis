@@ -97,7 +97,7 @@ The other blocks (`github`, `gitlab`, `web`, `collection`, `log_level`) can stay
 go run ./cmd/aveloxis migrate
 ```
 
-Expect a short stream of `migration step ok` log lines. The full schema (165 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
+Expect a short stream of `migration step ok` log lines. The full schema (173 tables, 20 8Knot materialized views plus the two supply-chain views, 50+ indexes) lands in two passes — DDL then view creation; the 8Knot pass runs only with `collection.materialized_views` enabled (the default), and the per-package test databases skip both.
 
 If you want to skip the matview build for faster iteration (you typically do during development):
 
@@ -122,10 +122,10 @@ Installs both `scc` (code-complexity scanner) and `scorecard` (OpenSSF Scorecard
 To do any actual collection from GitHub/GitLab, you need API tokens:
 
 ```bash
-# GitHub: any classic PAT or fine-grained token with `public_repo` scope.
+# GitHub: any classic PAT or fine-grained token with the public_repo scope.
 go run ./cmd/aveloxis add-key ghp_yourtokenhere --platform github
 
-# GitLab: a personal access token with `read_api` scope.
+# GitLab: a personal access token with the read_api scope.
 go run ./cmd/aveloxis add-key glpat-yourtokenhere --platform gitlab
 ```
 

@@ -6,7 +6,7 @@ package collector
 // bare_clone_path_test.go — v0.29.56. A repository that cannot be fetched
 // at all (DMCA takedown, disabled by GitHub, deleted) has no bare clone,
 // and every phase that reads one can only fail. In two hours of the
-// 2026-09-17 chaoss.tv log 8 repos logged "analysis failed: no bare clone"
+// 2026-09-17 production log 8 repos logged "analysis failed: no bare clone"
 // and then spent a remote scorecard run each to be told the repository is
 // unreachable. One spelling of the path, used by the facade that creates
 // it, analysis that reads it, and the scheduler that skips without it.

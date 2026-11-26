@@ -21,7 +21,12 @@ import (
 // field fails the test when called, so a test states exactly which store
 // calls an operation may make.
 type fakeStore struct {
-	t *testing.T
+	dismissRepositoryHost  func(context.Context, string, string) (int, error)
+	listRepositoryHosts    func(context.Context, []string) ([]db.RepositoryHost, error)
+	previewRepositoryHost  func(context.Context, string) (db.RepositoryHostImpact, error)
+	distrustRepositoryHost func(context.Context, string, string, string) (db.RepositoryHostImpact, bool, error)
+	restoreRepositoryHost  func(context.Context, string) (bool, error)
+	t                      *testing.T
 
 	createUserGroup           func(ctx context.Context, userID int, name string) (int64, error)
 	groupOwner                func(ctx context.Context, groupID int64) (int, string, error)
@@ -488,4 +493,40 @@ func testService(t *testing.T, st *fakeStore, opts Options) (*Service, *recHooks
 	hooks := newRecHooks()
 	logs := &logSink{}
 	return New(st, opts, hooks, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))), hooks, logs
+}
+
+func (f *fakeStore) ListRepositoryHosts(ctx context.Context, also []string) ([]db.RepositoryHost, error) {
+	if f.listRepositoryHosts == nil {
+		f.unexpected("ListRepositoryHosts")
+		return nil, nil
+	}
+	return f.listRepositoryHosts(ctx, also)
+}
+func (f *fakeStore) PreviewRepositoryHostDistrust(ctx context.Context, host string) (db.RepositoryHostImpact, error) {
+	if f.previewRepositoryHost == nil {
+		f.unexpected("PreviewRepositoryHostDistrust")
+		return db.RepositoryHostImpact{}, nil
+	}
+	return f.previewRepositoryHost(ctx, host)
+}
+func (f *fakeStore) DistrustAndPurgeRepositoryHost(ctx context.Context, host, by, note string) (db.RepositoryHostImpact, bool, error) {
+	if f.distrustRepositoryHost == nil {
+		f.unexpected("DistrustAndPurgeRepositoryHost")
+		return db.RepositoryHostImpact{}, false, nil
+	}
+	return f.distrustRepositoryHost(ctx, host, by, note)
+}
+func (f *fakeStore) RestoreRepositoryHost(ctx context.Context, host string) (bool, error) {
+	if f.restoreRepositoryHost == nil {
+		f.unexpected("RestoreRepositoryHost")
+		return false, nil
+	}
+	return f.restoreRepositoryHost(ctx, host)
+}
+func (f *fakeStore) DismissRepositoryHostSignals(ctx context.Context, host, by string) (int, error) {
+	if f.dismissRepositoryHost == nil {
+		f.unexpected("DismissRepositoryHostSignals")
+		return 0, nil
+	}
+	return f.dismissRepositoryHost(ctx, host, by)
 }

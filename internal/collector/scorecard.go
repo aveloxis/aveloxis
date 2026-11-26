@@ -41,7 +41,6 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -552,9 +551,14 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 		)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Scorecard's report names files of the repository in its details, so
+	// its size is the repository's to choose: taken up to
+	// scorecardOutputMaxBytes and refused past it (0.29.215). Its stderr is
+	// kept as a bounded head and tail.
+	stdout := &cappedOutput{max: scorecardOutputMaxBytes}
+	stderr := newBoundedCapture()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	// Scorecard needs GITHUB_TOKEN for API-dependent checks. May be a
 	// comma-separated multi-token list (round-robined per request).
 	cmd.Env = append(cmd.Environ(), "GITHUB_TOKEN="+githubToken)
@@ -588,6 +592,9 @@ func invokeScorecard(ctx context.Context, scorecardPath string, repoID int64, re
 	// status 1 when individual checks fail (e.g., invalid YAML in workflow
 	// files), but still produces valid JSON with scores for successful checks.
 	// Only error if there's no parseable output at all.
+	if stdout.Over() {
+		return nil, fmt.Errorf("scorecard wrote more than %d bytes of report: %w", scorecardOutputMaxBytes, errOutputPastBound)
+	}
 	var raw scorecardOutput
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
@@ -652,7 +659,7 @@ func tailForError(s string) string {
 //
 // Before this the rotation was unconditional, so a 15-minute remote
 // timeout followed by a successful local fallback replaced an 18-check
-// set with an 11-check one — 10,214 repos on chaoss.tv held that
+// set with an 11-check one — 10,214 repos on a production fleet held that
 // 7-check deficit. Mode is the discriminator so the rule survives
 // scorecard adding or removing a check, and needs no platform case.
 // A probe ERROR is not "no prior set" (SR-5): nothing is written.
@@ -700,8 +707,8 @@ func persistScorecard(ctx context.Context, store scorecardStore, repoID int64, r
 func setRemoteOrigin(ctx context.Context, repoPath, remoteURL string) error {
 	cmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", remoteURL)
 	cmd.Dir = repoPath
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := newBoundedCapture()
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git remote set-url failed: %w: %s", execErr(ctx, err), stderr.String())
 	}
@@ -828,6 +835,13 @@ func rateLimitDelta(before, after rateLimitSnapshot) int64 {
 	}
 	return core + graphql
 }
+
+// scorecardOutputMaxBytes is the most of a scorecard report that is taken.
+// PROVISIONAL. A report is one record per check (about twenty) with its
+// details; the reports seen are tens of kilobytes, and a check lists at
+// most the files it found. Sixteen mebibytes is some hundreds of times the
+// ordinary report; past it the run fails by name and nothing is stored.
+const scorecardOutputMaxBytes = 16 << 20
 
 // scorecardOutput is the JSON structure output by `scorecard --format json`.
 type scorecardOutput struct {

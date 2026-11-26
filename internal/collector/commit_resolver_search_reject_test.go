@@ -12,8 +12,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/platform"
 )
@@ -49,7 +47,7 @@ func TestCommitResolverTreatsARejectedSearchAsNoMatch(t *testing.T) {
 	}
 	ctx := context.Background()
 	lg := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

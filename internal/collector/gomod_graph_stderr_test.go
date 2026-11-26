@@ -39,7 +39,7 @@ func TestGoModGraphOneLogsToolchainStderr(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(&logBuf, nil))}
-	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil)
+	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, &goModTaken{})
 	if ok {
 		t.Fatal("goModGraphOne reported success on a go.mod the toolchain rejects")
 	}
@@ -53,7 +53,7 @@ func TestGoModGraphOneLogsToolchainStderr(t *testing.T) {
 }
 
 // TestGoModGraphOneWorksInsideAGoWorkspace — 2026-09-23 log review: 52 of
-// 64 toolchain failures on kate were "-mod may only be set to readonly or
+// 64 toolchain failures on a production fleet were "-mod may only be set to readonly or
 // vendor when in workspace mode … or set GOWORK=off": a module under a
 // go.work refuses GOFLAGS=-mod=mod, so every workspace repo got an empty
 // Go closure. The expansion reads each module on its own, so it must run
@@ -80,7 +80,7 @@ func TestGoModGraphOneWorksInsideAGoWorkspace(t *testing.T) {
 	}
 	var logBuf bytes.Buffer
 	ac := &AnalysisCollector{logger: slog.New(slog.NewTextHandler(&logBuf, nil))}
-	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil)
+	_, _, ok := ac.goModGraphOne(context.Background(), 0, goBin, work, mod, map[string]bool{}, nil, nil, &goModTaken{})
 	if !ok || strings.Contains(logBuf.String(), "go toolchain invocation failed") {
 		t.Fatalf("a module inside a go.work must expand (GOWORK=off); ok=%v log:\n%s", ok, logBuf.String())
 	}

@@ -133,7 +133,7 @@ func (s *Scheduler) logKeyPoolSummary() {
 		"secondary_hits_lifetime", secondaryHits,
 		// 2026-09-17: keys GitHub has refused (403/429 + Remaining: 0)
 		// whose refusal still stands. The remaining_* numbers below are
-		// the pool's TRACKED balances; on chaoss.tv they read >= 4,305 on
+		// the pool's TRACKED balances; on a production fleet they read >= 4,305 on
 		// every key while one key was being refused thousands of times.
 		"refused_core_now", refusedCore,
 		"refused_graphql_now", refusedGQL,

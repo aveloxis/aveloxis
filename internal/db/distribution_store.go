@@ -76,6 +76,49 @@ func (s *PostgresStore) ReleaseDistributionClaim(ctx context.Context, job *Distr
 	return job.tx.Rollback(ctx)
 }
 
+// distributionClaimSQL is ClaimNextDistributionRepo's statement, with or
+// without the immediate re-claim of a partial scan.
+func distributionClaimSQL(immediatePartialReclaim bool) string {
+	partialReclaimClause := ""
+	if immediatePartialReclaim {
+		partialReclaimClause = fmt.Sprintf("OR (COALESCE(r.distribution_scan_complete, TRUE) = FALSE AND COALESCE(r.distribution_failed_attempts, 0) < %d)\n			           ", DistributionMaxFailures)
+	}
+
+	// Backoff base is sourced from the named constant so the schedule
+	// stays documented in one place. Plain Sprintf is safe here: the
+	// only substitutions are an integer constant and the literal
+	// SQL fragment above, neither user input.
+	claimSQL := fmt.Sprintf(`
+		WITH candidate AS (
+		    SELECT r.repo_id
+		    FROM aveloxis_data.repos r
+		    JOIN aveloxis_ops.collection_queue q USING (repo_id)
+		    WHERE q.last_collected IS NOT NULL
+		      AND COALESCE(r.repo_archived, FALSE) = FALSE
+		      AND (r.distribution_last_run IS NULL
+		           %s
+		           OR r.distribution_last_run < NOW() - $1::interval)
+		      AND (r.distribution_last_failed_at IS NULL
+		           OR r.distribution_last_failed_at < NOW() - make_interval(
+		               secs => %d * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)
+		                          * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)))
+		    ORDER BY
+		        -- Partial scans get priority (after NULLs) so they
+		        -- re-collect ahead of routine cadence-elapsed rows.
+		        -- v0.25.3: this ORDER BY clause stays in both modes;
+		        -- only the WHERE-clause immediate-reclaim branch toggles.
+		        COALESCE(r.distribution_scan_complete, TRUE) ASC,
+		        r.distribution_last_run NULLS FIRST,
+		        r.repo_id
+		    LIMIT 1
+		    FOR UPDATE SKIP LOCKED
+		)
+		SELECT r.repo_id, r.repo_owner, r.repo_name, r.repo_git
+		FROM aveloxis_data.repos r
+		WHERE r.repo_id IN (SELECT repo_id FROM candidate)`, partialReclaimClause, distributionBackoffBaseSeconds)
+	return claimSQL
+}
+
 // ClaimNextDistributionRepo atomically claims the highest-priority
 // eligible repo for distribution tracking. Returns (nil, nil) when
 // no eligible row exists — the caller treats this as "queue empty,
@@ -137,43 +180,7 @@ func (s *PostgresStore) ClaimNextDistributionRepo(ctx context.Context, cadence t
 	// strike limit. The tenth failure stamps distribution_last_run (the
 	// sideline's cadence gate), and this branch bypassed that gate, so a
 	// sidelined partial scan came back every time its backoff elapsed.
-	partialReclaimClause := ""
-	if immediatePartialReclaim {
-		partialReclaimClause = fmt.Sprintf("OR (COALESCE(r.distribution_scan_complete, TRUE) = FALSE AND COALESCE(r.distribution_failed_attempts, 0) < %d)\n			           ", DistributionMaxFailures)
-	}
-
-	// Backoff base is sourced from the named constant so the schedule
-	// stays documented in one place. Plain Sprintf is safe here: the
-	// only substitutions are an integer constant and the literal
-	// SQL fragment above, neither user input.
-	claimSQL := fmt.Sprintf(`
-		WITH candidate AS (
-		    SELECT r.repo_id
-		    FROM aveloxis_data.repos r
-		    JOIN aveloxis_ops.collection_queue q USING (repo_id)
-		    WHERE q.last_collected IS NOT NULL
-		      AND COALESCE(r.repo_archived, FALSE) = FALSE
-		      AND (r.distribution_last_run IS NULL
-		           %s
-		           OR r.distribution_last_run < NOW() - $1::interval)
-		      AND (r.distribution_last_failed_at IS NULL
-		           OR r.distribution_last_failed_at < NOW() - make_interval(
-		               secs => %d * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)
-		                          * GREATEST(COALESCE(r.distribution_failed_attempts, 0), 1)))
-		    ORDER BY
-		        -- Partial scans get priority (after NULLs) so they
-		        -- re-collect ahead of routine cadence-elapsed rows.
-		        -- v0.25.3: this ORDER BY clause stays in both modes;
-		        -- only the WHERE-clause immediate-reclaim branch toggles.
-		        COALESCE(r.distribution_scan_complete, TRUE) ASC,
-		        r.distribution_last_run NULLS FIRST,
-		        r.repo_id
-		    LIMIT 1
-		    FOR UPDATE SKIP LOCKED
-		)
-		SELECT r.repo_id, r.repo_owner, r.repo_name, r.repo_git
-		FROM aveloxis_data.repos r
-		WHERE r.repo_id IN (SELECT repo_id FROM candidate)`, partialReclaimClause, distributionBackoffBaseSeconds)
+	claimSQL := distributionClaimSQL(immediatePartialReclaim)
 	row := tx.QueryRow(ctx, claimSQL, cadence.String())
 
 	var job DistributionJob

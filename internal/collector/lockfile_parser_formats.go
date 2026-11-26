@@ -8,10 +8,11 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/aveloxis/aveloxis/internal/manifest"
 )
 
 // ============================================================
@@ -37,7 +38,7 @@ func parsePoetryStyleTOML(data []byte) (parsedLockfileData, error) {
 		if name != "" && version != "" {
 			scope := ""
 			if category == "dev" {
-				scope = "dev"
+				scope = lockfileScopeDev
 			}
 			out.Entries = append(out.Entries, LockfileEntry{Name: name, Version: version, Scope: scope})
 		}
@@ -326,24 +327,34 @@ func parseMixLock(data []byte) (parsedLockfileData, error) {
 // entries carry dependency: "direct main" / "direct dev" /
 // "direct overridden" / "transitive" — direct IS distinguished.
 func parsePubspecLock(data []byte) (parsedLockfileData, error) {
-	var doc struct {
-		Packages map[string]struct {
-			Dependency string `yaml:"dependency"`
-			Version    string `yaml:"version"`
-		} `yaml:"packages"`
+	// Through the node walk of lockfile_yaml.go: yaml.Unmarshal into a map
+	// is quadratic in the packages.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	packages, err := yamlPairs(yamlField(root, "packages"))
+	if err != nil {
 		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
-	for name, pkg := range doc.Packages {
-		if pkg.Version == "" {
+	for _, pkg := range packages {
+		fields, err := yamlPairs(pkg.val)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		version, verr := yamlString(yamlField(fields, "version"))
+		dependency, derr := yamlString(yamlField(fields, "dependency"))
+		if err := errors.Join(verr, derr); err != nil {
+			return parsedLockfileData{}, err
+		}
+		if version == "" {
 			continue
 		}
 		entries = append(entries, LockfileEntry{
-			Name:    name,
-			Version: pkg.Version,
-			Direct:  strings.HasPrefix(pkg.Dependency, "direct"),
+			Name:    pkg.key,
+			Version: version,
+			Direct:  strings.HasPrefix(dependency, "direct"),
 		})
 	}
 	return parsedLockfileData{Entries: entries, DirectKnown: true}, nil
@@ -362,7 +373,7 @@ func parsePubspecLock(data []byte) (parsedLockfileData, error) {
 // case-sensitively, so the purl carries the manifest's spelling and a
 // manifest that spells the URL non-canonically ("Apple/Swift-NIO", which
 // GitHub serves) mints a purl OSV does not match — and the identity is
-// the fallback for a pin with no host; the case-insensitive lockfileMatchKey still matches the
+// the fallback for a pin with no host; the case-insensitive pkgid.MatchKey still matches the
 // Package.swift manifest parser's repo-name extraction either way.
 // Direct deps are not distinguished.
 func parsePackageResolved(data []byte) (parsedLockfileData, error) {
@@ -397,7 +408,7 @@ func parsePackageResolved(data []byte) (parsedLockfileData, error) {
 		// v0.29.59 (worklist 46): the pin's repository URL carries the purl
 		// namespace (host/owner) and the case-preserved repository name —
 		// the identity is that name lowercased, so the graph key
-		// (LockfileGraphKey lowercases) still matches the Package.swift
+		// (pkgid.Key lowercases) still matches the Package.swift
 		// direct dependency, and the purl now matches the direct writer's
 		// pkg:swift/github.com/Owner/Repo shape. A pin with no host (a
 		// local path) keeps its identity and stays namespace-less.
@@ -509,19 +520,30 @@ var stackHackageNameVersionRe = regexp.MustCompile(`^(.+)-([0-9][0-9.]*)$`)
 // are declared, but the snapshot resolution model doesn't map onto a
 // direct/transitive split).
 func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
-	var doc struct {
-		Packages []struct {
-			Completed struct {
-				Hackage string `yaml:"hackage"`
-			} `yaml:"completed"`
-		} `yaml:"packages"`
+	// Through the node walk of lockfile_yaml.go: yaml.Unmarshal compares
+	// every key of a mapping with every other, into a struct as into a map.
+	root, err := yamlLockRoot(data)
+	if err != nil {
+		return parsedLockfileData{}, err
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	packages, err := yamlItems(yamlField(root, "packages"))
+	if err != nil {
 		return parsedLockfileData{}, err
 	}
 	var entries []LockfileEntry
-	for _, p := range doc.Packages {
-		spec := p.Completed.Hackage
+	for _, p := range packages {
+		item, err := yamlPairs(p)
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		completed, err := yamlPairs(yamlField(item, "completed"))
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
+		spec, err := yamlString(yamlField(completed, "hackage"))
+		if err != nil {
+			return parsedLockfileData{}, err
+		}
 		if at := strings.IndexByte(spec, '@'); at >= 0 {
 			spec = spec[:at]
 		}
@@ -532,11 +554,11 @@ func parseStackYamlLock(data []byte) (parsedLockfileData, error) {
 	return parsedLockfileData{Entries: entries}, nil
 }
 
-// swiftRepoNamespace is parseSwiftPackageURL's (namespace, repo) view for
+// swiftRepoNamespace is manifest.ParseSwiftPackageURL's (namespace, repo) view for
 // the Package.resolved reader: "", "" for anything that is not a package
 // repository URL, so the caller keeps the pin's identity with no namespace.
 func swiftRepoNamespace(rawURL string) (namespace, repo string) {
-	ref, ok := parseSwiftPackageURL(rawURL)
+	ref, ok := manifest.ParseSwiftPackageURL(rawURL)
 	if !ok {
 		return "", ""
 	}

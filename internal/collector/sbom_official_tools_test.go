@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 // sbomToolsEnv names the Python (with spdx-tools and cyclonedx-python-lib)
@@ -90,6 +92,70 @@ func TestSBOMsPassTheOfficialValidators(t *testing.T) {
 	}
 	if ok, out := cdxOK(write("seed.cdx.json", cdx)); !ok {
 		t.Errorf("the CycloneDX validator rejects the generated document:\n%s", out)
+	}
+
+	// The documents with vulnerability findings in them (summary/70, 4.1.4):
+	// one finding of each class an annotator decides about.
+	vRepo, vDeps, vScan, vulns := sbomVulnSeed()
+	vCDX, err := generateCycloneDX(vRepo, vDeps, vScan, sbomSeedGraph())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vSP, err := generateSPDX(vRepo, vDeps, vScan, sbomSeedGraph())
+	if err != nil {
+		t.Fatal(err)
+	}
+	annCDX, err := AnnotateCycloneDXWithVulns(vCDX, vulns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annSP, err := AnnotateSPDXWithVulns(vSP, vulns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(annCDX), `"vulnerabilities"`) || !strings.Contains(string(annSP), `"advisory"`) {
+		t.Fatal("the annotated documents carry no findings; the validators would be checking bare documents")
+	}
+	if ok, out := spdxOK(write("annotated.spdx.json", annSP)); !ok {
+		t.Errorf("pyspdxtools rejects the SPDX document annotated with findings:\n%s", out)
+	}
+	if ok, out := cdxOK(write("annotated.cdx.json", annCDX)); !ok {
+		t.Errorf("the CycloneDX validator rejects the document annotated with findings:\n%s", out)
+	}
+
+	// The coverage marker (summary/70, 8.8; 0.29.199), through both
+	// validators: a never-analysed repository that publishes a package, and
+	// one with a carried manifest, each also annotated with findings.
+	for name, cov := range map[string]*vulnclass.CoverageView{"never-analysed": neverAnalysedPublisher(), "carried": carriedManifest()} {
+		cRepo, cDeps, cScan, cVulns := sbomVulnSeed()
+		cRepo.Coverage = cov
+		mCDX, err := generateCycloneDX(cRepo, cDeps, cScan, sbomSeedGraph())
+		if err != nil {
+			t.Fatal(err)
+		}
+		mSP, err := generateSPDX(cRepo, cDeps, cScan, sbomSeedGraph())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(mCDX), "aveloxis:coverage:state") || !strings.Contains(string(mSP), "aveloxis:coverage: state=") {
+			t.Fatalf("%s: the documents carry no coverage marker; the validators would be checking unmarked documents", name)
+		}
+		if ok, out := spdxOK(write(name+".spdx.json", mSP)); !ok {
+			t.Errorf("%s: pyspdxtools rejects the SPDX document with a coverage marker:\n%s", name, out)
+		}
+		if ok, out := cdxOK(write(name+".cdx.json", mCDX)); !ok {
+			t.Errorf("%s: the CycloneDX validator rejects the document with a coverage marker:\n%s", name, out)
+		}
+		aCDX, err := AnnotateCycloneDXWithVulns(mCDX, cVulns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(aCDX), "aveloxis:version_not_determined") || !strings.Contains(string(aCDX), "aveloxis:coverage:state") {
+			t.Fatalf("%s: the annotated document lost the marker or carries no version-not-determined property", name)
+		}
+		if ok, out := cdxOK(write(name+".annotated.cdx.json", aCDX)); !ok {
+			t.Errorf("%s: the CycloneDX validator rejects the annotated document with a marker:\n%s", name, out)
+		}
 	}
 
 	// Negative controls: each tool must reject a known-bad document.

@@ -60,10 +60,10 @@ See [`configuration.md` -> scancode worker](../getting-started/configuration.md)
 # Start with defaults (collection.workers, default 12; dashboard on 127.0.0.1:5555)
 aveloxis serve
 
-# Start with 4 workers and a custom dashboard address (8082 is the web GUI's port)
+# Start with 4 workers and a custom dashboard address (8082 is the port of the web GUI)
 aveloxis serve --workers 4 --monitor 127.0.0.1:5556
 
-# Start using Augur's API keys
+# Start using the API keys of Augur
 aveloxis serve --workers 4 --augur-keys
 ```
 
@@ -425,10 +425,10 @@ are left as they are.
 aveloxis migrate
 ```
 
-Creates 165 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
+Creates 173 tables across three PostgreSQL schemas, plus 20 8Knot materialized views when `collection.materialized_views` is enabled (the default) and, always, the two supply-chain views:
 
-- **`aveloxis_data`** (109 tables + 22 materialized views) -- all collected data
-- **`aveloxis_ops`** (52 tables) -- operational state
+- **`aveloxis_data`** (113 tables + 22 materialized views) -- all collected data
+- **`aveloxis_ops`** (56 tables) -- operational state
 - **`aveloxis_scan`** (4 tables) -- scancode per-file license/copyright results
 
 Also performs a data cleanup pass that nullifies garbage timestamps (year < 1970) across all tables, preventing BC-era dates from poisoning queries.
@@ -728,11 +728,11 @@ Installs optional analysis tools.
 aveloxis install-tools
 ```
 
-Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
+Installs three external analysis tools: [scc](https://github.com/boyter/scc) (per-file code complexity; requires Go), [scorecard](https://github.com/ossf/scorecard) (OpenSSF security posture; release tarball), and [scancode](https://github.com/nexB/scancode-toolkit) (per-file license/copyright scanning; requires **Python 3.10+** and pipx — also injects the `typecode-libmagic` plugin, and since 0.29.230 holds one of scancode's dependencies below the version it cannot start with: `pipx inject --force scancode-toolkit-mini 'pluggy<1.7'`). If the Python prerequisite is missing, scancode installation fails and per-file license scanning never runs; see `aveloxis upgrade-tools` for updating installed tools.
 
 If `scc` is not installed, the code complexity phase is silently skipped during collection.
 
-Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69); since 0.29.144 the same holds for scc, whose upgrade also fails when the installed scc does not report the pinned version.
+Exits non-zero if any tool fails to install or installs off PATH (the same `LookPath` serve's phases use), so `aveloxis install-tools && aveloxis start all` stops before a start without the tool (v0.29.68). Since 0.29.234 it also runs `scancode --version` on a scancode it finds installed or has just installed, and exits non-zero with the repair commands while scancode does not start. If scancode installs but its `pluggy<1.7` bound cannot be applied, the run fails with the retry command; retry with that command or with `aveloxis upgrade-tools` (a second `install-tools` does not retry the bound, it reports whether scancode starts). Both `install-tools` and `upgrade-tools` are non-interactive: each tool runs in its own process group with pip and git prompts disabled (`PIP_NO_INPUT`, `GIT_TERMINAL_PROMPT=0`; a Homebrew formula install never prompts), so credentials must come from configuration or a keyring and a pip or git credential prompt fails at once (any other prompt, such as an ssh host-key or passphrase question when git fetches over ssh, is not answered and ends at the bound); each tool is bounded by the same limit as the monthly update check, and Ctrl-C kills the tool in flight and ends the walk. `upgrade-tools` and the monthly update check count a scorecard upgrade as failed when an older scorecard earlier on PATH would still be the one serve runs, and name both paths (v0.29.69); since 0.29.144 the same holds for scc, whose upgrade also fails when the installed scc does not report the pinned version.
 
 ---
 
@@ -744,7 +744,10 @@ the install path to pull updates: `go install` of the one pinned scc
 version Aveloxis validates (since 0.29.144; see the analysis architecture
 page), a fresh
 release tarball for scorecard, and `pipx upgrade` for scancode (preserving
-venv customizations) plus a `typecode-libmagic` re-injection.
+venv customizations) plus a `typecode-libmagic` re-injection and, since
+0.29.230, the same `pluggy<1.7` bound `install-tools` applies. Since
+0.29.234 a bound that could not be applied is a failed upgrade, with the
+retry command in the message.
 
 ```bash
 aveloxis upgrade-tools
@@ -880,10 +883,10 @@ Each component tags its connection pool with an `application_name` that
 carries the component and this machine's hostname, separated by `@`:
 
 ```
-aveloxis-serve@kate
+aveloxis-serve@myhost
 aveloxis-scancode-worker@runner-01
-aveloxis-web@kate
-aveloxis-api@kate
+aveloxis-web@myhost
+aveloxis-api@myhost
 ```
 
 `stop` matches on the part **before** the `@` (the component) and
@@ -1370,7 +1373,7 @@ aveloxis data-verify --ground-truth 10        # ALSO re-fetch live GitHub
 aveloxis data-verify --min-identity-fill 95   # optional floors → WARN below
 aveloxis data-verify --deterministic-sample   # sample by a hash of the id, so
                                               # two copies of one database read
-                                              # alike (data-test's snapshot mode)
+                                              # alike (the snapshot mode of data-test)
 ```
 
 Severities: FAIL = a code-enforced invariant is broken (exit 1);
@@ -2129,6 +2132,14 @@ Prints the Aveloxis version.
 ```bash
 aveloxis version
 ```
+
+---
+
+## `aveloxis manifest-read`
+
+Not a command to run by hand, and not listed by `--help`. Each analysis starts it once, to read one repository's clone in a process of its own: the dependency names, then the declarations and their versions, then the lockfiles. It takes its request on standard input and answers on standard output. It reads no configuration file, opens no database connection and makes no network request; when a Maven build needs a parent pom or a BOM that is not in the clone, it asks the analysis that started it, which answers from the configured repositories as before.
+
+It exists so that what a repository's files say cannot hold a collection worker, or the host's memory, past two limits: `collection.manifest_read_cpu_seconds` (default 180) and `collection.manifest_read_memory_mb` (default 2048). The process watches its own processor time and memory and ends itself when it passes either; the analysis also stops it if it runs too long by the clock, and it ends itself if the analysis that started it is gone. On Linux it is started from the running program's own image, so replacing the `aveloxis` file on disk under a running `serve` does not change what the child is; on other systems it is started from the file on disk and refuses a request from another version. What a stopped reading leaves behind is described in [the analysis architecture page](../architecture/analysis.md) and, for an operator, in [troubleshooting](troubleshooting.md).
 
 ---
 

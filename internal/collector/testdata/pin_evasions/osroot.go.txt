@@ -1,0 +1,21 @@
+package collector
+
+import (
+	"io"
+	"os"
+)
+
+func PinEvasionOSROOT(dir string) int {
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return 0
+	}
+	defer r.Close()
+	f, err := r.Open("package.json")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	b, _ := io.ReadAll(f)
+	return len(b)
+}

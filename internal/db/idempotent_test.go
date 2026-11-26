@@ -85,9 +85,9 @@ func TestBatchInsertsHaveOnConflict(t *testing.T) {
 	batchExceptions := map[string]bool{
 		"aveloxis_data.repo_sbom_scans":     true, // SBOMs accumulate per collection run
 		"aveloxis_data.repo_deps_scorecard": true, // ReplaceScorecard rotates before its inserts (one tx)
-		"aveloxis_data.repo_deps_libyear":   true, // uses RotateLibyearToHistory before insert
+		"aveloxis_data.repo_deps_libyear":   true, // replaced whole by ReplaceRepoLibyear
 		// v0.27.17: repo_dependencies is snapshot-replaced by the SAME
-		// RotateLibyearToHistory pass (it deletes both tables' current
+		// ReplaceRepoLibyear pass (it deletes both tables' current
 		// rows), and neither table has a unique arbiter — the old
 		// blanket ON CONFLICT DO NOTHING was dead code (the
 		// repo_labor/review_msg_ref/repo_groups class; see

@@ -1,0 +1,24 @@
+@@ A01 sqlfn param via unnest (want VIOL)
+CREATE FUNCTION aveloxis_data.f1(text[]) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET ar = v.c FROM unnest($1) AS v(c) $$
+@@ A02 sqlfn param via VALUES (want VIOL)
+CREATE FUNCTION aveloxis_data.f2(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET ar = v.c FROM (VALUES ($1)) AS v(c) $$
+@@ A02c control: sqlfn param direct (VIOL)
+CREATE FUNCTION aveloxis_data.f2(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET ar = $1 $$
+@@ A03 sqlfn fill-empty from unnest param (want VIOL)
+CREATE FUNCTION aveloxis_data.f3(text[]) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, v.c) FROM unnest($1) AS v(c) $$
+@@ A03c control fill direct param (VIOL)
+CREATE FUNCTION aveloxis_data.f3(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, $1) $$
+@@ A04 plpgsql param via unnest $1 (want VIOL)
+CREATE FUNCTION aveloxis_data.f4(a text[]) RETURNS void LANGUAGE plpgsql AS $$ BEGIN UPDATE aveloxis_data.repos r SET ar = v.c FROM unnest($1) AS v(c); END $$
+@@ A05 sqlfn pnn via select param (want VIOL)
+CREATE FUNCTION aveloxis_data.f5(text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET pnn = COALESCE(v.c, r.pnn) FROM (SELECT $1 AS c) v $$
+@@ A06 sqlfn insert-select unnest param excluded (want VIOL)
+CREATE FUNCTION aveloxis_data.f6(text[]) RETURNS void LANGUAGE sql AS $$ INSERT INTO aveloxis_data.repos (repo_id, ar) SELECT 1, v.c FROM unnest($1) AS v(c) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar $$
+@@ A06c control insert values param excluded in body (VIOL)
+CREATE FUNCTION aveloxis_data.f6(text) RETURNS void LANGUAGE sql AS $$ INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES (1, $1) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar $$
+@@ A07 sqlfn bare batch column (want VIOL)
+CREATE FUNCTION aveloxis_data.f7(text[]) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET ar = c FROM unnest($1) AS v(c) $$
+@@ A29 sqlfn pn operand batch (want VIOL)
+CREATE FUNCTION aveloxis_data.f9(text[]) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET pn = COALESCE(NULLIF(v.c, ''), r.pn) FROM unnest($1) AS v(c) $$
+@@ A30 guarded bare fill in sqlfn from batch param (want VIOL)
+CREATE FUNCTION aveloxis_data.f10(text[]) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos r SET fe = v.c FROM unnest($1) AS v(c) WHERE r.fe IS NULL $$

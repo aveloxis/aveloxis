@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>Analysis &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1892,9 +1935,9 @@
 <td><p>Python (setuptools)</p></td>
 <td><p>Regex parser for <code class="docutils literal notranslate"><span class="pre">install_requires</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">build.gradle</span></code>, <code class="docutils literal notranslate"><span class="pre">build.gradle.kts</span></code></p></td>
 <td><p>Java (Gradle)</p></td>
-<td><p>Parses <code class="docutils literal notranslate"><span class="pre">implementation</span></code>, <code class="docutils literal notranslate"><span class="pre">compile</span></code>, <code class="docutils literal notranslate"><span class="pre">api</span></code> declarations</p></td>
+<td><p>Reads every <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> block (the build script’s own included) as tokens, not by running it: each configuration; the string, map and Kotlin named-argument notations; <code class="docutils literal notranslate"><span class="pre">platform(...)</span></code>; versions held in a variable the file assigns. See “Gradle build files” below.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">composer.json</span></code></p></td>
 <td><p>PHP (Composer)</p></td>
@@ -1955,7 +1998,7 @@
 </section>
 <section id="supported-registries">
 <h3>Supported registries<a class="headerlink" href="#supported-registries" title="Link to this heading"></a></h3>
-<p>Twelve registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, and SwiftPM (via GitHub releases). Examples:</p>
+<p>Thirteen registries are queried: npm, PyPI, Go proxy, crates.io, RubyGems, Maven Central, Packagist, Hex.pm, NuGet, pub.dev, Hackage, SwiftPM (via GitHub releases), and CRAN (via crandb). Examples:</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Registry</p></th>
@@ -2042,7 +2085,7 @@ alone: a requirements variant by name (<code class="docutils literal notranslate
 directly inside a directory named <code class="docutils literal notranslate"><span class="pre">requirements</span></code> (that directory name
 byte-exact),
 and never <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> itself in any casing. Both walks match
-<code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> in any letter case (one normalizer, <code class="docutils literal notranslate"><span class="pre">canonicalManifestName</span></code>,
+<code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> in any letter case (one normalizer, <code class="docutils literal notranslate"><span class="pre">manifest.CanonicalManifestName</span></code>,
 v0.29.68 — through v0.29.67 they matched it byte for byte and a
 <code class="docutils literal notranslate"><span class="pre">Requirements.txt</span></code> was collected by nothing), so <code class="docutils literal notranslate"><span class="pre">requirements/requirements.txt</span></code>
 and <code class="docutils literal notranslate"><span class="pre">Requirements.txt</span></code> are the ordinary manifest, gate or no gate. Every other
@@ -2105,12 +2148,304 @@ distinction: a <code class="docutils literal notranslate"><span class="pre">path
 </tbody>
 </table>
 </section>
+<section id="a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">
+<h3>A dependency keeps its row when the registry cannot answer (0.29.162)<a class="headerlink" href="#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162" title="Link to this heading"></a></h3>
+<p>The inventory says what a repository depends on. The manifest states that; the registry only adds the latest version, the dates and the licence. So a dependency whose lookup fails keeps its row, with its purl built from the manifest, <code class="docutils literal notranslate"><span class="pre">libyear</span></code> NULL, and the reason in <code class="docutils literal notranslate"><span class="pre">libyear_status</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">libyear_status</span></code></p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resolved</span></code></p></td>
+<td><p>The registry answered and libyear was computed.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">no_version</span></code></p></td>
+<td><p>No version could be worked out for the dependency.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">no_release_date</span></code></p></td>
+<td><p>The package is known; the registry gave no date for the version.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">not_on_registry</span></code></p></td>
+<td><p>The registry says there is no such package (a private package, a typo, a deleted one).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cannot_be_asked</span></code></p></td>
+<td><p>The coordinate is invalid, or the host is one the resolver does not support.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lookup_failed</span></code></p></td>
+<td><p>No answer this cycle (a timeout, a rate limit, a server error). Asked again at the next analysis.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">no_timeline</span></code></p></td>
+<td><p>The ecosystem has no registry timeline (GitHub Actions).</p></td>
+</tr>
+</tbody>
+</table>
+<p>A row written before 0.29.162 has no status. Three kinds of dependency get no row, and since 0.29.164 each is recorded in <code class="docutils literal notranslate"><span class="pre">repo_inventory_notes</span></code> with its kind and counted under the same kind in <code class="docutils literal notranslate"><span class="pre">repo_dependency_coverage.dependencies_without_row</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">non_registry</span></code>: it comes from a local path, a workspace, git or a URL, so it is not the registry package of the same name.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">no_namespace</span></code>: no purl can be built for it (a Maven or Gradle coordinate with no group, for example).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">name_rejected</span></code>: the declared name is not a package name. Each ecosystem has a name grammar (<code class="docutils literal notranslate"><span class="pre">pkgid.ValidName</span></code>); a name that fails it, holds a byte that cannot be stored, or is longer than 2,704 bytes gets no row, and the registry is not asked about it. Until 0.29.164 the registry was the only check, by answering for nothing else.</p></li>
+</ul>
+</section>
+<section id="the-inventory-is-replaced-whole-0-29-157">
+<h3>The inventory is replaced whole (0.29.157)<a class="headerlink" href="#the-inventory-is-replaced-whole-0-29-157" title="Link to this heading"></a></h3>
+<p>The libyear phase works in three steps: it walks the clone and parses every manifest, it looks every declared dependency up, and only then does it write. The write is one transaction (<code class="docutils literal notranslate"><span class="pre">ReplaceRepoLibyear</span></code>): the previous rows are copied to <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear_history</span></code>, deleted, and the new rows inserted. Either all of that happens or none of it.</p>
+<p>So <code class="docutils literal notranslate"><span class="pre">repo_deps_libyear</span></code> is never partial. An analysis that stops before the write, for any reason (a <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">serve</span></code> during the lookups, a database error, a clone whose root cannot be read), has written nothing, and the previous inventory stands whole. The cost is that an interrupted analysis keeps none of its progress; the next one starts again.</p>
+<p>Before 0.29.157 the previous rows were moved to history first and each new row was inserted after its own registry lookup. A vulnerability scan that read the table part-way found most dependencies missing and closed their findings as if they had been fixed.</p>
+<p>Three consequences:</p>
+<ul class="simple">
+<li><p>A clone whose root cannot be read fails the phase and keeps the previous inventory. It used to be logged and treated as a repository with no dependencies.</p></li>
+<li><p>A registry answer or a requirement string that holds a byte PostgreSQL cannot store (a NUL, invalid UTF-8) is cleaned before the write and the row is kept. One such row used to be lost with a WARN.</p></li>
+<li><p>A dependency whose <em>name</em> holds such a byte gets no row: a cleaned name is a different name, and may be another package’s. The analysis logs one WARN per repository with the count.</p></li>
+</ul>
+<p>Since 0.29.159 the same transaction writes the repository’s row in <code class="docutils literal notranslate"><span class="pre">repo_dependency_coverage</span></code>: how many manifests were found and parsed, which failed, how many dependencies were declared, and how many were given no row and why. An analysis that does not replace the inventory records when and why in that row’s two attempt columns instead. A manifest that cannot be read is recorded there and logged; it used to contribute nothing, silently, for most formats.</p>
+<p>Since 0.29.160 each row names the manifest that declared it (<code class="docutils literal notranslate"><span class="pre">manifest_path</span></code>), and a manifest that cannot be read or parsed keeps its dependencies: the replace carries its previous rows into the new inventory, as new rows, for as long as the file exists and fails. Deleting the file ends that. A row written before 0.29.160 names no manifest and cannot be carried.</p>
+<p>The dependency-name inventory (<code class="docutils literal notranslate"><span class="pre">repo_dependencies</span></code>) is built the same way since 0.29.158: walked first, then replaced in one transaction (<code class="docutils literal notranslate"><span class="pre">ReplaceRepoDependencies</span></code>).</p>
+</section>
 <section id="rate-limiting">
 <h3>Rate limiting<a class="headerlink" href="#rate-limiting" title="Link to this heading"></a></h3>
 <p>Each stored row also carries the registry-reported <code class="docutils literal notranslate"><span class="pre">license</span></code> (normalized to SPDX downstream) and a spec-conformant <code class="docutils literal notranslate"><span class="pre">purl</span></code> — these feed the license table, SBOM generation, and vulnerability scanning. Registry queries are not subject to GitHub/GitLab rate limits. However, some registries (notably crates.io) have their own rate limits. The libyear calculator makes requests sequentially to avoid overwhelming registries.</p>
 </section>
 </section>
 <hr class="docutils" />
+<section id="gradle-build-files">
+<h2>Gradle build files<a class="headerlink" href="#gradle-build-files" title="Link to this heading"></a></h2>
+<p>A Gradle build file is a program. Aveloxis does not run it; from 0.29.192 it reads the file
+as tokens and takes the declarations of every <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> block, including
+<code class="docutils literal notranslate"><span class="pre">buildscript</span> <span class="pre">{</span> <span class="pre">dependencies</span> <span class="pre">{</span> <span class="pre">...</span> <span class="pre">}</span> <span class="pre">}</span></code> and blocks inside <code class="docutils literal notranslate"><span class="pre">subprojects</span></code>, <code class="docutils literal notranslate"><span class="pre">allprojects</span></code> or a
+condition.</p>
+<ul class="simple">
+<li><p><strong>Every configuration</strong> is read (<code class="docutils literal notranslate"><span class="pre">implementation</span></code>, <code class="docutils literal notranslate"><span class="pre">api</span></code>, <code class="docutils literal notranslate"><span class="pre">compileOnly</span></code>, <code class="docutils literal notranslate"><span class="pre">runtimeOnly</span></code>,
+<code class="docutils literal notranslate"><span class="pre">kapt</span></code>, <code class="docutils literal notranslate"><span class="pre">annotationProcessor</span></code>, <code class="docutils literal notranslate"><span class="pre">classpath</span></code>, a variant’s such as <code class="docutils literal notranslate"><span class="pre">debugImplementation</span></code>, a
+custom one). The scope follows from the name: a configuration with <code class="docutils literal notranslate"><span class="pre">test</span></code> in its name is
+<code class="docutils literal notranslate"><span class="pre">dev</span></code>; <code class="docutils literal notranslate"><span class="pre">classpath</span></code>, an annotation processor, <code class="docutils literal notranslate"><span class="pre">kapt</span></code> and <code class="docutils literal notranslate"><span class="pre">ksp</span></code> are <code class="docutils literal notranslate"><span class="pre">build</span></code>; the rest are
+<code class="docutils literal notranslate"><span class="pre">runtime</span></code>.</p></li>
+<li><p><strong>Each notation</strong>: <code class="docutils literal notranslate"><span class="pre">'group:artifact:version'</span></code>; <code class="docutils literal notranslate"><span class="pre">group:</span> <span class="pre">'g',</span> <span class="pre">name:</span> <span class="pre">'a',</span> <span class="pre">version:</span> <span class="pre">'v'</span></code>;
+Kotlin’s <code class="docutils literal notranslate"><span class="pre">group</span> <span class="pre">=</span> <span class="pre">&quot;g&quot;,</span> <span class="pre">name</span> <span class="pre">=</span> <span class="pre">&quot;a&quot;,</span> <span class="pre">version</span> <span class="pre">=</span> <span class="pre">&quot;v&quot;</span></code>; with or without parentheses, over
+several lines, several on a line, with a closure after. A classifier and an <code class="docutils literal notranslate"><span class="pre">&#64;aar</span></code>
+extension are not part of the version.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">platform(...)</span></code> and <code class="docutils literal notranslate"><span class="pre">enforcedPlatform(...)</span></code></strong> are marked as a BOM.</p></li>
+<li><p><strong>Variables.</strong> <code class="docutils literal notranslate"><span class="pre">&quot;g:a:$v&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;g:a:${versions.lib}&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">version:</span> <span class="pre">v</span></code> are looked up among
+what the file assigns: <code class="docutils literal notranslate"><span class="pre">ext.v</span> <span class="pre">=</span> <span class="pre">...</span></code>, an <code class="docutils literal notranslate"><span class="pre">ext</span> <span class="pre">{</span> <span class="pre">}</span></code> block, <code class="docutils literal notranslate"><span class="pre">def</span></code>/<code class="docutils literal notranslate"><span class="pre">val</span></code>, <code class="docutils literal notranslate"><span class="pre">ext['v']</span></code>,
+<code class="docutils literal notranslate"><span class="pre">extra[&quot;v&quot;]</span></code>, <code class="docutils literal notranslate"><span class="pre">set(&quot;v&quot;,</span> <span class="pre">...)</span></code>, <code class="docutils literal notranslate"><span class="pre">val</span> <span class="pre">v</span> <span class="pre">by</span> <span class="pre">extra(...)</span></code>, a map (<code class="docutils literal notranslate"><span class="pre">versions</span> <span class="pre">=</span> <span class="pre">[lib:</span> <span class="pre">'1']</span></code>), and
+a project property set at the top of the file (<code class="docutils literal notranslate"><span class="pre">version</span> <span class="pre">=</span> <span class="pre">'1.0'</span></code>, read back as
+<code class="docutils literal notranslate"><span class="pre">${project.version}</span></code>).</p></li>
+<li><p><strong>The rest of the build</strong>, from 0.29.193, read in the clone only and never run:
+<code class="docutils literal notranslate"><span class="pre">gradle.properties</span></code> in each directory from the clone’s root down to the build file (the
+nearest wins); <code class="docutils literal notranslate"><span class="pre">settings.gradle(.kts)</span></code> (<code class="docutils literal notranslate"><span class="pre">gradle.ext.x</span> <span class="pre">=</span> <span class="pre">...</span></code>); the build files of the
+directories above; a file applied with <code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">from:</span></code> (relative, or from <code class="docutils literal notranslate"><span class="pre">$rootDir</span></code>; a URL
+is not opened); version catalogues, <code class="docutils literal notranslate"><span class="pre">gradle/*.versions.toml</span></code>, with their accessors
+(<code class="docutils literal notranslate"><span class="pre">libs.guava</span></code>, <code class="docutils literal notranslate"><span class="pre">libs.bundles.testing</span></code>, <code class="docutils literal notranslate"><span class="pre">libs.versions.kotlin.get()</span></code>); and constants in
+<code class="docutils literal notranslate"><span class="pre">buildSrc</span></code> sources (<code class="docutils literal notranslate"><span class="pre">object</span> <span class="pre">Versions</span> <span class="pre">{</span> <span class="pre">const</span> <span class="pre">val</span> <span class="pre">kotlin</span> <span class="pre">=</span> <span class="pre">&quot;1.9&quot;</span> <span class="pre">}</span></code> is
+<code class="docutils literal notranslate"><span class="pre">Versions.kotlin</span></code>, and <code class="docutils literal notranslate"><span class="pre">Deps.guava</span></code> may hold a whole coordinate). A symbolic link, or a
+path that leaves the clone, is not followed.</p></li>
+<li><p><strong>Platforms supply versions</strong>, from 0.29.194. A dependency written with no version takes
+the version its platform manages. A platform is a Maven BOM. It is fetched from the configured Maven
+repositories (<code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code>), with its own parents and imports. From
+0.29.216 it is never taken from a <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> of the repository, because Gradle asks its
+repositories for a platform’s coordinates and reads no pom of the checkout for them
+(see “Gradle” below). The
+build’s BOMs are the <code class="docutils literal notranslate"><span class="pre">platform(...)</span></code> and <code class="docutils literal notranslate"><span class="pre">enforcedPlatform(...)</span></code> it declares, those a
+build file above declares for <code class="docutils literal notranslate"><span class="pre">allprojects</span></code> or <code class="docutils literal notranslate"><span class="pre">subprojects</span></code>, Spring’s
+<code class="docutils literal notranslate"><span class="pre">dependencyManagement</span> <span class="pre">{</span> <span class="pre">imports</span> <span class="pre">{</span> <span class="pre">mavenBom</span> <span class="pre">&quot;g:a:v&quot;</span> <span class="pre">}</span> <span class="pre">}</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">spring-boot-dependencies</span></code> at the Spring Boot plugin’s version when the
+<code class="docutils literal notranslate"><span class="pre">io.spring.dependency-management</span></code> plugin is applied in the same <code class="docutils literal notranslate"><span class="pre">plugins</span></code> block. Such a
+row has <code class="docutils literal notranslate"><span class="pre">version_source</span></code> <code class="docutils literal notranslate"><span class="pre">managed</span></code> and records the repository hosts it came through. A
+dependency the build gave a version to is never answered for by a platform, read or not.
+When a platform cannot be obtained, each dependency it might have managed says why
+(<code class="docutils literal notranslate"><span class="pre">version_reason</span></code>). A platform read whole, its own imports included, leaves the
+inventory with a <code class="docutils literal notranslate"><span class="pre">managed_unused</span></code> note, as a pom’s BOM import does; one that was not
+obtained whole stays a row.</p></li>
+<li><p><strong>Repositories blocks are recorded</strong>, from 0.29.195, in <code class="docutils literal notranslate"><span class="pre">repo_declared_repositories</span></code>
+like a pom’s: <code class="docutils literal notranslate"><span class="pre">maven</span> <span class="pre">{</span> <span class="pre">url</span> <span class="pre">...</span> <span class="pre">}</span></code> in each spelling, <code class="docutils literal notranslate"><span class="pre">google()</span></code>, <code class="docutils literal notranslate"><span class="pre">mavenCentral()</span></code>
+(recorded as Maven Central’s address, which is the configured repository when you have
+not removed it) and <code class="docutils literal notranslate"><span class="pre">gradlePluginPortal()</span></code>. A block of a build file serves its
+dependencies; <code class="docutils literal notranslate"><span class="pre">buildscript</span> <span class="pre">{</span> <span class="pre">repositories</span> <span class="pre">}</span></code> and a settings file’s <code class="docutils literal notranslate"><span class="pre">pluginManagement</span></code>
+serve plugins and are recorded and not used; <code class="docutils literal notranslate"><span class="pre">allprojects</span></code>, <code class="docutils literal notranslate"><span class="pre">subprojects</span></code> and a settings
+file’s <code class="docutils literal notranslate"><span class="pre">dependencyResolutionManagement</span></code> serve the projects below. <code class="docutils literal notranslate"><span class="pre">mavenLocal()</span></code>,
+<code class="docutils literal notranslate"><span class="pre">flatDir</span></code>, <code class="docutils literal notranslate"><span class="pre">ivy</span></code>, <code class="docutils literal notranslate"><span class="pre">jcenter()</span></code> (shut down), an address that is not https, one with
+credentials (which are never stored) and one that cannot be read are recorded with the
+reason and never fetched from. A platform’s BOM is asked of the configured repositories
+first, then of the build’s own fetchable ones (the build file’s, then those shared from
+above), under <code class="docutils literal notranslate"><span class="pre">collection.declared_repository_fetch</span></code> and never from a distrusted host.</p></li>
+<li><p><strong>Two values are no value.</strong> A variable the same file assigns twice with different
+values (one per branch of a condition, usually) is not known: choosing one would be a
+guess, and in a name it would be another package.</p></li>
+<li><p><strong>What is not a dependency declares nothing</strong>: <code class="docutils literal notranslate"><span class="pre">project(':core')</span></code>, <code class="docutils literal notranslate"><span class="pre">files(...)</span></code>,
+<code class="docutils literal notranslate"><span class="pre">fileTree(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">gradleApi()</span></code>, a <code class="docutils literal notranslate"><span class="pre">constraints</span> <span class="pre">{</span> <span class="pre">}</span></code> block (a constraint pins a version
+for something else to use; it is not a dependency), anything outside a <code class="docutils literal notranslate"><span class="pre">dependencies</span></code>
+block.</p></li>
+<li><p><strong>A version that cannot be read is unknown.</strong> A variable the file does not assign, a
+dynamic version (<code class="docutils literal notranslate"><span class="pre">1.+</span></code>, <code class="docutils literal notranslate"><span class="pre">latest.release</span></code>) or a range leaves the row with no version and
+with what was written in its requirement. An expression is never stored as a version. A
+coordinate whose group or artifact cannot be read in full is not recorded: half a name
+is another package’s name.</p></li>
+</ul>
+</section>
+<section id="maven-read-as-a-tree-0-29-178">
+<h2>Maven: read as a tree (0.29.178)<a class="headerlink" href="#maven-read-as-a-tree-0-29-178" title="Link to this heading"></a></h2>
+<p>A Maven dependency is often declared with no <code class="docutils literal notranslate"><span class="pre">&lt;version&gt;</span></code>: Maven takes it from
+<code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code>. Aveloxis resolves that the way Maven does, from the poms in the
+repository:</p>
+<ol class="arabic simple">
+<li><p>an entry in the same pom’s <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code>;</p></li>
+<li><p>an entry in a parent pom’s, up the chain (the nearest pom wins);</p></li>
+<li><p>an entry in a BOM that any pom of the chain imports (<code class="docutils literal notranslate"><span class="pre">&lt;scope&gt;import&lt;/scope&gt;</span></code>).</p></li>
+</ol>
+<p>Properties (<code class="docutils literal notranslate"><span class="pre">${...}</span></code>) are resolved across the chain in the context of the pom being read,
+so a property the child overrides changes what a parent’s entry means for that child.</p>
+<p>A parent is the pom at the child’s <code class="docutils literal notranslate"><span class="pre">&lt;relativePath&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">../pom.xml</span></code>; a directory
+means its <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code>), and only when its coordinates are the ones the child names. An empty
+<code class="docutils literal notranslate"><span class="pre">&lt;relativePath/&gt;</span></code> means the parent is not in the repository. A BOM has coordinates and no
+place: it is taken from the repository only when exactly one pom of the importing pom’s
+own build, or of the build of the pom being read, has those coordinates (0.29.216,
+0.29.217; a build is the poms joined by <code class="docutils literal notranslate"><span class="pre">&lt;modules&gt;</span></code>, see “A pom that is not known” below). A fixture or template pom elsewhere in the
+repository that carries the same coordinates is not a candidate. Nothing is read above the
+clone and no symlink is followed.</p>
+<p>A version found this way is stored with <code class="docutils literal notranslate"><span class="pre">version_source</span></code> <code class="docutils literal notranslate"><span class="pre">managed</span></code>.</p>
+<p><strong>A parent or BOM that is not in the repository (0.29.182)</strong> is fetched from the Maven
+repositories in <code class="docutils literal notranslate"><span class="pre">collection.maven_repositories</span></code>, in order: a parent with an empty
+<code class="docutils literal notranslate"><span class="pre">&lt;relativePath/&gt;</span></code>, one that is not at its place, every parent of a fetched pom, and a BOM
+import no pom of the importing pom’s build has the coordinates of. Not fetched: a snapshot, a version
+range, an unresolved <code class="docutils literal notranslate"><span class="pre">${...}</span></code> reference, and a BOM whose coordinates two poms of that
+build share.</p>
+<p>Each answer is stored (<code class="docutils literal notranslate"><span class="pre">maven_pom_results</span></code>) and used before any request: a pom is fetched
+once, ever; a repository’s “I have none” is asked again after a day. When asking again
+fails, the stored answer stands, so a repository’s bad hour does not change a dependency’s
+version (and with it the dependency’s findings). A dependency that still has no version
+because a pom could not be obtained says why in <code class="docutils literal notranslate"><span class="pre">version_reason</span></code>; one that is simply
+managed nowhere has no version and no reason. A dependency declared inside a <code class="docutils literal notranslate"><span class="pre">&lt;plugin&gt;</span></code> has build scope.</p>
+<p><strong>A <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> entry is not a dependency (0.29.183).</strong> It says which version a
+dependency would get. Until this release each entry, and each BOM import’s own
+coordinate, was inventoried as a dependency, so an entry nothing uses had vulnerability
+findings no module was exposed to. Now, in a tree read whole:</p>
+<ul class="simple">
+<li><p>an entry whose version a dependency took has no row of its own: that dependency is its row;</p></li>
+<li><p>an entry whose version was applied to no dependency (unused, or used at a version that
+overrides it), and a BOM import’s own coordinate, is recorded as a note
+(<code class="docutils literal notranslate"><span class="pre">repo_inventory_notes</span></code>, kind <code class="docutils literal notranslate"><span class="pre">managed_unused</span></code>); a finding recorded on it closes with the
+reason <code class="docutils literal notranslate"><span class="pre">never_applied</span></code>.</p></li>
+</ul>
+<p>A tree is a pom, the poms its <code class="docutils literal notranslate"><span class="pre">&lt;modules&gt;</span></code> name, and every pom whose parent chain reaches
+one of them. It is read whole unless a pom of it could not be read or parsed, a parent or
+an imported BOM could not be obtained, a BOM import matches more than one pom, or
+<code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> sits inside a profile. In any of those cases a module that was not
+seen may be the user of an entry, so that tree’s entries stay inventoried and
+<code class="docutils literal notranslate"><span class="pre">repo_dependency_coverage.maven_trees_not_whole</span></code> names the tree with the reason. Other
+trees of the repository are unaffected: a broken fixture pom is its own tree.</p>
+</section>
+<section id="the-clone-is-read-by-a-process-of-its-own-0-29-213">
+<h2>The clone is read by a process of its own (0.29.213)<a class="headerlink" href="#the-clone-is-read-by-a-process-of-its-own-0-29-213" title="Link to this heading"></a></h2>
+<p>Manifests and lockfiles are written by whoever owns the repository. A file can be shaped, by accident or on purpose, so that reading it takes minutes of processor time or gigabytes of memory, and four review rounds showed that counting work inside the readers does not find every such shape. So nothing in the collection worker reads what a repository’s files say. Each analysis starts one child process (<code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code>, the same program) and the child reads the clone.</p>
+<p><strong>What the child does.</strong> Three readings, each ending with its own completion message: the dependency names (with a list of the lockfile paths present, read from the directory, not from the files), the declarations with their versions (the walk the sections above describe, with Maven’s and Gradle’s trees and Go’s test-only imports), and the lockfiles. Lockfiles are last because they are the only reading with no largest honest input.</p>
+<p><strong>What the child has.</strong> The clone directory and the options, and nothing else: an empty environment, no configuration file, no database connection, no network. A Maven parent or BOM that is not in the clone is asked of the analysis over the same pipe; the analysis answers from the configured repositories under the rules it always applied, and counts the coordinates asked (at most 1,000 an analysis; one more is a failed lookup).</p>
+<p><strong>What the analysis trusts.</strong> Nothing the child says. Every path must be inside the clone and in its plain form, every kind, ecosystem and reason must be one the roster knows, every count must add up, and a message that is too large, malformed or out of order ends the reading with nothing kept. The lockfile results are checked as they arrive and written to a temporary file (at most sixteen times the lockfiles’ own size), so the worker does not hold them in memory.</p>
+<p><strong>The two limits.</strong> The child watches its own processor time and its Go heap against <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_cpu_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code>, ten times a second, and ends itself past either. Processor time, not clock time: waiting for the analysis to answer a pom does not count. Before any file is read, its size times what reading its format costs (a factor per format; 0.29.216 measured each again on dense files and added a margin of one half to what was measured: from 6 for <code class="docutils literal notranslate"><span class="pre">Package.resolved</span></code> to 52 for <code class="docutils literal notranslate"><span class="pre">pubspec.lock</span></code> among lockfiles, from 15 for <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> to 100 for <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> among manifests; <a class="reference internal" href="../getting-started/configuration.html"><span class="std std-doc">the configuration page</span></a> has the table) is compared with the memory left: a file that cannot fit is not read. It is recorded as one manifest or lockfile that could not be read, the rest of the repository is read, and a lockfile left unread this way keeps its previous rows and raises the caution. A file that passes is read into one buffer of its size. The factors are the highest cost over the shapes that were measured, not a bound over every file a reader accepts. A file of a shape that was not measured can cost more than its factor: a lockfile whose entries are almost all dependency edges with one-letter names (measured in review at two to three and a half times the factor for <code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">pdm.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">poetry.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">Gemfile.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">renv.lock</span></code> and <code class="docutils literal notranslate"><span class="pre">gradle.lockfile</span></code>), a <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> of one-letter lines (twice its factor), and text that is not a file of its kind at all, which can cost more before the reader rejects it (a <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> of collections nested nine thousand deep, 97 times its length). Such a file is let by when it is small, and the child is stopped at its memory limit, which ends that repository’s reading and no other’s. The limit is on the Go heap; the child’s resident memory has been measured at up to about one and a half times the setting. The same rule covers a file a reader opens for itself (a Gradle catalogue or applied script, a Maven parent, a Cargo workspace root, a Composer path repository): refused, it makes the build that needs it unread, never silently smaller. The analysis also stops the child by the clock (one minute plus four times the processor limit, not counting its own time answering), and the child ends itself if the analysis is gone.</p>
+<p><strong>What a stopped reading means.</strong> A reading that is stopped stores nothing of what it had read. One reading that is not stopped stores part: a lockfile too large to read is left out alone (the third row).</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Stopped during</p></th>
+<th class="head"><p>Stored inventory</p></th>
+<th class="head"><p>Stored lockfile rows</p></th>
+<th class="head"><p>Recorded</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>the names or the declarations</p></td>
+<td><p>stays as it was</p></td>
+<td><p>the lockfile phase still runs, with nothing read: rows of lockfiles still in the clone stay, and when the names pass had listed the clone’s lockfiles before the stop, rows of lockfiles that are gone are removed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code> or <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>; and, because the lockfiles went unread too, <code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> is <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code> (0.29.215: no reading of them began, so none of the four reasons above is said of them), with the caution as in the row below</p></td>
+</tr>
+<tr class="row-odd"><td><p>the lockfiles</p></td>
+<td><p>replaced; a dependency keeps the locked version its stored lockfile row gives it, if that lockfile is still in the clone</p></td>
+<td><p>rows of lockfiles still in the clone stay; rows of lockfiles that are gone are removed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> on the coverage record (0.29.214), an ERROR in the log naming the limit, and a caution on the repository’s page; <code class="docutils literal notranslate"><span class="pre">last_attempt_result</span></code> is untouched, because the inventory was replaced</p></td>
+</tr>
+<tr class="row-even"><td><p>nothing: the reading finished, and one or more lockfiles were too large for the memory left (0.29.215)</p></td>
+<td><p>replaced</p></td>
+<td><p>replaced: every other lockfile’s rows are this reading’s, and each lockfile left unread keeps the rows of its last reading</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> is <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> (0.29.216; 0.29.215 recorded <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>), <code class="docutils literal notranslate"><span class="pre">lockfiles_read_at</span></code> is kept, an ERROR in the log names the lockfiles and the setting, and the caution is the third sentence below</p></td>
+</tr>
+</tbody>
+</table>
+<p>There is a second way to the third row’s reason (0.29.216): a repository whose lockfiles would store more than 4,000,000 rows. That snapshot is refused whole, so every stored lockfile row is the previous reading’s, <code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> is <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code>, and the log names the row limit. The page shows the same sentence as for a lockfile too large to read, though here it is about every lockfile of the repository, memory is not the cause, and no setting raises the limit.</p>
+<p>The reading is tried again at the repository’s next collection, not sooner. The first lockfile reading that completes sets <code class="docutils literal notranslate"><span class="pre">lockfiles_read_at</span></code> and clears the reason, and the caution goes.</p>
+<p>While a caution is up, no surface says the repository has no vulnerabilities: <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> is false, and the counts are unchanged (0.29.216). The caution has three sentences. For <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> with lockfile rows stored: “Some lockfiles could not be read (reading them would take more memory than allowed). Their versions and transitive dependencies may be out of date.”, with no date, because no one date is true of the stored rows. With no lockfile row stored that reason takes the “could not be read” sentence below, since nothing stored can be out of date (0.29.217). For every other reason there are two, and which one is said is decided from what is stored (0.29.215). With lockfile rows stored for the repository: “Lockfiles last read <date>; the latest read did not finish (…). Versions and transitive dependencies may be out of date.”, the date being when those rows were read (rows stored before 0.29.214 carry their own snapshot’s date). With none stored: “Lockfiles could not be read (…). Transitive dependencies are not checked.” The reason in the parentheses is the latest reading’s.</p>
+<p><strong>Which program the child is.</strong> On Linux the child is started from the running program’s own image (<code class="docutils literal notranslate"><span class="pre">/proc/self/exe</span></code>), which stays what it was when the file on disk is replaced; if the link can be read and cannot be started, the file on disk is started and one WARN says so (a Linux host with no procfs at all cannot start the reader: the program’s own path is read from the same place). On other systems it is started from the file on disk. The request carries the asking program’s version and, when the child was started from a file on disk, its build (the file’s length and time; 0.29.216: not asked on Linux, where the running image itself is started, so a <code class="docutils literal notranslate"><span class="pre">touch</span></code> of the file no longer matters there; elsewhere a <code class="docutils literal notranslate"><span class="pre">touch</span></code> reads as another build until <code class="docutils literal notranslate"><span class="pre">serve</span></code> is restarted); a child that is another version or another build refuses, the reading fails as <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>, and the log says once, at ERROR, that the manifest reader is another version and <code class="docutils literal notranslate"><span class="pre">serve</span></code> must be restarted. At start, <code class="docutils literal notranslate"><span class="pre">serve</span></code> runs the reader once on an empty directory and logs <code class="docutils literal notranslate"><span class="pre">manifest</span> <span class="pre">reader</span> <span class="pre">ok</span></code> with the program, version, build and limits, or <code class="docutils literal notranslate"><span class="pre">manifest</span> <span class="pre">reader</span> <span class="pre">self-test</span> <span class="pre">FAILED</span></code> at ERROR with advice; <code class="docutils literal notranslate"><span class="pre">serve</span></code> goes on either way. The self-test has 30 seconds (0.29.216); past that it fails with “the reader did not answer about an empty directory within 30s”. <code class="docutils literal notranslate"><span class="pre">manifest</span> <span class="pre">reader</span> <span class="pre">ok</span></code> is logged at Info.</p>
+<p><strong>What else a worker takes from a repository, and what bounds it (restated in 0.29.216).</strong> A tool’s output is as much the repository’s as its files are, and so are the rows a worker reads back from the database. The 0.29.215 release note said a worker holds no unbounded repository data. That was wrong, and the claim is withdrawn: review found a Go module expansion held at 3.7 GiB with every bound of that release respected, lockfile rows that were written as a stream and then read back whole to build the SBOM, and scc’s rows not counted at all. What is true is listed here. Every place in the collector that takes a file’s content, a directory’s entries or a subprocess’s output is registered in the source with one of two statements, “bounded” with its number or “NOT BOUNDED” with what it grows with, and a new unregistered read fails the build. The numbers are provisional.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>What the worker takes</p></th>
+<th class="head"><p>Bounded?</p></th>
+<th class="head"><p>The bound, or what it grows with</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Go’s module graph (<code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">go</span> <span class="pre">mod</span> <span class="pre">graph</span></code>)</p></td>
+<td><p>bounded</p></td>
+<td><p>For one repository, over all its modules and both commands: 2,000,000 lines, 128 MiB of line text, 8 KiB a line, and 64 MiB of output from one command. About 480 MiB held at the bounds. Past any of them the expansion is incomplete: the stored closure stays as it was and one WARN says so. A build of 280 modules and 607,803 edges, with lines about 100 bytes long, was measured to complete in about 127 MiB (about 155 MiB with lines of 160 bytes). The line bound is three times that build; the bound on text is about twice it, and is the one such a build meets first</p></td>
+</tr>
+<tr class="row-odd"><td><p>The walk for <code class="docutils literal notranslate"><span class="pre">go.mod</span></code> files</p></td>
+<td><p>bounded</p></td>
+<td><p>5,000,000 directory entries, 256 levels deep</p></td>
+</tr>
+<tr class="row-even"><td><p>scc’s rows (one a file)</p></td>
+<td><p>bounded</p></td>
+<td><p>5,000,000 rows, about 1 GiB. A report of more files fails the scan through its usual failure path and nothing is written</p></td>
+</tr>
+<tr class="row-odd"><td><p>A scancode report</p></td>
+<td><p>bounded</p></td>
+<td><p>256 MiB, held about two and a half times over while it is ingested. The number comes from an estimate, not from a real report. Past it the run fails</p></td>
+</tr>
+<tr class="row-even"><td><p>A scorecard report</p></td>
+<td><p>bounded</p></td>
+<td><p>16 MiB. Past it the run fails</p></td>
+</tr>
+<tr class="row-odd"><td><p>A repository’s lockfile rows (lockfiles, packages, edges, the Go closure, carried rows)</p></td>
+<td><p>bounded in rows</p></td>
+<td><p>4,000,000 for one repository: four times the largest snapshot of the fleets it was sized on (920,550 rows). A snapshot over it is refused whole: the previous rows stand, the reading is recorded <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> and the caution shows. No setting raises it</p></td>
+</tr>
+<tr class="row-even"><td><p>One lockfile’s parsed entries and edges</p></td>
+<td><p>NOT bounded by a number of its own</p></td>
+<td><p>Grows with the largest lockfile the reader’s memory limit lets it read. Measured before 0.29.216: 556 MiB for a 60 MB <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code>; a limit of 1024 MiB reads a <code class="docutils literal notranslate"><span class="pre">pnpm-lock.yaml</span></code> of at most about 22 MiB, and the 2048 default of 0.29.217 one of about 44.5 MiB, at which nothing was measured</p></td>
+</tr>
+<tr class="row-odd"><td><p>The names and declarations of a repository’s manifests</p></td>
+<td><p>NOT bounded by a number of its own</p></td>
+<td><p>Held whole until the analysis ends. Grows with the count of manifests and declarations. Measured at a limit of 1024 MiB, the default until 0.29.217 (not measured at 2048): 507 MiB of names, 347 MiB of declarations</p></td>
+</tr>
+<tr class="row-even"><td><p>One batch of the git log (500 commits)</p></td>
+<td><p>NOT bounded in bytes</p></td>
+<td><p>A commit holds a row for every file it touched. Measured: 963 MiB for one batch</p></td>
+</tr>
+<tr class="row-odd"><td><p>Lockfile rows read back: SBOM generation, the vulnerability scan’s targets, the rows carried for a lockfile that failed</p></td>
+<td><p>NOT bounded in bytes</p></td>
+<td><p>At most 4,000,000 rows for a snapshot written from 0.29.216 on. An SPDX document was measured at 1.6 GiB for 1,000,000 rows, so about 6.4 GiB at the limit. The scan’s targets were measured at 396 MiB for 240 MB of lockfiles</p></td>
+</tr>
+<tr class="row-even"><td><p>A forge’s answer to one GraphQL request</p></td>
+<td><p>not this program’s to bound</p></td>
+<td><p>Read whole; its size is the forge’s page</p></td>
+</tr>
+</tbody>
+</table>
+<p>Bounding a worker’s memory as a whole (SBOM generation, the scan’s targets, code counting, the git log, and what the worker holds of the reader’s result) is planned work and is not in this release. Lockfile rows are written to the database one lockfile at a time inside one transaction, from the temporary file. The error output kept from a tool is bounded too: a git clone or fetch, scorecard and scancode’s clone keep the first and last 16 KiB; a command whose output is streamed (git log, the Go commands) keeps the first 2 KiB; scancode’s own run keeps the first 1 MiB and the last 256 KiB.</p>
+<p><strong>No budgets inside the readers.</strong> 0.29.195 to 0.29.212 counted work, and later memory and remote requests, inside the Maven and Gradle readers and refused a file or a tree past an allowance. Those allowances are gone: they refused an honest build of 3,000 Gradle projects, and one of them could give a dependency the wrong version. What remains inside the readers is what a single file’s correctness needs: the largest build file read (8 MiB), the length of a parent chain (32), the size of an interpolated value.</p>
+<p><strong>A pom that is not known.</strong> A managed version is taken from a parent or a BOM only if every pom Maven would consult before it is known not to manage the artifact. A parent or BOM is looked for at its <code class="docutils literal notranslate"><span class="pre">relativePath</span></code> and then by its coordinates, before any package repository is asked. From 0.29.216 the lookup by coordinates is only among the poms of a build: the poms joined by <code class="docutils literal notranslate"><span class="pre">&lt;modules&gt;</span></code> entries, in either direction. Two builds are looked in: the build of the pom that names the coordinates, and (0.29.217) the build of the pom being read. The second matters for a parent that is used through <code class="docutils literal notranslate"><span class="pre">relativePath</span></code> and that no pom lists as a module: by the first rule alone it is a build of its own, and a BOM it imports from the build its child belongs to was not found. This stands for what Maven resolves without a repository, the projects of the build being run; which build Maven is run on is not known here. When the two builds together hold two poms with the coordinates, neither is taken. A pom elsewhere in the repository (a test fixture, an example, an archetype template, a vendored build) is never taken, whatever coordinates it gives itself; 0.29.215 took any one pom of the repository with the coordinates, and a fixture that called itself a published parent had its versions stored. A pom fetched from a repository is part of no build of the clone, so its parent and its imports are asked of the repositories and nothing of the clone is taken for them. A repository whose parent or BOM sits in the clone without being a module of the build now gets the published pom, or <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>.</p>
+<p>A pom whose content is not known withholds: its lookup failed; its repository is refused; it was never asked for (a snapshot, a version range, <code class="docutils literal notranslate"><span class="pre">LATEST</span></code> or <code class="docutils literal notranslate"><span class="pre">RELEASE</span></code>, a coordinate that cannot be resolved or that no request can be built from, no repository configured, a repository the build declares that is not asked: <code class="docutils literal notranslate"><span class="pre">http</span></code>, credentials, <code class="docutils literal notranslate"><span class="pre">mavenLocal</span></code>, or <code class="docutils literal notranslate"><span class="pre">collection.declared_repository_fetch</span></code> off); it is in the build and could not be read (poms declared ISO-8859-1, Windows-1252, US-ASCII or XML 1.1 are read; other declared encodings, such as ISO-8859-15, are not, and withhold); two poms of the build carry its coordinates; it lies beyond a chain of 32 parents or 32 nested imports, or in a parent or import cycle. So does a pom that manages the artifact at a version it cannot give. The dependency then has no version and <code class="docutils literal notranslate"><span class="pre">version_reason</span></code> says why. A pom that every repository answered “not found” for does not withhold: that is an answer. A tree in which anything was withheld is reported not whole.</p>
+<p><strong>Profiles (0.29.216).</strong> The build that is read is Maven’s default build. A profile with <code class="docutils literal notranslate"><span class="pre">&lt;activeByDefault&gt;true&lt;/activeByDefault&gt;</span></code> is applied as Maven applies it: its properties, its managed entries and its imports. Any other profile changes nothing, because which profiles a build activates (by property, JDK, operating system or file) is not known here. 0.29.215 withheld every version a profile might manage; those versions are back. <code class="docutils literal notranslate"><span class="pre">profile_managed</span></code> means one thing: a pom’s own profile that is active by default declares the dependency with a version, so that pom’s own declaration of it with no version is not given the managed version. A module below that declares the dependency itself is not affected (0.29.217; 0.29.215 and 0.29.216 withheld its version too). The <code class="docutils literal notranslate"><span class="pre">&lt;modules&gt;</span></code> of a default profile are not joined into the build, so a parent or BOM listed only there is not found by its coordinates. A <code class="docutils literal notranslate"><span class="pre">&lt;properties&gt;</span></code> element inside a profile’s <code class="docutils literal notranslate"><span class="pre">&lt;build&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">&lt;reporting&gt;</span></code> is a plugin’s: it is not the profile’s and not the pom’s, and is not read (0.29.218; 0.29.217 took it for a property of the pom, so it stood over the pom’s own properties written after <code class="docutils literal notranslate"><span class="pre">&lt;profiles&gt;</span></code>). The reader of a single file finds where a profile, its <code class="docutils literal notranslate"><span class="pre">&lt;build&gt;</span></code> and its <code class="docutils literal notranslate"><span class="pre">&lt;reporting&gt;</span></code> end by the first closing tag of that name, so this holds up to that tag only (see the known differences). <code class="docutils literal notranslate"><span class="pre">&lt;activeByDefault&gt;</span></code> is read wherever it stands in the profile and in any case (0.29.217). Maven also deactivates default profiles when another profile of the same pom is activated; that cannot be known, and the default build is what is modelled.</p>
+<p>Known differences from Maven: a pom listed by two aggregators joins both builds; a fetched pom finds nothing in the clone, where Maven’s reactor would serve a module of the running build; profiles activated by JDK, operating system, file or property are taken as inactive; the modules a default profile lists are not part of the build; a pom of the repository whose file is not named <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> and that is reached only through a <code class="docutils literal notranslate"><span class="pre">relativePath</span></code> finds no parent or BOM in the repository by coordinates; where a plugin’s configuration inside a profile’s <code class="docutils literal notranslate"><span class="pre">&lt;build&gt;</span></code> itself holds a <code class="docutils literal notranslate"><span class="pre">&lt;build&gt;</span></code> element (the fabric8 docker-maven-plugin’s <code class="docutils literal notranslate"><span class="pre">&lt;images&gt;&lt;image&gt;&lt;build&gt;</span></code>) or a <code class="docutils literal notranslate"><span class="pre">&lt;profile&gt;</span></code> element (the spring-boot-maven-plugin’s <code class="docutils literal notranslate"><span class="pre">&lt;configuration&gt;&lt;profiles&gt;&lt;profile&gt;</span></code>), the reader of a single file takes the profile’s build, or the profile, to end at that inner closing tag, and a plugin-configuration <code class="docutils literal notranslate"><span class="pre">&lt;properties&gt;</span></code> element written after it is still read as a property (the profile’s, or the pom’s), where Maven reads it as the plugin’s.</p>
+<p><strong>Gradle (0.29.215, corrected in 0.29.216).</strong> Two mechanisms are told apart. <em>Platforms</em> (<code class="docutils literal notranslate"><span class="pre">platform</span></code>, <code class="docutils literal notranslate"><span class="pre">enforcedPlatform</span></code>): the highest recommended version wins, by Gradle’s version ordering (numeric parts numerically, a number above a word, and <code class="docutils literal notranslate"><span class="pre">dev</span></code> &lt; other words &lt; <code class="docutils literal notranslate"><span class="pre">rc</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">snapshot</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">final</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">ga</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">release</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">sp</span></code>); one enforced version overrides; a platform that could not be obtained leaves a dependency with NO written version not determined. <em>The Spring dependency-management plugin</em> (<code class="docutils literal notranslate"><span class="pre">mavenBom</span></code> imports and Spring Boot’s own BOM): BOMs apply in order, Boot’s first, and the last that manages the artifact answers; explicit <code class="docutils literal notranslate"><span class="pre">dependency</span></code> entries override imports; only a BOM that is not known AFTER the answer withholds. When both mechanisms manage one artifact at different versions, or two versions cannot be ordered, the version is not determined (<code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code>). A value longer than is read gives <code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>.</p>
+<p>What 0.29.216 changed:</p>
+<ul class="simple">
+<li><p><strong>A written version stands.</strong> It is stored as written. 0.29.215 raised it to a platform’s higher version; that is right in Gradle only for a platform on the same configuration, which is not modelled, so the rule was removed.</p></li>
+<li><p><strong>The Spring plugin’s property overrides are read.</strong> A BOM entry whose version is written <code class="docutils literal notranslate"><span class="pre">${x.version}</span></code> takes the project’s property when the project sets one: <code class="docutils literal notranslate"><span class="pre">ext['x.version']</span> <span class="pre">=</span> <span class="pre">'...'</span></code>, <code class="docutils literal notranslate"><span class="pre">ext</span> <span class="pre">{</span> <span class="pre">set('x.version',</span> <span class="pre">'...')</span> <span class="pre">}</span></code>, Kotlin’s <code class="docutils literal notranslate"><span class="pre">extra[&quot;x.version&quot;]</span> <span class="pre">=</span> <span class="pre">&quot;...&quot;</span></code>, and <code class="docutils literal notranslate"><span class="pre">bomProperty(&quot;x.version&quot;,</span> <span class="pre">&quot;...&quot;)</span></code> or <code class="docutils literal notranslate"><span class="pre">bomProperties(...)</span></code> inside the import. A value from <code class="docutils literal notranslate"><span class="pre">gradle.properties</span></code> also counts, because it is in the same variable scope, and so does what a build file above sets (not for a name that is an entry of a map in the build file being read: see below). In the build file being read only an assignment that is sure is taken (0.29.217): made at the top of the file, once, with a literal value. A property that file sets in any other way (inside <code class="docutils literal notranslate"><span class="pre">subprojects</span> <span class="pre">{</span> <span class="pre">}</span></code> or another block, under a condition, twice with different values, or to something that is not a literal, such as a call or an environment variable) is set by the build to a value that is not known: the dependencies the BOM manages through that property have no version, and <code class="docutils literal notranslate"><span class="pre">version_reason</span></code> is <code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>. That includes a property that is the version of a BOM the Spring BOM imports (such as <code class="docutils literal notranslate"><span class="pre">jackson-bom.version</span></code>): what that BOM manages has no version, with <code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>, and no repository is asked for it (0.29.218; 0.29.217 said <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>). The same reason is given to what a BOM imported after that one would manage, and to a dependency that nothing manages, because which BOM answers for a dependency is not known while one of them is not read. An entry of a map (<code class="docutils literal notranslate"><span class="pre">ext.slf4j</span> <span class="pre">=</span> <span class="pre">[version:</span> <span class="pre">'...']</span></code>) is not a project property and changes nothing, and neither is a dotted write of that entry (<code class="docutils literal notranslate"><span class="pre">ext.slf4j.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code>, which puts a value into the map; 0.29.219: 0.29.218 took it for the property and stored its value). A name that is a map’s entry and that the file also assigns by a quoted key (<code class="docutils literal notranslate"><span class="pre">ext['slf4j.version']</span> <span class="pre">=</span> <span class="pre">'...'</span></code>, <code class="docutils literal notranslate"><span class="pre">set('slf4j.version',</span> <span class="pre">'...')</span></code>, <code class="docutils literal notranslate"><span class="pre">extra[&quot;slf4j.version&quot;]</span> <span class="pre">=</span> <span class="pre">&quot;...&quot;</span></code>) is judged by those quoted-key assignments alone (0.29.218). A name that is a map’s entry and has no quoted-key assignment in the file is not looked for in <code class="docutils literal notranslate"><span class="pre">gradle.properties</span></code> or in a build file above. These narrower rules are for the build file being read only. A property that reaches a project from a build file above it, or from a script one of them applies, is read by the earlier, looser rule (see the known differences). This applies to the Spring plugin only, not to <code class="docutils literal notranslate"><span class="pre">platform(...)</span></code>.</p></li>
+<li><p><strong>A platform or <code class="docutils literal notranslate"><span class="pre">mavenBom</span></code> named by coordinates is read from the repositories only.</strong> A <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> of the repository is never taken for it: Gradle resolves those coordinates from the build’s repositories and reads no pom of the checkout. A repository that keeps its BOM as a <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> and consumes it from Gradle at a version that is not published (a snapshot, or with no repository to ask) gets no version for those dependencies, with <code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code>.</p></li>
+<li><p><strong>Scope.</strong> What <code class="docutils literal notranslate"><span class="pre">subprojects</span> <span class="pre">{</span> <span class="pre">}</span></code> declares (a platform, a <code class="docutils literal notranslate"><span class="pre">mavenBom</span></code>, a <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> entry) is for the subprojects and not for the root project’s own dependencies; <code class="docutils literal notranslate"><span class="pre">allprojects</span> <span class="pre">{</span> <span class="pre">}</span></code> is for both. Management written for one configuration (<code class="docutils literal notranslate"><span class="pre">dependencyManagement</span> <span class="pre">{</span> <span class="pre">&lt;configuration&gt;</span> <span class="pre">{</span> <span class="pre">...</span> <span class="pre">}</span> <span class="pre">}</span></code>) is for that configuration’s rows only.</p></li>
+<li><p><strong>Apply order, one sure case.</strong> A script’s assignment stands over the file’s own only when the file’s assignment is a top-level <code class="docutils literal notranslate"><span class="pre">ext</span></code>/<code class="docutils literal notranslate"><span class="pre">extra</span></code> property written before its first <code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">from:</span></code>, every <code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">from:</span></code> is a top-level statement, and the script’s assignment is a top-level property too. In every other arrangement the file’s own value is read, as before 0.29.215.</p></li>
+</ul>
+<p>Known differences from Gradle: a written version is not raised or replaced by a platform’s; <code class="docutils literal notranslate"><span class="pre">overriddenByDependencies</span> <span class="pre">=</span> <span class="pre">false</span></code> is not read; the apply-order shapes outside the sure case keep the file’s value; a project property that a Spring BOM uses and that the build file sets twice, in a block or under a condition is not read (Gradle takes the value the build ends with), and the dependencies managed through it have no version (<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>), also in the root project when the assignment stands inside <code class="docutils literal notranslate"><span class="pre">subprojects</span> <span class="pre">{</span> <span class="pre">}</span></code> and is not the root’s at all. A Spring BOM property that a project takes from a build file above it, or from an applied script, is read by the looser rule that the file itself followed until 0.29.216: set there to something that is not a literal, or twice, the BOM’s own version is stored with no reason; set there under a condition or inside another block, the value is taken as if unconditional; set there as an entry of a map (<code class="docutils literal notranslate"><span class="pre">ext.log4j2</span> <span class="pre">=</span> <span class="pre">[version:</span> <span class="pre">'...']</span></code>), it is taken for the property <code class="docutils literal notranslate"><span class="pre">log4j2.version</span></code>. A property named like an entry of a map in the build file being read (and given no quoted-key assignment there) is not taken from <code class="docutils literal notranslate"><span class="pre">gradle.properties</span></code> or from a build file above, where Gradle would take it: the BOM’s own version is stored. A dotted assignment is read as the property <code class="docutils literal notranslate"><span class="pre">log4j2.version</span></code> when no map in the file gives that entry a value that is read: with no map of that name (<code class="docutils literal notranslate"><span class="pre">ext.log4j2.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code> alone), with an empty map, or with a map that does not list the key or gives it a value that is not a literal. Gradle, when a map of that name exists at all, puts the value into that map and the BOM’s own version stands; with an empty map, or one that does not give the key a literal, this reader differs.</p>
+<p>These Maven and Gradle rules are from the tools’ documentation; they were not checked against a running Maven or Gradle.</p>
+</section>
 <section id="code-complexity-via-scc">
 <h2>Code complexity via scc<a class="headerlink" href="#code-complexity-via-scc" title="Link to this heading"></a></h2>
 <p>If <a class="reference external" href="https://github.com/boyter/scc">scc</a> (Sloc Cloc and Code) is installed, Aveloxis runs it against the full checkout to get per-file code metrics.</p>

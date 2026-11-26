@@ -47,6 +47,15 @@ func TestSrctestIsTestOnly(t *testing.T) {
 			if strings.HasSuffix(filepath.ToSlash(path), "internal/srctest") {
 				return filepath.SkipDir
 			}
+			// 0.29.213: the run-time write-policy judge is test support
+			// under the same umbrella (it judges with sqlscan). It is
+			// imported only by the DB-tier test harness and by tests:
+			// scripts/statement_trace_seam_test.go reads every non-test
+			// file of the module for any other importer of it or of the
+			// harness, so no binary links it.
+			if strings.HasSuffix(filepath.ToSlash(path), "internal/testdb/writejudge") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {

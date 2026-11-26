@@ -245,7 +245,7 @@ type ScancodeWorker struct {
 	// probe and every real scan) carries TYPECODE_LIBMAGIC_PATH +
 	// TYPECODE_LIBMAGIC_DB_PATH so typecode can never cross-load a
 	// wheel .so against a foreign compiled magic DB — the July 2026
-	// chaoss.tv root cause. See scancode_remediate.go.
+	// production root cause. See scancode_remediate.go.
 	typecodeEnv atomic.Pointer[typecodeEnvPair]
 }
 
@@ -366,7 +366,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	defer w.bookkeepingClose.Do(func() { close(w.bookkeepingDone) })
 	if _, err := exec.LookPath("scancode"); err != nil {
 		w.logger.Info("scancode binary not installed; ScancodeWorker disabled",
-			"install_hint", "pipx install scancode-toolkit")
+			"install_hint", "aveloxis install-tools")
 		// Record not-installed so the operator can see why scancode produces no data.
 		st, detail := classifyScancodeHealth(false, runtime.GOOS, "", false)
 		w.recordScancodeStatus(ctx, st, detail)
@@ -409,7 +409,7 @@ func (w *ScancodeWorker) Run(ctx context.Context) {
 	// the (post-recovery) lock rows. runOne's defer only removes its
 	// clone on clean exits; hard kills leaked clone dirs forever.
 	//
-	// v0.27.13: runs in the BACKGROUND. On 2026-07-15 kate's first
+	// v0.27.13: runs in the BACKGROUND. On 2026-07-15 a production fleet's first
 	// post-upgrade start spent 20+ minutes inside this call — serial
 	// os.RemoveAll of multi-GB stale clones on a spinning disk ran
 	// 10+ minutes PER DIRECTORY — and the dispatcher below never
@@ -746,7 +746,7 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	// (tarballs, binary assets, compiled artifacts) aren't useful
 	// for that work. Critical for repos whose LFS budget is
 	// exhausted (2026-05-14 diagnostic: 214 clone failures on the
-	// chaoss.tv fleet, all "exceeded its LFS budget"); the LFS
+	// production fleet, all "exceeded its LFS budget"); the LFS
 	// fetch fails, which fails the smudge filter, which fails the
 	// checkout, which fails the whole clone. Skipping smudge bypasses
 	// the entire chain. Also speeds up clones on every LFS-using
@@ -797,7 +797,10 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 	// subprocesses running as orphans. groupKilled is the one shared
 	// block (v0.29.68 review round 14).
 	groupKilled(cloneCmd)
-	if out, err := cloneCmd.CombinedOutput(); err != nil {
+	// git's output is kept as a bounded head and tail, not whole.
+	cloneOut := newBoundedCapture()
+	cloneCmd.Stdout, cloneCmd.Stderr = cloneOut, cloneOut
+	if err := cloneCmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			// Shutdown killed the clone: a clean release, not a strike
 			// (pass 37 — the strike fed the quadratic claim backoff and,
@@ -809,7 +812,7 @@ func (w *ScancodeWorker) prepareClone(ctx context.Context, job db.ScancodeJob, t
 		}
 		w.logger.Warn("scancode runOne git clone failed",
 			"repo_id", job.RepoID, "owner", job.RepoOwner, "repo", job.RepoName,
-			"error", err, "git_output", string(out))
+			"error", err, "git_output", cloneOut.String())
 		w.recordFailureBestEffort(ctx, job.RepoID)
 		return false
 	}
@@ -1693,7 +1696,7 @@ func salvageScancodeOutput(outputPath string) (filesCount int, headerErrors []st
 	if !fileExistsAndNonEmpty(outputPath) {
 		return 0, nil, false
 	}
-	data, err := os.ReadFile(outputPath)
+	data, err := readToolOutputWithin(outputPath, scancodeOutputMaxBytes)
 	if err != nil {
 		return 0, nil, false
 	}

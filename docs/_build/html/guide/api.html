@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>REST API &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>REST API &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="../architecture/overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/analysis.html#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../architecture/vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1819,6 +1862,236 @@
 </pre></div>
 </div>
 <p>The API runs as a separate process alongside <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code> (collection) and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">web</span></code> (GUI). All three share the same PostgreSQL database. It refuses to start until <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> has brought the schema to its own version.</p>
+<section id="changes-for-api-clients-in-0-29-219">
+<h2>Changes for API clients in 0.29.219<a class="headerlink" href="#changes-for-api-clients-in-0-29-219" title="Link to this heading"></a></h2>
+<p>No field or value changes. One Gradle answer differs from 0.29.218: a write through a
+dotted name into a map (<code class="docutils literal notranslate"><span class="pre">ext.log4j2.version</span> <span class="pre">=</span> <span class="pre">'...'</span></code> after <code class="docutils literal notranslate"><span class="pre">ext.log4j2</span> <span class="pre">=</span> <span class="pre">[version:</span> <span class="pre">'...']</span></code>) is no
+longer taken for the Spring property <code class="docutils literal notranslate"><span class="pre">log4j2.version</span></code>, so a dependency managed through
+that property has the BOM’s own version again, as in 0.29.217. When such a write is
+not a literal, the BOM’s version is stored too, where 0.29.217 and 0.29.218 sent no
+version and <code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code>. When the file also sets the property once,
+at the top level, by a quoted key with a literal value (<code class="docutils literal notranslate"><span class="pre">ext['log4j2.version']</span> <span class="pre">=</span> <span class="pre">'...'</span></code>),
+that value is sent; 0.29.218, when the two values differed, sent no version and
+<code class="docutils literal notranslate"><span class="pre">value_not_read</span></code> there, and 0.29.217 the BOM’s version or none.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-218">
+<h2>Changes for API clients in 0.29.218<a class="headerlink" href="#changes-for-api-clients-in-0-29-218" title="Link to this heading"></a></h2>
+<p><strong><code class="docutils literal notranslate"><span class="pre">version_reason:</span> <span class="pre">value_not_read</span></code></strong> is also given for a Gradle dependency managed by a
+BOM that a Spring-imported BOM itself imports, when the property that holds that BOM’s
+version is set by the build in a way that is not read. 0.29.217 sent
+<code class="docutils literal notranslate"><span class="pre">inherited_not_found</span></code> there. The same reason is given to what a BOM imported after
+that one would manage, and to a dependency that nothing manages, because which BOM
+answers for a dependency is not known while one of them is not read. No field or
+value is added.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-217">
+<h2>Changes for API clients in 0.29.217<a class="headerlink" href="#changes-for-api-clients-in-0-29-217" title="Link to this heading"></a></h2>
+<p>No field is added and no enum gains a value. Two <code class="docutils literal notranslate"><span class="pre">version_reason</span></code> values mean more, or
+less, than their first descriptions said:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code></strong> (Gradle) is now also given when the version is written with, or
+managed through, a variable or property the build sets in a way that is not read: a
+computed value, an assignment under a condition, or more than one assignment. That
+includes a property through which a BOM imported by Spring’s dependency-management
+plugin manages the dependency (<code class="docutils literal notranslate"><span class="pre">ext['log4j2.version']</span> <span class="pre">=</span> <span class="pre">someCall()</span></code>): 0.29.216 sent no
+<code class="docutils literal notranslate"><span class="pre">version_reason</span></code> for those rows, and before 0.29.216 they carried the BOM’s default
+version. The first meaning stands too: an expression too long to be read whole.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code></strong> (Maven) means only this: a profile that is active by default, in
+the pom that declares the dependency, declares it with a version, so the pom’s own
+declaration with no version is not given a managed version. A profile that is not
+active by default gives no reason, and neither does a parent pom’s profile. 0.29.215
+gave the reason behind any profile that managed the dependency; most of those rows have
+their version again.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread</span></code> with the reason <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code> and <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null
+(no lockfile row is stored) takes the “Lockfiles could not be read (…). Transitive
+dependencies are not checked.” sentence, as every other reason does. The sentence with
+no date is for <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> set.</p>
+<p><code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> defaults to 2048 (was 1024), so fewer repositories
+carry <code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code>.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-216">
+<h2>Changes for API clients in 0.29.216<a class="headerlink" href="#changes-for-api-clients-in-0-29-216" title="Link to this heading"></a></h2>
+<p><strong><code class="docutils literal notranslate"><span class="pre">coverage.clean_result</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> while <code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread</span></code> is set</strong>, on the
+three answers that carry the coverage object. A repository whose lockfiles went unread
+has not been shown to be free of vulnerabilities: its transitive dependencies were not
+checked, or were checked at versions that may be out of date. Nothing else in the object
+changes: <code class="docutils literal notranslate"><span class="pre">state</span></code>, <code class="docutils literal notranslate"><span class="pre">count_blank</span></code> and every count are as before, so a repository scanned
+with nothing found still reports <code class="docutils literal notranslate"><span class="pre">vulnerabilities:</span> <span class="pre">0</span></code> and <code class="docutils literal notranslate"><span class="pre">state:</span> <span class="pre">scanned</span></code>. A client that
+writes a “no vulnerabilities” sentence from <code class="docutils literal notranslate"><span class="pre">clean_result</span></code> now writes the coverage state
+in its place (for example “Scanned.”), with the caution beside it. A client that decides
+the sentence from <code class="docutils literal notranslate"><span class="pre">state</span></code> alone should also require <code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code> to be <code class="docutils literal notranslate"><span class="pre">null</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread.reason</span></code> gains <strong><code class="docutils literal notranslate"><span class="pre">lockfiles_too_large</span></code></strong>: some lockfiles would
+have taken more memory to read than <code class="docutils literal notranslate"><span class="pre">collection.manifest_read_memory_mb</span></code> allows, and
+every other lockfile was read at that analysis. The lockfiles left unread keep the rows
+of their last reading. No one date is true of the stored rows in this case, so show no
+date when lockfile rows are stored: “Some lockfiles could not be read (reading them
+would take more memory than allowed). Their versions and transitive dependencies may be
+out of date.” With none stored (<code class="docutils literal notranslate"><span class="pre">last_read_at</span></code> null), show the “Lockfiles could not be
+read (…). Transitive dependencies are not checked.” sentence instead (0.29.217). 0.29.215 reported this case as <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>, with the date
+of an earlier reading. The same reason is given when a repository’s lockfiles would store more rows than
+are kept for one repository (4,000,000): that reading is refused whole and every stored
+row is the previous reading’s.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-215">
+<h2>Changes for API clients in 0.29.215<a class="headerlink" href="#changes-for-api-clients-in-0-29-215" title="Link to this heading"></a></h2>
+<p>A dependency’s <strong><code class="docutils literal notranslate"><span class="pre">version_reason</span></code></strong> (the libyear and dependency answers) can take three
+more values. Each means the row has no version because the build file names none that can
+be relied on:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">profile_managed</span></code>: Maven. In 0.29.215, a profile of the build manages the dependency,
+and which profiles a build activates is not known. Since 0.29.216 it means one thing
+only: a profile that is active by default in the pom itself declares the dependency with
+a version (see the 0.29.217 entry above).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">platforms_disagree</span></code>: Gradle; more than one platform (or a platform and Spring’s
+dependency-management plugin) gives the dependency a version and they do not agree in a
+way that can be settled.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">value_not_read</span></code>: Gradle; the version is written with a value that is not read. In
+0.29.215 that is an expression too long to be read whole; 0.29.217 adds more cases (see
+its entry above).</p></li>
+</ul>
+<p>Show a value you do not know as written. A dependency that had a version before 0.29.215
+can have none after it, with one of these reasons, and the count of findings at a known
+version can fall with it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">coverage.lockfiles_unread.reason</span></code> gains <code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code>, and <code class="docutils literal notranslate"><span class="pre">last_read_at</span></code>
+changed meaning; both are described under 0.29.214 below.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-214">
+<h2>Changes for API clients in 0.29.214<a class="headerlink" href="#changes-for-api-clients-in-0-29-214" title="Link to this heading"></a></h2>
+<p>The <strong><code class="docutils literal notranslate"><span class="pre">coverage</span></code></strong> object (<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/vulnerabilities</span></code>,
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stats</span></code>, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code>) gains
+<strong><code class="docutils literal notranslate"><span class="pre">lockfiles_unread</span></code></strong>. It is <code class="docutils literal notranslate"><span class="pre">null</span></code> except when the repository’s lockfiles went unread at
+the last analysis; then it is an object:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">reason</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>,
+<code class="docutils literal notranslate"><span class="pre">manifest_read_timed_out</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_failed</span></code>, <code class="docutils literal notranslate"><span class="pre">root_unreadable</span></code>, or (0.29.215)
+<code class="docutils literal notranslate"><span class="pre">lockfiles_not_reached</span></code>: the reader was stopped while it read the manifests and never
+began on the lockfiles. Show a value you do not know as written.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">last_read_at</span></code></strong>: when the lockfile rows that are stored were read, or <code class="docutils literal notranslate"><span class="pre">null</span></code> when
+none is stored. The key is always sent. (0.29.214 sent the date of the last reading
+that finished since that release, which was <code class="docutils literal notranslate"><span class="pre">null</span></code> for every repository at first and
+could name a date whose lockfiles had since been deleted.)</p></li>
+</ul>
+<p>Show it as a caution beside the coverage state, never in its place. With a date: the
+exact versions and transitive dependencies in the answer are as old as that date. With no
+date: no lockfile was read, so transitive dependencies are not checked. When the field is
+<code class="docutils literal notranslate"><span class="pre">null</span></code>, or absent (an older server), show nothing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">last_analysis_attempt.reason</span></code> can also be one of the four <code class="docutils literal notranslate"><span class="pre">manifest_read_*</span></code> values
+(since 0.29.213; the reference listed three).</p>
+<p>The SBOM’s coverage marker gains <code class="docutils literal notranslate"><span class="pre">lockfiles_unread_reason</span></code> and <code class="docutils literal notranslate"><span class="pre">lockfiles_last_read_at</span></code>
+in the same cases.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-199">
+<h2>Changes for API clients in 0.29.199<a class="headerlink" href="#changes-for-api-clients-in-0-29-199" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/sbom</span></code>, both formats, with or without <code class="docutils literal notranslate"><span class="pre">vulns=1</span></code>:</p>
+<ul class="simple">
+<li><p>The document carries a <strong>coverage marker</strong>: CycloneDX <code class="docutils literal notranslate"><span class="pre">metadata.properties</span></code> named
+<code class="docutils literal notranslate"><span class="pre">aveloxis:coverage:*</span></code>, and an SPDX document <code class="docutils literal notranslate"><span class="pre">comment</span></code> that begins
+<code class="docutils literal notranslate"><span class="pre">aveloxis:coverage:</span></code>. It holds the coverage state, whether the dependencies are known,
+a recorded failed analysis attempt’s reason, and the counts of failed and carried
+manifests. See <a class="reference internal" href="../architecture/vulnerability-and-sbom.html"><span class="std std-doc">Vulnerabilities and SBOM</span></a>,
+“The coverage marker”. A consumer that compares documents byte for byte will see the
+new fields.</p></li>
+<li><p>With <code class="docutils literal notranslate"><span class="pre">vulns=1</span></code>, a CycloneDX finding whose version is not determined carries the
+property <code class="docutils literal notranslate"><span class="pre">aveloxis:version_not_determined</span></code> = <code class="docutils literal notranslate"><span class="pre">true</span></code>. Its <code class="docutils literal notranslate"><span class="pre">analysis.state</span></code> stays
+<code class="docutils literal notranslate"><span class="pre">in_triage</span></code>, the nearest value the schema has.</p></li>
+</ul>
+</section>
+<section id="changes-for-api-clients-in-0-29-198">
+<h2>Changes for API clients in 0.29.198<a class="headerlink" href="#changes-for-api-clients-in-0-29-198" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/deps</span></code> and its alias <code class="docutils literal notranslate"><span class="pre">/libyear</span></code>:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">libyear</span></code> can be <code class="docutils literal notranslate"><span class="pre">null</span></code>.</strong> It was a number on every row, and an unknown read as 0,
+which is “up to date”. It is now null when it is not known. A client that does
+arithmetic on it must skip nulls. <code class="docutils literal notranslate"><span class="pre">0</span></code> is still a number: at the latest version.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">libyear_status</span></code></strong> says why a row has a libyear or lacks one. A row is an unknown when
+<code class="docutils literal notranslate"><span class="pre">libyear</span></code> is null and the status is not <code class="docutils literal notranslate"><span class="pre">no_timeline</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">scope</span></code></strong> on every row: <code class="docutils literal notranslate"><span class="pre">runtime</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">test</span></code>, <code class="docutils literal notranslate"><span class="pre">build</span></code>, <code class="docutils literal notranslate"><span class="pre">optional</span></code> or <code class="docutils literal notranslate"><span class="pre">peer</span></code>.
+<code class="docutils literal notranslate"><span class="pre">dep_type</span></code> stays, as stored.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">version_source</span></code> and <code class="docutils literal notranslate"><span class="pre">version_reason</span></code>, where they apply.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/licenses</span></code> gains <strong><code class="docutils literal notranslate"><span class="pre">left_out</span></code></strong>: the dependencies outside the table
+because the registry did not answer for them and nothing gave them a licence. They are
+not in the <code class="docutils literal notranslate"><span class="pre">Unknown</span></code> row.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">upstream_dependencies</span></code> snapshot’s detail gains <strong><code class="docutils literal notranslate"><span class="pre">libyear_unknown</span></code></strong> and
+<strong><code class="docutils literal notranslate"><span class="pre">dev_libyear_unknown</span></code></strong>: how many dependencies in each split the count and the medians
+leave out.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-197">
+<h2>Changes for API clients in 0.29.197<a class="headerlink" href="#changes-for-api-clients-in-0-29-197" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/vulnerabilities</span></code>, <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stats</span></code> and
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/stats?ids=</span></code> carry a <strong><code class="docutils literal notranslate"><span class="pre">coverage</span></code></strong> object: what is known about whether
+the repository’s dependencies were read and checked. One function decides it for all
+three, so they cannot disagree.</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">state</span></code></strong> is one of nine values, each with one wording (see the reference). It replaces
+any rule a client had for “has this been scanned”.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">count_blank</span></code></strong>: show the count of findings blank. A 0 there would claim a check that
+did not happen (never scanned and nothing found; or nothing could be sent for
+checking).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">clean_result</span></code></strong>: a sentence that says there are no vulnerabilities may be used only
+when this is true.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">second_line</span></code></strong>, beside the state: a failed analysis attempt, no dependency inventory
+recorded, or an inventory older than the last attempt.</p></li>
+<li><p>The dates (<code class="docutils literal notranslate"><span class="pre">last_completed_scan_at</span></code>, <code class="docutils literal notranslate"><span class="pre">last_scan_attempt_at</span></code>, <code class="docutils literal notranslate"><span class="pre">analysed_at</span></code>), the last
+failed analysis attempt, and the counts of failed and carried manifests and of
+declared dependencies with no inventory row. The list answer adds the manifests’ paths.</p></li>
+</ul>
+<p>When the object is <strong>absent</strong> (one of its inputs could not be read; the list answer is
+then partial and not cached), show “coverage not known”: a count of zero is blank, never
+0 and never “not yet scanned”; a non-zero count stays. Treat a <code class="docutils literal notranslate"><span class="pre">state</span></code> you do not know the
+same way. On the statistics answers a failed coverage read fails the request, as the
+count reads do. The list answer’s top-level <code class="docutils literal notranslate"><span class="pre">scanned_at</span></code> keeps its meaning.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-196">
+<h2>Changes for API clients in 0.29.196<a class="headerlink" href="#changes-for-api-clients-in-0-29-196" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/vulnerabilities</span></code>:</p>
+<ul class="simple">
+<li><p>Every finding carries <strong><code class="docutils literal notranslate"><span class="pre">class</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">closed</span></code>, <code class="docutils literal notranslate"><span class="pre">self</span></code>, <code class="docutils literal notranslate"><span class="pre">version_not_determined</span></code> or
+<code class="docutils literal notranslate"><span class="pre">exposure</span></code>. The server decides it, by the rule its counts use. Key on it instead of
+working the class out from <code class="docutils literal notranslate"><span class="pre">resolved_at</span></code>, <code class="docutils literal notranslate"><span class="pre">dependency_kind</span></code> and <code class="docutils literal notranslate"><span class="pre">version_resolution</span></code>.
+A later release adds values (a withdrawn advisory); treat a value you do not know as
+its own group and never as exposure.</p></li>
+<li><p>An <code class="docutils literal notranslate"><span class="pre">exposure</span></code> finding carries <strong><code class="docutils literal notranslate"><span class="pre">evidence</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">in_use</span></code>, <code class="docutils literal notranslate"><span class="pre">lowest_allowed</span></code>,
+<code class="docutils literal notranslate"><span class="pre">floating_ref</span></code> or <code class="docutils literal notranslate"><span class="pre">not_classified</span></code>.</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">closed</span></code> finding that did not close because of a fix carries <strong><code class="docutils literal notranslate"><span class="pre">closed_reason</span></code></strong>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">counts.resolved</span></code> is no longer “fixed”.</strong> It stays the total of closed findings, and
+is now split: <code class="docutils literal notranslate"><span class="pre">resolved_unlabelled</span></code> (resolved in the ordinary sense) and
+<code class="docutils literal notranslate"><span class="pre">resolved_superseded</span></code>, <code class="docutils literal notranslate"><span class="pre">resolved_version_determined</span></code>, <code class="docutils literal notranslate"><span class="pre">resolved_version_lost</span></code>,
+<code class="docutils literal notranslate"><span class="pre">resolved_version_changed</span></code>, <code class="docutils literal notranslate"><span class="pre">resolved_never_applied</span></code>, <code class="docutils literal notranslate"><span class="pre">resolved_unsendable</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">resolved_other_reason</span></code> (closed for a reason this release does not name; never a fix).
+The parts sum to <code class="docutils literal notranslate"><span class="pre">resolved</span></code>. A client that shows “N resolved” should show <code class="docutils literal notranslate"><span class="pre">resolved_unlabelled</span></code>
+and name the others for what they are.</p></li>
+</ul>
+</section>
+<section id="changes-for-api-clients-in-0-29-178">
+<h2>Changes for API clients in 0.29.178<a class="headerlink" href="#changes-for-api-clients-in-0-29-178" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">version_resolution</span></code> gains the value <code class="docutils literal notranslate"><span class="pre">managed</span></code>: a Maven dependency declared with no
+version, whose version comes from <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code> (see the table under the
+vulnerabilities answer). Such a dependency was <code class="docutils literal notranslate"><span class="pre">unpinned</span></code> before, with no version in its
+purl; its findings at the versionless purl close with <code class="docutils literal notranslate"><span class="pre">closed_reason</span></code> set, and a
+dependency row’s <code class="docutils literal notranslate"><span class="pre">current_version</span></code> and purl now carry the managed version.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-177">
+<h2>Changes for API clients in 0.29.177<a class="headerlink" href="#changes-for-api-clients-in-0-29-177" title="Link to this heading"></a></h2>
+<p>Dependency rows (the repository’s dependency list and libyear answers) and SBOM
+components report the version in use where a lockfile determines it, so
+<code class="docutils literal notranslate"><span class="pre">current_version</span></code>, the row’s purl and <code class="docutils literal notranslate"><span class="pre">libyear</span></code> change at a repository’s next analysis
+with no change in the repository. A row declared <code class="docutils literal notranslate"><span class="pre">^4.0.0</span></code> and locked at 4.18.2 was
+reported at 4.0.0 and is now reported at 4.18.2. The declaration is still in
+<code class="docutils literal notranslate"><span class="pre">requirement</span></code>. Vulnerability findings are unaffected.</p>
+</section>
+<section id="changes-for-api-clients-in-0-29-167">
+<h2>Changes for API clients in 0.29.167<a class="headerlink" href="#changes-for-api-clients-in-0-29-167" title="Link to this heading"></a></h2>
+<p>The package answers (<code class="docutils literal notranslate"><span class="pre">/api/v1/packages/...</span></code>, the leaderboard and one package’s profile) gain
+<code class="docutils literal notranslate"><span class="pre">closed_with_reason</span></code>: the findings on the package that closed for a reason other than a fix
+(the package’s version was worked out, lost or changed, or its purl can no longer be sent to
+OSV). Those findings are no longer in any other figure of the answer: <code class="docutils literal notranslate"><span class="pre">cohort_repos</span></code>,
+<code class="docutils literal notranslate"><span class="pre">findings</span></code>, <code class="docutils literal notranslate"><span class="pre">pct_unresolved</span></code>, <code class="docutils literal notranslate"><span class="pre">pct_transitive</span></code>, <code class="docutils literal notranslate"><span class="pre">worst_severity</span></code>, <code class="docutils literal notranslate"><span class="pre">max_cvss</span></code>,
+<code class="docutils literal notranslate"><span class="pre">n_advisories</span></code> and the lead advisory, nor in the advisory list. A package or an advisory
+whose only findings are such closures is no longer listed, and one package’s profile then
+answers 404.</p>
+</section>
 <section id="changes-for-api-clients-in-0-29-145">
 <h2>Changes for API clients in 0.29.145<a class="headerlink" href="#changes-for-api-clients-in-0-29-145" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/v1/repos/{id}/stars</span></code>, <code class="docutils literal notranslate"><span class="pre">/forks</span></code> and <code class="docutils literal notranslate"><span class="pre">/watchers</span></code> leave out a metadata
@@ -3427,8 +3700,8 @@ headline GUIs should lead with).</p>
 declares no version (<code class="docutils literal notranslate"><span class="pre">version_resolution:</span> <span class="pre">&quot;unpinned&quot;</span></code>) was queried
 at OSV.dev without one, and OSV answers such a query with every
 advisory ever published for the package — most of them for old
-releases. Whether the repository is affected is unknown (the VEX
-<code class="docutils literal notranslate"><span class="pre">under_investigation</span></code> class), so these rows are no longer
+releases. The version in use is not determined, so whether the
+repository is affected is not known, and these rows are no longer
 dependency exposure: <code class="docutils literal notranslate"><span class="pre">current</span></code>, <code class="docutils literal notranslate"><span class="pre">critical</span></code>, <code class="docutils literal notranslate"><span class="pre">direct</span></code>,
 <code class="docutils literal notranslate"><span class="pre">transitive</span></code>, <code class="docutils literal notranslate"><span class="pre">dev</span></code> and <code class="docutils literal notranslate"><span class="pre">runtime</span></code> exclude them, and they are
 counted apart as <code class="docutils literal notranslate"><span class="pre">unknown_version</span></code> (with <code class="docutils literal notranslate"><span class="pre">unknown_version_critical</span></code>).
@@ -3495,8 +3768,11 @@ the scanned version was chosen:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">range-floor</span></code></p></td>
 <td><p>Lower bound only (<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>). The purl is the FLOOR — the worst case the declaration permits, not the installed version. UIs should say so, e.g. “lowest allowed” beside the version, with the declared requirement.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unpinned</span></code></p></td>
-<td><p>No version declared: OSV.dev was queried without one and returned every advisory for the package, so exposure is unknown — counted apart as <code class="docutils literal notranslate"><span class="pre">unknown_version</span></code> (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in <code class="docutils literal notranslate"><span class="pre">current</span></code>.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">managed</span></code></p></td>
+<td><p>(0.29.178) A Maven dependency declared with no version, whose version comes from <code class="docutils literal notranslate"><span class="pre">dependencyManagement</span></code>: in the same pom, a parent pom, or an imported BOM found in the repository. The purl is that version. Before 0.29.178 such a dependency was <code class="docutils literal notranslate"><span class="pre">unpinned</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unpinned</span></code></p></td>
+<td><p>No version declared: OSV.dev was queried without one and returned every advisory for the package, so the version is not determined — counted apart as <code class="docutils literal notranslate"><span class="pre">unknown_version</span></code> (v0.29.70). For a GitHub Actions dependency it is a floating ref (a major tag or a branch) whose advisories were matched against the ref: exposure, counted in <code class="docutils literal notranslate"><span class="pre">current</span></code>.</p></td>
 </tr>
 </tbody>
 </table>

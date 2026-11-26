@@ -299,7 +299,7 @@ func (c *Client) fetchHistoryWindow(ctx context.Context, login string, w History
 	if err := c.http.GraphQL(ctx, query, nil, &resp); err != nil {
 		// Error-path policy (rounds 26/28/29 + code-review round
 		// 2026-09-06 — one narrative, superseding the earlier stacked
-		// comments; chaoss.tv logs 2026-09-03..05 are the evidence base):
+		// comments; production logs 2026-09-03..05 are the evidence base):
 		//
 		// The "window is too expensive" signal arrives in three shapes —
 		//  (a) a global RESOURCE_LIMITS_EXCEEDED (the ErrResourceLimits

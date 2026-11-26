@@ -1,0 +1,32 @@
+@@ N28w pick moved to WHERE
+WITH pick AS (SELECT msg_id FROM aveloxis_data.messages WHERE msg_text_clean_rule < $3 ORDER BY msg_id LIMIT 500 FOR UPDATE SKIP LOCKED) UPDATE aveloxis_data.messages m SET msg_text_clean = v.clean, msg_text_clean_rule = $3 FROM unnest($1::bigint[], $2::text[]) AS v(id, clean) WHERE v.id = m.msg_id AND m.msg_id IN (SELECT pick.msg_id FROM pick)
+@@ N31w greatest with same WHERE
+INSERT INTO aveloxis_data.messages (msg_id, msg_text, msg_updated) VALUES ($1,$2,$3) ON CONFLICT (msg_id) DO UPDATE SET msg_updated = GREATEST(messages.msg_updated, EXCLUDED.msg_updated), msg_text = EXCLUDED.msg_text WHERE EXCLUDED.msg_updated > messages.msg_updated
+@@ N49w flattened
+UPDATE aveloxis_data.repo_deps_vulnerabilities SET entered_exposure_at = CASE WHEN class = 'exposure' AND entered_exposure_at IS NULL THEN NOW() ELSE entered_exposure_at END WHERE repo_id = $1
+@@ N62w update from derived
+UPDATE aveloxis_data.repos r SET created_at = COALESCE(r.created_at, s.c) FROM (SELECT i.repo_id, MIN(i.created_at) AS c FROM aveloxis_data.repo_info i GROUP BY 1) s WHERE s.repo_id = r.repo_id
+@@ N70w exists
+INSERT INTO aveloxis_data.contributors (cntrb_id, gh_user_id) SELECT ci.cntrb_id, ci.platform_user_id FROM aveloxis_data.contributor_identities ci WHERE ci.platform_id = 1 AND EXISTS (SELECT 1 FROM aveloxis_data.contributors c WHERE c.cntrb_id = ci.cntrb_id AND c.gh_user_id IS NULL) ON CONFLICT (cntrb_id) DO UPDATE SET gh_user_id = COALESCE(contributors.gh_user_id, EXCLUDED.gh_user_id)
+@@ N57w unnest
+INSERT INTO aveloxis_data.repo_traffic_weeks (repo_id, traffic_kind, week_start, uniques) SELECT $1, v.k, v.w, v.u FROM unnest($2::text[], $3::date[], $4::int[]) AS v(k, w, u) ON CONFLICT (repo_id, traffic_kind, week_start) DO UPDATE SET uniques = EXCLUDED.uniques, data_collection_date = NOW()
+@@ N25w pg_temp undeclared
+UPDATE aveloxis_data.messages m SET msg_text_clean = s.clean, msg_text_clean_rule = s.rule FROM pg_temp.tmp_clean s WHERE s.msg_id = m.msg_id
+@@ N47w handed in
+UPDATE aveloxis_data.repo_deps_vulnerabilities n SET first_detected_at = LEAST(n.first_detected_at, $1::timestamptz) WHERE n.vuln_row_id = $2
+@@ X1 real violation: JSON_TABLE reading the target, real schema (clones)
+UPDATE aveloxis_data.repo_clones c SET total_clones = j.v FROM JSON_TABLE((SELECT jsonb_agg(x.total_clones) FROM aveloxis_data.repo_clones x WHERE x.repo_id = $1), '$[0]' COLUMNS (v int PATH '$')) j WHERE c.repo_id = $2
+@@ X2 real violation: (excluded).col after INSERT SELECT from the table
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones) SELECT $2, l.clone_timestamp, l.total_clones FROM aveloxis_data.repo_clones l WHERE l.repo_id = $1 ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = (EXCLUDED).total_clones
+@@ X3 control: same with EXCLUDED.col
+INSERT INTO aveloxis_data.repo_clones (repo_id, clone_timestamp, total_clones) SELECT $2, l.clone_timestamp, l.total_clones FROM aveloxis_data.repo_clones l WHERE l.repo_id = $1 ON CONFLICT (repo_id, clone_timestamp) DO UPDATE SET total_clones = EXCLUDED.total_clones
+@@ X4 gh_user_id replaced via (excluded) when fill value reads other row
+INSERT INTO aveloxis_data.contributors (cntrb_id, gh_user_id) SELECT $1::uuid, l.gh_user_id FROM aveloxis_data.contributors l WHERE l.cntrb_id = $2::uuid ON CONFLICT (cntrb_id) DO UPDATE SET gh_user_id = COALESCE(contributors.gh_user_id, (EXCLUDED).gh_user_id)
+@@ X5 messages clean: unqualified user fn
+UPDATE aveloxis_data.messages SET msg_text_clean = strip_quotes(msg_text), msg_text_clean_rule = $2 WHERE msg_id = $1
+@@ X6 stamp = other stored column of row
+UPDATE aveloxis_data.repos SET vuln_scan_last_run = data_collection_date WHERE repo_id = $1
+@@ X7 clones total from views table (other table same repo)
+UPDATE aveloxis_data.repo_clones c SET total_clones = v.total_views FROM aveloxis_data.repo_views v WHERE v.repo_id = c.repo_id
+@@ X8 loser's clones summed into winner via scalar sub w/ condition only
+UPDATE aveloxis_data.repo_clones c SET total_clones = $3 WHERE c.repo_id = $1 AND EXISTS (SELECT 1 FROM aveloxis_data.repo_clones l WHERE l.repo_id = $2)

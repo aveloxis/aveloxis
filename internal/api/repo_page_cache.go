@@ -34,7 +34,7 @@ import (
 // unchanged repository is never recomputed. No answer expires on a timer
 // (D6, 0.29.120, summary/63: durable until recollection — the enrichment
 // interval that used to age the contributor answers made them recompute
-// every 17 minutes on kate; a name the enrichment sweep fills in now shows
+// every 17 minutes on a production fleet; a name the enrichment sweep fills in now shows
 // at the repository's next collection). Time enters a key only through a
 // windowed route's effective window (pageWindows).
 //
@@ -1055,7 +1055,7 @@ func (s *Server) runOnce(c *repoPageCache, key string, r *http.Request, uri stri
 // cancellation, bounded by http_timeout_seconds like every request and every
 // re-warm request. A caller that leaves mid-computation — nginx's read
 // timeout is 120 s against the API's 180 s, so the warm script's heaviest
-// chart was cut at 120 s on kate (2026-11-04), the cancellation reached the
+// chart was cut at 120 s on a production fleet (2026-11-04), the cancellation reached the
 // store through the query, the run was marked uncacheable and the next warm
 // pass failed the same way, forever — no longer discards the work: the
 // answer is stored for whoever asks next, and only the caller that left

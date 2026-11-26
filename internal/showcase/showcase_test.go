@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 func TestSlugify(t *testing.T) {
@@ -84,9 +87,9 @@ func hostileRepoPage() RepoPageData {
 			{Name: "Fuzzing", Score: 1},
 			{Name: "CI-Tests", Score: -1},
 		},
-		VulnScanned:  true,
 		VulnTotal:    3,
 		VulnCritical: 1,
+		VulnState:    "scanned 2026-07-30",
 	}
 }
 
@@ -127,6 +130,8 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 		Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y",
 		GeneratedAt: time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC),
 	}
+	never := vulnclass.Coverage(vulnclass.CoverageInputs{})
+	d.SetVulnCoverage(&never)
 	var b strings.Builder
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)
@@ -135,18 +140,70 @@ func TestRenderRepoHonestEmptyStates(t *testing.T) {
 	if !strings.Contains(out, "not yet scanned") {
 		t.Error("missing scorecard 'not yet scanned' empty state")
 	}
-	if !strings.Contains(out, "scan pending") {
-		t.Error("missing vulnerability 'scan pending' empty state (v0.28.7 wording — the SCAN is what's pending under the stamp gate)")
+	// Never scanned (0.29.200: the state's own wording, decided by
+	// vulnclass.Coverage; "scan pending" is retired for it): a dash, not a
+	// 0, and the sentence says what is known.
+	if !strings.Contains(out, `<div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">not yet scanned</div>`) {
+		t.Errorf("the tile of a repository never scanned must show a dash and the state:\n%s", out)
+	}
+	if !strings.Contains(out, "Not yet scanned.") || strings.Contains(out, "No open vulnerabilities") || strings.Contains(out, "scan pending") {
+		t.Error("a repository never scanned must say so in the state's wording, and must not read as clean")
 	}
 
 	// Scanned with zero findings is a genuinely clean state and says so.
-	d.VulnScanned = true
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	in := vulnclass.CoverageInputs{HasRow: true, ScanStamp: &at}
+	in.Coverage.AnalysedAt, in.Coverage.ScanAttemptAt = &at, &at
+	in.Coverage.Scan.Outcome = model.ScanSent
+	clean := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&clean)
 	b.Reset()
 	if err := RenderRepo(&b, d); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(b.String(), "No open vulnerabilities") {
-		t.Error("scanned repo with zero findings must render the clean state")
+	if !strings.Contains(b.String(), "No open vulnerabilities") || !strings.Contains(b.String(), `<div class="v">0</div><div class="k">Vulnerabilities</div><div class="s">scanned 2026-08-01</div>`) {
+		t.Errorf("scanned repo with zero findings must render the clean state, a real 0 and the scan's date:\n%s", b.String())
+	}
+
+	// The scan failed and nothing is known: not clean, a dash, the state.
+	in.Coverage.Scan.Outcome, in.ScanStamp = model.ScanFailed, nil
+	failed := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&failed)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), "Scan failed.") || strings.Contains(b.String(), "No open vulnerabilities") {
+		t.Error("a failed scan with nothing known must say so and must not read as clean")
+	}
+
+	// Scanned, and nothing has ever said what it depends on: the sentence
+	// says that, and so does the second line.
+	yes := true
+	in.Coverage.Scan.Outcome, in.ScanStamp, in.Coverage.AnalysedAt = model.ScanSent, &at, nil
+	in.Coverage.Scan.DependenciesUnknown = &yes
+	unknown := vulnclass.Coverage(in)
+	d.SetVulnCoverage(&unknown)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), "No dependency inventory recorded.") || strings.Contains(b.String(), "No open vulnerabilities") {
+		t.Errorf("scanned with no inventory recorded must say so and must not read as clean:\n%s", b.String())
+	}
+	// Once: the sentence and the line beside it are the same words here.
+	if n := strings.Count(b.String(), "No dependency inventory recorded."); n != 1 {
+		t.Errorf("the page says \"No dependency inventory recorded.\" %d times, want once", n)
+	}
+
+	// The coverage could not be decided: not known, a zero blank.
+	d.SetVulnCoverage(nil)
+	b.Reset()
+	if err := RenderRepo(&b, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(b.String(), `<div class="v">—</div><div class="k">Vulnerabilities</div><div class="s">coverage not known</div>`) || !strings.Contains(b.String(), "Coverage not known.") {
+		t.Errorf("with no coverage view the page must say coverage not known and blank the zero:\n%s", b.String())
 	}
 }
 
@@ -561,5 +618,87 @@ func TestShowcaseFooterLinksTheBlog(t *testing.T) {
 		if !strings.Contains(foot, `<a href="/blog/index.html">Blog</a>`) {
 			t.Errorf("%s page's footer row does not link the blog:\n%s", name, foot)
 		}
+	}
+}
+
+// The lockfile caution (0.29.214) is on the page under the security line in
+// both of its cases, and not otherwise.
+func TestRenderRepoShowsTheLockfileCautionAndOtherwiseNothing(t *testing.T) {
+	read := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	render := func(at *time.Time, reason string) string {
+		t.Helper()
+		d := RepoPageData{BaseURL: "https://aveloxis.io", Slug: "x-y", Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y",
+			GeneratedAt: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)}
+		in := vulnclass.CoverageInputs{HasRow: true}
+		in.Coverage.LockfilesLastRead, in.Coverage.LockfilesUnreadReason = at, reason
+		v := vulnclass.Coverage(in)
+		d.SetVulnCoverage(&v)
+		var b strings.Builder
+		if err := RenderRepo(&b, d); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	behind := render(&read, "manifest_read_memory_limit")
+	if !strings.Contains(behind, `<p class="note-line"><strong>Caution.</strong> Lockfiles last read 2026-11-02; the latest read did not finish (reading them took more memory than allowed). Versions and transitive dependencies may be out of date.</p>`) {
+		t.Errorf("behind: the caution is not on the page:\n%s", behind)
+	}
+	never := render(nil, "manifest_read_failed")
+	if !strings.Contains(never, "<strong>Caution.</strong> Lockfiles could not be read (the reader failed). Transitive dependencies are not checked.</p>") {
+		t.Error("never read: the caution is not on the page")
+	}
+	for name, out := range map[string]string{"read": render(&read, ""), "nothing known": render(nil, "")} {
+		if strings.Contains(out, "Caution.") || strings.Contains(out, "Lockfiles") {
+			t.Errorf("%s: a page with nothing to caution about says something about lockfiles", name)
+		}
+	}
+}
+
+// Operator, 2026-11-21 ("Withdraw, keep the count"): a page whose lockfile
+// caution is up does not say "No open vulnerabilities recorded", in any
+// coverage state; without the caution every state says what it said.
+func TestRenderRepoWithdrawsTheCleanSentenceUnderTheLockfileCaution(t *testing.T) {
+	const cleanSentence = "No open vulnerabilities recorded in scanned dependencies."
+	at := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	sent, nothing, failed := model.ScanSent, model.ScanNothingToSend, model.ScanFailed
+	cleanSeen := 0
+	for name, outcome := range map[string]*string{"scanned": &sent, "nothing to scan": &nothing, "scan failed": &failed, "no scan half": nil} {
+		render := func(reason string) (string, bool) {
+			t.Helper()
+			in := vulnclass.CoverageInputs{HasRow: true, ScanStamp: &at}
+			in.Coverage.AnalysedAt = &at
+			if outcome != nil {
+				in.Coverage.ScanAttemptAt, in.Coverage.Scan.Outcome = &at, *outcome
+			}
+			in.Coverage.LockfilesUnreadReason = reason
+			v := vulnclass.Coverage(in)
+			d := RepoPageData{BaseURL: "https://aveloxis.io", Slug: "x-y", Owner: "x", Name: "y", ForgeURL: "https://github.com/x/y", GeneratedAt: at}
+			d.SetVulnCoverage(&v)
+			var b strings.Builder
+			if err := RenderRepo(&b, d); err != nil {
+				t.Fatal(err)
+			}
+			return b.String(), v.CleanResult
+		}
+		without, wasClean := render("")
+		if strings.Contains(without, cleanSentence) != wasClean {
+			t.Errorf("%s, no caution: the clean sentence is on the page %v, clean_result %v", name, !wasClean, wasClean)
+		}
+		if wasClean {
+			cleanSeen++
+		}
+		with, clean := render(model.InventoryAttemptReadMemoryLimit)
+		if clean || strings.Contains(with, cleanSentence) {
+			t.Errorf("%s: the page claims no open vulnerabilities beside the lockfile caution", name)
+		}
+		if !strings.Contains(with, "<strong>Caution.</strong> Lockfiles could not be read") {
+			t.Errorf("%s: the caution is not on the page", name)
+		}
+		if wasClean && !strings.Contains(with, `<p class="note-line">Scanned.`) && !strings.Contains(with, `<p class="note-line">Nothing to scan.`) {
+			t.Errorf("%s: in place of the clean sentence the page does not say its coverage state", name)
+		}
+	}
+	if cleanSeen < 2 {
+		t.Fatalf("%d states were clean without the caution: nothing was withdrawn", cleanSeen)
 	}
 }

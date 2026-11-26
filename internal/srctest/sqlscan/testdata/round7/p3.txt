@@ -1,0 +1,115 @@
+@@ R01 returns table col named fe, use_variable, guard reads variable
+CREATE FUNCTION aveloxis_data.f(v text) RETURNS TABLE(fe text) LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R02 OUT param named fe, use_variable
+CREATE FUNCTION aveloxis_data.f(v text, OUT fe text) LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R03 IN param named fe use_variable (control)
+CREATE FUNCTION aveloxis_data.f(fe text) RETURNS void LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R04 DO use_variable + EXECUTE const: ar reads stored
+DO $$ #variable_conflict use_variable
+DECLARE ar text; BEGIN EXECUTE 'UPDATE aveloxis_data.repos SET ar = ar || ''x'''; END $$
+@@ R05 DO use_variable; nested CREATE FUNCTION sql inside EXECUTE
+DO $$ #variable_conflict use_variable
+DECLARE ar text; BEGIN EXECUTE 'CREATE FUNCTION aveloxis_data.g() RETURNS void LANGUAGE sql AS ''UPDATE aveloxis_data.repos SET ar = ar || 1'''; END $$
+@@ R06 plpgsql use_variable; fill with stored shadowed by var: COALESCE(fe,$1)
+CREATE FUNCTION aveloxis_data.f(v text) RETURNS void LANGUAGE plpgsql AS $$ #variable_conflict use_variable
+DECLARE fe text; BEGIN UPDATE aveloxis_data.repos SET fe = COALESCE(fe, $1); END $$
+@@ R07 variable_conflict in a comment, real default error
+CREATE FUNCTION aveloxis_data.f(fe text) RETURNS void LANGUAGE plpgsql AS $$
+/* #variable_conflict use_column */
+BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R08 variable_conflict use_column in string literal later in the body
+CREATE FUNCTION aveloxis_data.f(fe text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN PERFORM '#variable_conflict use_column'; UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R09 hash-operator lookalike: x # variable_conflict use_column as expression
+CREATE FUNCTION aveloxis_data.f(fe text, variable_conflict int, use_column int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN PERFORM 1 # variable_conflict use_column; UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R10 two directives: use_column then use_variable (last wins in PG?)
+CREATE FUNCTION aveloxis_data.f(fe text) RETURNS void LANGUAGE plpgsql AS $$ #variable_conflict use_column
+#variable_conflict use_variable
+BEGIN UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL; END $$
+@@ R11 label-qualified
+CREATE FUNCTION aveloxis_data.f() RETURNS void LANGUAGE plpgsql AS $$
+<<blk>> DECLARE ar text; BEGIN UPDATE aveloxis_data.repos SET ar = blk.ar; END $$
+@@ R12 loop record
+CREATE FUNCTION aveloxis_data.f() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r record; BEGIN FOR r IN SELECT * FROM aveloxis_data.src LOOP UPDATE aveloxis_data.repos SET ar = r.ar; END LOOP; END $$
+@@ R13 loop record over target (stored through a record)
+CREATE FUNCTION aveloxis_data.f() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r record; BEGIN FOR r IN SELECT * FROM aveloxis_data.repos LOOP UPDATE aveloxis_data.repos SET ar = r.ar WHERE repo_id = r.repo_id; END LOOP; END $$
+@@ R14 sql fn param named fe: guard is column (ok accept)
+CREATE FUNCTION aveloxis_data.f(fe text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET fe = $1 WHERE fe IS NULL $$
+@@ R15 sql fn named like table, qualified param
+CREATE FUNCTION aveloxis_data.repos(ar text) RETURNS void LANGUAGE sql AS $$ UPDATE aveloxis_data.repos SET ar = repos.ar || 'x' $$
+@@ R16 insert as excluded
+INSERT INTO aveloxis_data.repos AS excluded (repo_id, pnn) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(excluded.pnn, excluded.pnn)
+@@ R17 conflict update pnn stored qualified by schema.table
+INSERT INTO aveloxis_data.repos (repo_id, pnn) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(EXCLUDED.pnn, aveloxis_data.repos.pnn)
+@@ R18 update from with other schema's repos (same bare name)
+UPDATE aveloxis_data.repos SET fe = COALESCE(repos.fe, $1) FROM public.repos WHERE true
+@@ R19 update: FROM function named like target
+UPDATE aveloxis_data.repos SET fe = COALESCE(repos.fe, $1) FROM repos() WHERE true
+@@ R20 lateral
+UPDATE aveloxis_data.repos r SET ar = l.v FROM LATERAL (SELECT r.ar AS v) l
+@@ R21 set op subselect
+UPDATE aveloxis_data.repos r SET ar = (SELECT x FROM (SELECT $1 AS x UNION ALL SELECT o.ar FROM aveloxis_data.repos o) u LIMIT 1)
+@@ R22 whole row field
+UPDATE aveloxis_data.repos r SET ar = (r.*)::text
+@@ R23 whole-row via from alias of self
+UPDATE aveloxis_data.repos r SET ar = to_jsonb(r2)->>'ar' FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id
+@@ R24 returning (no effect)
+UPDATE aveloxis_data.repos SET ar = $1 RETURNING ar
+@@ R25 merge when not matched by source update
+MERGE INTO aveloxis_data.repos t USING aveloxis_data.src s ON t.repo_id = s.repo_id WHEN NOT MATCHED BY SOURCE THEN UPDATE SET ar = t.ar
+@@ R26 merge: source alias same as column; fe fill reading source
+MERGE INTO aveloxis_data.repos t USING (SELECT repo_id, fe FROM aveloxis_data.repos) s ON t.repo_id = s.repo_id + 1 WHEN MATCHED THEN UPDATE SET ar = s.fe
+@@ R27 trigger NEW.ar := OLD.ar
+CREATE FUNCTION aveloxis_data.tf() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.ar := OLD.ar; RETURN NEW; END $$
+@@ R28 rule on other with OLD
+CREATE RULE r AS ON UPDATE TO aveloxis_data.other DO ALSO UPDATE aveloxis_data.repos SET ar = OLD.ar
+@@ R29 quoted mixed case alias
+UPDATE aveloxis_data.repos "R" SET fe = COALESCE(r.fe, $1)
+@@ R30 keepcarry with stored cast / other col
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN k ELSE $2::timestamptz END
+@@ R31 keepcarry with result NOW() AT TIME ZONE
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN pg_catalog.now() ELSE k END
+@@ R32 keepcarry result user schema now()
+UPDATE aveloxis_data.repos SET k = CASE WHEN $1 THEN evil.now() ELSE k END
+@@ R33 earliest LEAST($1, e, extra)
+UPDATE aveloxis_data.repos SET e = LEAST(e, $1::date)
+@@ R34 greatest missing fallback same order
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($1, g), COALESCE($1, g))
+@@ R35 greatest with two different params
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($1, g), COALESCE(g, $2))
+@@ R36 pnn with different param cast truncation
+UPDATE aveloxis_data.repos SET pnn = COALESCE($1::varchar(1), pnn)
+@@ R37 pn nullif incoming cast then stored
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($1::text, ''), pn)
+@@ R38 fe second arg subselect of other table
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe, (SELECT o.x FROM aveloxis_data.other o LIMIT 1))
+@@ R39 fe coalesce stored with collate
+UPDATE aveloxis_data.repos SET fe = COALESCE(fe COLLATE "C", $1)
+@@ R40 fe guard collate
+UPDATE aveloxis_data.repos SET fe = $1 WHERE COALESCE(fe, '') = '' COLLATE "C"
+@@ R41 fe guard with char padding semantic: fe = '' OR fe IS NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE (fe = '' OR fe IS NULL) AND repo_id = $2
+@@ R42 guard on other row via FROM alias
+UPDATE aveloxis_data.repos r SET fe = $1 FROM aveloxis_data.repos r2 WHERE r2.fe IS NULL
+@@ R43 guard with target unaliased but qualified by name while FROM has alias "repos"
+UPDATE aveloxis_data.repos SET fe = $1 FROM aveloxis_data.other repos WHERE repos.fe IS NULL
+@@ R44 guard: 3-part
+UPDATE aveloxis_data.repos SET fe = $1 WHERE aveloxis_data.repos.fe IS NULL
+@@ R45 guard NULLIF IS NULL
+UPDATE aveloxis_data.repos SET fe = $1 WHERE NULLIF(fe, '') IS NULL AND TRUE
+@@ R46 guard bare fe with FROM (ambiguous if other has fe; else target)
+UPDATE aveloxis_data.repos SET fe = $1 FROM aveloxis_data.other o WHERE fe IS NULL
+@@ R47 conflict update where guard bare
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE fe IS NULL
+@@ R48 conflict update guard on EXCLUDED
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE EXCLUDED.fe IS NULL
+@@ R49 fe = EXCLUDED other column under guard
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.pn WHERE repos.fe IS NULL
+@@ R50 pnn incoming EXCLUDED other column
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1,$2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(EXCLUDED.pn, repos.pnn)

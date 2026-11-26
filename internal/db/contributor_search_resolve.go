@@ -110,6 +110,15 @@ func (s *PostgresStore) GetContributorsNeedingSearch(ctx context.Context, limit 
 // nothing (ON CONFLICT DO NOTHING) — that's a sign of a
 // pre-existing duplicate the caller can't safely merge from here.
 func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID, login string, ghUserID int64) error {
+	// A GitHub user id that is not positive names nobody (0.29.217, review
+	// round 10, S10-3). Bound as it came, 0 would be written over a NULL
+	// gh_user_id, which fill-only then keeps, and would make the identity
+	// row (1, 0) that every login-only reference collapses onto
+	// (v0.27.108). The callers stop it; the store is where it cannot pass
+	// (SR-18).
+	if ghUserID <= 0 {
+		return fmt.Errorf("link contributor: GitHub user id %d names no user", ghUserID)
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
@@ -267,6 +276,15 @@ func (s *PostgresStore) LinkContributorToGitHubUser(ctx context.Context, cntrbID
 // original observation; the application log captures the
 // transition.)
 func (s *PostgresStore) RenameContributorGhLogin(ctx context.Context, cntrbID, newLogin string, ghUserID int64) error {
+	// A GitHub user id that is not positive names nobody (0.29.217, review
+	// round 10, S10-3). Bound as it came, 0 would be written over a NULL
+	// gh_user_id, which fill-only then keeps, and would make the identity
+	// row (1, 0) that every login-only reference collapses onto
+	// (v0.27.108). The callers stop it; the store is where it cannot pass
+	// (SR-18).
+	if ghUserID <= 0 {
+		return fmt.Errorf("rename contributor login: GitHub user id %d names no user", ghUserID)
+	}
 	return s.withRetry(ctx, func(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {

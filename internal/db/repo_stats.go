@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"time"
+
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 )
 
 // RepoStats holds gathered (actual row counts) and metadata (from repo_info API snapshot)
@@ -27,8 +29,14 @@ type RepoStats struct {
 	CriticalVulns   int   `json:"critical_vulns"`   // current CVEs with severity CRITICAL or cvss_score >= 9.0
 	// VulnsVersionUnknown (v0.29.70) counts the current advisories of
 	// dependencies that declare no version — OSV was asked without one, so
-	// exposure is unknown. Not in Vulnerabilities (exposurePredicateSQL).
+	// the version is not determined. Not in Vulnerabilities
+	// (exposurePredicateSQL).
 	VulnsVersionUnknown int `json:"vulnerabilities_version_unknown"`
+	// Coverage (0.29.197) is what is known about whether the repository's
+	// dependencies were read and checked: the state, and the facts a tile
+	// needs (whether its count is shown blank, whether "no exposure" may be
+	// said). nil only for a repository that does not exist.
+	Coverage *vulnclass.CoverageView `json:"coverage,omitempty"`
 	// Archived (v0.27.50) is the forge's read-only status from the
 	// latest repo_info snapshot (status='Archived') — the ACCURATE
 	// signal, distinct from the repos.repo_archived boolean (which
@@ -440,6 +448,27 @@ func (s *PostgresStore) GetRepoStatsBatch(ctx context.Context, repoIDs []int64) 
 	}
 	if err := rows5.Err(); err != nil {
 		return nil, fmt.Errorf("batch vulnerability iteration: %w", err)
+	}
+
+	// The coverage state (0.29.197; summary/70, 4.8), decided by the one
+	// function from one more read. A failed read fails the batch, as the
+	// counts above do: a tile with a count and no state would be read as
+	// "scanned" by a client that expects one.
+	inputs, err := s.GetRepoCoverageInputs(ctx, repoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch coverage: %w", err)
+	}
+	for id, in := range inputs {
+		st, ok := result[id]
+		if !ok {
+			continue
+		}
+		in.CurrentExposure = st.Vulnerabilities
+		view := vulnclass.Coverage(in)
+		// The paths are the list answer's; a statistics answer carries the
+		// counts.
+		view.ManifestPathsFailed, view.ManifestPathsCarried = nil, nil
+		st.Coverage = &view
 	}
 
 	return result, nil

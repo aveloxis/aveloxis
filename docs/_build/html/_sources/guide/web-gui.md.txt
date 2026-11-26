@@ -152,6 +152,49 @@ The web GUI uses breadcrumb navigation across the top of every page:
 - **Dashboard**: Shows `Home` as the breadcrumb. Lists all your groups with repo counts.
 - **Group detail page**: Shows `Home / {Group Name}`. Click `Home` to return to the dashboard.
 
+## The repository page's vulnerability tile
+
+The **Vulns** tile counts the repository's current exposure findings and names beside the
+count the critical ones and the findings whose version is not determined (a dependency
+with no declared version, for which every advisory of the package is listed; they are
+not in the count). Under it is the coverage state, in the same words on every surface:
+"scanned" with the date, "scanned; some packages not fully checked", "nothing to scan",
+"no dependency could be sent for checking", "sent for checking; no complete answer came
+back", "scan failed", "not yet analysed", "analysed,
+not yet scanned", "findings present, no completed scan recorded" or "not yet scanned";
+with the date of the last completed scan when there is one. A second line appears when
+the last analysis attempt failed, when no dependency inventory has been recorded, or
+when the inventory is older than the last attempt.
+
+Under the tiles a **caution** appears when the repository's lockfiles went unread at the
+last analysis (0.29.214), and only then. Exact versions and transitive dependencies come
+from lockfiles, so what the page shows below is then older than its date suggests, or
+lacks them. There are three sentences. When lockfile rows are stored: "Lockfiles last read
+2026-11-02; the latest read did not finish (reading them took more memory than allowed).
+Versions and transitive dependencies may be out of date." When none is stored:
+"Lockfiles could not be read (reading them took more memory than allowed). Transitive
+dependencies are not checked." When some lockfiles were too large to read and the
+others were read at that analysis (0.29.216): "Some lockfiles could not be read (reading
+them would take more memory than allowed). Their versions and transitive dependencies may
+be out of date.", with no date; when no lockfile row is stored at all, the "Lockfiles
+could not be read" sentence above is shown for this reason too (0.29.217). A repository whose lockfiles were read, or that has none,
+shows nothing.
+
+While the caution is up, no page says the repository has no vulnerabilities (0.29.216).
+The count is unchanged, because it is a true count of what was checked: a repository
+scanned with nothing found still shows 0 and "scanned" with its date, and where a page
+would have said "No known vulnerabilities recorded for this repository." it says
+"Scanned." with the caution beside it. The claim returns with the first reading of the
+lockfiles that completes. What to do about it is in [troubleshooting](troubleshooting.md).
+
+The count is a dash where a 0 would claim a check that did not happen: a repository
+never scanned with nothing found, one whose dependencies could not be sent for
+checking or were sent and not answered, or one for which nothing has recorded what it
+depends on. A tile reads "unavailable" when the page could not read the repository's
+statistics; until 0.29.200 it showed 0. The state and the rule for the dash are decided
+by one function that the REST API and the showcase use too
+([REST API](api.md), "Changes for API clients in 0.29.197").
+
 ## Comparing Repositories
 
 Each group detail page (and the main dashboard) includes a **Compare Repositories** search widget. This uses the REST API (`aveloxis api`) to search across all repositories in the database — not just those in the current group. Select up to 5 repos, click **Compare**, and you are taken to the comparison page with your selection pre-populated.
@@ -311,6 +354,29 @@ and, on request, the largest; sign-ups per day for the last 30 days; and the
 sign-up allowlist of networks (CIDR) that bypass the sign-up quota. The
 rules and the configuration half are in
 [Configuration](../getting-started/configuration.md), "Capacity".
+
+**Repository hosts** (`/admin/repository-hosts`) lists the hosts Maven poms
+are fetched from: the ones you have distrusted, the configured repositories
+(`collection.maven_repositories`), and hosts that a collected repository's
+own pom declared and that have answered. Each row says when the host first
+and last answered and what depends on it: results stored from it,
+repositories, current findings, and Maven trees. **Distrust** opens a page
+that says what the distrust will do, with those counts, and asks for an
+optional reason; its button is the separate step that acts. From then on
+nothing is fetched from the host and nothing it served earlier is used. What
+is stored from it is deleted at once; each repository drops what came through
+it at its next analysis, where a dependency whose version came through the
+host has no version (`version_reason` `inherited_repository_refused`) and its
+findings at that version close as `version_lost`, which is not a fix.
+**Restore** reverses the decision the same way. Nothing distrusts a host by
+itself. The page's first list, **Needs a decision**, holds hosts the periodic
+check (`collection.repository_host_check_hours`) saw something about: the name
+no longer resolves, it resolves to an address Aveloxis does not reach, its
+certificate is not valid, its domain was registered after Aveloxis first
+fetched from it, or it is on the configured threat list. A signal is a reason to look, not a verdict; distrust
+the host, or **Mark as seen**, which takes it off that list until a new signal
+appears and changes nothing else. A check that could not tell (a timeout, a
+refused connection) is shown as "not known", never as clear. Every change is logged with the administrator who made it.
 
 **API tokens** (`/admin/api-tokens`) grants an operator-issued token to an
 account (a label, a lifetime of 1 to 365 days, hourly and daily allowances;

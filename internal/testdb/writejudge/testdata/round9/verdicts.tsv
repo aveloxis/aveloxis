@@ -1,0 +1,95 @@
+fp9.txt	N01 gh_user_id batch fill from unnest	pass
+fp9.txt	N02 gh_user_id fill from identities (coalesce)	pass
+fp9.txt	N03 gh_user_id guarded bare from identities	assign
+fp9.txt	N04 gh_user_id fill, incoming 0 means none	pass
+fp9.txt	N05 gh_user_id fill treating stored 0 as empty	assign
+fp9.txt	N06 gh_user_id guarded bare	pass
+fp9.txt	N07 gh_user_id guarded bare null-or-zero	assign
+fp9.txt	N08 gl_id on conflict	pass
+fp9.txt	N09 cntrb_login insert-select unnest on conflict fill	pass
+fp9.txt	N10 cntrb_login fill from alias table	pass
+fp9.txt	N11 stamp list	pass
+fp9.txt	N12 stamp in CTE with RETURNING feeding an insert	pass
+fp9.txt	N13 stamp from scan runs table	pass
+fp9.txt	N14 stamp from scalar subselect qualified	pass
+fp9.txt	N15 stamp from scalar subselect bare names	pass
+fp9.txt	N16 stamp reset	pass
+fp9.txt	N17 stamp interval arithmetic	pass
+fp9.txt	N18 stamp throttled by stored in WHERE	pass
+fp9.txt	N20 messages batch upsert select-star unnest	pass
+fp9.txt	N21 messages upsert with changed guard	pass
+fp9.txt	N22 clean rerun batch	pass
+fp9.txt	N23 clean computed in SQL from raw	pass
+fp9.txt	N24 clean from staging table	pass
+fp9.txt	N25 clean from temp table unqualified	assign
+fp9.txt	N26 clean via CTE of VALUES	pass
+fp9.txt	N27 rule reset with pick CTE skip locked	pass
+fp9.txt	N28 batch value joined to pick CTE	assign
+fp9.txt	N29 msg_updated greatest batch	pass
+fp9.txt	N30 msg_updated greatest on conflict with freshness WHERE	pass
+fp9.txt	N31 msg_updated bare under newer-than guard	assign
+fp9.txt	N32 updated_at greatest with coalesce-now incoming	assign
+fp9.txt	N33 repos identity upsert	pass
+fp9.txt	N34 repos batch upsert from unnest	pass
+fp9.txt	N35 repos upsert on expression index	pass
+fp9.txt	N36 created_at fill from repo_info join	pass
+fp9.txt	N37 created_at fill to_timestamp	pass
+fp9.txt	N38 created_at fill nullif zero time	pass
+fp9.txt	N39 platform_repo_id fill from forge id changes	pass
+fp9.txt	N40 platform_repo_id fill from number	pass
+fp9.txt	N42 forked_from from another table	assign
+fp9.txt	N43 identities upsert	pass
+fp9.txt	N44 identities upsert aliased	pass
+fp9.txt	N45 identities batch upsert	pass
+fp9.txt	N46 first_detected on conflict least	pass
+fp9.txt	N47 first_detected carried from predecessor row	assign
+fp9.txt	N48 entered_exposure class-transition CASE	pass
+fp9.txt	N49 entered_exposure nested CASE	assign
+fp9.txt	N50 package_key batch fill guarded	pass
+fp9.txt	N51 package_key batch fill guarded empty	pass
+fp9.txt	N52 package_key from the lockfile table	pass
+fp9.txt	N53 package_key from a schema function	assign
+fp9.txt	N54 clones batch insert-select	pass
+fp9.txt	N55 clones upsert only when changed	pass
+fp9.txt	N56 clones date from EXCLUDED default	pass
+fp9.txt	N57 weeks from jsonb elements	assign
+fp9.txt	N58 clones move repo id	pass
+fp9.txt	N59 paths snapshot insert	pass
+fp9.txt	N60 views heal from windows table	pass
+fp9.txt	N62 DO-block backfill loop	assign
+fp9.txt	N63 contributor merge winner takes loser gh id	assign
+fp9.txt	N64 stamp batch at given time	pass
+fp9.txt	N66 clean from VALUES joined to a ref table	pass
+fp9.txt	N67 rule from a pattern table scalar	pass
+fp9.txt	N68 unique clones sentinel	pass
+fp9.txt	N69 gh id fill by insert-select from identities	pass
+fp9.txt	N70 same, source joins contributors to filter	assign
+wo.txt	V06w	pass
+wo.txt	V46w	pass
+wo.txt	V10w	pass
+wo.txt	V12w (lower handed in)	pass
+wo.txt	V17w	pass
+wo.txt	V24w	pass
+wo.txt	V30w	pass
+wo.txt	V32w	pass
+wo.txt	V40w hand in	pass
+wo.txt	V42w	pass
+wo.txt	V49w	pass
+wo.txt	V50w	pass
+wo.txt	V06w2 doc way out literally (unqualified MIN(created_at) in the derived)	pass
+wo9.txt	N28w pick moved to WHERE	pass
+wo9.txt	N31w greatest with same WHERE	pass
+wo9.txt	N49w flattened	pass
+wo9.txt	N62w update from derived	pass
+wo9.txt	N70w exists	pass
+wo9.txt	N57w unnest	pass
+wo9.txt	N25w pg_temp undeclared	assign
+wo9.txt	N47w handed in	pass
+wo9.txt	X1 real violation: JSON_TABLE reading the target, real schema (clones)	assign
+wo9.txt	X2 real violation: (excluded).col after INSERT SELECT from the table	assign
+wo9.txt	X3 control: same with EXCLUDED.col	assign
+wo9.txt	X4 gh_user_id replaced via (excluded) when fill value reads other row	assign
+wo9.txt	X5 messages clean: unqualified user fn	pass
+wo9.txt	X6 stamp = other stored column of row	pass
+wo9.txt	X7 clones total from views table (other table same repo)	pass
+wo9.txt	X8 loser's clones summed into winner via scalar sub w/ condition only	pass

@@ -442,7 +442,7 @@ Every column is derived from `repo_deps_vulnerabilities` alone; nothing is fetch
 
 | Column | Meaning | Derived how |
 |---|---|---|
-| `ecosystem`, `package_name` | the package, as the scan names it (`npm`, `pypi`, `go`, `maven`, `cargo`, `rubygems`, `packagist`, `nuget`, `hex`, `pub`, `swiftpm`, `hackage`, `githubactions`) | group key; rows with an empty ecosystem or name are excluded |
+| `ecosystem`, `package_name` | the package, as the scan names it (`npm`, `pypi`, `go`, `maven`, `cargo`, `rubygems`, `packagist`, `nuget`, `hex`, `pub`, `swiftpm`, `hackage`, `cran`, `bioconductor`, `githubactions`) | group key; rows with an empty ecosystem or name are excluded |
 | `cohort_repos` | repositories that have EVER had a finding on the package | `COUNT(DISTINCT repo_id)` |
 | `repos_unresolved` | repositories with a current finding | the same over current rows |
 | `findings`, `findings_unresolved` | finding rows (repository × advisory × scanned version), all and current | `COUNT(*)` |

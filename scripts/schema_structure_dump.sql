@@ -9,7 +9,7 @@
 --      comm -13 fresh.txt target.txt   # extra on target
 --
 -- KNOWN-EQUIVALENT differences to normalize/ignore before judging drift
--- (all confirmed on the 2026-08-20 aveloxis_large audit):
+-- (all confirmed on the 2026-08-20 production audit):
 --   - tool_version column DEFAULTs carry the migrating binary's version
 --     ('0.27.100'::text vs '0.27.114'::text) — setToolVersionDefaults
 --     stamps at migrate time; version skew, not drift. Normalize with:

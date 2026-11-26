@@ -31,6 +31,9 @@ import (
 type Server struct {
 	store *db.PostgresStore
 	cfg   config.WebConfig
+	// repositoryHosts are the configured Maven repositories' hosts, for
+	// the console page (WithRepositoryHosts).
+	repositoryHosts []string
 	// proxyCheck logs a missing web.trusted_proxy once (v0.29.89; the
 	// shared detector since v0.29.91).
 	proxyCheck httpserver.MissingTrustedProxyDetector
@@ -379,6 +382,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/capacity/signup-allowlist", s.requireAdmin(s.handleAdminAllowlistAdd))
 	mux.HandleFunc("GET /admin/capacity/signup-allowlist/remove", s.requireAdmin(s.handleAdminAllowlistRemoveConfirm))
 	mux.HandleFunc("POST /admin/capacity/signup-allowlist/remove", s.requireAdmin(s.handleAdminAllowlistRemove))
+	// 0.29.188: the package repository hosts (summary/70, 4.5, D14).
+	mux.HandleFunc("GET /admin/repository-hosts", s.requireAdmin(s.handleAdminRepositoryHosts))
+	mux.HandleFunc("GET /admin/repository-hosts/distrust", s.requireAdmin(s.handleAdminRepositoryHostDistrustConfirm))
+	mux.HandleFunc("POST /admin/repository-hosts/distrust", s.requireAdmin(s.handleAdminRepositoryHostDistrust))
+	mux.HandleFunc("GET /admin/repository-hosts/restore", s.requireAdmin(s.handleAdminRepositoryHostRestoreConfirm))
+	mux.HandleFunc("POST /admin/repository-hosts/restore", s.requireAdmin(s.handleAdminRepositoryHostRestore))
+	mux.HandleFunc("POST /admin/repository-hosts/dismiss", s.requireAdmin(s.handleAdminRepositoryHostDismiss))
 	mux.HandleFunc("GET /admin/collections", s.requireAdmin(s.handleAdminCollections))
 	mux.HandleFunc("POST /admin/collections", s.requireAdmin(s.handleAdminCollectionCreate))
 	mux.HandleFunc("GET /admin/collections/{collectionID}", s.requireAdmin(s.handleAdminCollection))

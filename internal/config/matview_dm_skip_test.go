@@ -6,7 +6,7 @@ package config
 // matview_dm_skip_test.go — TDD suite for the v0.27.56
 // matview_rebuild_skip_dm_aggregates knob.
 //
-// Motivating incident (2026-07-27→30, aveloxis_large): the weekly
+// Motivating incident (2026-07-27→30, the larger production database): the weekly
 // rebuild's SECOND step — RefreshAllRepoAggregates, a 93,222-repo ×
 // two-pass per-repo DELETE+INSERT loop — ran for 3+ days while
 // MatviewRebuildActive stayed set, silently pausing all collection

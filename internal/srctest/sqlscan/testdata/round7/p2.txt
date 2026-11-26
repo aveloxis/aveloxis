@@ -1,0 +1,82 @@
+@@ D01 alter schema rename (registered tables' schema)
+ALTER SCHEMA aveloxis_data RENAME TO aveloxis_old
+@@ D02 other schema renamed TO aveloxis_data
+ALTER SCHEMA staging RENAME TO aveloxis_data
+@@ D03 truncate other cascade
+TRUNCATE aveloxis_data.other CASCADE
+@@ D04 drop owned
+DROP OWNED BY aveloxis
+@@ D05 alter type using
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe TYPE varchar(3) USING left(fe, 3)
+@@ D06 set default
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe SET DEFAULT 'x'
+@@ D07 add generated identity on io
+ALTER TABLE aveloxis_data.repos ALTER COLUMN io ADD GENERATED ALWAYS AS IDENTITY
+@@ D08 rename col into registered
+ALTER TABLE aveloxis_data.repos RENAME COLUMN zz TO fe
+@@ D09 rename col from registered
+ALTER TABLE aveloxis_data.repos RENAME fe TO zz
+@@ D10 drop column cascade
+ALTER TABLE aveloxis_data.repos DROP COLUMN IF EXISTS fe CASCADE
+@@ D11 like + swap
+CREATE TABLE aveloxis_data.repos_new (LIKE aveloxis_data.repos INCLUDING ALL)
+@;
+ALTER TABLE aveloxis_data.repos_new RENAME TO repos
+@@ D12 drop type cascade
+DROP TYPE aveloxis_data.some_enum CASCADE
+@@ D13 create or replace view named like registered (unqualified)
+CREATE OR REPLACE VIEW repos AS SELECT 1
+@@ D14 create policy
+CREATE POLICY p ON aveloxis_data.repos USING (true)
+@@ D15 event trigger
+CREATE EVENT TRIGGER et ON ddl_command_start EXECUTE FUNCTION f()
+@@ D16 trigger on view over registered
+CREATE TRIGGER tr INSTEAD OF UPDATE ON aveloxis_data.v_repos FOR EACH ROW EXECUTE FUNCTION f()
+@@ D17 alter table rename constraint
+ALTER TABLE aveloxis_data.repos RENAME CONSTRAINT a TO b
+@@ D18 add col with fk action on registered col? (new constraint)
+ALTER TABLE aveloxis_data.repos ADD CONSTRAINT fk FOREIGN KEY (fe) REFERENCES aveloxis_data.other(id) ON UPDATE CASCADE
+@@ D19 add column with fk (column constraint) via ALTER ADD COLUMN named registered
+ALTER TABLE aveloxis_data.repos ADD COLUMN IF NOT EXISTS fe text REFERENCES aveloxis_data.other(id) ON DELETE SET NULL
+@@ D20 alter column generic: drop not null
+ALTER TABLE aveloxis_data.repos ALTER COLUMN fe DROP NOT NULL
+@@ D21 import foreign schema into aveloxis_data
+IMPORT FOREIGN SCHEMA x FROM SERVER s INTO aveloxis_data
+@@ D22 alter view rename to registered
+ALTER VIEW aveloxis_data.v_repos RENAME TO repos
+@@ D23 subscription
+CREATE SUBSCRIPTION s CONNECTION 'x' PUBLICATION p
+@@ D24 delete all rows
+DELETE FROM aveloxis_data.repos
+@@ D25 alter table set schema on other to become child? no: other renamed to registered name in other schema
+ALTER TABLE aveloxis_ops.q SET SCHEMA aveloxis_data
+@@ D26 alter index rename
+ALTER INDEX aveloxis_data.i RENAME TO j
+@@ D27 create table ... of type / partition by on new table
+CREATE TABLE aveloxis_data.newt (a int) PARTITION BY RANGE (a)
+@@ D28 alter table all in tablespace
+ALTER TABLE ALL IN TABLESPACE a SET TABLESPACE b
+@@ D29 alter sequence owned
+ALTER SEQUENCE aveloxis_data.s OWNED BY aveloxis_data.repos.io
+@@ D30 alter table alter column type on FK-referenced parent (cascade rewrite?) other
+ALTER TABLE aveloxis_data.other ALTER COLUMN id TYPE bigint
+@@ D31 drop schema cascade
+DROP SCHEMA IF EXISTS aveloxis_data CASCADE
+@@ D32 alter domain add constraint
+ALTER DOMAIN d ADD CONSTRAINT c CHECK (VALUE <> '')
+@@ D33 update pg_catalog
+UPDATE pg_catalog.pg_attribute SET attname = 'fe' WHERE attname = 'zz'
+@@ D34 update pg_class no schema
+UPDATE pg_class SET relname = 'x'
+@@ D35 alter table ... alter column set data type via ALTER TYPE composite
+ALTER TYPE aveloxis_data.comp ALTER ATTRIBUTE a TYPE text CASCADE
+@@ D36 alter table rename unqualified
+ALTER TABLE repos RENAME TO repos2
+@@ D37 alter table repos drop column unqualified
+ALTER TABLE repos DROP COLUMN fe
+@@ D38 refresh matview
+REFRESH MATERIALIZED VIEW aveloxis_data.m
+@@ D39 create table as with same name as registered in other schema then set schema
+CREATE TABLE public.repos AS SELECT * FROM aveloxis_data.repos
+@@ D40 alter extension / create extension
+CREATE EXTENSION IF NOT EXISTS pg_trgm

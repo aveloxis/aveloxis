@@ -101,17 +101,19 @@ type pageWriterCoverage struct {
 
 var pageCacheWriters = map[string]pageWriterCoverage{
 	"InsertVulnerabilityBatch":         {"stamps", "a vulnerability scan (the job's, heal-vulnerabilities)"},
+	"RecordScanCoverage":               {"stamps", "every vulnerability scan's outcome: the coverage state (0.29.197)"},
+	"RecordInventoryAttempt":           {"stamps", "an analysis that did not replace the inventory: the coverage object's second line (0.29.197)"},
+	"recordLockfileReadingOn":          {"stamps", "how an analysis's reading of the lockfiles ended: the coverage object's lockfiles_unread, which the pages' caution is drawn from (0.29.214). The one place the statement is sent, on the pool (RecordLockfileReading) or inside the snapshot replace's transaction (0.29.215); the statement stamps in itself"},
 	"MarkStaleVulnerabilitiesResolved": {"stamps", "a vulnerability scan; stamps only when rows were resolved"},
 	"UpdateCVSSScoreForVector":         {"stamps", "heal-vulnerabilities --rescore-only"},
 	"ReplaceScorecard":                 {"stamps", "the job's scorecard phase and run-scorecard"},
 	"ReplaceScancodeSnapshot":          {"stamps", "the decoupled scancode worker"},
 	"HealUnknownLibyear":               {"stamps", "heal-libyear --apply"},
 	"rotateScancodeRows":               {"helper", "ReplaceScancodeSnapshot"},
-	"ClearRepoDependencies":            {"job", "analysis phase"},
-	"InsertRepoDependency":             {"job", "analysis phase"},
-	"RotateLibyearToHistory":           {"job", "analysis phase"},
-	"InsertRepoLibyear":                {"job", "analysis phase"},
-	"ReplaceRepoLockfileSnapshot":      {"job", "analysis phase (lockfile scan)"},
+	"ReplaceRepoDependencies":          {"job", "analysis phase"},
+	"ReplaceRepoLibyear":               {"job", "analysis phase"},
+	"ReplaceRepoLockfileSnapshotFrom":  {"job", "analysis phase (lockfile scan); ReplaceRepoLockfileSnapshot is this, handed slices"},
+	"DeleteRepoLockfileRowsAtPaths":    {"job", "analysis phase (lockfile scan whose lockfiles went unread: the rows of lockfiles that are gone, 0.29.214)"},
 	"migrateStage10RecentReleases":     {"migrate", "a migration step"},
 	// The staged processor reaches these outside any job too (heal-messages,
 	// heal-collection-gaps, the leftover drain), so they stamp themselves.
@@ -184,6 +186,7 @@ var pageCacheWriters = map[string]pageWriterCoverage{
 	"mergeOnePair":                      {"fleet", "merge-cntrb-collisions"},
 	"upsertOneContributor":              {"fleet", "contributor rows"},
 	"BackfillIssueExternalKeys":         {"unread", "issues.external_key"},
+	"FillPackageKeysStep":               {"unread", "through packageKeyFillSQL (a statement builder, followed since 0.29.212): repo_deps_libyear.package_key, repo_lockfile_packages.package_key (0.29.173: no cached answer reads the key)"},
 	"MarkActivityCheckedBatch":          {"unread", "contributors.gh_activity_checked_at"},
 	"MarkHistoryBackfilled":             {"unread", "contributors.gh_history_backfilled_at, gh_history_failed_at"},
 	"MarkHistoryFetchFailed":            {"unread", "contributors.gh_history_failed_at"},
@@ -358,6 +361,47 @@ func sqlOf(part string, values map[string]string) string {
 	return b.String()
 }
 
+// statementBuilderParts adds the body of every registered statement
+// builder to values, under the builder's name, and returns which functions
+// they are.
+func statementBuilderParts(t *testing.T, stripped map[string]string, values map[string]string) map[string]bool {
+	t.Helper()
+	registered := columnWriteBuilders(t)
+	is := map[string]bool{}
+	for _, src := range stripped {
+		for fn, part := range srctest.FuncParts(t, src) {
+			if _, ok := registered[fn]; ok && fn != srctest.PackageLevel {
+				is[fn] = true
+				values[fn] += "\n" + part
+			}
+		}
+	}
+	for name := range registered {
+		if !is[name] && !strings.Contains(name, ".") {
+			t.Errorf("the statement builder %s is registered with the write-policy check and is no function of internal/db", name)
+		}
+	}
+	return is
+}
+
+// A writer that takes its statement from a builder is the writer of what
+// the builder's text writes: the property the registry is about (which
+// function writes which table) follows the call.
+func TestSQLOfFollowsAStatementBuilder(t *testing.T) {
+	values := map[string]string{
+		"thingSteps":   "[]step{{`DELETE FROM aveloxis_data.commits WHERE repo_id = $1`}}",
+		"thingStepSQL": "func thingStepSQL(i int) string { return thingSteps[i].sql }",
+		"otherSQL":     "func otherSQL() string { return `DELETE FROM aveloxis_data.messages` }",
+	}
+	got := sqlOf("func Heal() { for i := range thingSteps2 { exec(thingStepSQL(i)) } }", values)
+	if !strings.Contains(got, "DELETE FROM aveloxis_data.commits") {
+		t.Errorf("a statement taken from a builder must be read where the builder is called: %q", got)
+	}
+	if strings.Contains(got, "aveloxis_data.messages") {
+		t.Errorf("a builder the function never calls must not be read: %q", got)
+	}
+}
+
 func TestSQLOfFollowsNamedStatements(t *testing.T) {
 	values := map[string]string{
 		"upsertThingSQL": "`INSERT INTO aveloxis_data.messages (a) VALUES ($1)`",
@@ -389,9 +433,17 @@ func TestPageCacheTableWritersAreCovered(t *testing.T) {
 			values[n] = v
 		}
 	}
+	// A statement BUILDER (a function registered with the write-policy
+	// check, columnWriteBuilders: it returns a statement's text and runs
+	// nothing) is not a writer. The writer is the function that calls it,
+	// and that function's statements include the builder's text: the
+	// builder's body stands among the values a name is followed to, exactly
+	// as a named constant does (0.29.212: an extraction of SQL text into a
+	// builder then needs no edit here).
+	isBuilder := statementBuilderParts(t, stripped, values)
 	for name, src := range stripped {
 		for fn, part := range srctest.FuncParts(t, src) {
-			if fn == srctest.PackageLevel {
+			if fn == srctest.PackageLevel || isBuilder[fn] {
 				continue
 			}
 			bodies[fn] += part

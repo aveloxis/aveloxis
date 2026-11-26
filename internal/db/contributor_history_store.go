@@ -54,6 +54,32 @@ var githubSystemAccounts = []string{
 // within days once GitHub's (diurnal) resolver load shifts.
 const HistoryFailureCooldown = 24 * time.Hour
 
+// historyBackfillClaimSQL is GetContributorsForHistoryBackfill's claim for
+// one activity class: classFilter is one of the two predicates that
+// function writes at its calls (the write-policy check runs this builder
+// for each).
+func historyBackfillClaimSQL(classFilter string) string {
+	return `
+			SELECT cntrb_id::text, gh_login
+			FROM aveloxis_data.contributors
+			WHERE gh_login IS NOT NULL
+			  AND gh_login != ''
+			  AND COALESCE(cntrb_deleted, 0) = 0
+			  AND NOT (
+			      COALESCE(gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
+			      OR gh_login ILIKE '%[bot]%'
+			      OR gh_login ~* '[-_](bot|robot)[0-9]*$' -- narrower than "Hide bots" (displayBotLoginSQL) on purpose: this decides whose history is collected
+			      OR LOWER(gh_login) = ANY($4::text[])
+			  )
+			  ` + classFilter + `
+			  AND (gh_history_backfilled_at IS NULL
+			       OR gh_history_backfilled_at < NOW() - ($2::interval * (1.0 - $3::float8 + random() * 2.0 * $3::float8)))
+			  AND (gh_history_failed_at IS NULL
+			       OR gh_history_failed_at < NOW() - $5::interval)
+			ORDER BY gh_history_backfilled_at ASC NULLS FIRST
+			LIMIT $1`
+}
+
 // GetContributorsForHistoryBackfill claims contributors for the daily
 // history sweep: never-backfilled first, then oldest — with
 // contributors whose trailing-year class shows activity
@@ -78,25 +104,7 @@ func (s *PostgresStore) GetContributorsForHistoryBackfill(ctx context.Context, l
 		cooldown = 90 * 24 * time.Hour
 	}
 	claim := func(classFilter string, n int) ([]ActivityCheckContributor, error) {
-		rows, err := s.pool.Query(ctx, `
-			SELECT cntrb_id::text, gh_login
-			FROM aveloxis_data.contributors
-			WHERE gh_login IS NOT NULL
-			  AND gh_login != ''
-			  AND COALESCE(cntrb_deleted, 0) = 0
-			  AND NOT (
-			      COALESCE(gh_type, '') IN ('Bot', 'ProgrammaticAccessBot', 'Organization')
-			      OR gh_login ILIKE '%[bot]%'
-			      OR gh_login ~* '[-_](bot|robot)[0-9]*$' -- narrower than "Hide bots" (displayBotLoginSQL) on purpose: this decides whose history is collected
-			      OR LOWER(gh_login) = ANY($4::text[])
-			  )
-			  `+classFilter+`
-			  AND (gh_history_backfilled_at IS NULL
-			       OR gh_history_backfilled_at < NOW() - ($2::interval * (1.0 - $3::float8 + random() * 2.0 * $3::float8)))
-			  AND (gh_history_failed_at IS NULL
-			       OR gh_history_failed_at < NOW() - $5::interval)
-			ORDER BY gh_history_backfilled_at ASC NULLS FIRST
-			LIMIT $1`, n, cooldown.String(), BreadthCooldownJitterFrac, githubSystemAccounts,
+		rows, err := s.pool.Query(ctx, historyBackfillClaimSQL(classFilter), n, cooldown.String(), BreadthCooldownJitterFrac, githubSystemAccounts,
 			HistoryFailureCooldown.String())
 		if err != nil {
 			return nil, err

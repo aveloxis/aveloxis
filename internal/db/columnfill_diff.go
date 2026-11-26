@@ -129,6 +129,12 @@ func populatedPredicate(quotedCol, dataType string) string {
 	}
 }
 
+// quotedIdentifier is a name, or a dotted path of names, quoted the way
+// SQL quotes identifiers: in double quotes, a double quote inside doubled.
+// THE way a catalog name is put into a statement's text in this package's
+// comparison tools.
+func quotedIdentifier(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
+
 type columnRef struct {
 	schema, table, column, dataType string
 }
@@ -325,6 +331,18 @@ func enumerateColumns(ctx context.Context, pool colFillQuerier, schemas []string
 	return cols, rows.Err()
 }
 
+// populatedCountsSQL counts, for one table, the rows in which each of its
+// columns is populated (populatedPredicate, by the column's data type).
+// The names are the catalog's and are quoted as SQL quotes an identifier;
+// a data type only chooses the predicate.
+func populatedCountsSQL(schema, table string, columns, dataTypes []string) string {
+	exprs := make([]string, len(columns))
+	for i := range columns {
+		exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quotedIdentifier(columns[i]), dataTypes[i]))
+	}
+	return fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(exprs, ", "), quotedIdentifier(schema, table))
+}
+
 // populatedCounts computes the populated count for every column, ONE
 // single-scan query per table (all of a table's columns aggregated in
 // one pass).
@@ -338,14 +356,11 @@ func populatedCounts(ctx context.Context, pool colFillQuerier, cols []columnRef)
 	out := map[string]int64{}
 	for _, tableCols := range byTable {
 		schema, table := tableCols[0].schema, tableCols[0].table
-		exprs := make([]string, len(tableCols))
+		columns, dataTypes := make([]string, len(tableCols)), make([]string, len(tableCols))
 		for i, c := range tableCols {
-			quoted := fmt.Sprintf("%q", c.column)
-			exprs[i] = fmt.Sprintf("COUNT(*) FILTER (WHERE %s)", populatedPredicate(quoted, c.dataType))
+			columns[i], dataTypes[i] = c.column, c.dataType
 		}
-		// Identifiers come from information_schema, quoted with %q —
-		// same safety posture as tableRowCounts.
-		q := fmt.Sprintf(`SELECT %s FROM %q.%q`, strings.Join(exprs, ", "), schema, table)
+		q := populatedCountsSQL(schema, table, columns, dataTypes)
 		row := pool.QueryRow(ctx, q)
 		dests := make([]any, len(tableCols))
 		vals := make([]int64, len(tableCols))

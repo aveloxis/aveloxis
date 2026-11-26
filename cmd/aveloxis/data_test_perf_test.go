@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/config"
-	"github.com/jackc/pgx/v5"
+	"github.com/aveloxis/aveloxis/internal/db"
 )
 
 func TestEndpointNameDropsTheRepository(t *testing.T) {
@@ -152,7 +152,7 @@ func TestRunProbeRollsBackAndKeepsThePlan(t *testing.T) {
 	dbCfg, _ := testDatabaseConfig(t, dsn)
 	ctx := context.Background()
 	r := &snapshotRun{ctx: ctx, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), primary: &config.Config{Database: dbCfg}, workDir: t.TempDir()}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := db.OpenConn(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestCheckPerfEndpoints(t *testing.T) {
 }
 
 // An endpoint a side never answered: the released side alone (main timing
-// out on a kate-shaped clone, the class a release fixes) is reported,
+// out on a production-shaped clone, the class a release fixes) is reported,
 // counted in its column (the review of the first fixes, finding 1); neither
 // side is the source's state, reported too, since a wrong request list is
 // refused before the run (checkPerfEndpoints; the L10 second round, F4);

@@ -1,0 +1,111 @@
+@@ F01 store fe nullif qualified by table
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(repos.fe, ''), $7) WHERE repo_id = $1
+@@ F02 alias added
+UPDATE aveloxis_data.repos r SET fe = COALESCE(NULLIF(r.fe, ''), $7) WHERE r.repo_id = $1
+@@ F03 cast added on incoming
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, ''), $7::text) WHERE repo_id = $1
+@@ F04 cast on the whole
+UPDATE aveloxis_data.repos SET fe = COALESCE(NULLIF(fe, ''), $7)::text WHERE repo_id = $1
+@@ F05 dedupOnePair style guard
+UPDATE aveloxis_data.repos SET fe = $2 WHERE repo_id = $1 AND COALESCE(fe, '') = ''
+@@ F06 reordered guard
+UPDATE aveloxis_data.repos SET fe = $2 WHERE COALESCE(fe, '') = '' AND repo_id = $1
+@@ F07 OR guard
+UPDATE aveloxis_data.repos SET fe = $2 WHERE repo_id = $1 AND (fe IS NULL OR fe = '')
+@@ F08 reversed equals guard
+UPDATE aveloxis_data.repos SET fe = $2 WHERE repo_id = $1 AND '' = COALESCE(fe, '')
+@@ F09 guard length
+UPDATE aveloxis_data.repos SET fe = $2 WHERE repo_id = $1 AND (fe IS NULL OR length(fe) = 0)
+@@ F10 guard with cast value
+UPDATE aveloxis_data.repos SET fe = $2::text WHERE repo_id = $1 AND fe IS NULL
+@@ F11 CTE introduced
+WITH x AS (SELECT $1::bigint AS id) UPDATE aveloxis_data.repos r SET fe = $2 FROM x WHERE r.repo_id = x.id AND r.fe IS NULL
+@@ F12 batch fill coalesce from unnest
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, sub.v) FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::text[]) AS v) sub WHERE r.repo_id = sub.id
+@@ F13 batch fill guarded bare from unnest
+UPDATE aveloxis_data.repos r SET fe = sub.v FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::text[]) AS v) sub WHERE r.repo_id = sub.id AND r.fe IS NULL
+@@ F14 conflict store shape
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(NULLIF(repos.fe, ''), EXCLUDED.fe)
+@@ F15 conflict alias
+INSERT INTO aveloxis_data.repos AS r (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(NULLIF(r.fe, ''), EXCLUDED.fe)
+@@ F16 conflict schema-qualified stored
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(aveloxis_data.repos.fe, EXCLUDED.fe)
+@@ F17 conflict nullif both
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = COALESCE(NULLIF(repos.fe, ''), NULLIF(EXCLUDED.fe, ''))
+@@ F18 conflict CASE spelling
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = CASE WHEN COALESCE(repos.fe, '') = '' THEN EXCLUDED.fe ELSE repos.fe END
+@@ F19 conflict guarded bare in DO UPDATE WHERE
+INSERT INTO aveloxis_data.repos (repo_id, fe) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET fe = EXCLUDED.fe WHERE COALESCE(repos.fe, '') = ''
+@@ F20 pn store
+INSERT INTO aveloxis_data.repos (repo_id, pn) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET pn = COALESCE(NULLIF(EXCLUDED.pn, ''), repos.pn)
+@@ F21 pn param
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF($6, ''), pn) WHERE repo_id = $1
+@@ F22 pn trim
+UPDATE aveloxis_data.repos SET pn = COALESCE(NULLIF(TRIM($6), ''), pn) WHERE repo_id = $1
+@@ F23 pn alias
+UPDATE aveloxis_data.repos AS r SET pn = COALESCE(NULLIF($6, ''), r.pn) WHERE r.repo_id = $1
+@@ F24 pnn conflict
+INSERT INTO aveloxis_data.repos (repo_id, pnn) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET pnn = COALESCE(EXCLUDED.pnn, repos.pnn)
+@@ F25 pnn cast
+UPDATE aveloxis_data.repos r SET pnn = COALESCE($2::timestamptz, r.pnn) WHERE r.repo_id = $1
+@@ F26 pnn from batch
+UPDATE aveloxis_data.repos r SET pnn = COALESCE(sub.v, r.pnn) FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::text[]) AS v) sub WHERE r.repo_id = sub.id
+@@ F27 g store
+INSERT INTO aveloxis_data.repos (repo_id, g) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET g = GREATEST(COALESCE(EXCLUDED.g, repos.g), COALESCE(repos.g, EXCLUDED.g))
+@@ F28 g param cast
+UPDATE aveloxis_data.repos SET g = GREATEST(COALESCE($9::timestamptz, g), COALESCE(g, $9::timestamptz)) WHERE repo_id = $1
+@@ F29 g plain GREATEST (ignores NULLs in PG: same value)
+INSERT INTO aveloxis_data.repos (repo_id, g) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET g = GREATEST(repos.g, EXCLUDED.g)
+@@ F30 ar excluded
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ F31 ar excluded with change guard
+INSERT INTO aveloxis_data.repos (repo_id, ar) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar WHERE repos.ar IS DISTINCT FROM EXCLUDED.ar
+@@ F32 ar now
+UPDATE aveloxis_data.repos SET ar = NOW() WHERE repo_id = $1
+@@ F33 ar batch store style
+UPDATE aveloxis_data.repos m SET ar = sub.clean, pnn = COALESCE($4, m.pnn) FROM (SELECT unnest($1::bigint[]) AS msg_id, unnest($2::text[]) AS clean) sub WHERE m.repo_id = sub.msg_id
+@@ F34 ar from aggregate of other table (stage9 style)
+UPDATE aveloxis_data.repos r SET ar = sub.last_seen FROM (SELECT repo_id, MAX(last_seen_at) AS last_seen FROM aveloxis_data.other GROUP BY repo_id) sub WHERE r.repo_id = sub.repo_id AND r.ar IS NULL
+@@ F35 ar correlated subselect other table
+UPDATE aveloxis_data.repos r SET ar = (SELECT MAX(o.last_seen_at) FROM aveloxis_data.other o WHERE o.repo_id = r.repo_id) WHERE r.repo_id = $1
+@@ F36 ar correlated subselect other table, unaliased bare columns
+UPDATE aveloxis_data.repos SET ar = (SELECT MAX(last_seen_at) FROM aveloxis_data.other WHERE other.repo_id = repos.repo_id) WHERE repo_id = $1
+@@ F37 ar subselect whose other table has a column of the same name (bare)
+UPDATE aveloxis_data.repos SET ar = (SELECT MAX(ar) FROM aveloxis_data.other WHERE other.repo_id = $1) WHERE repo_id = $1
+@@ F38 ar case on param
+UPDATE aveloxis_data.repos SET ar = CASE WHEN $2 = '' THEN NULL ELSE $2 END WHERE repo_id = $1
+@@ F39 ar quoted, ONLY, returning
+UPDATE ONLY aveloxis_data.repos SET "ar" = $2 WHERE repo_id = $1 RETURNING repo_id
+@@ F40 e store
+INSERT INTO aveloxis_data.repos (repo_id, e) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET e = LEAST(repos.e, EXCLUDED.e)
+@@ F41 e swapped alias
+INSERT INTO aveloxis_data.repos AS v (repo_id, e) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET e = LEAST(EXCLUDED.e, v.e)
+@@ F42 k store-like
+INSERT INTO aveloxis_data.repos (repo_id, k) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET k = CASE WHEN NOT (COALESCE(EXCLUDED.kind, '') <> 'self') THEN repos.k WHEN repos.resolved_at IS NULL THEN repos.k WHEN $3::timestamptz IS NOT NULL THEN $3::timestamptz ELSE NOW() END
+@@ F43 k with COALESCE result
+INSERT INTO aveloxis_data.repos (repo_id, k) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET k = CASE WHEN repos.resolved_at IS NULL THEN repos.k ELSE COALESCE($3::timestamptz, NOW()) END
+@@ F44 k current_timestamp
+INSERT INTO aveloxis_data.repos (repo_id, k) VALUES ($1, $2) ON CONFLICT (repo_id) DO UPDATE SET k = CASE WHEN repos.resolved_at IS NULL THEN repos.k ELSE CURRENT_TIMESTAMP END
+@@ F45 io insert do nothing
+INSERT INTO aveloxis_data.repos (repo_id, io) VALUES ($1, NOW()) ON CONFLICT (repo_id) DO NOTHING
+@@ F46 io untouched in conflict
+INSERT INTO aveloxis_data.repos (repo_id, io, ar) VALUES ($1, NOW(), $2) ON CONFLICT (repo_id) DO UPDATE SET ar = EXCLUDED.ar
+@@ F47 comment inside
+UPDATE aveloxis_data.repos -- the stamp
+SET ar = NOW() /* always */ WHERE repo_id = $1
+@@ F48 delete then insert snapshot
+DELETE FROM aveloxis_data.repos WHERE repo_id = $1 AND day = $2
+@;
+INSERT INTO aveloxis_data.repos (repo_id, day, io) SELECT $1, $2, v FROM unnest($3::text[]) v
+@@ F49 temp staging across statements in ONE text
+CREATE TEMP TABLE stage (id bigint, v text) ON COMMIT DROP; INSERT INTO stage SELECT * FROM unnest($1::bigint[], $2::text[]); UPDATE aveloxis_data.repos r SET ar = s.v FROM stage s WHERE s.id = r.repo_id
+@@ F50 guard IS NULL then additional OR in parens elsewhere
+UPDATE aveloxis_data.repos SET fe = $2 WHERE fe IS NULL AND (repo_id = $1 OR repo_git = $3)
+@@ F51 fe: store UpdateRepoMetadata created_at shape
+UPDATE aveloxis_data.repos SET fe = COALESCE(repos.fe, $8) WHERE repo_id = $1
+@@ F52 fe with FOR UPDATE CTE lock first
+WITH locked AS (SELECT repo_id FROM aveloxis_data.repos WHERE repo_id = $1 FOR UPDATE) UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, $2) FROM locked WHERE r.repo_id = locked.repo_id
+@@ F53 ar with FOR UPDATE CTE lock first (CTE over target, reads no ar)
+WITH locked AS (SELECT repo_id FROM aveloxis_data.repos WHERE repo_id = $1 FOR UPDATE) UPDATE aveloxis_data.repos r SET ar = $2 FROM locked WHERE r.repo_id = locked.repo_id
+@@ F54 ar subselect that locks/reads target for another column
+UPDATE aveloxis_data.repos r SET ar = (SELECT count(*) FROM aveloxis_data.repos x WHERE x.owner = r.owner) WHERE r.repo_id = $1

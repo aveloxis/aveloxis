@@ -401,7 +401,7 @@ const goneSidelineSQL = "repo_gone_at IS NOT NULL"
 // archivedSidelineSQL is the OLD dead-arm sideline (0.29.140, operator
 // decision 2026-11-07): before this release reconcile-repos set repo_archived
 // ALONE on a definitive 404 — no gone stamp, no episode — and the row sat
-// archived and queueless (49 on kate). A repository the forge archived keeps
+// archived and queueless (49 on a production fleet). A repository the forge archived keeps
 // its queue row and cycles, so archived + unstamped + queueless is that
 // residue and nothing else; a queueless row that is not archived (a
 // data-bearing rename duplicate prelim dequeued on purpose) never matches.
@@ -501,16 +501,27 @@ func (s *PostgresStore) clearUnderRowLock(ctx context.Context, repoID int64, c g
 	return tag, tx.Commit(ctx)
 }
 
+// goneClearSQL is the statement a goneClear runs, and goneClearLockSQL the
+// row lock it takes first when it is not lockAlways: both from the ONE
+// sideline of the goneClear. Functions of the goneClear, so that the
+// write-policy check runs them for every goneClear written in the store
+// (column_write_policy_test.go).
+func goneClearSQL(c goneClear) string { return c.build(c.sideline + c.guard) }
+
+func goneClearLockSQL(c goneClear) string {
+	return `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 AND (` + c.sideline + `) FOR NO KEY UPDATE`
+}
+
 // clearInTxUnderRowLock is clearUnderRowLock inside a caller's transaction.
 func clearInTxUnderRowLock(ctx context.Context, tx rotationExecer, repoID int64, c goneClear, args ...any) (pgconn.CommandTag, error) {
-	sql := c.build(c.sideline + c.guard)
+	sql := goneClearSQL(c)
 	if c.lockAlways {
 		if _, err := tx.Exec(ctx, lockRepoRowsSQL, []int64{repoID}); err != nil {
 			return pgconn.CommandTag{}, fmt.Errorf("lock repository %d: %w", repoID, err)
 		}
 		return tx.Exec(ctx, sql, args...)
 	}
-	locked, err := tx.Exec(ctx, `SELECT 1 FROM aveloxis_data.repos WHERE repo_id = $1 AND (`+c.sideline+`) FOR NO KEY UPDATE`, repoID)
+	locked, err := tx.Exec(ctx, goneClearLockSQL(c), repoID)
 	if err != nil {
 		return pgconn.CommandTag{}, fmt.Errorf("lock repository %d: %w", repoID, err)
 	}

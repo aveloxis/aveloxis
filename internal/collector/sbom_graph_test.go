@@ -19,11 +19,12 @@ import (
 	"testing"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func sbomGraphFixture() *sbomGraph {
 	return &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "pypi", PackageName: "click", ResolvedVersion: "8.1.7", LockfilePath: "poetry.lock"},
 			{Ecosystem: "pypi", PackageName: "werkzeug", ResolvedVersion: "2.3.7", LockfilePath: "poetry.lock"},
 		},
@@ -140,7 +141,7 @@ func TestGenerateCycloneDX_TransitiveDedupsAgainstDirect(t *testing.T) {
 	}
 	graph := &sbomGraph{
 		// Same purl as the direct dep — bom-ref must stay unique.
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.0.0"},
 		},
 	}
@@ -166,7 +167,7 @@ func TestGenerateCycloneDX_EcosystemAliasFoldResolvesDirectParent(t *testing.T) 
 		{Name: "rails", CurrentVersion: "7.0.0", PackageManager: "gem", Purl: "pkg:gem/rails@7.0.0", Type: "runtime"},
 	}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "rubygems", PackageName: "actionpack", ResolvedVersion: "7.0.0"},
 		},
 		Edges: []db.RepoLockfileEdge{
@@ -200,7 +201,7 @@ func TestGenerateCycloneDX_EcosystemAliasFoldResolvesDirectParent(t *testing.T) 
 func TestGenerateCycloneDX_ParentVersionExactAttach(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org"}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0"},
 			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "2.0.0"},
 			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "3.0.0"},
@@ -291,7 +292,7 @@ func TestGenerateSPDX_TransitiveIDCollisionDedups(t *testing.T) {
 	graph := &sbomGraph{
 		// Same name@version as the direct dep — spdxPackageID hashes
 		// identically; a duplicate SPDXID is document-invalid.
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "pypi", PackageName: "flask", ResolvedVersion: "2.0.0"},
 		},
 	}
@@ -335,7 +336,7 @@ func TestGenerateSBOMLoadsGraphFromStore(t *testing.T) {
 func TestGenerateSPDX_CrossEcosystemNameCollision(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "myapp", Owner: "org", GitURL: "https://github.com/org/myapp"}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "foo", ResolvedVersion: "1.0.0"},
 			{Ecosystem: "pypi", PackageName: "foo", ResolvedVersion: "1.0.0"},
 		},
@@ -396,7 +397,7 @@ func TestGenerateSPDX_CrossEcosystemNameCollision(t *testing.T) {
 func TestGenerateCycloneDX_EdgesNeverCrossLockfiles(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
 			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
 			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "2.0.0", LockfilePath: "apps/b/package-lock.json"},
@@ -436,7 +437,7 @@ func TestGenerateCycloneDX_EdgesNeverCrossLockfiles(t *testing.T) {
 func TestGenerateSPDX_EdgesNeverCrossLockfiles(t *testing.T) {
 	repo := &db.RepoForSBOM{Name: "mono", Owner: "org", GitURL: "https://github.com/org/mono"}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "npm", PackageName: "p", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
 			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "1.0.0", LockfilePath: "apps/a/package-lock.json"},
 			{Ecosystem: "npm", PackageName: "c", ResolvedVersion: "2.0.0", LockfilePath: "apps/b/package-lock.json"},
@@ -598,7 +599,7 @@ func TestSBOM_PurlLessTransitivesMatchAcrossFormats(t *testing.T) {
 		{Name: "php", CurrentVersion: "8.2", PackageManager: "packagist", Purl: "", Type: "runtime"},
 	}
 	graph := &sbomGraph{
-		Transitives: []db.RepoLockfilePackage{
+		Transitives: []model.RepoLockfilePackage{
 			{Ecosystem: "swiftpm", PackageName: "alamofire", ResolvedVersion: "5.8.0", LockfilePath: "Package.resolved"},
 			{Ecosystem: "swiftpm", PackageName: "swift-nio", ResolvedVersion: "2.60.0", LockfilePath: "Package.resolved"},
 			{Ecosystem: "packagist", PackageName: "php", ResolvedVersion: "8.2", LockfilePath: "composer.lock"},

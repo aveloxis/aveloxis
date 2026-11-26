@@ -168,6 +168,39 @@ func (p *OutboundPolicy) Allow() []string {
 // path, or a URL whose authority is empty.
 var ErrNoHost = errors.New("repository URL has no host")
 
+// WithTrustedHosts answers a copy of the policy that also trusts names: a
+// caller whose own fixed hosts are trusted the way the operator's configured
+// ones are (the registry request path's registries, 0.29.179). A trusted
+// name's addresses are still refused for link-local. A nil policy (the
+// strict rule) gains exactly these names and nothing else.
+func (p *OutboundPolicy) WithTrustedHosts(names ...string) *OutboundPolicy {
+	out := &OutboundPolicy{hosts: map[string]struct{}{}}
+	if p != nil {
+		out.nets, out.lookup, out.dialer = p.nets, p.lookup, p.dialer
+		for h := range p.hosts {
+			out.hosts[h] = struct{}{}
+		}
+	}
+	for _, n := range names {
+		if h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), "."); h != "" {
+			out.hosts[h] = struct{}{}
+		}
+	}
+	return out
+}
+
+// Strict answers the rule with none of this policy's trust: no name and no
+// range. It resolves and dials as this policy does. It is the rule for a
+// host that someone other than the operator chose (a repository a collected
+// build file declares, 0.29.208).
+func (p *OutboundPolicy) Strict() *OutboundPolicy {
+	out := &OutboundPolicy{hosts: map[string]struct{}{}}
+	if p != nil {
+		out.lookup, out.dialer = p.lookup, p.dialer
+	}
+	return out
+}
+
 // Refuse answers nil when rawURL's host may be reached, ErrPrivateAddress
 // (or ErrLinkLocalAddress) when not, and the resolver's error when the host
 // cannot be resolved (a host that does not resolve cannot be cloned either;

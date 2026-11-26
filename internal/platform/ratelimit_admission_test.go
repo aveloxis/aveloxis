@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Sean Goggins, University of Missouri, Derek Howard
 // SPDX-License-Identifier: MIT
 
-// 2026-09-12 chaoss.tv analysis: the pool governed WHICH key a caller used
+// 2026-09-12 production log analysis: the pool governed WHICH key a caller used
 // but never WHETHER it could spend. One background sweep demanded 113% of
 // the fleet's GraphQL budget; keys depleted; the per-key 500-point
 // background cliff shrank the eligible set; the shared round-robin cursor

@@ -217,6 +217,13 @@ func (s *Server) handleRepoDetail(w http.ResponseWriter, r *http.Request, sess *
 		"Group":   group,
 		"Repo":    repo,
 		"Stats":   stats,
+		// The four tiles, decided here: a number, "unavailable" when the
+		// statistics could not be read, and for vulnerabilities the count
+		// or a dash with the coverage state (0.29.200).
+		"Issues":  statOrUnavailable(stats, func(s *db.RepoStats) int { return s.GatheredIssues }),
+		"PRs":     statOrUnavailable(stats, func(s *db.RepoStats) int { return s.GatheredPRs }),
+		"Commits": statOrUnavailable(stats, func(s *db.RepoStats) int { return s.GatheredCommits }),
+		"Vuln":    vulnTileOf(stats),
 		"RepoID":  repoID,
 		"GroupID": groupID,
 	})

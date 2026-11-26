@@ -1,0 +1,26 @@
+@@ A80 bare item column inside a scalar sub-select of the value
+UPDATE aveloxis_data.repos r SET ar = (SELECT keep) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A81 bare item column inside a sub-select with its own FROM
+UPDATE aveloxis_data.repos r SET ar = (SELECT keep || o.v FROM aveloxis_data.other o WHERE o.id = r.repo_id) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A82 bare view column inside sub-select (every column of a view counts)
+UPDATE aveloxis_data.repos r SET ar = (SELECT fe) FROM aveloxis_data.v_repos v WHERE v.repo_id = r.repo_id
+@@ A83 control: bare outside sub-select
+UPDATE aveloxis_data.repos r SET ar = keep FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A84 item whole row bare in sub-select
+UPDATE aveloxis_data.repos r SET ar = (SELECT to_jsonb(s)->>'keep') FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A85 item star in sub-select
+UPDATE aveloxis_data.repos r SET ar = (SELECT x.keep FROM (SELECT s.*) x) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A86 3-part ref to a view item inside sub-select
+UPDATE aveloxis_data.repos r SET ar = (SELECT aveloxis_data.v_repos.fe) FROM aveloxis_data.v_repos WHERE v_repos.repo_id = r.repo_id
+@@ A87 item qualified in sub-select whose FROM has same alias for another table (shadow correct)
+UPDATE aveloxis_data.repos r SET ar = (SELECT s.keep FROM aveloxis_data.other s LIMIT 1) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A88 shadowing claimed but alias is in a SIBLING sub-select (not enclosing)
+UPDATE aveloxis_data.repos r SET ar = COALESCE((SELECT 'x' FROM aveloxis_data.other s LIMIT 1), '') || (SELECT s.keep) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A89 shadow by alias in nested FROM subselect (not in scope at the reference)
+UPDATE aveloxis_data.repos r SET ar = (SELECT s.keep FROM (SELECT 1 FROM aveloxis_data.other s) q) FROM (SELECT repo_id AS rid, ar AS keep FROM aveloxis_data.repos) s WHERE s.rid = r.repo_id
+@@ A90 stored r.ar with shadow via nested-FROM alias r (not in scope at the reference)
+UPDATE aveloxis_data.repos r SET ar = (SELECT r.ar FROM (SELECT 1 FROM aveloxis_data.other r) q)
+@@ A91 fe incoming side reads stored through nested-alias shadow
+UPDATE aveloxis_data.repos r SET fe = COALESCE(r.fe, (SELECT r.fe || 'x' FROM (SELECT 1 FROM aveloxis_data.other r) q))
+@@ A92 pnn "incoming" unaffected; fe: mentionsStored with join-alias in sub
+UPDATE aveloxis_data.repos r SET ar = (SELECT r.ar FROM aveloxis_data.other o JOIN aveloxis_data.src r2 ON true LIMIT 1)

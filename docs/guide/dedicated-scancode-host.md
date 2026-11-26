@@ -33,7 +33,7 @@ On the database host, allow the scancode machine to connect:
 listen_addresses = '*'          # or a specific interface address
 
 # pg_hba.conf — one line for the scancode host (use its actual address;
-# do NOT open 0.0.0.0/0 — chaoss.tv's postgres logs show constant
+# do NOT open 0.0.0.0/0 — a production host's postgres logs show constant
 # credential brute-forcing against exposed 5432 ports):
 hostssl  aveloxis  aveloxis  192.0.2.42/32  scram-sha-256
 
@@ -69,9 +69,10 @@ PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt psql "postgres://aveloxis:PASSW
 # never @latest: the worker never migrates, so a newer binary than the
 # schema stamp refuses to start (v0.29.68; it logged an ERROR and read
 # columns the database did not have yet). Release tags are v-prefixed
-# (v0.29.4), so set the bare number `aveloxis version` prints on the
+# (v0.29.4), so set the bare number that aveloxis version prints on the
 # primary and let the @v prefix supply the tag form:
-PRIMARY_VERSION=0.29.4   # what `aveloxis version` prints on the primary
+# What aveloxis version prints on the primary
+PRIMARY_VERSION=0.29.4
 go install "github.com/aveloxis/aveloxis/cmd/aveloxis@v${PRIMARY_VERSION}"
 
 # git is required for the shallow clones; then the analysis tools

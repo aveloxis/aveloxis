@@ -130,6 +130,52 @@ func constraintStateMatches(ctx context.Context, pg *PostgresStore, constraintNa
 	return updateRule == wantUpdate && deleteRule == wantDelete && deferrable == wantDeferrable, true, nil
 }
 
+// fullBehaviorFKAddSQL and fullBehaviorFKValidateSQL are the two statements
+// that give a foreign key the full behaviour (ON UPDATE CASCADE ON DELETE
+// RESTRICT DEFERRABLE), NOT VALID first and validated second.
+func fullBehaviorFKAddSQL(table, column, parent, parentCol, constraintName string) string {
+	return fmt.Sprintf(`
+		ALTER TABLE aveloxis_data.%s
+		DROP CONSTRAINT IF EXISTS %s,
+		ADD CONSTRAINT %s
+		FOREIGN KEY (%s) REFERENCES aveloxis_data.%s(%s)
+		ON UPDATE CASCADE
+		ON DELETE RESTRICT
+		DEFERRABLE INITIALLY DEFERRED
+		NOT VALID
+	`, table, constraintName, constraintName, column, parent, parentCol)
+}
+
+func fullBehaviorFKValidateSQL(table, constraintName string) string {
+	return fmt.Sprintf(`
+		ALTER TABLE aveloxis_data.%s
+		VALIDATE CONSTRAINT %s
+	`, table, constraintName)
+}
+
+// The same for the i-th of fkExtraConstraints and of cntrbIDChildFKs:
+// functions of the index, so that the write-policy check runs them for
+// every member. applyFullBehaviorFK is handed their results.
+func extraFKAddSQL(i int) string {
+	fk := fkExtraConstraints[i]
+	return fullBehaviorFKAddSQL(fk.table, fk.column, fk.parent, fk.parentCol, fk.constraintName)
+}
+
+func extraFKValidateSQL(i int) string {
+	fk := fkExtraConstraints[i]
+	return fullBehaviorFKValidateSQL(fk.table, fk.constraintName)
+}
+
+func cntrbFullFKAddSQL(i int) string {
+	fk := cntrbIDChildFKs[i]
+	return fullBehaviorFKAddSQL(fk.table, fk.column, "contributors", "cntrb_id", fk.constraint)
+}
+
+func cntrbFullFKValidateSQL(i int) string {
+	fk := cntrbIDChildFKs[i]
+	return fullBehaviorFKValidateSQL(fk.table, fk.constraint)
+}
+
 // applyFullBehaviorFK is the shared DROP+ADD+VALIDATE step. Uses
 // the v0.22.1 NOT VALID + VALIDATE pattern so the validation scan
 // takes SHARE UPDATE EXCLUSIVE (concurrent reads + writes permitted)
@@ -147,24 +193,12 @@ func constraintStateMatches(ctx context.Context, pg *PostgresStore, constraintNa
 //
 // DEFERRABLE INITIALLY DEFERRED is orthogonal to NOT VALID in
 // PostgreSQL — they combine cleanly in one ADD clause.
-func applyFullBehaviorFK(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, table, column, parent, parentCol, constraintName, version string) {
+func applyFullBehaviorFK(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error, table, column, constraintName, version, addSQL, validateSQL string) {
 	addLabel := fmt.Sprintf("%s ON UPDATE CASCADE ON DELETE RESTRICT DEFERRABLE on aveloxis_data.%s.%s", version, table, column)
-	execMigrationStep(ctx, pg, logger, errs, addLabel, fmt.Sprintf(`
-		ALTER TABLE aveloxis_data.%s
-		DROP CONSTRAINT IF EXISTS %s,
-		ADD CONSTRAINT %s
-		FOREIGN KEY (%s) REFERENCES aveloxis_data.%s(%s)
-		ON UPDATE CASCADE
-		ON DELETE RESTRICT
-		DEFERRABLE INITIALLY DEFERRED
-		NOT VALID
-	`, table, constraintName, constraintName, column, parent, parentCol))
+	execMigrationStep(ctx, pg, logger, errs, addLabel, addSQL)
 
 	validateLabel := fmt.Sprintf("%s VALIDATE CONSTRAINT %s", version, constraintName)
-	execMigrationStep(ctx, pg, logger, errs, validateLabel, fmt.Sprintf(`
-		ALTER TABLE aveloxis_data.%s
-		VALIDATE CONSTRAINT %s
-	`, table, constraintName))
+	execMigrationStep(ctx, pg, logger, errs, validateLabel, validateSQL)
 }
 
 // ensureExtraFKConstraints is the v0.22.7 migration step that
@@ -184,7 +218,7 @@ func applyFullBehaviorFK(ctx context.Context, pg *PostgresStore, logger *slog.Lo
 // which is exactly the 17-hour-stall pattern v0.22.6 was built
 // to prevent.
 func ensureExtraFKConstraints(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, fk := range fkExtraConstraints {
+	for i, fk := range fkExtraConstraints {
 		matches, exists, err := constraintStateMatches(ctx, pg, fk.constraintName, "CASCADE", "RESTRICT", true)
 		if err != nil {
 			*errs = append(*errs, fmt.Errorf("v0.22.7 introspect %s: %w", fk.constraintName, err))
@@ -201,7 +235,7 @@ func ensureExtraFKConstraints(ctx context.Context, pg *PostgresStore, logger *sl
 			// Already in the desired state. Idempotency fast path.
 			continue
 		}
-		applyFullBehaviorFK(ctx, pg, logger, errs, fk.table, fk.column, fk.parent, fk.parentCol, fk.constraintName, "v0.22.7")
+		applyFullBehaviorFK(ctx, pg, logger, errs, fk.table, fk.column, fk.constraintName, "v0.22.7", extraFKAddSQL(i), extraFKValidateSQL(i))
 	}
 }
 
@@ -222,7 +256,7 @@ func ensureExtraFKConstraints(ctx context.Context, pg *PostgresStore, logger *sl
 // On an existing v0.22.6 → v0.22.7 upgrade, each FK is DROPped
 // and re-ADDed with the full clause.
 func ensureCntrbIDFKsFullBehavior(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, fk := range cntrbIDChildFKs {
+	for i, fk := range cntrbIDChildFKs {
 		matches, exists, err := constraintStateMatches(ctx, pg, fk.constraint, "CASCADE", "RESTRICT", true)
 		if err != nil {
 			*errs = append(*errs, fmt.Errorf("v0.22.7 introspect %s: %w", fk.constraint, err))
@@ -236,8 +270,17 @@ func ensureCntrbIDFKsFullBehavior(ctx context.Context, pg *PostgresStore, logger
 		if matches {
 			continue
 		}
-		applyFullBehaviorFK(ctx, pg, logger, errs, fk.table, fk.column, "contributors", "cntrb_id", fk.constraint, "v0.22.7")
+		applyFullBehaviorFK(ctx, pg, logger, errs, fk.table, fk.column, fk.constraint, "v0.22.7", cntrbFullFKAddSQL(i), cntrbFullFKValidateSQL(i))
 	}
+}
+
+// fkDeferrableSQL makes one foreign key the catalog lists DEFERRABLE. The
+// names are the catalog's, and are quoted.
+func fkDeferrableSQL(schema, table, constraint string) string {
+	return fmt.Sprintf(`
+			ALTER TABLE %s
+			ALTER CONSTRAINT %s DEFERRABLE INITIALLY DEFERRED
+		`, quotedIdentifier(schema, table), quotedIdentifier(constraint))
 }
 
 // ensureAllFKsDeferrable is the v0.22.7 catch-all that ensures
@@ -299,9 +342,6 @@ func ensureAllFKsDeferrable(ctx context.Context, pg *PostgresStore, logger *slog
 
 	for _, t := range pending {
 		label := fmt.Sprintf("v0.22.7 ALTER CONSTRAINT DEFERRABLE on %s.%s.%s", t.schema, t.table, t.constraint)
-		execMigrationStep(ctx, pg, logger, errs, label, fmt.Sprintf(`
-			ALTER TABLE %s.%s
-			ALTER CONSTRAINT %s DEFERRABLE INITIALLY DEFERRED
-		`, t.schema, t.table, t.constraint))
+		execMigrationStep(ctx, pg, logger, errs, label, fkDeferrableSQL(t.schema, t.table, t.constraint))
 	}
 }

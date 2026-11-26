@@ -17,8 +17,10 @@ import (
 )
 
 func TestNoCloneSkipsAnalysisAndScorecard(t *testing.T) {
-	body := srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"),
-		"func (s *Scheduler) runFacadeAndAnalysis(")
+	// Comments are taken out first (0.29.223, Copilot on PR #263): the call
+	// commented out still stood in the text, and every index below was found.
+	body := srctest.StripGoComments(srctest.FuncBody(t, srctest.Read(t, "internal/scheduler/scheduler.go"),
+		"func (s *Scheduler) runFacadeAndAnalysis("))
 	guard := strings.Index(body, "collector.HasBareClone(")
 	analyze := strings.Index(body, "ac.AnalyzeRepo(")
 	scorecard := strings.Index(body, "s.runScorecardPhase(")
@@ -33,5 +35,13 @@ func TestNoCloneSkipsAnalysisAndScorecard(t *testing.T) {
 	after := body[guard:analyze]
 	if !strings.Contains(after, "\n\t\treturn\n") {
 		t.Error("the guard must return before analysis when there is no clone")
+	}
+	// 0.29.160: the guard records, through the analysis's one attempt
+	// writer, that the dependency inventory was not refreshed, BEFORE it
+	// returns (the analysis that would have recorded it is never entered).
+	record := strings.Index(after, "collector.RecordAnalysisSkippedForNoClone(ctx, s.store, s.logger, repoID)")
+	ret := strings.LastIndex(after, "\n\t\treturn\n")
+	if record < 0 || record > ret {
+		t.Error("the guard must call collector.RecordAnalysisSkippedForNoClone before it returns")
 	}
 }

@@ -10,9 +10,11 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -71,6 +73,11 @@ type PackageExposure struct {
 	LeadFixedVersion       string   `json:"lead_fixed_version"`
 	LeadAdvisoryRepos      int      `json:"lead_advisory_repos"`
 	ReposWithKnownVersions int      `json:"repos_with_known_versions"`
+	// ClosedWithReason (0.29.167) counts the findings on this package that
+	// closed for a reason other than a fix (closed_reason: the version was
+	// worked out, lost or changed, or the purl can no longer be sent). They
+	// are in no other figure here.
+	ClosedWithReason int `json:"closed_with_reason"`
 }
 
 // PackageAdvisory is one advisory's footprint on a package in the cohort.
@@ -162,14 +169,31 @@ const notSelfFindingSQL = exposurePredicateSQLv
 // out of the purl (the version is stored only inside package_purl) and
 // the "current" flag. %s is the repo filter — "" for the fleet, or
 // " AND v.repo_id = ANY($1)" for a cohort.
-const packageFindingsSQL = `
+//
+// v0.29.167: a closure with a reason is not a resolution (the finding was
+// re-keyed, not fixed), so this base leaves those rows out and every
+// aggregate built on it does too: the shares, the severity, the advisory
+// count, the lead advisory, the versions, the advisory view. They are counted
+// once, apart, by packageReasonedClosuresSQL.
+const packageFindingsSQL = packageFindingsAllSQL + ` AND v.closed_reason IS NULL%s`
+
+// packageFindingsAllSQL is the base before that filter. No %s: both users
+// append their own tail.
+const packageFindingsAllSQL = `
 	SELECT v.ecosystem, v.package_name, v.repo_id, v.vuln_id, v.cve_id,
 	       v.severity, v.cvss_score, v.fixed_version, v.dependency_kind,
 	       v.first_detected_at, v.resolved_at,
 	       (v.resolved_at IS NULL) AS current,
 	       ` + purlVersionSQL + ` AS scanned_version
 	  FROM aveloxis_data.repo_deps_vulnerabilities v
-	 WHERE v.ecosystem <> '' AND v.package_name <> ''` + notSelfFindingSQL + `%s`
+	 WHERE v.ecosystem <> '' AND v.package_name <> ''` + notSelfFindingSQL
+
+// packageReasonedClosuresSQL counts, per package, the findings that closed
+// with a reason. %s is the repo filter.
+const packageReasonedClosuresSQL = `
+	SELECT ecosystem, package_name, COUNT(*) AS closed_with_reason
+	  FROM (` + packageFindingsAllSQL + ` AND v.closed_reason IS NOT NULL%s) r
+	 GROUP BY ecosystem, package_name`
 
 // purlVersionSQL reads the scanned version out of v.package_purl: the text
 // after the LAST '@' when it contains no '/' (review round 1 on v0.29.60).
@@ -244,7 +268,8 @@ func packageExposureSQL(repoFilter string) string {
 	           ecosystem, package_name, vuln_id, cve_id, severity, fixed_version, repos
 	      FROM advisories
 	     ORDER BY ecosystem, package_name, repos DESC, vuln_id
-	)
+	),
+	reasoned AS (` + fmt.Sprintf(packageReasonedClosuresSQL, repoFilter) + `)
 	SELECT p.ecosystem, p.package_name, p.cohort_repos, p.repos_unresolved,
 	       p.findings, p.findings_unresolved, p.pct_unresolved, p.pct_transitive,
 	       p.median_days_open, p.max_cvss,
@@ -254,10 +279,14 @@ func packageExposureSQL(repoFilter string) string {
 	       CASE WHEN p.repos_with_known_versions > 0 THEN ROUND(100.0 * m.modal_repos / p.repos_with_known_versions, 1) END AS modal_version_share_pct,
 	       COALESCE(l.vuln_id, '') AS lead_advisory, COALESCE(l.cve_id, '') AS lead_cve,
 	       COALESCE(l.severity, '') AS lead_severity, COALESCE(l.fixed_version, '') AS lead_fixed_version,
-	       COALESCE(l.repos, 0) AS lead_advisory_repos
+	       COALESCE(l.repos, 0) AS lead_advisory_repos,
+	       -- v0.29.167, the LAST column: closures that are not fixes. A
+	       -- package with only such closures has no per_pkg row, so no row.
+	       COALESCE(rc.closed_with_reason, 0) AS closed_with_reason
 	  FROM per_pkg p
 	  LEFT JOIN modal m USING (ecosystem, package_name)
-	  LEFT JOIN lead  l USING (ecosystem, package_name)`
+	  LEFT JOIN lead  l USING (ecosystem, package_name)
+	  LEFT JOIN reasoned rc USING (ecosystem, package_name)`
 }
 
 // packageAdvisorySQL is one row per (ecosystem, package, advisory): the
@@ -296,18 +325,64 @@ func isUndefinedTable(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
 }
 
+// fleetViewCannotAnswer reports that a supply-chain view cannot answer a
+// fleet reader: it is not built (42P01), or it is built from an EARLIER
+// definition and lacks a column the reader selects (42703). Both happen on
+// the supported paths: serve builds the pair only when a member is
+// missing, so a view from the previous release stays until a migrate
+// re-creates it, and a failed re-create keeps the previous view. The
+// reader then aggregates live over the whole table, the same SQL the view
+// is built from. If the reader's own SQL names a wrong column, the live
+// query fails the same way and that error is returned. Any other error is
+// returned as it is (SR-5).
+func fleetViewCannotAnswer(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "42P01" || pgErr.Code == "42703")
+}
+
+// The two fleet views, as the line below names them.
+const (
+	fleetExposureView = "explorer_package_exposure"
+	fleetAdvisoryView = "explorer_package_advisory"
+)
+
+// olderFleetViewLogged makes the line below a once-per-process-and-view
+// one: the condition holds for every fleet read until a migrate, and the
+// answer itself says it was aggregated live. Per view, because the two are
+// re-created separately and either can be the older one: with one switch
+// for both, the second view's line was never written.
+var olderFleetViewLogged sync.Map
+
+// noteFleetViewFallback logs, once per view, that a fleet view exists and
+// could not answer: an operator can do something about that one (run the
+// migrate). A view that is simply not built is a configuration, and is not
+// logged.
+func (s *PostgresStore) noteFleetViewFallback(view string, err error) {
+	var pgErr *pgconn.PgError
+	if s.logger == nil || !errors.As(err, &pgErr) || pgErr.Code != "42703" {
+		return
+	}
+	if _, logged := olderFleetViewLogged.LoadOrStore(view, true); logged {
+		return
+	}
+	s.logger.Warn("a supply-chain view was built by an earlier release and lacks a column this build reads; its fleet package reads aggregate live (slower) until `aveloxis migrate` re-creates the view",
+		"view", view, "error", pgErr.Message)
+}
+
 func exposureSelectColumns() string {
 	return `ecosystem, package_name, cohort_repos, repos_unresolved, findings, findings_unresolved,
 	        pct_unresolved, pct_transitive, median_days_open, max_cvss, worst_severity, n_advisories,
 	        distinct_versions_in_use, repos_with_known_versions, modal_version, modal_version_share_pct,
-	        lead_advisory, lead_cve, lead_severity, lead_fixed_version, lead_advisory_repos`
+	        lead_advisory, lead_cve, lead_severity, lead_fixed_version, lead_advisory_repos,
+	        closed_with_reason`
 }
 
 func exposureScanTargets(e *PackageExposure, maxCVSS **float64) []any {
 	return []any{&e.Ecosystem, &e.PackageName, &e.CohortRepos, &e.ReposUnresolved, &e.Findings, &e.FindingsUnresolved,
 		&e.PctUnresolved, &e.PctTransitive, &e.MedianDaysOpen, maxCVSS, &e.WorstSeverity, &e.Advisories,
 		&e.DistinctVersionsInUse, &e.ReposWithKnownVersions, &e.ModalVersion, &e.ModalVersionSharePct,
-		&e.LeadAdvisory, &e.LeadCVE, &e.LeadSeverity, &e.LeadFixedVersion, &e.LeadAdvisoryRepos}
+		&e.LeadAdvisory, &e.LeadCVE, &e.LeadSeverity, &e.LeadFixedVersion, &e.LeadAdvisoryRepos,
+		&e.ClosedWithReason}
 }
 
 func scanExposure(row pgx.Row) (*PackageExposure, error) {
@@ -344,6 +419,53 @@ type PackageExposurePage struct {
 	Live  bool
 }
 
+// Where ListPackageExposure reads from: the fleet's materialized view, the
+// live computation over a cohort ($1 = its repositories), or the live
+// computation over the fleet (when the view cannot answer).
+const (
+	exposureFromView = iota
+	exposureFromCohort
+	exposureFromLiveFleet
+)
+
+// packageExposureListSQL is ListPackageExposure's two statements, the page
+// and the count: for a source, with or without the ecosystem and the name
+// filters (whose arguments follow the cohort's, in that order), sorted by
+// a key of PackageExposureSorts. Any other source or key is refused here,
+// before a statement exists. The page's LIMIT and OFFSET are its last two
+// arguments.
+func packageExposureListSQL(source int, ecosystem, search bool, sortKey string) (page, count string, err error) {
+	orderBy, ok := PackageExposureSorts[sortKey]
+	if !ok {
+		return "", "", fmt.Errorf("package exposure list: unknown sort %q", sortKey)
+	}
+	n := 0
+	var src string
+	switch source {
+	case exposureFromView:
+		src = "aveloxis_data.explorer_package_exposure x"
+	case exposureFromCohort:
+		src = "(" + packageExposureSQL(cohortFilter) + ") x"
+		n++
+	case exposureFromLiveFleet:
+		src = "(" + packageExposureSQL("") + ") x"
+	default:
+		return "", "", fmt.Errorf("package exposure list: unknown source %d", source)
+	}
+	where := ""
+	if ecosystem {
+		n++
+		where += fmt.Sprintf(" AND x.ecosystem = $%d", n)
+	}
+	if search {
+		n++
+		where += fmt.Sprintf(` AND lower(x.package_name) LIKE $%d ESCAPE '\'`, n)
+	}
+	page = "SELECT " + exposureSelectColumns() + ", COUNT(*) OVER () AS total FROM " + src + " WHERE TRUE" + where +
+		" ORDER BY " + orderBy + fmt.Sprintf(" LIMIT $%d OFFSET $%d", n+1, n+2)
+	return page, "SELECT COUNT(*) FROM " + src + " WHERE TRUE" + where, nil
+}
+
 // ListPackageExposure returns the leaderboard page. A nil RepoIDs reads the
 // materialized view; a cohort aggregates live. One pass: the total rides
 // on every row as COUNT(*) OVER () (the aggregated set is one row per
@@ -351,9 +473,9 @@ type PackageExposurePage struct {
 // the whole aggregate twice per request); a page past the end counts the
 // set once more.
 func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposureQuery) (*PackageExposurePage, error) {
-	orderBy, ok := PackageExposureSorts[q.Sort]
-	if !ok {
-		orderBy = PackageExposureSorts["repos"]
+	sortKey := q.Sort
+	if _, ok := PackageExposureSorts[sortKey]; !ok {
+		sortKey = "repos"
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -365,37 +487,39 @@ func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposu
 	offset := max(q.Offset, 0)
 
 	page := &PackageExposurePage{Live: q.RepoIDs != nil}
-	var source string
+	source := exposureFromView
 	args := []any{}
 	if q.RepoIDs != nil {
-		source = "(" + packageExposureSQL(cohortFilter) + ") x"
+		source = exposureFromCohort
 		args = append(args, q.RepoIDs)
-	} else {
-		source = "aveloxis_data.explorer_package_exposure x"
 	}
-	where := ""
 	if q.Ecosystem != "" {
 		args = append(args, q.Ecosystem)
-		where += fmt.Sprintf(" AND x.ecosystem = $%d", len(args))
 	}
 	if q.Search != "" {
 		// A literal substring (PR #212 review): LIKE's wildcards in the
 		// search text are escaped, so "_" (common in package names) and "%"
 		// match only themselves.
 		args = append(args, "%"+likeLiteral(strings.ToLower(q.Search))+"%")
-		where += fmt.Sprintf(` AND lower(x.package_name) LIKE $%d ESCAPE '\'`, len(args))
 	}
 	pageArgs := append(append([]any{}, args...), limit, offset)
-	pageSQL := func(src string) string {
-		return "SELECT " + exposureSelectColumns() + ", COUNT(*) OVER () AS total FROM " + src + " WHERE TRUE" + where +
-			" ORDER BY " + orderBy + fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(pageArgs)-1, len(pageArgs))
+	pageSQL, countSQL, err := packageExposureListSQL(source, q.Ecosystem != "", q.Search != "", sortKey)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, pageSQL(source), pageArgs...)
-	if err != nil && q.RepoIDs == nil && isUndefinedTable(err) {
-		// The fleet view is not built: aggregate live over the whole table.
-		source = "(" + packageExposureSQL("") + ") x"
+	// The same two statements over the live fleet, for when the fleet
+	// view is not built, or is an earlier definition.
+	livePageSQL, liveCountSQL, err := packageExposureListSQL(exposureFromLiveFleet, q.Ecosystem != "", q.Search != "", sortKey)
+	if err != nil {
+		return nil, err
+	}
+	fellBack := false
+	rows, err := s.pool.Query(ctx, pageSQL, pageArgs...)
+	if err != nil && q.RepoIDs == nil && fleetViewCannotAnswer(err) {
+		s.noteFleetViewFallback(fleetExposureView, err)
+		fellBack = true
 		page.Live = true
-		rows, err = s.pool.Query(ctx, pageSQL(source), pageArgs...)
+		rows, err = s.pool.Query(ctx, livePageSQL, pageArgs...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("package exposure list: %w", err)
@@ -414,7 +538,13 @@ func (s *PostgresStore) ListPackageExposure(ctx context.Context, q PackageExposu
 	}
 	if len(page.Rows) == 0 && offset > 0 {
 		// A page past the end carries no window count; count the set once.
-		if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+source+" WHERE TRUE"+where, args...).Scan(&page.Total); err != nil {
+		var err error
+		if fellBack {
+			err = s.pool.QueryRow(ctx, liveCountSQL, args...).Scan(&page.Total)
+		} else {
+			err = s.pool.QueryRow(ctx, countSQL, args...).Scan(&page.Total)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("package exposure count: %w", err)
 		}
 	}
@@ -439,8 +569,10 @@ func (s *PostgresStore) GetPackageExposure(ctx context.Context, ecosystem, name 
 			ecosystem, name)
 	}
 	e, err := scanExposure(row)
-	if err != nil && repoIDs == nil && isUndefinedTable(err) {
-		// The fleet view is not built: aggregate live over the whole table.
+	if err != nil && repoIDs == nil && fleetViewCannotAnswer(err) {
+		s.noteFleetViewFallback(fleetExposureView, err)
+		// The fleet view is not built, or is an earlier definition:
+		// aggregate live over the whole table.
 		live = true
 		e, err = scanExposure(s.pool.QueryRow(ctx, "SELECT "+exposureSelectColumns()+" FROM ("+packageExposureSQL("")+") x WHERE x.ecosystem = $1 AND x.package_name = $2",
 			ecosystem, name))
@@ -467,8 +599,10 @@ func (s *PostgresStore) GetPackageAdvisories(ctx context.Context, ecosystem, nam
 		rows, err = s.pool.Query(ctx, `SELECT vuln_id, cve_id, severity, max_cvss, fixed_version, repos, repos_unresolved, first_seen
 			FROM aveloxis_data.explorer_package_advisory WHERE ecosystem = $1 AND package_name = $2 ORDER BY repos DESC, vuln_id`,
 			ecosystem, name)
-		if err != nil && isUndefinedTable(err) {
-			// The fleet view is not built: aggregate live over the whole table.
+		if err != nil && fleetViewCannotAnswer(err) {
+			s.noteFleetViewFallback(fleetAdvisoryView, err)
+			// The fleet view is not built, or is an earlier definition:
+			// aggregate live over the whole table.
 			rows, err = s.pool.Query(ctx, "SELECT vuln_id, cve_id, severity, max_cvss, fixed_version, repos, repos_unresolved, first_seen FROM ("+
 				packageAdvisorySQL("")+") x WHERE x.ecosystem = $1 AND x.package_name = $2 ORDER BY repos DESC, vuln_id",
 				ecosystem, name)
@@ -493,22 +627,30 @@ func (s *PostgresStore) GetPackageAdvisories(ctx context.Context, ecosystem, nam
 	return out, rows.Err()
 }
 
+// packageVersionsInUseSQL is GetPackageVersionsInUse's statement, for the fleet or (cohort) for the
+// repositories its last argument lists.
+func packageVersionsInUseSQL(cohort bool) string {
+	filter := ""
+	if cohort {
+		filter = " AND v.repo_id = ANY($3)"
+	}
+	return `
+		SELECT ` + purlVersionSQL + ` AS ver, COUNT(DISTINCT v.repo_id)
+		  FROM aveloxis_data.repo_deps_vulnerabilities v
+		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL` + notSelfFindingSQL + filter + `
+		 GROUP BY 1 HAVING ` + purlVersionSQL + ` IS NOT NULL
+		 ORDER BY 2 DESC, 1`
+}
+
 // GetPackageVersionsInUse is the version-agreement panel: each scanned
 // version among CURRENT exposures and how many repositories run it. Live
 // in both scopes (indexed by (ecosystem, package_name)).
 func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, name string, repoIDs []int64) ([]PackageVersionUse, error) {
-	filter := ""
 	args := []any{ecosystem, name}
 	if repoIDs != nil {
-		filter = " AND v.repo_id = ANY($3)"
 		args = append(args, repoIDs)
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+purlVersionSQL+` AS ver, COUNT(DISTINCT v.repo_id)
-		  FROM aveloxis_data.repo_deps_vulnerabilities v
-		 WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
-		 GROUP BY 1 HAVING `+purlVersionSQL+` IS NOT NULL
-		 ORDER BY 2 DESC, 1`, args...)
+	rows, err := s.pool.Query(ctx, packageVersionsInUseSQL(repoIDs != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("package versions %s/%s: %w", ecosystem, name, err)
 	}
@@ -524,30 +666,18 @@ func (s *PostgresStore) GetPackageVersionsInUse(ctx context.Context, ecosystem, 
 	return out, rows.Err()
 }
 
-// GetPackageExposedRepos lists the repositories currently exposed to one
-// package, most findings first, each with its per-version detail.
-func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, name string, repoIDs []int64, limit int) ([]PackageExposedRepo, error) {
-	if limit <= 0 {
-		limit = packageExposureDefaultLimit
-	}
-	if limit > packageExposureMaxLimit {
-		limit = packageExposureMaxLimit // the leaderboard's clamp (review round 2)
-	}
+// packageExposedReposSQL is GetPackageExposedRepos' statement, for the fleet or (cohort) for the
+// repositories its last argument lists.
+func packageExposedReposSQL(cohort bool) string {
 	filter := ""
-	args := []any{ecosystem, name, limit}
-	if repoIDs != nil {
+	if cohort {
 		filter = " AND v.repo_id = ANY($4)"
-		args = append(args, repoIDs)
 	}
-	// f is one row per CURRENT finding with its scanned version; per_ver
-	// weighs each (repository, version). The versions array keeps its
-	// original text order; the per-version arrays ride in the same order
-	// and are re-sorted in Go (CompareVersionish is not SQL).
-	rows, err := s.pool.Query(ctx, `
+	return `
 		WITH f AS (
-		    SELECT v.repo_id, v.dependency_kind, `+purlVersionSQL+` AS ver
+		    SELECT v.repo_id, v.dependency_kind, ` + purlVersionSQL + ` AS ver
 		      FROM aveloxis_data.repo_deps_vulnerabilities v
-		     WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL`+notSelfFindingSQL+filter+`
+		     WHERE v.ecosystem = $1 AND v.package_name = $2 AND v.resolved_at IS NULL` + notSelfFindingSQL + filter + `
 		),
 		per_repo AS (
 		    SELECT repo_id, COUNT(*) AS findings_unresolved,
@@ -566,7 +696,27 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 		  LEFT JOIN per_ver pv USING (repo_id)
 		 GROUP BY p.repo_id, r.repo_owner, r.repo_name, p.findings_unresolved, p.transitive
 		 ORDER BY p.findings_unresolved DESC, r.repo_owner, r.repo_name
-		 LIMIT $3`, args...)
+		 LIMIT $3`
+}
+
+// GetPackageExposedRepos lists the repositories currently exposed to one
+// package, most findings first, each with its per-version detail.
+func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, name string, repoIDs []int64, limit int) ([]PackageExposedRepo, error) {
+	if limit <= 0 {
+		limit = packageExposureDefaultLimit
+	}
+	if limit > packageExposureMaxLimit {
+		limit = packageExposureMaxLimit // the leaderboard's clamp (review round 2)
+	}
+	args := []any{ecosystem, name, limit}
+	if repoIDs != nil {
+		args = append(args, repoIDs)
+	}
+	// f is one row per CURRENT finding with its scanned version; per_ver
+	// weighs each (repository, version). The versions array keeps its
+	// original text order; the per-version arrays ride in the same order
+	// and are re-sorted in Go (CompareVersionish is not SQL).
+	rows, err := s.pool.Query(ctx, packageExposedReposSQL(repoIDs != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("package repos %s/%s: %w", ecosystem, name, err)
 	}
@@ -613,14 +763,14 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 
 // attachLockfileCounts fills each version's Lockfiles from the listed
 // repositories' current lockfile snapshot. The match is the lockfile-graph
-// key (LockfileGraphKey: the ecosystem alias fold — a finding stored under
+// key (pkgid.Key: the ecosystem alias fold — a finding stored under
 // "gem" matches a Gemfile.lock row under "rubygems" — the lowercase name
 // and PyPI's PEP 503 fold), decided in Go. The SQL only narrows the rows
 // read to candidates and must never drop a row the key accepts: an ASCII
 // row is lowercased under the "C" collation (ASCII-only, the same mapping
 // as Go's for ASCII, whatever the database locale — a Turkish one maps
 // 'I' elsewhere) and matched as a substring built from the same fold
-// (lockfileGraphName; LIKE's metacharacters escaped, PyPI's folded '-' a
+// (pkgid.KeyName; LIKE's metacharacters escaped, PyPI's folded '-' a
 // one-character wildcard for '-', '_' or '.'); a row with any non-ASCII
 // character is always a candidate (Go's ToLower maps the Kelvin sign to
 // 'k'), and a non-ASCII target narrows nothing.
@@ -628,7 +778,7 @@ func (s *PostgresStore) GetPackageExposedRepos(ctx context.Context, ecosystem, n
 // Versions are matched as text against the scanned version the purl
 // carries. A direct locked target's purl carries the lockfile's
 // resolved_version verbatim; a transitive's purl percent-escapes '%', '@',
-// '?', '#' and space (purlEscapeSegment), so the escaped spelling is also
+// '?', '#' and space (pkgid.EscapeSegment), so the escaped spelling is also
 // tried decoded. Accepted residue (L10 review): a DIRECT version that
 // itself contains a valid %XX ("1.0%2B1") is also credited with the raw
 // spelling's lockfiles, and one version seen both verbatim and escaped
@@ -648,12 +798,12 @@ func (s *PostgresStore) attachLockfileCounts(ctx context.Context, ecosystem, nam
 	for i, r := range repos {
 		ids[i] = r.RepoID
 	}
-	target := LockfileGraphKey(ecosystem, name)
-	folded := lockfileGraphName(lockfileEcoFold(ecosystem), name)
+	target := pkgid.Key(ecosystem, name)
+	folded := pkgid.KeyName(pkgid.FoldEcosystem(ecosystem), name)
 	pattern := "%"
 	if isASCII(folded) {
 		lit := likeLiteral(folded)
-		if lockfileEcoFold(ecosystem) == "pypi" {
+		if pkgid.FoldEcosystem(ecosystem) == "pypi" {
 			lit = strings.ReplaceAll(lit, "-", "_")
 		}
 		pattern = "%" + lit + "%"
@@ -675,7 +825,7 @@ func (s *PostgresStore) attachLockfileCounts(ctx context.Context, ecosystem, nam
 		if err := rows.Scan(&repoID, &eco, &pkg, &version, &path); err != nil {
 			return fmt.Errorf("package repos %s/%s: lockfile counts: scan: %w", ecosystem, name, err)
 		}
-		if LockfileGraphKey(eco, pkg) != target {
+		if pkgid.Key(eco, pkg) != target {
 			continue
 		}
 		if paths[repoID] == nil {

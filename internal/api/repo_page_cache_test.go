@@ -531,7 +531,7 @@ func TestPageCacheZeroBudgetStillRevalidates(t *testing.T) {
 	}
 }
 
-// 0.29.137 (the kate warm run of 2026-11-04): nginx's read timeout cut the
+// 0.29.137 (the production warm run of 2026-11-04): nginx's read timeout cut the
 // warm script's contributors chart at 120 s, which cancelled the leader's
 // context, which marked 120 s of computation uncacheable — and the next
 // pass failed the same request the same way. The leader now runs its

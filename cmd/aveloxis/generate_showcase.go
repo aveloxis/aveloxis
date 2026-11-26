@@ -488,17 +488,6 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 		return d, fmt.Errorf("vulnerability counts: %w", err)
 	}
 	d.VulnTotal, d.VulnCritical, d.VulnUnknownVersion = vc.Exposure, vc.Critical, vc.UnknownVersion
-	// v0.28.5 (Copilot round): the "scanned" gate is the OSV scan
-	// STAMP (v0.28.1 A4), not dependency-row presence — analysis can
-	// run cycles before the first OSV scan, and gating on
-	// HasDependencyData rendered a fabricated clean 0 for
-	// analyzed-but-never-scanned repos. Findings also prove a scan
-	// (pre-v0.28.1 rows have a NULL stamp until their next scan).
-	if ts, terr := store.GetVulnScanLastRun(ctx, t.repoID); terr != nil {
-		return d, fmt.Errorf("vuln scan stamp: %w", terr)
-	} else {
-		d.VulnScanned = showcaseVulnScanned(ts, vc)
-	}
 	// v0.28.2 (items 1c+4): the forge's metadata totals for the tile
 	// sub-lines — one cheap cached read (GetRepoStats reads queue
 	// cache + latest repo_info snapshot; ~27 featured repos per run).
@@ -513,6 +502,12 @@ func buildRepoPage(ctx context.Context, store *db.PostgresStore, logger *slog.Lo
 		// not the (nullable) snapshot date — a legacy NULL-dated
 		// snapshot carries real counts with a nil date.
 		d.HasMetadata = st.HasMetadataSnapshot
+		// 0.29.200: what the page says about the counts above is the
+		// coverage view the statistics carry, decided by the one function
+		// every surface uses. The showcase's own "a scan ran" rule is gone:
+		// it counted neither closed nor own-package findings, so a
+		// repository with only those and no stamp read "scan pending".
+		d.SetVulnCoverage(st.Coverage)
 	}
 	// v0.28.2 (item 1e): the REDACTED contributors section. Real
 	// counts + classes + cross-repo names; the generator NEVER emits
@@ -926,11 +921,4 @@ func writeAtomic(path string, data []byte) error {
 		return fmt.Errorf("renaming %s: %w", path, err)
 	}
 	return nil
-}
-
-// showcaseVulnScanned is the showcase's "a scan ran" evidence: the OSV scan
-// stamp, or any current finding (pre-v0.28.1 rows carry no stamp until their
-// next scan) — unknown-version advisories included (v0.29.70 review round 6).
-func showcaseVulnScanned(stamp *time.Time, c db.VulnClassCounts) bool {
-	return stamp != nil || c.Exposure > 0 || c.UnknownVersion > 0
 }

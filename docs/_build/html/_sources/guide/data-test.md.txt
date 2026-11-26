@@ -155,8 +155,10 @@ captures rows the released schema missed. Two scenarios:
 If a FLAG is unexpected, run with `--keep-dbs`, then:
 
 ```bash
-TABLE=issues      # the flagged table
-PK=issue_id       # its primary key
+# The flagged table
+TABLE=issues
+# Its primary key
+PK=issue_id
 psql -d aveloxis_new -c "
   SELECT * FROM aveloxis_data.$TABLE
   WHERE $PK NOT IN (SELECT $PK FROM aveloxis_released.aveloxis_data.$TABLE);
@@ -612,7 +614,7 @@ short, and checks the gone-history invariant every second on a consistent
 snapshot:
 
 ```bash
-# a clone of a snapshot run's local side (kept with --keep-dbs); the test writes
+# a clone of the local side of a snapshot run (kept with --keep-dbs); the test writes
 psql -c "CREATE DATABASE aveloxis_dt_stress TEMPLATE aveloxis_new STRATEGY FILE_COPY"
 AVELOXIS_TEST_STRESS_DB="postgres://user:pass@localhost:5432/aveloxis_dt_stress" \
 AVELOXIS_TEST_STRESS_DURATION_SECONDS=300 AVELOXIS_TEST_STRESS_WORKERS=16 \

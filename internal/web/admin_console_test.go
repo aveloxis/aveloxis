@@ -165,3 +165,46 @@ func TestAdminLinksAreShownToAdministratorsOnly(t *testing.T) {
 		}
 	}
 }
+
+// Every route under /admin/ is registered behind requireAdmin (0.29.188).
+// The service refuses a non-administrator by itself, so a route registered
+// behind requireAuth still answers 403; this pins the outer gate too, which
+// keeps a signed-in non-administrator from reaching a handler's parsing and
+// from learning which administrator routes exist by their different errors.
+// Derived from Handler's registrations: a route added later is covered.
+func TestEveryAdminRouteIsBehindRequireAdmin(t *testing.T) {
+	_, file := srctest.PackageFuncAt(t, "internal/web", "func (s *Server) Handler(")
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(srctest.Root(t), filepath.FromSlash(file)), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	examined := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); !ok || sel.Sel.Name != "HandleFunc" {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok {
+			return true
+		}
+		pattern, _ := strconv.Unquote(lit.Value)
+		_, path, _ := strings.Cut(pattern, " ")
+		if !strings.HasPrefix(path, "/admin/") {
+			return true
+		}
+		examined++
+		wrap, ok := call.Args[1].(*ast.CallExpr)
+		if ok {
+			if ws, isSel := wrap.Fun.(*ast.SelectorExpr); isSel && ws.Sel.Name == "requireAdmin" {
+				return true
+			}
+		}
+		t.Errorf("%s is not registered behind s.requireAdmin", pattern)
+		return true
+	})
+	srctest.MinCount(t, "/admin/ routes examined", examined, 20)
+}

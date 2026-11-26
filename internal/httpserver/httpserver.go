@@ -31,7 +31,7 @@ import (
 )
 
 // DefaultTimeout is http_timeout_seconds' default. Every nginx timeout
-// defaults to 60 s, and the slowest API statement measured on kate over
+// defaults to 60 s, and the slowest API statement measured on a production fleet over
 // 2026-09-22..28 was 59.9 s (held under nginx's default); three minutes
 // stays above both, so nginx — tuned shorter — is the bound an operator
 // sees first.

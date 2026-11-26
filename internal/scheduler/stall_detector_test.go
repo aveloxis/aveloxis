@@ -4,7 +4,7 @@
 package scheduler
 
 // stall_detector_test.go — v0.29.56. Two hours of the 2026-09-17
-// chaoss.tv log (v0.29.55) had 194 gaps of 4 seconds or more with 70
+// production log (v0.29.55) had 194 gaps of 4 seconds or more with 70
 // busy workers, and unrelated workers resuming in the SAME millisecond
 // ("scorecard complete", "facade complete" and "staged collection
 // complete" for three repos all at 16:36:21.916). Four times the DB

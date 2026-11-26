@@ -361,7 +361,7 @@ func TestLifecycleStress(t *testing.T) {
 	var deadlocksAfter int64
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		conn, err := pgx.Connect(ctx, dsn)
+		conn, err := OpenConn(ctx, dsn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -384,7 +384,7 @@ func TestLifecycleStress(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	for {
-		conn, err := pgx.Connect(ctx, dsn)
+		conn, err := OpenConn(ctx, dsn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -558,7 +558,7 @@ func stressSetup(ctx context.Context, t *testing.T, store *PostgresStore) *stres
 	// cleanup opens its own connection (the run closes the store's pool).
 	t.Cleanup(func() {
 		bg := context.Background()
-		conn, err := pgx.Connect(bg, os.Getenv("AVELOXIS_TEST_STRESS_DB"))
+		conn, err := OpenConn(bg, os.Getenv("AVELOXIS_TEST_STRESS_DB"))
 		if err != nil {
 			t.Logf("cleanup: %v", err)
 			return

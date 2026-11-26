@@ -24,7 +24,7 @@ var nodeIDIndexes = []struct{ index, table string }{
 //
 // Declaring them in schema.sql would defeat the rollout: the base DDL runs
 // before any migration step, so an upgrading fleet would block-build them on
-// 23.0M pull_requests / 9.6M issues (aveloxis_large) during startup migrate,
+// 23.0M pull_requests / 9.6M issues (the larger production database) during startup migrate,
 // and the CONCURRENTLY step would then no-op.
 func TestNodeIDIndexesAreMigrationOnlyAndConcurrent(t *testing.T) {
 	schema := srctest.Read(t, "internal/db/schema.sql")

@@ -1,0 +1,12 @@
+a1.txt	A01 sqlfn param via unnest (want VIOL)	assign
+a1.txt	A02 sqlfn param via VALUES (want VIOL)	assign
+a1.txt	A02c control: sqlfn param direct (VIOL)	assign
+a1.txt	A03 sqlfn fill-empty from unnest param (want VIOL)	assign
+a1.txt	A03c control fill direct param (VIOL)	assign
+a1.txt	A04 plpgsql param via unnest $1 (want VIOL)	assign
+a1.txt	A05 sqlfn pnn via select param (want VIOL)	assign
+a1.txt	A06 sqlfn insert-select unnest param excluded (want VIOL)	assign
+a1.txt	A06c control insert values param excluded in body (VIOL)	assign
+a1.txt	A07 sqlfn bare batch column (want VIOL)	assign
+a1.txt	A29 sqlfn pn operand batch (want VIOL)	assign
+a1.txt	A30 guarded bare fill in sqlfn from batch param (want VIOL)	assign

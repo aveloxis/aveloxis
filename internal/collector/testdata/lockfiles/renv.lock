@@ -1,0 +1,27 @@
+{
+  "R": {
+    "Version": "4.3.1",
+    "Repositories": [
+      {"Name": "CRAN", "URL": "https://cloud.r-project.org"},
+      {"Name": "RSPM", "URL": "https://packagemanager.posit.co/cran/2023-08-01"},
+      {"Name": "INTERNAL", "URL": "https://r.corp.example/repo"},
+      {"Name": "PPM", "URL": "https://packagemanager.posit.co/internal-pkgs/latest"}
+    ]
+  },
+  "Bioconductor": {"Version": "3.17"},
+  "Packages": {
+    "Rcpp": {"Package": "Rcpp", "Version": "1.0.11", "Source": "Repository", "Repository": "CRAN", "Requirements": ["R", "methods", "utils"], "Hash": "ae6cbbe1492f4de79c45fce06f967ce8"},
+    "data.table": {"Package": "data.table", "Version": "1.14.8", "Source": "Repository", "Repository": "RSPM", "Requirements": ["R", "methods"]},
+    "MASS": {"Package": "MASS", "Version": "7.3-60", "Source": "Repository", "Repository": "CRAN", "Requirements": ["R", "grDevices", "graphics", "methods", "stats", "utils"]},
+    "RcppArmadillo": {"Package": "RcppArmadillo", "Version": "0.12.6.1.0", "Source": "Repository", "Repository": "https://cran.r-project.org", "Requirements": ["R", "Rcpp", "methods", "stats", "utils"]},
+    "limma": {"Package": "limma", "Version": "3.56.2", "Source": "Bioconductor", "Requirements": ["R", "grDevices", "methods", "stats", "utils"]},
+    "edgeR": {"Package": "edgeR", "Version": "3.42.4", "Source": "Bioconductor", "Requirements": ["R", "Rcpp", "limma", "methods"]},
+    "devpkg": {"Package": "devpkg", "Version": "0.1.0", "Source": "GitHub", "RemoteType": "github", "RemoteUsername": "someone", "RemoteRepo": "devpkg", "RemoteSha": "0123456789abcdef0123456789abcdef01234567", "Requirements": ["Rcpp"]},
+    "corp": {"Package": "corp", "Version": "2.0.0", "Source": "Repository", "Repository": "INTERNAL", "Requirements": ["Rcpp"]},
+    "corp2": {"Package": "corp2", "Version": "2.1.0", "Source": "Repository", "Repository": "PPM"},
+    "localpkg": {"Package": "localpkg", "Version": "0.0.1", "Source": "Local"},
+    "mystery": {"Package": "mystery", "Version": "1.0", "Source": "unknown"},
+    "noversion": {"Package": "noversion", "Source": "Repository", "Repository": "CRAN"},
+    "renv": {"Package": "renv", "Version": "1.0.3", "Source": "Repository", "Repository": "CRAN", "Requirements": ["utils"]}
+  }
+}

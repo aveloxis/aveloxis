@@ -243,7 +243,7 @@ func TestActivityBoundsPreferTheStoredColumn(t *testing.T) {
 			"p.commit_daily_complete_at IS NOT NULL)), (SELECT cmt_author_timestamp FROM aveloxis_data.commits WHERE repo_id = r.id AND cmt_author_timestamp IS NOT NULL AND cmt_author_timestamp >= $3::timestamptz AND cmt_author_timestamp < $2::timestamptz",
 		},
 	} {
-		body := srctest.NormalizeWS(srctest.FuncBody(t, src, "func (s *PostgresStore) "+fn+"("))
+		body := srctest.NormalizeWS(srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) "+fn+"(")))
 		for _, needle := range needles {
 			if !strings.Contains(body, needle) {
 				t.Errorf("%s: the commits arm must read the stored column, then the complete daily picture, and scan commits only when neither answers", fn)
@@ -399,7 +399,7 @@ func TestRecordCommitBoundsReadsTheCommitsOncePerBound(t *testing.T) {
 	}
 	tr := &captureTracer{}
 	cfg.ConnConfig.Tracer = tr
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := OpenPoolConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

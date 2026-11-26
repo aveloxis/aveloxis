@@ -429,7 +429,7 @@ func (a reachableAction) String() string {
 // A forge-archived repository renamed onto a TRACKED one (targetTracked) is
 // a data-bearing duplicate prelim dequeued on purpose; lifting it would
 // have prelim dequeue it again at every run (the L10 passes: two such rows
-// on kate). targetTracked is read only for an archived unstamped redirect.
+// on a production fleet). targetTracked is read only for an archived unstamped redirect.
 // The store re-checks the class in the statement; this picks the call.
 //
 // targetNotARepo (0.29.146, review round 7) comes first and for every

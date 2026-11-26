@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -998,7 +999,7 @@ func TestSBOMGraphResolvesParentByVersionFirst(t *testing.T) {
 	// population, the version-exact lookup must precede the
 	// name-level fallback.
 	s := srctest.Read(t, "internal/collector/sbom.go")
-	body := srctest.FuncBody(t, s, "func (x *sbomGraphIndex) parentRefs(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func (x *sbomGraphIndex) parentRefs("))
 	lockVer := strings.Index(body, `lockByNameVer[e.LockfilePath][pk+"@"+e.ParentVersion]`)
 	lockName := strings.Index(body, "lockByName[e.LockfilePath][pk]")
 	dirVer := strings.Index(body, `directByNameVer[pk+"@"+e.ParentVersion]`)
@@ -1048,7 +1049,9 @@ func TestChainRootsArePerLockfile(t *testing.T) {
 // diagnostic. The log must SPLIT the kinds (log-the-effective-value).
 func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/lockfile_scan.go")
-	if !strings.Contains(s, `"transitive_resolutions", len(packages)-direct`) ||
+	// 0.29.215: the rows are counted as they are handed to the store (they
+	// are no longer all held), direct and transitive each on its own.
+	if !strings.Contains(s, `"transitive_resolutions", transitive`) || !strings.Contains(s, "transitive++") ||
 		!strings.Contains(s, `"direct_resolutions", direct`) {
 		t.Error("lockfile-scan completion log must report direct and transitive counts separately")
 	}
@@ -1060,29 +1063,29 @@ func TestLockfileScanLogSplitsResolutionKinds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Enforces SR-17 (scripts/standing_rules.go).
-// #1: graph keys now fold through the ONE shared db.LockfileGraphKey —
+// #1: graph keys now fold through the ONE shared pkgid.Key —
 // case, PyPI underscore/dot equivalence, and the rubygems↔gem-class
 // ecosystem vocabulary split. Raw keys silently dropped chains for
 // exactly the packages whose spellings differ between subsystems, and
 // the SBOM side's private fold was a duplicate waiting to drift.
 func TestLockfileGraphKeyIsTheOneFold(t *testing.T) {
-	if got := LockfileGraphKey("rubygems", "Rails"); got != "gem|rails" {
+	if got := pkgid.Key("rubygems", "Rails"); got != "gem|rails" {
 		t.Errorf("alias+case folding broken: %q", got)
 	}
-	if got := LockfileGraphKey("pypi", "Foo_Bar.baz"); got != "pypi|foo-bar-baz" {
+	if got := pkgid.Key("pypi", "Foo_Bar.baz"); got != "pypi|foo-bar-baz" {
 		t.Errorf("PyPI PEP 503 folding broken: %q", got)
 	}
 	chains := srctest.Read(t, "internal/api/vuln_chains.go")
-	if !strings.Contains(chains, "db.LockfileGraphKey(") {
-		t.Error("the chain walk must key through db.LockfileGraphKey")
+	if !strings.Contains(chains, "pkgid.Key(") {
+		t.Error("the chain walk must key through pkgid.Key")
 	}
 	sbom := srctest.Read(t, "internal/collector/sbom.go")
-	if !strings.Contains(sbom, "return db.LockfileGraphKey(eco, name)") {
-		t.Error("sbomGraphKey must delegate to db.LockfileGraphKey — a private fold copy WILL drift")
+	if !strings.Contains(sbom, "return pkgid.Key(eco, name)") {
+		t.Error("sbomGraphKey must delegate to pkgid.Key — a private fold copy WILL drift")
 	}
 	sets := srctest.Read(t, "internal/db/lockfile_store.go")
-	if !strings.Contains(sets, "key := LockfileGraphKey(eco, name)") {
-		t.Error("GetRepoDirectPackageSets must key through LockfileGraphKey")
+	if !strings.Contains(sets, "key := pkgid.Key(eco, name)") {
+		t.Error("GetRepoDirectPackageSets must key through pkgid.Key")
 	}
 }
 
@@ -1134,7 +1137,7 @@ func TestGapForceListSentinel(t *testing.T) {
 	if !strings.Contains(s, "const GapForceList = -1.0") {
 		t.Error("GapForceList sentinel missing")
 	}
-	body := srctest.FuncBody(t, s, "func gapExceedsThreshold(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func gapExceedsThreshold("))
 	if !strings.Contains(body, "if threshold < 0 {") {
 		t.Error("gapExceedsThreshold must short-circuit TRUE in force-list mode before any count comparison")
 	}
@@ -1189,7 +1192,7 @@ func TestSPDXIDsAreEcosystemScoped(t *testing.T) {
 	if !strings.Contains(s, "func spdxPackageID(eco, name, version string) string") {
 		t.Error("spdxPackageID must take the ecosystem")
 	}
-	if !strings.Contains(s, `sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))`) {
+	if !strings.Contains(s, `sha256.Sum256([]byte(pkgid.Key(eco, name) + "@" + version))`) {
 		t.Error("the ID hash must scope by the alias-folded graph key — bare name@version collides across ecosystems")
 	}
 }
@@ -1213,7 +1216,7 @@ func TestPodlingProbeDistinguishesAbsenceFromFailure(t *testing.T) {
 	if !strings.Contains(a, "not a definitive answer") {
 		t.Error("non-definitive statuses must ERROR, not fall through to the next variant")
 	}
-	body := srctest.FuncBody(t, a, "func Fetch(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, a, "func Fetch("))
 	if !strings.Contains(body, "return tlpProjects, fmt.Errorf(\"resolving podling") {
 		t.Error("Fetch must ABORT on a probe error — the import re-runs cleanly; silent demotion loses podlings")
 	}
@@ -1259,7 +1262,7 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	if !strings.Contains(qd, "func (s *PostgresStore) HeartbeatDrainLocks(ctx context.Context, workerID string)") {
 		t.Fatal("HeartbeatDrainLocks (set-wide) must exist — a per-repo beat leaves the parked tail reclaimable")
 	}
-	hb := srctest.FuncBody(t, qd, "func (s *PostgresStore) HeartbeatDrainLocks(")
+	hb := srctest.StripGoComments(srctest.FuncBody(t, qd, "func (s *PostgresStore) HeartbeatDrainLocks("))
 	if !strings.Contains(hb, "locked_by = $1 AND status = 'collecting'") {
 		t.Error("the heartbeat must guard on locked_by + status so a straggler beat after release/reclaim is a 0-row no-op")
 	}
@@ -1283,7 +1286,7 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	}
 	// Both holders start the ONE runner for their whole run.
 	sched := srctest.Read(t, "internal/scheduler/scheduler.go")
-	drain := srctest.FuncBody(t, sched, "func (s *Scheduler) processLeftoverStagingBackground(")
+	drain := srctest.StripGoComments(srctest.FuncBody(t, sched, "func (s *Scheduler) processLeftoverStagingBackground("))
 	hbPos := strings.Index(drain, "StartDrainHeartbeat(")
 	loopPos := strings.Index(drain, "range drainSet")
 	if hbPos < 0 || loopPos < 0 || hbPos > loopPos {
@@ -1292,7 +1295,7 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 	// v0.29.65: the heal's run lives in heal_collection_gaps_run.go; its
 	// heartbeat covers the whole run (TestGapHealFleet* drive the order).
 	healer := srctest.StripGoComments(srctest.Read(t, "cmd/aveloxis/heal_collection_gaps_run.go"))
-	run := srctest.FuncBody(t, healer, "func (r *gapHealRun) run(")
+	run := srctest.StripGoComments(srctest.FuncBody(t, healer, "func (r *gapHealRun) run("))
 	hbAt := strings.Index(run, "r.store.StartDrainHeartbeat(ctx, r.logger, r.workerID)")
 	workAt := strings.Index(run, "r.runFleet(")
 	if hbAt < 0 || workAt < 0 || hbAt > workAt {
@@ -1309,8 +1312,22 @@ func TestDrainLocksAreHeartbeated(t *testing.T) {
 // pins. Behavioral proof: the stale-snapshot fixtures in
 // TestGetGapHealCandidatesEndToEnd (red-proven against the bare join).
 func TestGapHealCandidatesResolveLatestSnapshot(t *testing.T) {
+	// 0.29.212: the statement is built by gapHealCandidatesSQL (so that the
+	// write-policy check runs it for both modes). What is pinned is
+	// unchanged, and read where the text now stands: the reader runs that
+	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
+	if fn := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
+	}
+	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {
+		gapHealStatementShape(t, body)
+	}
+}
+
+// gapHealStatementShape: the latest-snapshot join of one mode's statement.
+func gapHealStatementShape(t *testing.T, body string) {
+	t.Helper()
 	if !strings.Contains(body, "JOIN LATERAL") ||
 		!strings.Contains(body, "ORDER BY ri0.data_collection_date DESC NULLS LAST, ri0.repo_info_id DESC") {
 		t.Error("GetGapHealCandidates must pick the latest repo_info snapshot per repo (LATERAL, date DESC with repo_info_id tiebreak)")
@@ -1423,7 +1440,7 @@ func TestDrainHeartbeatDefeatsStaleLockRecovery(t *testing.T) {
 // fractional-start fixture in TestCompleteJobLastCollectedSemantics.
 func TestCompleteJobFloorsAnchorToSecond(t *testing.T) {
 	src := srctest.Read(t, "internal/db/queue.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) CompleteJob(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) CompleteJob("))
 	if !strings.Contains(body, "NullTime(startedAt.Truncate(time.Second))") {
 		t.Error("CompleteJob must floor the anchor to the whole second — forge timestamps truncate DOWN, so a sub-second since re-opens the boundary second as a blind window")
 	}
@@ -1478,7 +1495,7 @@ func TestImportTripwiresParseNotRegex(t *testing.T) {
 // bypasses the tripwire the round-27 AST rewrite had just rebuilt.
 func TestImportGroupingRuleIsFileWide(t *testing.T) {
 	ig := srctest.Read(t, "scripts/import_grouping_test.go")
-	body := srctest.FuncBody(t, ig, "func TestImportGroupsKeepStdlibFirst(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, ig, "func TestImportGroupsKeepStdlibFirst("))
 	declLoop := strings.Index(body, "range af.Decls")
 	seen := strings.Index(body, `seenModule := ""`)
 	if declLoop < 0 || seen < 0 || seen > declLoop {
@@ -1504,7 +1521,7 @@ func TestImportGroupingRuleIsFileWide(t *testing.T) {
 // match).
 func TestForgeIDLookupIsHostScoped(t *testing.T) {
 	src := srctest.Read(t, "internal/db/repo_forge_id.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) FindRepoByPlatformRepoID(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) FindRepoByPlatformRepoID("))
 	if !strings.Contains(body, "lower(split_part(repo_git, '/', 3)) = $3") {
 		t.Error("FindRepoByPlatformRepoID must filter by the URL's host — GitLab project IDs are per-instance, not global")
 	}
@@ -1588,9 +1605,26 @@ func TestForgeIDRenameHealNeverCrossesHosts(t *testing.T) {
 // the COALESCE-to-zero predicate. Behavioral: the nosnap fixture in
 // TestGetGapHealCandidatesEndToEnd.
 func TestGapHealCandidatesIncludeSnapshotlessInAll(t *testing.T) {
+	// 0.29.212: the statement is built by gapHealCandidatesSQL (so that the
+	// write-policy check runs it for both modes). What is pinned is
+	// unchanged, and read where the text now stands: the reader runs that
+	// builder's statement, and the statement of EACH mode has the shape.
 	src := srctest.Read(t, "internal/db/gap_heal_store.go")
-	body := srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")
-	if !strings.Contains(body, "LEFT JOIN LATERAL") {
+	if fn := srctest.StripGoComments(srctest.FuncBody(t, src, "func (s *PostgresStore) GetGapHealCandidates(")); !strings.Contains(fn, "s.pool.Query(ctx, gapHealCandidatesSQL(all),") {
+		t.Fatal("GetGapHealCandidates must run the statement gapHealCandidatesSQL builds for its mode")
+	}
+	for _, body := range []string{gapHealCandidatesSQL(false), gapHealCandidatesSQL(true)} {
+		gapHealSnapshotlessShape(t, body)
+	}
+}
+
+// gapHealSnapshotlessShape: the LEFT join and the zero counts of one mode's statement.
+func gapHealSnapshotlessShape(t *testing.T, body string) {
+	t.Helper()
+	// The lateral that reads repo_info, by its own first line: the
+	// statement has another LEFT JOIN LATERAL (the synthetic-issue count),
+	// which satisfied a bare "LEFT JOIN LATERAL" whatever this one was.
+	if !srctest.ContainsNormalized(body, "LEFT JOIN LATERAL ( SELECT ri0.issues_count, ri0.pr_count") {
 		t.Error("repo_info must LEFT-join — an inner join drops snapshotless collected repos from the --all sweep")
 	}
 	if !strings.Contains(body, "COALESCE(ri.issues_count, 0)") {
@@ -1639,7 +1673,7 @@ func TestPodlingProbeFollowsValidatedRedirects(t *testing.T) {
 	if !strings.Contains(a, "func podlingRedirectTarget(") {
 		t.Fatal("the probe must validate and follow redirect targets — ignoring Location drops renamed podlings as unresolved")
 	}
-	body := srctest.FuncBody(t, a, "func podlingRedirectTarget(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, a, "func podlingRedirectTarget("))
 	if !strings.Contains(body, "strings.EqualFold(loc.Host, req.URL.Host)") {
 		t.Error("redirect targets must stay on the SAME forge host")
 	}
@@ -1673,8 +1707,10 @@ func TestDataTestReportRendersTypeChanges(t *testing.T) {
 // TestGoModuleRemovalClearsStaleClosure.
 func TestGoModDiscoveryPrecedesToolchainCheck(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/gomod_graph.go")
-	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
-	walk := strings.Index(body, "filepath.Walk(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph("))
+	// 0.29.215: the discovery walk is walkBounded (a directory's listing is
+	// taken in chunks, in the worker); the ORDER this pins is unchanged.
+	walk := strings.Index(body, "walkBounded(workDir,")
 	zero := strings.Index(body, "if len(modDirs) == 0 {")
 	look := strings.Index(body, `exec.LookPath("go")`)
 	if walk < 0 || zero < 0 || look < 0 || !(walk < zero && zero < look) {
@@ -1691,7 +1727,7 @@ func TestGoModDiscoveryPrecedesToolchainCheck(t *testing.T) {
 // TestChainsForFoldsRootSpellingsAcrossLockfiles.
 func TestChainRootDedupUsesGraphKey(t *testing.T) {
 	s := srctest.Read(t, "internal/api/vuln_chains.go")
-	body := srctest.FuncBody(t, s, "func walkChainGraph(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func walkChainGraph("))
 	if !strings.Contains(body, "rootSeen[key]") || strings.Contains(body, "rootSeen[parent]") {
 		t.Error("rootSeen must key on the folded graph key, never the raw parent spelling — introduced_by_total_roots overcounts otherwise")
 	}
@@ -1738,13 +1774,16 @@ func TestSchemaAuditDumpFailsClosed(t *testing.T) {
 // Enforces SR-16 (scripts/standing_rules.go).
 func TestGoModWalkFailureIsIncomplete(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/gomod_graph.go")
-	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
-	failCheck := strings.Index(body, "if walkErr != nil || walkFailed {")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph("))
+	// 0.29.215: walkBounded ends at the first entry it cannot read and
+	// returns that error, so the one check is of its error (there is no
+	// second flag to forget).
+	failCheck := strings.Index(body, "if walkErr != nil {")
 	zeroCheck := strings.Index(body, "if len(modDirs) == 0 {")
 	if failCheck < 0 || zeroCheck < 0 || failCheck > zeroCheck {
 		t.Error("the walk-failure check must precede the zero-modules COMPLETE return — otherwise a failed walk clears the prior closure as if the repo dropped Go")
 	}
-	if strings.Contains(body, "_ = filepath.Walk(") {
+	if strings.Contains(body, "_ = filepath.Walk(") || strings.Contains(body, "_ = walkBounded(") || !strings.Contains(body, "walkErr := walkBounded(") {
 		t.Error("the walk error must not be discarded (SR-16)")
 	}
 }
@@ -1762,7 +1801,7 @@ func TestGoModWalkFailureIsIncomplete(t *testing.T) {
 // TestGenerateSPDX_DuplicateDirectDepsEmitOnePackage.
 func TestSPDXDirectDepsGuardSeenIDs(t *testing.T) {
 	s := srctest.Read(t, "internal/collector/sbom.go")
-	body := srctest.FuncBody(t, s, "func generateSPDX(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func generateSPDX("))
 	guard := strings.Index(body, "if seenIDs[pkgID] {")
 	mark := strings.Index(body, "seenIDs[pkgID] = true")
 	if guard < 0 || mark < 0 || guard > mark {
@@ -1778,7 +1817,7 @@ func TestSPDXDirectDepsGuardSeenIDs(t *testing.T) {
 // TestTypeBodyGroupedDeclarationSlicesTheNamedType.
 func TestTypeBodySlicesGroupedDeclarations(t *testing.T) {
 	s := srctest.Read(t, "internal/srctest/srctest.go")
-	body := srctest.FuncBody(t, s, "func TypeBody(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func TypeBody("))
 	if !strings.Contains(body, "gd.Lparen.IsValid()") ||
 		!strings.Contains(body, "fset.Position(ts.Pos()).Offset:fset.Position(ts.End()).Offset") {
 		t.Error("TypeBody must slice the matched TypeSpec when the declaration is grouped — the whole-GenDecl span lets pins match sibling types")
@@ -1805,7 +1844,7 @@ func TestSBOMScopesFoldAcrossDuplicates(t *testing.T) {
 	if strings.Count(s, "model.StrongerScope(") < 2 {
 		t.Error("BOTH generators must fold duplicate scopes through model.StrongerScope — first-observation scope lets manifest order hide runtime deps")
 	}
-	spdx := srctest.FuncBody(t, s, "func generateSPDX(")
+	spdx := srctest.StripGoComments(srctest.FuncBody(t, s, "func generateSPDX("))
 	if !strings.Contains(spdx, "model.SPDXRelationshipForScope(scopeFor[pkgID])") {
 		t.Error("the SPDX relationship must use the FOLDED scope, not dep.Type")
 	}

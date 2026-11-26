@@ -42,7 +42,7 @@ func openFixture(t *testing.T) *dbFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := db.OpenPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

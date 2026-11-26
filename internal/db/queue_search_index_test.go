@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
 // TestSchemaCreatesTrigramExtension pins the migration-side contract:
@@ -53,7 +55,7 @@ func TestSchemaCreatesRepoNameTrigramIndex(t *testing.T) {
 // schema discovered from the catalog, so it resolves regardless of the
 // session search_path. The extension can be registered in pg_extension
 // while its operator class lives in a schema not on the connecting
-// role's search_path (observed on kate 2026-06-13 with SQLSTATE 42704);
+// role's search_path (observed on a production fleet 2026-06-13 with SQLSTATE 42704);
 // an unqualified reference fails there and used to fatally block serve
 // startup over a perf index. A future refactor that reverts to an
 // unqualified `gin_trgm_ops` would re-introduce that bug; this test
@@ -94,13 +96,20 @@ func TestListQueuePageSearchUsesIndexedExpression(t *testing.T) {
 		t.Fatalf("read queue.go: %v", err)
 	}
 	src := string(data)
-	body := extractBatchFunc(src, "ListQueuePage")
-	if body == "" {
-		t.Fatal("could not locate ListQueuePage")
-	}
+	// 0.29.212: the page's two statements are built by queuePageSQL (so that
+	// the write-policy check runs them for every sort). What is pinned is
+	// unchanged, and read where the text now stands: ListQueuePage runs
+	// that builder's statements, and the builder's body has the shape.
+	builtByQueuePageSQL(t)
+	// Comments are taken out first (Copilot on PR #263, third review): the
+	// indexed expression kept only in a comment satisfied the check below.
+	body := srctest.StripGoComments(srctest.FuncBody(t, src, "func queuePageSQL("))
 
-	// The exact concatenation form must appear in the WHERE clause so
-	// the planner uses the GIN index on the expression.
+	// The exact concatenation form must appear in the builder's text so
+	// the planner can use the GIN index on the expression. This holds the
+	// text only: it does not show that BOTH statements the builder returns
+	// use it (review round 15, T-3; a pin on the returned statements is
+	// planned work).
 	if !strings.Contains(body, "(repo_owner || '/' || repo_name)") &&
 		!strings.Contains(body, "(repo_owner||'/'||repo_name)") {
 		t.Error("ListQueuePage search must filter on (repo_owner || '/' || repo_name) — the same " +

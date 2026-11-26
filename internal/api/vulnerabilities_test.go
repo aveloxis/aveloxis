@@ -12,18 +12,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/collector"
+	"github.com/aveloxis/aveloxis/internal/model"
 )
 
 func TestAdvisoryURLs(t *testing.T) {
-	osv, cve := advisoryURLs("GHSA-abcd-1234", "CVE-2023-34053")
+	osv, cve := collector.AdvisoryURLs("GHSA-abcd-1234", "CVE-2023-34053")
 	if osv != "https://osv.dev/vulnerability/GHSA-abcd-1234" {
 		t.Errorf("osv url: %s", osv)
 	}
 	if cve != "https://app.opencve.io/cve/CVE-2023-34053" {
 		t.Errorf("cve url: %s", cve)
 	}
-	if _, cve := advisoryURLs("PYSEC-2024-1", ""); cve != "" {
+	if _, cve := collector.AdvisoryURLs("PYSEC-2024-1", ""); cve != "" {
 		t.Error("no cve id must mean no opencve link — never fabricate one")
 	}
 }
@@ -31,13 +32,13 @@ func TestAdvisoryURLs(t *testing.T) {
 func TestAnnotateCycloneDXWithVulns(t *testing.T) {
 	sbom := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"bom-ref":"pkg:npm/a@1","purl":"pkg:npm/a@1"}]}`)
 	resolvedAt := time.Now()
-	rows := []*db.VulnerabilityRow{
+	rows := []*model.VulnerabilityRow{
 		{VulnID: "GHSA-live", CVEID: "CVE-2024-1", PackageName: "a", PackagePurl: "pkg:npm/a@1",
 			Severity: "CRITICAL", CVSSScore: 9.8, Summary: "bad", FixedVersion: "2.0", Source: "osv.dev"},
 		{VulnID: "GHSA-gone", PackagePurl: "pkg:npm/b@1", Severity: "LOW",
 			Source: "osv.dev", ResolvedAt: &resolvedAt},
 	}
-	out, err := annotateCycloneDXWithVulns(sbom, rows)
+	out, err := collector.AnnotateCycloneDXWithVulns(sbom, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestV0274RoutesRegistered(t *testing.T) {
 	}
 	// The licenses handler must ship the scanned flag (GUI empty-state
 	// disambiguation) and the SBOM handler the vulns=1 annotation path.
-	for _, needle := range []string{`"scanned":`, `HasDependencyData`, `annotateCycloneDXWithVulns`, `args.withVulns`} {
+	for _, needle := range []string{`"scanned":`, `HasDependencyData`, `collector.AnnotateCycloneDXWithVulns`, `args.withVulns`} {
 		if !strings.Contains(src, needle) {
 			t.Errorf("server.go missing v0.27.4 wiring %q", needle)
 		}

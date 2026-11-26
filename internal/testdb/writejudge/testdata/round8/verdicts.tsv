@@ -1,0 +1,64 @@
+fp.txt	V01 batch fill platform id (guarded bare from unnest)	pass
+fp.txt	V02 batch fill coalesce nullif	pass
+fp.txt	V03 created_at fill with cast	pass
+fp.txt	V04 created_at fill with NULLIF sentinel on incoming	pass
+fp.txt	V05 created_at fill from repo_info (other table) in subselect	pass
+fp.txt	V06 created_at guarded bare from FROM derived over other table	assign
+fp.txt	V07 updated_at greatest plain	pass
+fp.txt	V08 updated_at greatest with cast	pass
+fp.txt	V09 updated_at greatest of batch	pass
+fp.txt	V10 updated_at conditional keep: CASE WHEN $2 > updated_at	assign
+fp.txt	V11 forked_from prefer nonempty batch	pass
+fp.txt	V12 forked_from prefer nonempty with lower()	assign
+fp.txt	V13 forked_from prefer nonempty with trim	pass
+fp.txt	V14 forked_from where guard instead	assign
+fp.txt	V15 vuln_scan_last_run from param	pass
+fp.txt	V16 vuln_scan_last_run batch	pass
+fp.txt	V17 vuln_scan_last_run from other table derived with join to repos to filter	assign
+fp.txt	V18 vuln_scan_last_run where subselect over repos in WHERE only	pass
+fp.txt	V19 vuln_scan_last_run with CTE picking rows from repos FOR UPDATE SKIP LOCKED	pass
+fp.txt	V20 same, value from pick-unrelated param	pass
+fp.txt	V21 msg_text_clean batch through VALUES	pass
+fp.txt	V22 msg_text_clean NULL reset for rerun	pass
+fp.txt	V23 msg_text_clean computed in SQL from raw (other column of same row)	pass
+fp.txt	V24 msg_text_clean batch json	assign
+fp.txt	V25 msg_updated greatest excluded plain	pass
+fp.txt	V26 msg_updated greatest alias	pass
+fp.txt	V27 cntrb_login fill on conflict nullable form	pass
+fp.txt	V28 cntrb_login fill guarded in DO UPDATE WHERE	pass
+fp.txt	V29 cntrb_login fill CASE	pass
+fp.txt	V30 cntrb_login fill CASE reversed arms	assign
+fp.txt	V31 node_id prefer nonempty update	pass
+fp.txt	V32 node_id prefer nonempty via CASE	assign
+fp.txt	V33 node_id only when given (WHERE guard on param)	assign
+fp.txt	V34 total_clones excluded with coalesce to 0	pass
+fp.txt	V35 total_clones batch from unnest insert-select	pass
+fp.txt	V36 data_collection_date = CURRENT_TIMESTAMP / clock_timestamp	pass
+fp.txt	V37 only-if-changed guard reading stored in WHERE (AR value clean)	pass
+fp.txt	V38 first_detected least reversed with cast	pass
+fp.txt	V39 first_detected update least param	pass
+fp.txt	V40 first_detected least coalesce param now	assign
+fp.txt	V41 entered_exposure simple CASE	pass
+fp.txt	V42 entered_exposure COALESCE(stored, NOW())	assign
+fp.txt	V43 entered_exposure CASE with coalesce(param, now)	pass
+fp.txt	V44 entered_exposure reset NULL on leaving exposure	assign
+fp.txt	V45 package_key fill batch	pass
+fp.txt	V46 package_key fill computed in SQL from other columns	assign
+fp.txt	V47 package_key fill coalesce computed	pass
+fp.txt	V48 package_key fill with guard = ''	pass
+fp.txt	V49 package_key guard inside EXISTS / IN (keyset window)	assign
+fp.txt	V50 merge fill	assign
+fp.txt	V51 delete registered row (fine)	pass
+fp.txt	V52 insert into traffic paths on conflict do nothing	pass
+fp.txt	V53 repo_description copy on dedup merge (InsertOnly -> must be exception)	assign
+fp.txt	V54 created_at fill on merge from loser row (self join; fill)	assign
+fp.txt	V55 updated_at merge from loser greatest	assign
+fp.txt	V56 forked_from merge from loser	assign
+fp.txt	V57 platform id merge from loser guarded	assign
+fp.txt	V58 vuln_scan_last_run merge from loser (AR: stored of other row)	assign
+real.txt	RL1 direct self-join (control: must be refused)	assign
+real.txt	RL2 same through CROSS JOIN LATERAL (repo_dedup.go:483 style)	assign
+real.txt	RL3 same through a WITH query with a column list (retention_store.go:77 style)	assign
+real.txt	RL4 control: WITH query without column list	assign
+real.txt	RL5 dedup move of traffic rows (repo_dedup.go:476 style)	assign
+real.txt	RL6 msg_text_clean copied from another message row via lateral	assign

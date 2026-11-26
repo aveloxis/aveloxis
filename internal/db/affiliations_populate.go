@@ -35,6 +35,17 @@ func (s *PostgresStore) PopulateAffiliations(ctx context.Context) (int, error) {
 	// contributor-resolution contract (R3 section) — their non-empty fields
 	// were already copied into the winner, so including them only
 	// duplicates consensus votes.
+	//
+	// The pair can come from two states of one profile (review round 12,
+	// C12-1; accepted by the operator, 2026-11-22): cntrb_email is the FIRST
+	// address observed (0.29.216) and cntrb_company the latest, so a
+	// contributor enriched again after a change of employer votes the old
+	// domain for the new company. Reading cntrb_canonical here instead was
+	// measured and not taken: that column is often a commit address (a
+	// profile with a company and no public address leaves it so), and on the
+	// fleets counted it would have lost or moved the vote of about a hundred
+	// times more contributors than it corrected. The statement is the
+	// released v0.29.146 text. A guarded form is recorded as planned work.
 	rows, err := s.pool.Query(ctx, `
 		SELECT cntrb_email, cntrb_company
 		FROM aveloxis_data.contributors

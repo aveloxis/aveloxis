@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // exampleValueAllowlist: per-file fields where a committed example
@@ -124,6 +125,19 @@ var effectiveAccessors = map[string]func(c *CollectionConfig) any{
 	"ScancodeIgnoreGlobs":                         func(c *CollectionConfig) any { return c.ScancodeIgnoreGlobsOrDefault() },
 	"MatviewRebuildDay":                           func(c *CollectionConfig) any { return c.MatviewRebuildWeekday() },
 	"MaterializedViews":                           func(c *CollectionConfig) any { return c.MaterializedViewsValue() },
+	"OSVPagesPerQuery":                            func(c *CollectionConfig) any { return c.OSVPagesPerQueryOrDefault() },
+	"DeclaredRepositoryFetch":                     func(c *CollectionConfig) any { return c.DeclaredRepositoryFetchValue() },
+	"MavenRepositories":                           func(c *CollectionConfig) any { return strings.Join(c.MavenRepositoryList(), " ") },
+	"PackageKeyFillRows":                          func(c *CollectionConfig) any { return c.PackageKeyFillRowsOrDefault() },
+	"RepositoryHostRegistrationCheck":             func(c *CollectionConfig) any { return c.RepositoryHostRegistrationCheckValue() },
+	"RepositoryHostThreatListURL":                 func(c *CollectionConfig) any { return c.RepositoryHostThreatListURLValue() },
+	"ManifestReadCPUSeconds":                      func(c *CollectionConfig) any { return c.ManifestReadCPULimit() },
+	"ManifestReadMemoryMB":                        func(c *CollectionConfig) any { return c.ManifestReadMemoryLimit() },
+	"RepositoryHostCheckHours": func(c *CollectionConfig) any {
+		d, _ := c.RepositoryHostCheckInterval()
+		return int(d / time.Hour)
+	},
+	"OSVRejectedQueriesPerBatch": func(c *CollectionConfig) any { return c.OSVRejectedQueryCap() },
 	"SupplyChainRefreshHours": func(c *CollectionConfig) any {
 		d, on := c.SupplyChainRefreshInterval()
 		return fmt.Sprintf("%v/%v", d, on)

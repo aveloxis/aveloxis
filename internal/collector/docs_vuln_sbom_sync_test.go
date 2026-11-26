@@ -69,6 +69,77 @@ func TestVulnSBOMDocLockfileCountMatchesRoster(t *testing.T) {
 	}
 }
 
+// The README and the docs index state the same count, of the same roster
+// (operator, 2026-11-19: "The README should match the roster exactly"; they
+// said 19 while the roster held 18, and nothing held them to it).
+// The same for the registries libyear asks (review round 1: the heading
+// said 12 and the README "all 12 registries" after CRAN made thirteen), and
+// for the roster count the architecture page states in passing.
+func TestEveryStatedRegistryCountIsTheShippedOnes(t *testing.T) {
+	// The registries with a base URL here, and SwiftPM, which is resolved
+	// through GitHub releases and has none.
+	want := len(shippedRegistryBases) + 1
+	found := 0
+	// Every "<n> registries" in the public pages that state it, and the
+	// architecture page's heading. Round 2 found five statements the first
+	// form of this check did not read (it knew two phrasings).
+	number := regexp.MustCompile(`(\d+) registries`)
+	heading := regexp.MustCompile(`Libyear registries — (\d+)`)
+	for _, doc := range []string{"../../README.md", "../../docs/index.md", "../../docs/guide/collection-pipeline.md", "../../docs/architecture/vulnerability-and-sbom.md"} {
+		data, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range []*regexp.Regexp{number, heading} {
+			for _, m := range re.FindAllSubmatch(data, -1) {
+				found++
+				if string(m[1]) != fmt.Sprint(want) {
+					t.Errorf("%s says %q; libyear asks %d registries", doc, m[0], want)
+				}
+			}
+		}
+	}
+	// The denominator: the statements that exist today. Fewer means a
+	// phrase was reworded and is no longer read.
+	if found < 5 {
+		t.Errorf("%d statements of the registry count were examined, want at least 5", found)
+	}
+	data, err := os.ReadFile("../../docs/architecture/vulnerability-and-sbom.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`Roster count = (\d+) registered filenames`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("the architecture page no longer states the roster count in that phrase")
+	}
+	if string(m[1]) != fmt.Sprint(len(lockfileKinds)) {
+		t.Errorf("the architecture page says the roster has %s filenames; it has %d", m[1], len(lockfileKinds))
+	}
+}
+
+func TestEveryStatedLockfileCountIsTheRosters(t *testing.T) {
+	phrase := regexp.MustCompile(`(\d+) lockfile formats`)
+	found := 0
+	for _, doc := range []string{"../../README.md", "../../docs/index.md"} {
+		data, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range phrase.FindAllSubmatch(data, -1) {
+			found++
+			if want := fmt.Sprint(len(lockfileKinds)); string(m[1]) != want {
+				t.Errorf("%s says %q; the lockfile roster has %s kinds", doc, m[0], want)
+			}
+		}
+	}
+	// The denominator: the statements that exist today (four in the
+	// README, one in the index). Fewer means the phrase was reworded and
+	// this check is reading nothing.
+	if found < 5 {
+		t.Errorf("found %d statements of the lockfile count, want at least 5", found)
+	}
+}
+
 // TestVulnSBOMDocInToctree — the doc must stay reachable from the
 // Sphinx toctree; an orphaned page is not "easily findable".
 func TestVulnSBOMDocInToctree(t *testing.T) {

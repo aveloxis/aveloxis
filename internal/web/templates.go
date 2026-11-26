@@ -48,6 +48,7 @@ var templateOrder = []string{
 	"admin_cache.html",
 	"admin_collections.html",
 	"admin_collection.html",
+	"admin_repository_hosts.html",
 }
 
 var allTemplates = func() string {

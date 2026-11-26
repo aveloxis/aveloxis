@@ -14,12 +14,15 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
 	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/spdx"
+	"github.com/aveloxis/aveloxis/internal/vulnclass"
 	"github.com/google/uuid"
 )
 
@@ -130,16 +133,16 @@ func GenerateSBOMWithOptions(ctx context.Context, store *db.PostgresStore, repoI
 // the requirement edges become the REAL dependency graph replacing the
 // synthetic flat root→all shape. nil = pre-v0.27.134 output verbatim.
 type sbomGraph struct {
-	Transitives []db.RepoLockfilePackage
+	Transitives []model.RepoLockfilePackage
 	Edges       []db.RepoLockfileEdge
 }
 
 // sbomGraphKey is the name-level resolution key for graph endpoints.
-// Round 22: delegates to db.LockfileGraphKey — the ONE fold shared
+// Round 22: delegates to pkgid.Key — the ONE fold shared
 // with the chain-attribution walk, so the two graph consumers can
 // never disagree on endpoint resolution.
 func sbomGraphKey(eco, name string) string {
-	return db.LockfileGraphKey(eco, name)
+	return pkgid.Key(eco, name)
 }
 
 // purlLessBOMRef is the CycloneDX bom-ref of a component that has no
@@ -252,7 +255,53 @@ type cdxMetadata struct {
 	Timestamp string        `json:"timestamp"`
 	Tools     cdxTools      `json:"tools"`
 	Component *cdxComponent `json:"component,omitempty"`
+	// Properties carries the coverage marker (0.29.199).
+	Properties []cdxProperty `json:"properties,omitempty"`
 }
+
+// cdxProperty is one name and value of a CycloneDX properties list.
+type cdxProperty struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// coverageMarker is what an export says about the coverage it was made
+// under (summary/70, 8.8), from the one function that decides the coverage
+// state: the state, whether nothing has ever said what the repository
+// depends on, a recorded failed analysis attempt's reason, and the counts of
+// failed and carried manifests. The state alone would not do: a repository
+// never analysed that publishes a package reads "scanned". In order; a nil
+// view has no marker.
+func coverageMarker(v *vulnclass.CoverageView) []cdxProperty {
+	if v == nil {
+		return nil
+	}
+	out := []cdxProperty{
+		{Name: "state", Value: v.State},
+		{Name: "dependencies_unknown", Value: strconv.FormatBool(v.DependenciesUnknown)},
+	}
+	if v.LastAnalysisAttempt != nil {
+		out = append(out, cdxProperty{Name: "last_analysis_attempt_reason", Value: v.LastAnalysisAttempt.Reason})
+	}
+	out = append(out,
+		cdxProperty{Name: "manifests_failed", Value: strconv.Itoa(v.ManifestsFailed)},
+		cdxProperty{Name: "manifests_carried", Value: strconv.Itoa(v.ManifestsCarried)})
+	// 0.29.214: the lockfiles went unread at the last analysis, so the
+	// versions and transitive components of this document are from the
+	// lockfile rows of the date given (or there are none, with no date).
+	if u := v.LockfilesUnread; u != nil {
+		out = append(out, cdxProperty{Name: "lockfiles_unread_reason", Value: u.Reason})
+		// Some lockfiles too large, the others read at this analysis: no
+		// one date is true of the rows, so none is given (0.29.216).
+		if u.LastReadAt != nil && u.Reason != model.LockfileUnreadTooLarge {
+			out = append(out, cdxProperty{Name: "lockfiles_last_read_at", Value: u.LastReadAt.UTC().Format(time.RFC3339)})
+		}
+	}
+	return out
+}
+
+// coverageMarkerPrefix names the marker in both formats.
+const coverageMarkerPrefix = "aveloxis:coverage"
 
 // cdxTools uses the CycloneDX object form (components + services),
 // introduced in 1.5, instead of the deprecated bare array.
@@ -318,7 +367,7 @@ type cdxDependency struct {
 }
 
 func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.ScancodeForSBOM, graph *sbomGraph) ([]byte, error) {
-	rootRef := buildPurl("generic", repo.Owner+"/"+repo.Name, "") // v0.27.29: one purl builder everywhere
+	rootRef := pkgid.Purl("generic", repo.Owner+"/"+repo.Name, "") // v0.27.29: one purl builder everywhere
 	rootComp := &cdxComponent{
 		Type:   "application",
 		Name:   repo.Name,
@@ -378,6 +427,9 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 			Tools:     cdxTools{Components: toolComponents},
 			Component: rootComp,
 		},
+	}
+	for _, p := range coverageMarker(repo.Coverage) {
+		bom.Metadata.Properties = append(bom.Metadata.Properties, cdxProperty{Name: coverageMarkerPrefix + ":" + p.Name, Value: p.Value})
 	}
 
 	// Track dep bom-refs for the dependencies graph. v0.27.29:
@@ -461,7 +513,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	}
 
 	// v0.27.134: lockfile transitives join the component list. Purls
-	// come from purlForPackage — the SAME builder the vuln scan uses,
+	// come from pkgid.PurlForPackage — the SAME builder the vuln scan uses,
 	// so cross-kind dedup against direct components works by ref. A
 	// transitive with no valid purl (an unmapped ecosystem, or a
 	// namespace-required type without one, v0.29.58) is still a
@@ -473,7 +525,7 @@ func generateCycloneDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Sca
 	var transRefs []string
 	if graph != nil {
 		for _, t := range graph.Transitives {
-			purl := purlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion)
+			purl := pkgid.PurlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion)
 			if purl == "" {
 				// v0.29.58 (review rounds 1 and 2): a package with no valid
 				// purl is still a component of the software — SPDX lists
@@ -645,7 +697,7 @@ func assumedChoiceComment(packageManager, declared string) string {
 		return ""
 	}
 	for eco, registry := range map[string]string{"rubygems": "RubyGems", "hex": "Hex"} {
-		if db.LockfileGraphKey(packageManager, "x") == db.LockfileGraphKey(eco, "x") {
+		if pkgid.Key(packageManager, "x") == pkgid.Key(eco, "x") {
 			return "The " + registry + " registry records a package's licenses as a list that does not state how they combine; " +
 				"Aveloxis reads such a list as a choice (OR), the common dual-licensing reading."
 		}
@@ -699,6 +751,9 @@ type spdxDoc struct {
 	Relationships     []spdxRelation `json:"relationships"`
 	// ExtractedLicenses declares each LicenseRef- the packages use.
 	ExtractedLicenses []spdxExtractedLicense `json:"hasExtractedLicensingInfos,omitempty"`
+	// Comment carries the coverage marker (0.29.199): SPDX 2.3 has no
+	// property list at document level.
+	Comment string `json:"comment,omitempty"`
 }
 
 type spdxExtractedLicense struct {
@@ -756,6 +811,13 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 			Created:  time.Now().UTC().Format(time.RFC3339),
 			Creators: []string{"Tool: aveloxis-" + db.ToolVersion},
 		},
+	}
+	if marker := coverageMarker(repo.Coverage); len(marker) > 0 {
+		parts := make([]string, len(marker))
+		for i, p := range marker {
+			parts[i] = p.Name + "=" + p.Value
+		}
+		doc.Comment = coverageMarkerPrefix + ": " + strings.Join(parts, "; ")
 	}
 	// v0.27.23: same provenance rule as CycloneDX — name the ScanCode
 	// version whenever its evidence shaped licenseConcluded/copyright.
@@ -890,7 +952,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 				LicenseConcluded: "NOASSERTION",
 				LicenseDeclared:  "NOASSERTION",
 			}
-			if purl := purlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion); purl != "" {
+			if purl := pkgid.PurlForPackage(t.Ecosystem, t.Namespace, t.PackageName, t.ResolvedVersion); purl != "" {
 				pkg.ExternalRefs = []spdxExternalRef{{
 					ReferenceCategory: "PACKAGE-MANAGER",
 					ReferenceType:     "purl",
@@ -934,7 +996,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 // spdxPackageID generates a stable SPDX package identifier. Uses a
 // truncated SHA-256 hash to ensure stability across regenerations
 // regardless of dep ordering. Round-24: the hash input is the
-// ECOSYSTEM-SCOPED graph key (db.LockfileGraphKey — alias-folded, so
+// ECOSYSTEM-SCOPED graph key (pkgid.Key — alias-folded, so
 // the same real package reached via the gem/rubygems vocabulary split
 // still deduplicates) + "@" + version. A bare name@version hash
 // collided npm/foo@1.0.0 with pypi/foo@1.0.0: seenIDs dropped the
@@ -943,7 +1005,7 @@ func generateSPDX(repo *db.RepoForSBOM, deps []db.SBOMDep, scanData *db.Scancode
 // document-scoped per the SPDX spec, so the scheme change only means
 // regenerated documents carry new (still deterministic) SPDXIDs.
 func spdxPackageID(eco, name, version string) string {
-	h := sha256.Sum256([]byte(db.LockfileGraphKey(eco, name) + "@" + version))
+	h := sha256.Sum256([]byte(pkgid.Key(eco, name) + "@" + version))
 	return fmt.Sprintf("SPDXRef-Package-%x", h[:8])
 }
 

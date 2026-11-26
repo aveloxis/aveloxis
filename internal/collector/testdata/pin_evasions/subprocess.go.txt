@@ -1,0 +1,5 @@
+package collector
+
+import "os/exec"
+
+func PinEvasionSUBPROCESS(dir string) int { b, _ := exec.Command("cat", dir+"/package.json").Output(); return len(b) }

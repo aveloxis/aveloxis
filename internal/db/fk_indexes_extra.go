@@ -114,6 +114,16 @@ var fkExtraIndexes = []fkExtraIndex{
 	{"repo_traffic_weeks", "repo_id", "idx_repo_traffic_weeks_repo_id"},
 }
 
+// fkExtraIndexSQL is the CREATE INDEX statement for the i-th of fkExtraIndexes: a function of the
+// index, so that the write-policy check runs it for every member.
+func fkExtraIndexSQL(i int) string {
+	idx := fkExtraIndexes[i]
+	return fmt.Sprintf(
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
+		idx.indexName, idx.table, idx.column,
+	)
+}
+
 // ensureExtraFKIndexes is the v0.22.7 migration step that adds
 // btree indexes on the 55 FK columns of fkExtraIndexes (the original
 // 50 unindexed ones identified by the 2026-05-17 audit, plus the five
@@ -139,12 +149,8 @@ var fkExtraIndexes = []fkExtraIndex{
 // fail-closed contract — serve refuses to start if any index
 // build fails.
 func ensureExtraFKIndexes(ctx context.Context, pg *PostgresStore, logger *slog.Logger, errs *[]error) {
-	for _, idx := range fkExtraIndexes {
-		sql := fmt.Sprintf(
-			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON aveloxis_data.%s (%s)`,
-			idx.indexName, idx.table, idx.column,
-		)
+	for i, idx := range fkExtraIndexes {
 		execCreateIndexConcurrently(ctx, pg, logger, errs,
-			"aveloxis_data", idx.indexName, sql)
+			"aveloxis_data", idx.indexName, fkExtraIndexSQL(i))
 	}
 }

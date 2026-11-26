@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributor Resolution &mdash; Aveloxis 0.29.146 documentation</title>
+  <title>Contributor Resolution &mdash; Aveloxis 0.29.235 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=d480f3dd" />
@@ -14,7 +14,7 @@
   
       <script src="../_static/jquery.js?v=5d32c60e"></script>
       <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=a9266ffa"></script>
+      <script src="../_static/documentation_options.js?v=e9bf0ce6"></script>
       <script src="../_static/doctools.js?v=fd6eb6e6"></script>
       <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/js/theme.js"></script>
@@ -71,6 +71,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#github">GitHub</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#gitlab">GitLab</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../getting-started/configuration.html#collection">Collection</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#what-reading-each-file-format-costs-0-29-216">What reading each file format costs (0.29.216)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#scancode-worker-v0-21-0">Scancode worker (v0.21.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#distributionworker-v0-24-0">DistributionWorker (v0.24.0)</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../getting-started/configuration.html#mailing-list-worker-v0-25-7">Mailing-list worker (v0.25.7)</a></li>
@@ -297,6 +298,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-projects"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-projects</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-load-numfocus-orgs"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">load-numfocus-orgs</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-version"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">version</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#aveloxis-manifest-read"><code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">manifest-read</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/commands.html#global-behavior">Global behavior</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#config-file">Config file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../guide/commands.html#exit-codes">Exit codes</a></li>
@@ -318,6 +320,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-individual-repos-to-a-group">Adding Individual Repos to a Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#adding-an-entire-github-org-or-gitlab-group">Adding an Entire GitHub Org or GitLab Group</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#navigation-and-breadcrumbs">Navigation and Breadcrumbs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#the-repository-page-s-vulnerability-tile">The repository page’s vulnerability tile</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#comparing-repositories">Comparing Repositories</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/web-gui.html#searching-and-pagination">Searching and Pagination</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="../guide/web-gui.html#search">Search</a></li>
@@ -339,10 +342,28 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#cryptography">Cryptography</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#data">Data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#logs">Logs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/security.html#requests-to-package-registries">Requests to package registries</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#hosts-that-collected-repositories-choose">Hosts that collected repositories choose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../guide/security.html#the-repository-host-check">The repository host check</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/security.html#why-the-web-process-has-no-request-limiter-of-its-own">Why the web process has no request limiter of its own</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/api.html">REST API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-219">Changes for API clients in 0.29.219</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-218">Changes for API clients in 0.29.218</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-217">Changes for API clients in 0.29.217</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-216">Changes for API clients in 0.29.216</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-215">Changes for API clients in 0.29.215</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-214">Changes for API clients in 0.29.214</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-199">Changes for API clients in 0.29.199</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-198">Changes for API clients in 0.29.198</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-197">Changes for API clients in 0.29.197</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-196">Changes for API clients in 0.29.196</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-178">Changes for API clients in 0.29.178</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-177">Changes for API clients in 0.29.177</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-167">Changes for API clients in 0.29.167</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-145">Changes for API clients in 0.29.145</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-140">Changes for API clients in 0.29.140</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/api.html#changes-for-api-clients-in-0-29-129">Changes for API clients in 0.29.129</a></li>
@@ -735,6 +756,8 @@
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#serve-crashed-with-fatal-error-out-of-memory-allocating-heap-arena-metadata">serve crashed with <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">out</span> <span class="pre">of</span> <span class="pre">memory</span> <span class="pre">allocating</span> <span class="pre">heap</span> <span class="pre">arena</span> <span class="pre">metadata</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-daily-commit-counts-need-rebuilding">A repository’s daily commit counts need rebuilding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-one-shot-migration-backfill-needs-to-re-run">A one-shot migration backfill needs to re-run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#a-repository-s-dependency-analysis-is-stopped-at-a-limit-manifest-read-cpu-limit-manifest-read-memory-limit">A repository’s dependency analysis is stopped at a limit (<code class="docutils literal notranslate"><span class="pre">manifest_read_cpu_limit</span></code>, <code class="docutils literal notranslate"><span class="pre">manifest_read_memory_limit</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#after-upgrading-to-0-29-214-0-29-215-or-0-29-216-what-changed-in-the-data">After upgrading to 0.29.214, 0.29.215 or 0.29.216: what changed in the data</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#next-steps">Next steps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#issues-or-prs-missing-after-a-second-collection-round">Issues or PRs missing after a second collection round</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../guide/troubleshooting.html#gitlab-only-deployment-github-key-pool-has-no-usable-key-github-only-background-tasks-stay-idle">GitLab-only deployment: “GitHub key pool has no usable key — GitHub-only background tasks stay idle”</a></li>
@@ -791,9 +814,9 @@
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Architecture Overview</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#system-diagram">System diagram</a></li>
 <li class="toctree-l2"><a class="reference internal" href="overview.html#four-schemas">Four schemas</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-109-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (109 tables + 22 materialized views)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-data-113-tables-22-materialized-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_data</span></code> (113 tables + 22 materialized views)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-scan-4-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_scan</span></code> (4 tables)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-52-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (52 tables)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-ops-56-tables"><code class="docutils literal notranslate"><span class="pre">aveloxis_ops</span></code> (56 tables)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="overview.html#aveloxis-augur-data-6-views"><code class="docutils literal notranslate"><span class="pre">aveloxis_augur_data</span></code> (6 views)</a></li>
 </ul>
 </li>
@@ -995,9 +1018,14 @@
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#supported-registries">Supported registries</a></li>
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#version-cleaning">Version cleaning</a></li>
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#id1">Output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="analysis.html#a-dependency-keeps-its-row-when-the-registry-cannot-answer-0-29-162">A dependency keeps its row when the registry cannot answer (0.29.162)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="analysis.html#the-inventory-is-replaced-whole-0-29-157">The inventory is replaced whole (0.29.157)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#rate-limiting">Rate limiting</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="analysis.html#gradle-build-files">Gradle build files</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis.html#maven-read-as-a-tree-0-29-178">Maven: read as a tree (0.29.178)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="analysis.html#the-clone-is-read-by-a-process-of-its-own-0-29-213">The clone is read by a process of its own (0.29.213)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="analysis.html#code-complexity-via-scc">Code complexity via scc</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="analysis.html#execution">Execution</a></li>
@@ -1055,13 +1083,14 @@
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#sbom-generation">SBOM generation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#real-dependency-graphs-v0-27-134-c2">Real dependency graphs (v0.27.134, C2)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#vulnerability-annotated-sboms">Vulnerability-annotated SBOMs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#the-coverage-marker">The coverage marker</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#what-feeds-the-dependency-graph">What feeds the dependency graph</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#manifest-parsing-14-ecosystems">Manifest parsing — 14 ecosystems</a></li>
-<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lockfile-parsing-18-formats">Lockfile parsing — 18 formats</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#lockfile-parsing-19-formats">Lockfile parsing — 19 formats</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#dependency-edges-parent-chain-attribution-v0-27-133-c2">Dependency edges + parent-chain attribution (v0.27.133, C2)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#libyear-registries-12">Libyear registries — 12</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vulnerability-and-sbom.html#libyear-registries-13">Libyear registries — 13</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="vulnerability-and-sbom.html#external-binaries">External binaries</a></li>
@@ -1647,6 +1676,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#dependencies-and-sbom">Dependencies and SBOM</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependencies">repo_dependencies</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-libyear">repo_deps_libyear</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-declared-repositories">repo_declared_repositories</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#maven-pom-results">maven_pom_results</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-inventory-notes">repo_inventory_notes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-dependency-coverage">repo_dependency_coverage</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-deps-scorecard">repo_deps_scorecard</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#repo-sbom-scans">repo_sbom_scans</a></li>
 </ul>
@@ -1716,6 +1749,16 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../schema.html#aveloxis-ops-schema">aveloxis_ops Schema</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#package-repository-hosts-v0-29-185">Package repository hosts (v0.29.185)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#package-repository-hosts">package_repository_hosts</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#repository-host-signals">repository_host_signals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#distrusted-repository-hosts">distrusted_repository_hosts</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../schema.html#background-walks-v0-29-173">Background walks (v0.29.173)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="../schema.html#program-markers">program_markers</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="../schema.html#jira-collection-state-v0-29-0">Jira collection state (v0.29.0)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-project-serve">jira_project_serve</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../schema.html#jira-staging">jira_staging</a></li>
@@ -1878,7 +1921,7 @@
 </section>
 <section id="r2-identity-key-immutability">
 <h3>R2: Identity-key immutability<a class="headerlink" href="#r2-identity-key-immutability" title="Link to this heading"></a></h3>
-<p>Once <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> is written, it MUST NOT change. There is no operation in aveloxis that updates <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> on an existing row. If a row was inserted with a random UUID and the contributor later turns out to have a <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, the search-resolve background task adds the <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> to the existing row but does NOT migrate the row to the deterministic UUID. The two would differ only in the value of <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code>, and changing it would orphan every FK reference (commits, issues, PRs, messages — 16+ columns).</p>
+<p>Once <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> is written, collection MUST NOT change it. No collection path updates <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> on an existing row. Two operator-run commands do, on purpose and outside collection: <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate-cntrb-ids</span></code> (v0.22.2, one time) swaps a random <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> for the deterministic one where the platform user id is known, and the foreign keys’ <code class="docutils literal notranslate"><span class="pre">ON</span> <span class="pre">UPDATE</span> <span class="pre">CASCADE</span></code> carries the change to every child row in the same transaction; and a merge of two rows for one person re-points the loser’s identity and alias rows at the winner. If a row was inserted with a random UUID and the contributor later turns out to have a <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, the search-resolve background task adds the <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> to the existing row but does NOT migrate the row to the deterministic UUID. The two would differ only in the value of <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code>, and changing it would orphan every FK reference (commits, issues, PRs, messages — 16+ columns).</p>
 <p>This rule is the reason aveloxis does not ship a 16-table merge migration. The cleanup tools in <a class="reference external" href="https://github.com/aveloxis/augur-contributor-resolver">augur-contributor-resolver</a> exist precisely because Augur did the opposite — letting <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> mutate post-hoc and accumulating orphans. Aveloxis prevents the bad state at the write boundary.</p>
 </section>
 <section id="r3-cntrb-login-partial-uniqueness">
@@ -1910,8 +1953,13 @@
 <section id="r5-email-aliasing">
 <h3>R5: Email aliasing<a class="headerlink" href="#r5-email-aliasing" title="Link to this heading"></a></h3>
 <p>Every distinct commit-author email observed for a resolved contributor lands in <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> with <code class="docutils literal notranslate"><span class="pre">alias_email</span> <span class="pre">=</span> <span class="pre">email</span></code> and <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code> pointing at the contributor. The <code class="docutils literal notranslate"><span class="pre">UNIQUE</span> <span class="pre">(alias_email)</span></code> constraint enforces that one email maps to exactly one contributor.</p>
+<p><strong>An address a forge reports does not replace the stored <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code>, and no alias row is made for it (0.29.217).</strong> <code class="docutils literal notranslate"><span class="pre">contributors.cntrb_email</span></code> is the first non-empty address observed for the contributor, and no path replaces it; which address that is depends on the order of observation. Nothing can correct a stored <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> afterwards; that is the rule, not an oversight. Until 0.29.216 three write paths (the batch upsert and the two inserts of the contributor resolver) replaced the stored address with a newly observed one. The later address is kept in one place only, and not on every path: the identity row’s <code class="docutils literal notranslate"><span class="pre">email</span></code> takes it when the batch upsert makes the observation and the observation names a platform user id. The contributor resolver writes the identity row’s <code class="docutils literal notranslate"><span class="pre">email</span></code> only when it first writes that identity row; for an identity it already knows it reads one row and writes no address, so an address that arrives that way (the usual path for the authors of issues, pull requests and comments) is kept nowhere.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> is different: the profile’s address replaces a stored one (0.29.218).</strong> The commit resolver fills <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> with the address the commit carries, only when the column is empty, and that is often a noreply or personal address. The profile enrichment later brings the forge’s public address through the batch upsert, and it is the one writer that leaves noreply addresses out. The batch upsert takes a non-empty incoming canonical over the stored one, as every release to 0.29.215 did. An empty incoming value never clears a stored one. Every other writer of the column (the commit resolver, the search link, <code class="docutils literal notranslate"><span class="pre">SetContributorCanonical</span></code>, the v0.25.6 backfill, a merge) fills it only when it is empty. 0.29.216 and 0.29.217 made the batch stored-first for this column too, which left the commit address in place for good and took the organisation away from the affiliation lookups, which go by this column’s domain; no host ran either release.</p>
+<p>When a forge later reports a different address for a contributor, the batch upsert and the resolver write it nowhere on the contributor’s row, and no <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> row is made for it. The batch upsert puts it on the identity row’s <code class="docutils literal notranslate"><span class="pre">email</span></code> when the observation names a platform user id (a non-empty value replaces, as before). The resolver does that only when it first writes the identity row; for a known identity it writes no address. The alias rows are written, as before, by the commit resolver for commit-author addresses, by mailing-list sender linking, and by a merge of two rows of one person.</p>
+<p>0.29.216 added a step that kept such an address as an alias. It is not in 0.29.217. Review found that it wrote the alias for a contributor matched by <code class="docutils literal notranslate"><span class="pre">cntrb_login</span></code> alone: GitLab’s repository contributor listing gives a git author name and an address with no user id, and the name is stored as the login, so two people whose <code class="docutils literal notranslate"><span class="pre">user.name</span></code> is “root”, or a name that equals another forge’s login, match one row, and each one’s address became that row’s alias. Keeping every observed address is planned work, to be built with identification by a forge’s numeric user id only.</p>
 <p>If an email is observed under two different <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code>s, that is a duplicate-contributor bug, not a multi-mapping. Use the <a class="reference internal" href="#diagnostic-queries">Diagnostic queries</a> to detect this case.</p>
 <p><strong>Consumer (v0.27.91): the affiliations map.</strong> <code class="docutils literal notranslate"><span class="pre">PopulateAffiliations</span></code> builds its domain→company candidates from contributor profile emails PLUS the <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> bridge — the alias rows are what surface institutional domains seen only in git log (a gmail-profile contributor committing as <code class="docutils literal notranslate"><span class="pre">person&#64;university.edu</span></code>). Before v0.27.91 that signal was (incorrectly) sought via an hourly join against the ~500M-row <code class="docutils literal notranslate"><span class="pre">commits</span></code> table, which could only ever return domains the profile query already had and whose parallel DISTINCT sort exhausted the production host’s memory on 2026-08-16, crashing both Postgres backends and <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">serve</span></code>. A commits-table join is now banned from <code class="docutils literal notranslate"><span class="pre">affiliations_populate.go</span></code> by the <code class="docutils literal notranslate"><span class="pre">TestPopulateAffiliationsNeverTouchesCommitsTable</span></code> tripwire. Both candidate queries also filter <code class="docutils literal notranslate"><span class="pre">COALESCE(cntrb_deleted,</span> <span class="pre">0)</span> <span class="pre">=</span> <span class="pre">0</span></code> — the merge-loser exclusion this document’s R3 section has always claimed for <code class="docutils literal notranslate"><span class="pre">PopulateAffiliations</span></code> is real in code as of v0.27.91.</p>
+<p><strong>A known limit of the map (0.29.219).</strong> The profile query pairs <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> with <code class="docutils literal notranslate"><span class="pre">cntrb_company</span></code> from one row. Since 0.29.216 <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> is the first address observed, and <code class="docutils literal notranslate"><span class="pre">cntrb_company</span></code> is the latest the profile enrichment brought. So a contributor who is enriched a second time, after a change of employer, votes the old address’s domain for the new company. Releases to 0.29.215 replaced the address when the profile showed a new one, and then voted the new domain; when the profile showed a company and no address they also kept the old address. The map takes the most common company per domain, so a domain with several contributors absorbs one such vote; a domain with one contributor does not. The query is unchanged from the released text. Reading <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> there instead was measured and not taken: that column is often the commit address when a profile shows a company and no public address, and on two fleets it would have removed or moved far more votes than it corrected. A form that reads the canonical address only when it names an organisation and is not a commit alias is planned work.</p>
 </section>
 <section id="r6-enrichment-is-best-effort-cooldown-bounded">
 <h3>R6: Enrichment is best-effort, cooldown-bounded<a class="headerlink" href="#r6-enrichment-is-best-effort-cooldown-bounded" title="Link to this heading"></a></h3>
@@ -2141,7 +2189,19 @@ After all commits resolved:
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code> / <code class="docutils literal notranslate"><span class="pre">gl_id</span></code></p></td>
 <td><p>Never (write-once via COALESCE)</p></td>
-<td><p>Stable platform integer ID. Drives the deterministic <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code>.</p></td>
+<td><p>Stable platform integer ID. Drives the deterministic <code class="docutils literal notranslate"><span class="pre">cntrb_id</span></code>. An unknown id is NULL, never <code class="docutils literal notranslate"><span class="pre">0</span></code> (0.29.216: one path could store <code class="docutils literal notranslate"><span class="pre">0</span></code>, which fill-only writers then kept).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code></p></td>
+<td><p>Never (fill-only on every path, 0.29.216)</p></td>
+<td><p>The first address observed. A different address observed later does not replace it and gets no alias row; the identity row’s <code class="docutils literal notranslate"><span class="pre">email</span></code> takes it when the batch upsert observes it with a platform user id, and the resolver writes it only when it first writes the identity row (<a class="reference internal" href="#r5-email-aliasing">R5</a>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code></p></td>
+<td><p>Not by a rename. Replaced by the profile enrichment’s address (the batch upsert, 0.29.218); every other writer fills it only when empty</p></td>
+<td><p>The canonical address (<a class="reference internal" href="#r5-email-aliasing">R5</a>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gh_node_id</span></code></p></td>
+<td><p>Never (fill-only)</p></td>
+<td><p>Filled once when empty.</p></td>
 </tr>
 </tbody>
 </table>
@@ -2160,7 +2220,7 @@ After all commits resolved:
 <span class="w">    </span><span class="n">profile_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">EXCLUDED</span><span class="mf">.</span><span class="n">profile_url</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>The previous login is <strong>overwritten</strong> on the existing identity row. <strong>We do NOT create a new identity row for a rename.</strong> The identity row is a “current state per platform user” record, not a history. After a rename, the previous login at the identity layer is lost.</p>
+<p>The previous login is <strong>overwritten</strong> on the existing identity row. <strong>We do NOT create a new identity row for a rename.</strong> The identity row is a “current state per platform user” record, not a history. After a rename, the previous login at the identity layer is lost. It is in the <a class="reference internal" href="#login-history-table-v0-23-0">login history table</a> when a path that records history observed it before the rename (see “Which writers record a login” there).</p>
 </section>
 <section id="aveloxis-data-commits-one-row-per-file-per-commit">
 <h4><code class="docutils literal notranslate"><span class="pre">aveloxis_data.commits</span></code> (one row per file per commit)<a class="headerlink" href="#aveloxis-data-commits-one-row-per-file-per-commit" title="Link to this heading"></a></h4>
@@ -2169,7 +2229,7 @@ After all commits resolved:
 <li><p><code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span> <span class="pre">UUID</span></code> — the stable FK to <code class="docutils literal notranslate"><span class="pre">contributors(cntrb_id)</span></code>. <strong>This is what keeps commit attribution correct across renames</strong>, because the cntrb_id is deterministic from gh_user_id and the gh_user_id never changes.</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">BackfillCommitAuthorIDs</span></code> resolves unresolved commits via <code class="docutils literal notranslate"><span class="pre">LOWER(cmt_author_platform_username)</span> <span class="pre">=</span> <span class="pre">LOWER(cn.gh_login)</span></code> (v0.20.12 Fix H, case-insensitive). It joins against the <strong>current</strong> <code class="docutils literal notranslate"><span class="pre">gh_login</span></code>, not <code class="docutils literal notranslate"><span class="pre">cntrb_login</span></code>. The function only updates rows with <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span> <span class="pre">IS</span> <span class="pre">NULL</span></code>, so once a commit is attributed it stays attributed regardless of subsequent renames.</p>
-<p><strong>v0.25.6 coverage asymmetry closure.</strong> Production audit on 2026-05-29 of <code class="docutils literal notranslate"><span class="pre">aveloxis_large</span></code> (474M commit rows) found <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> populated on 91.95% of rows but <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> populated on only 77.58%. The asymmetry comes from API paths that stamp the UUID without updating the login text on every matching commit row (noreply email parsing, Commits API resolution, email-based backfill). v0.25.6 ships a one-shot migration <code class="docutils literal notranslate"><span class="pre">backfill</span> <span class="pre">cmt_author_platform_username</span> <span class="pre">from</span> <span class="pre">cmt_ght_author_id</span></code> that UPDATEs commits SET platform_username = c.gh_login wherever the UUID is populated but the login text isn’t. After deploy, login-based queries against commits match the UUID-based queries’ coverage. Soft-deleted contributors (R10 / v0.20.2 merge losers) are skipped per <code class="docutils literal notranslate"><span class="pre">COALESCE(c.cntrb_deleted,</span> <span class="pre">0)</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p>
+<p><strong>v0.25.6 coverage asymmetry closure.</strong> Production audit on 2026-05-29 of a large production database (474M commit rows) found <code class="docutils literal notranslate"><span class="pre">cmt_ght_author_id</span></code> populated on 91.95% of rows but <code class="docutils literal notranslate"><span class="pre">cmt_author_platform_username</span></code> populated on only 77.58%. The asymmetry comes from API paths that stamp the UUID without updating the login text on every matching commit row (noreply email parsing, Commits API resolution, email-based backfill). v0.25.6 ships a one-shot migration <code class="docutils literal notranslate"><span class="pre">backfill</span> <span class="pre">cmt_author_platform_username</span> <span class="pre">from</span> <span class="pre">cmt_ght_author_id</span></code> that UPDATEs commits SET platform_username = c.gh_login wherever the UUID is populated but the login text isn’t. After deploy, login-based queries against commits match the UUID-based queries’ coverage. Soft-deleted contributors (R10 / v0.20.2 merge losers) are skipped per <code class="docutils literal notranslate"><span class="pre">COALESCE(c.cntrb_deleted,</span> <span class="pre">0)</span> <span class="pre">=</span> <span class="pre">0</span></code>.</p>
 </section>
 </section>
 <section id="operational-consequences">
@@ -2224,6 +2284,7 @@ After all commits resolved:
 </tr>
 </tbody>
 </table>
+<p><strong>Which writers record a login.</strong> Two do: the batch upsert records the login of every identity it writes (source <code class="docutils literal notranslate"><span class="pre">observation</span></code>, or <code class="docutils literal notranslate"><span class="pre">rename_recovery</span></code> when the row was relabelled), and <code class="docutils literal notranslate"><span class="pre">RenameContributorGhLogin</span></code> records the new login (<code class="docutils literal notranslate"><span class="pre">rename_breadth</span></code>). <code class="docutils literal notranslate"><span class="pre">UpsertContributorFull</span></code> (the commit resolver), the contributor resolver’s identity upsert and the search link write a login with no history row. No path records the login it REPLACES: a replaced login is in the history only if one of the two recording paths observed it earlier. 0.29.216 added history writes to the other paths and a step that recorded a login before it was replaced; they are not in 0.29.217 and are planned work.</p>
 <p>Common queries:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Every login this person has ever used, oldest first</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">login</span><span class="p">,</span><span class="w"> </span><span class="n">first_seen</span><span class="p">,</span><span class="w"> </span><span class="n">last_seen</span><span class="p">,</span><span class="w"> </span><span class="n">source</span>
@@ -2301,13 +2362,14 @@ After all commits resolved:
 </section>
 <section id="why-is-cntrb-canonical-empty">
 <h3>Why is <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> empty?<a class="headerlink" href="#why-is-cntrb-canonical-empty" title="Link to this heading"></a></h3>
-<p>Three legal reasons (post-v0.25.6):</p>
+<p>Four legal reasons (post-v0.25.6):</p>
 <ol class="arabic simple">
 <li><p>The user has set their email to private on GitHub. <code class="docutils literal notranslate"><span class="pre">EnrichContributor</span></code> returns no email. After the 30-day cooldown the row is retried in case the user changed their setting, but typically stays empty.</p></li>
 <li><p>The contributor is <code class="docutils literal notranslate"><span class="pre">email-only</span></code> (no <code class="docutils literal notranslate"><span class="pre">gh_user_id</span></code>, no <code class="docutils literal notranslate"><span class="pre">gl_id</span></code>) — created from a commit author with a non-noreply email but no resolvable platform account. <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> may be set to the commit email itself, or empty if <code class="docutils literal notranslate"><span class="pre">UpsertContributorFull</span></code> was called with <code class="docutils literal notranslate"><span class="pre">commitEmail</span> <span class="pre">=</span> <span class="pre">''</span></code>.</p></li>
 <li><p>The contributor was created very recently and the enrichment ticker has not yet reached them. They appear in the next enrichment cycle.</p></li>
+<li><p>The contributor is known only from GitLab. GitLab profiles are not enriched and the commit resolver does not run for GitLab repositories, so nothing fills the column from GitLab and waiting does not change it. (A GitHub account with the same login can fill it, which is a known defect: see <a class="reference internal" href="#gitlab-parity-gaps">GitLab parity gaps</a>.)</p></li>
 </ol>
-<p><strong>Pre-v0.25.6 there was a fourth cause</strong>: the commit resolver’s <code class="docutils literal notranslate"><span class="pre">ensureAlias</span></code> (strategies 2 — DB lookup — and 4 — Search API) populated the <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> table but did NOT update <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> on the parent contributor row. The forward fix in v0.25.6 calls <code class="docutils literal notranslate"><span class="pre">SetContributorCanonical</span></code> on every alias insert, and the one-shot v0.25.6 migration <code class="docutils literal notranslate"><span class="pre">backfill</span> <span class="pre">cntrb_canonical</span> <span class="pre">from</span> <span class="pre">contributors_aliases</span></code> reads <code class="docutils literal notranslate"><span class="pre">MIN(alias_email)</span></code> per cntrb_id and fills empty canonicals from the alias table. After running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> on v0.25.6, this fourth cause is closed; rows that remain empty fall into one of the three reasons above.</p>
+<p><strong>Pre-v0.25.6 there was one more cause</strong>: the commit resolver’s <code class="docutils literal notranslate"><span class="pre">ensureAlias</span></code> (strategies 2 — DB lookup — and 4 — Search API) populated the <code class="docutils literal notranslate"><span class="pre">contributors_aliases</span></code> table but did NOT update <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> on the parent contributor row. The forward fix in v0.25.6 calls <code class="docutils literal notranslate"><span class="pre">SetContributorCanonical</span></code> on every alias insert, and the one-shot v0.25.6 migration <code class="docutils literal notranslate"><span class="pre">backfill</span> <span class="pre">cntrb_canonical</span> <span class="pre">from</span> <span class="pre">contributors_aliases</span></code> reads <code class="docutils literal notranslate"><span class="pre">MIN(alias_email)</span></code> per cntrb_id and fills empty canonicals from the alias table. After running <code class="docutils literal notranslate"><span class="pre">aveloxis</span> <span class="pre">migrate</span></code> on v0.25.6, that cause is closed; rows that remain empty fall into one of the four reasons above.</p>
 </section>
 <section id="what-does-gh-user-id-is-null-mean">
 <h3>What does <code class="docutils literal notranslate"><span class="pre">gh_user_id</span> <span class="pre">IS</span> <span class="pre">NULL</span></code> mean?<a class="headerlink" href="#what-does-gh-user-id-is-null-mean" title="Link to this heading"></a></h3>
@@ -2443,6 +2505,8 @@ After all commits resolved:
 <li><p><strong>GraphQL node IDs</strong> (<code class="docutils literal notranslate"><span class="pre">gh_node_id</span></code>) — GitLab uses numeric project IDs only; <code class="docutils literal notranslate"><span class="pre">SrcRepoID</span></code> numeric serves the same purpose.</p></li>
 <li><p><strong>Contributor identity URL fields</strong> (<code class="docutils literal notranslate"><span class="pre">gh_followers_url</span></code>, <code class="docutils literal notranslate"><span class="pre">gh_starred_url</span></code>, etc.) — GitHub-specific denormalized fields with no GitLab equivalent.</p></li>
 <li><p><strong>Search-by-email on GitLab</strong> — admin-only on gitlab.com; <code class="docutils literal notranslate"><span class="pre">runSearchResolve</span></code> produces no GitLab hits in practice.</p></li>
+<li><p><strong>GitLab profiles are not enriched.</strong> The periodic enrichment asks GitHub only (<code class="docutils literal notranslate"><span class="pre">runEnrichment</span></code>: thin contributors are picked by login with no platform filter, so asking GitLab for them could put a same-named stranger’s profile on a GitHub contributor). The GitLab client has an <code class="docutils literal notranslate"><span class="pre">EnrichContributor</span></code> that reads <code class="docutils literal notranslate"><span class="pre">/users?username=</span></code> and would bring <code class="docutils literal notranslate"><span class="pre">public_email</span></code>, company and location, and nothing calls it. So for a contributor known only from GitLab, <code class="docutils literal notranslate"><span class="pre">cntrb_company</span></code> and <code class="docutils literal notranslate"><span class="pre">cntrb_location</span></code> are not filled from GitLab. A GitHub account with the same login can fill them, and <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> with them, because the GitHub enrichment picks logins with no platform filter (a known defect, planned work). The commit resolver does not run for GitLab repositories, so <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code> is otherwise usually empty, and “the profile’s address wins for <code class="docutils literal notranslate"><span class="pre">cntrb_canonical</span></code>” has no GitLab path. <code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code> holds what the GitLab listings carried (the <code class="docutils literal notranslate"><span class="pre">email</span></code> or <code class="docutils literal notranslate"><span class="pre">public_email</span></code> of a user object, or for the contributors listing the git author’s address). Not a GitLab API limitation: planned work (platform-aware enrichment).</p></li>
+<li><p><strong>A GitLab rename is not followed on the contributor row.</strong> <code class="docutils literal notranslate"><span class="pre">contributors.gl_username</span></code> is filled once, when empty, and no path updates it when the user renames; <code class="docutils literal notranslate"><span class="pre">contributors.gh_login</span></code> follows a GitHub rename. The identity row’s <code class="docutils literal notranslate"><span class="pre">login</span></code> and the login history do follow a GitLab rename. Not a GitLab API limitation: planned work.</p></li>
 </ul>
 </section>
 <section id="cooldown-windows-are-30-days-not-configurable">
@@ -2509,7 +2573,7 @@ between 2026-09-14 and 2026-09-17, with 1.2 million contributors never checked.<
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gh_login</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">gl_username</span></code></p></td>
 <td><p>same</p></td>
-<td><p>✓ both populated (<code class="docutils literal notranslate"><span class="pre">ContributorIdentity.Login</span></code>)</p></td>
+<td><p>✓ both populated (<code class="docutils literal notranslate"><span class="pre">ContributorIdentity.Login</span></code>). <strong>Gap:</strong> <code class="docutils literal notranslate"><span class="pre">gh_login</span></code> follows a rename; <code class="docutils literal notranslate"><span class="pre">gl_username</span></code> is filled once and does not (planned). <code class="docutils literal notranslate"><span class="pre">contributor_identities.login</span></code> follows on both platforms.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gh_url</span></code> / <code class="docutils literal notranslate"><span class="pre">gh_html_url</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">gl_web_url</span></code></p></td>
@@ -2528,13 +2592,13 @@ between 2026-09-14 and 2026-09-17, with 1.2 million contributors never checked.<
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cntrb_email</span></code></p></td>
-<td><p>GitHub <code class="docutils literal notranslate"><span class="pre">/user.email</span></code> (public only) ; GitLab <code class="docutils literal notranslate"><span class="pre">/users.public_email</span></code></p></td>
-<td><p>✓ both populated when available; private-email users get <code class="docutils literal notranslate"><span class="pre">''</span></code> on either platform</p></td>
+<td><p>GitHub <code class="docutils literal notranslate"><span class="pre">/user.email</span></code> (public only) ; GitLab <code class="docutils literal notranslate"><span class="pre">email</span></code> or <code class="docutils literal notranslate"><span class="pre">public_email</span></code> on the user objects its listings return, or the git author’s address from the contributors listing</p></td>
+<td><p>≈ both filled with the first address observed (0.29.216); private-email users get <code class="docutils literal notranslate"><span class="pre">''</span></code> on either platform. The profile enrichment that would fetch GitLab’s <code class="docutils literal notranslate"><span class="pre">/users</span></code> <code class="docutils literal notranslate"><span class="pre">public_email</span></code> is not run for GitLab (see <a class="reference internal" href="#gitlab-parity-gaps">GitLab parity gaps</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cntrb_company</span></code>, <code class="docutils literal notranslate"><span class="pre">cntrb_location</span></code></p></td>
 <td><p>same</p></td>
-<td><p>both via the enrichment endpoint</p></td>
-<td><p>✓ both populated when set on the user profile</p></td>
+<td><p>GitHub: the profile enrichment; GitLab: not fetched</p></td>
+<td><p>≈ GitHub only. GitLab profiles are not enriched (see <a class="reference internal" href="#gitlab-parity-gaps">GitLab parity gaps</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gh_site_admin</span></code></p></td>
 <td><p>(gl_state implies isAdmin via <code class="docutils literal notranslate"><span class="pre">access_level</span> <span class="pre">&gt;=</span> <span class="pre">50</span></code>)</p></td>

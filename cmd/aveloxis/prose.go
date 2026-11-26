@@ -4,7 +4,7 @@
 // Prose the CLI prints for an operator to read — the deploy checklist's
 // step notes (the longest is over four thousand characters), the
 // accumulated range's once-only header, the start gate's refusals — wraps
-// at the column width (0.29.136; `deploy-checklist --pending` on kate
+// at the column width (0.29.136; `deploy-checklist --pending` on a production fleet
 // scrolled as one line per note with no line returns). Commands are never
 // wrapped: a step's command line is copied into a shell, and a backticked
 // command inside prose stays on one line.

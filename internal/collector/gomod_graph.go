@@ -25,14 +25,18 @@ package collector
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/aveloxis/aveloxis/internal/db"
+	"github.com/aveloxis/aveloxis/internal/model"
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 )
 
 // goModGraphTimeout bounds the WHOLE repo's toolchain expansion —
@@ -47,6 +51,68 @@ import (
 // the WARN-and-skip posture keeps partial results honest.
 const goModGraphTimeout = 5 * time.Minute
 
+// What the toolchain prints is decided by the repository's go.mod files,
+// so it is taken as a stream under two bounds (0.29.215, review round 8:
+// a go.mod of N requires, each replaced by a local directory whose go.mod
+// has the same N, prints N*N edges with no network; 228 KB of go.mod
+// became nine million edges and 2.75 GB in the worker).
+//
+// PROVISIONAL, all four. What is bounded is what the worker HOLDS for one
+// repository, over all its modules and both commands (0.29.216, review
+// round 9: the byte bound was per invocation and a line could be a
+// mebibyte, so 58 copies of one 699 KB go.mod with 4,000-byte module
+// paths were held at 3.7 GiB with every bound respected).
+//
+// goModHeldBytes is the text of the lines taken for one repository. A kept
+// edge holds its line once in the row and once more in the key that
+// removes duplicates within its module, and about 110 bytes of structure,
+// so at the bound a worker holds about twice this plus 110 bytes a line:
+// some 480 MiB at both bounds together. Measured (0.29.217) for a build of
+// 280 modules: 607,803 edges of lines about 100 bytes long (some 60 MiB of
+// text) are held in 127 MiB, and the same edges with lines about 160
+// bytes long (some 92 MiB) in 155 MiB.
+// goModGraphLines is the count of those lines. It was 500,000, derived
+// from one kubernetes-class repository, and abandoned an honest monorepo
+// of 280 modules every cycle; with the bytes bounded it need only bound
+// the per-line structure, and is three times that monorepo's lines. In
+// BYTES the room is less: the 128 MiB of text is about twice that
+// monorepo's at 100 bytes a line and about one and a half times at 160,
+// and it is the bound such a build meets first.
+// goModLineBytes is the longest line taken: a graph line is two
+// `module@version` pairs, and a module path with its version must be a
+// path in the module cache, which PATH_MAX (4,096) bounds; twice that.
+// goModOutputBytes is the output taken from ONE invocation and exists for
+// output that is not lines at all.
+const (
+	goModGraphLines  = 2_000_000
+	goModHeldBytes   = 128 << 20
+	goModLineBytes   = 8 << 10
+	goModOutputBytes = 64 << 20
+)
+
+// errGoModGraphLines: the repository's expansion passed one of the bounds
+// on what is held for it (its lines, their bytes, or one line's length).
+var errGoModGraphLines = errors.New("the Go module expansion is larger than is taken for one repository")
+
+// goModTaken counts what one repository's expansion has taken so far,
+// over all its modules and both commands.
+type goModTaken struct {
+	lines int
+	bytes int64
+	over  bool // a bound was passed
+}
+
+// take counts one line and reports whether the expansion is still inside
+// its bounds.
+func (g *goModTaken) take(line string) bool {
+	g.lines++
+	g.bytes += int64(len(line))
+	if len(line) > goModLineBytes || g.lines > goModGraphLines || g.bytes > goModHeldBytes {
+		g.over = true
+	}
+	return !g.over
+}
+
 // scanGoModGraph returns Go transitive package rows + requirement
 // edges for every go.mod module under workDir, plus a COMPLETE flag.
 // Best-effort: a missing go binary, a broken module, or the shared
@@ -59,7 +125,7 @@ const goModGraphTimeout = 5 * time.Minute
 // match keys (the direct set — its members are never written as
 // transitive rows).
 func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, workDir string, declared map[string]bool) (
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
+	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge, complete bool) {
 	// v0.27.152 (round 31, suppressed): discover modules BEFORE the
 	// toolchain check. Zero go.mod files is a DEFINITIVELY complete
 	// (empty) expansion regardless of whether go is installed — with
@@ -76,29 +142,29 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 	// caller anyway, so expanding the modules we happened to find
 	// would be wasted toolchain time.
 	var modDirs []string
-	walkFailed := false
-	walkErr := filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			walkFailed = true
-			return nil // note the failure; keep walking what we can for the log
-		}
-		if info.IsDir() {
-			base := info.Name()
+	// walkBounded, not filepath.Walk: this walk runs in the worker, and a
+	// directory's listing is as large as the repository makes it.
+	walkErr := walkBounded(workDir, cloneWalkEntries, func(path string, entry fs.DirEntry) error {
+		if entry.IsDir() {
+			base := entry.Name()
 			if base == "vendor" || base == "node_modules" || base == ".git" || base == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if info.Name() == "go.mod" {
+		if entry.Name() == "go.mod" {
 			modDirs = append(modDirs, filepath.Dir(path))
 		}
 		return nil
 	})
-	if walkErr != nil || walkFailed {
+	if walkErr != nil {
 		ac.logger.Warn("go.mod discovery walk failed — treating the expansion as INCOMPLETE (prior closure preserved)",
 			"repo_id", repoID, "dir", workDir, "walk_error", walkErr, "partial_modules_found", len(modDirs))
 		return nil, nil, false
 	}
+	// The order the toolchain is run in is the order of the paths, as
+	// filepath.Walk gave it (a directory's entries now arrive unsorted).
+	sort.Strings(modDirs)
 	if len(modDirs) == 0 {
 		return nil, nil, true
 	}
@@ -112,6 +178,7 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 	defer cancel()
 	complete = true
 	budgetWarned := false
+	taken := &goModTaken{}
 	for i, dir := range modDirs {
 		if errors.Is(rctx.Err(), context.Canceled) {
 			return packages, edges, false // shutdown: incomplete, the prior closure is preserved
@@ -125,9 +192,18 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 			break
 		}
 		var modOK bool
-		packages, edges, modOK = ac.goModGraphOne(rctx, repoID, goBin, workDir, dir, declared, packages, edges)
+		packages, edges, modOK = ac.goModGraphOne(rctx, repoID, goBin, workDir, dir, declared, packages, edges, taken)
 		if !modOK {
 			complete = false
+		}
+		if taken.over {
+			// Said once, with what was dropped: the expansion is
+			// incomplete, and what was gathered is not used.
+			ac.logger.Warn("go mod graph: the expansion is larger than is taken for one repository — abandoned as INCOMPLETE (prior closure preserved)",
+				"repo_id", repoID, "lines_taken", taken.lines, "bytes_taken", taken.bytes,
+				"lines_limit", goModGraphLines, "bytes_limit", goModHeldBytes, "line_bytes_limit", goModLineBytes,
+				"modules_processed", i+1, "modules_skipped", len(modDirs)-i-1)
+			return nil, nil, false
 		}
 	}
 	if !budgetWarned && errors.Is(rctx.Err(), context.DeadlineExceeded) {
@@ -140,13 +216,13 @@ func (ac *AnalysisCollector) scanGoModGraph(ctx context.Context, repoID int64, w
 }
 
 func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, goBin, workDir, dir string, declared map[string]bool,
-	packages []*db.RepoLockfilePackage, edges []*db.RepoLockfileEdge) ([]*db.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
+	packages []*model.RepoLockfilePackage, edges []*db.RepoLockfileEdge, taken *goModTaken) ([]*model.RepoLockfilePackage, []*db.RepoLockfileEdge, bool) {
 	// ctx carries the REPO-WIDE deadline (round 28) — no per-module
 	// timeout here, or N modules would multiply the budget.
 	rel, _ := filepath.Rel(workDir, filepath.Join(dir, "go.mod"))
 	// GOWORK=off: each module is expanded on its own, and inside a go.work
 	// the toolchain refuses -mod=mod ("may only be set to readonly or
-	// vendor when in workspace mode") — 52 of 64 failures on kate
+	// vendor when in workspace mode") — 52 of 64 failures on a production fleet
 	// (2026-09-23 log review), each an empty Go closure.
 	// GOTOOLCHAIN=local: a cloned go.mod's `toolchain go1.X` line must not
 	// make this host download and run that toolchain (under `auto` it
@@ -155,72 +231,87 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 	// arm below, as install-tools' own probe already pins it (tools.go).
 	env := goModuleEnv(ctx, goBin, ac.logger)
 
-	run := func(args ...string) (string, bool) {
+	// run hands each line the toolchain prints to each, and reports
+	// whether the invocation ran to its end. The output is never held
+	// whole: boundedLines stops the toolchain past goModOutputBytes, and
+	// the counts shared by the repository's modules (goModTaken) stop it
+	// past what is held for one repository.
+	run := func(each func(line string), args ...string) bool {
 		cmd := exec.CommandContext(ctx, goBin, args...)
 		cmd.Dir = dir
 		cmd.Env = env
-		out, rerr := cmd.Output()
+		stderr, rerr := boundedLines(cmd, goModOutputBytes, func(line string) error {
+			if !taken.take(line) {
+				return errGoModGraphLines
+			}
+			each(line)
+			return nil
+		})
 		if rerr != nil && errors.Is(ctx.Err(), context.Canceled) {
-			return "", false // shutdown killed the toolchain: not a module failure (pass 35); a budget DEADLINE still warns below
+			return false // shutdown killed the toolchain: not a module failure (pass 35); a budget DEADLINE still warns below
+		}
+		if errors.Is(rerr, errOutputPastBound) {
+			// One invocation alone wrote more than is taken (or a line no
+			// scanner buffer holds): the same answer as the repository's
+			// bounds, so that nothing gathered so far is kept and no
+			// further module is run.
+			taken.over = true
+		}
+		if taken.over {
+			return false // the caller says so, once, for the repository
 		}
 		if rerr != nil {
-			// v0.29.58: cmd.Output() keeps the toolchain's stderr on the
-			// ExitError; without it 147 warnings in one run read "exit
-			// status 1" and nothing else (2026-09-22 log review).
+			// v0.29.58: the toolchain's stderr is in the line; without it
+			// 147 warnings in one run read "exit status 1" and nothing
+			// else (2026-09-22 log review).
 			ac.logger.Warn("go toolchain invocation failed — skipping this module's transitive expansion",
-				"repo_id", repoID, "module_dir", rel, "args", strings.Join(args, " "), "error", rerr, "stderr", exitStderr(rerr))
-			return "", false
+				"repo_id", repoID, "module_dir", rel, "args", strings.Join(args, " "), "error", rerr, "stderr", stderr)
+			return false
 		}
-		return string(out), true
+		return true
 	}
 
 	// The RESOLVED build list: "module version" per line; the first
 	// line is the main module (no version) and is skipped.
-	listOut, ok := run("list", "-m", "all")
-	if !ok {
-		return packages, edges, false
-	}
 	seenPkg := map[string]bool{}
-	for _, line := range strings.Split(listOut, "\n") {
+	if !run(func(line string) {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
-			continue // main module or blank
+			return // main module or blank
 		}
 		name, version := fields[0], fields[1]
-		if declared[lockfileMatchKey("go", name)] || seenPkg[name+"@"+version] {
-			continue // declared deps are the direct set, already scanned
+		if declared[pkgid.MatchKey("go", name)] || seenPkg[name+"@"+version] {
+			return // declared deps are the direct set, already scanned
 		}
 		seenPkg[name+"@"+version] = true
-		packages = append(packages, &db.RepoLockfilePackage{
+		packages = append(packages, &model.RepoLockfilePackage{
 			Ecosystem:       "go",
 			PackageName:     name,
 			ResolvedVersion: version,
 			LockfilePath:    rel,
 			Direct:          false,
 		})
+	}, "list", "-m", "all") {
+		return packages, edges, false
 	}
 
 	// The requirement edges: "parent@ver child@ver" per line (the main
 	// module appears without @ver — its edges express the DIRECT set,
 	// which the declared deps already cover, so they are skipped).
-	graphOut, ok := run("mod", "graph")
-	if !ok {
-		return packages, edges, false
-	}
 	seenEdge := map[string]bool{}
-	for _, line := range strings.Split(graphOut, "\n") {
+	if !run(func(line string) {
 		parent, child, found := strings.Cut(strings.TrimSpace(line), " ")
 		if !found {
-			continue
+			return
 		}
 		pName, pVer, pOK := strings.Cut(parent, "@")
 		cName, cVer, _ := strings.Cut(child, "@")
 		if !pOK || pName == "" || cName == "" {
-			continue // main-module edges (no @ver) express the declared set
+			return // main-module edges (no @ver) express the declared set
 		}
 		key := parent + ">" + cName
 		if seenEdge[key] {
-			continue
+			return
 		}
 		seenEdge[key] = true
 		edges = append(edges, &db.RepoLockfileEdge{
@@ -231,6 +322,8 @@ func (ac *AnalysisCollector) goModGraphOne(ctx context.Context, repoID int64, go
 			ChildName:       cName,
 			ChildConstraint: cVer,
 		})
+	}, "mod", "graph") {
+		return packages, edges, false
 	}
 	return packages, edges, true
 }

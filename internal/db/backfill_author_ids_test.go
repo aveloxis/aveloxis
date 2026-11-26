@@ -4,7 +4,7 @@
 package db
 
 // v0.27.25 — pins for the BackfillCommitAuthorIDs fixes, after the
-// live 2-day-2-hour orphaned run on aveloxis_large (2026-07-20).
+// live 2-day-2-hour orphaned run on the larger production database (2026-07-20).
 
 import (
 	"os"

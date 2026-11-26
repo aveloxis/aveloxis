@@ -1,0 +1,2 @@
+@@ M15 flip: a WITH query named like the target's table, target self-joined by its schema-qualified name
+WITH repos AS (SELECT 1 AS x) UPDATE aveloxis_data.repos r SET ar = r2.ar FROM aveloxis_data.repos r2 WHERE r2.repo_id = r.repo_id

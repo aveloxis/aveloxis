@@ -68,7 +68,7 @@ func TestMarkGoneReposDoesNotMigrate(t *testing.T) {
 func TestOnReachableDecidesByClass(t *testing.T) {
 	// The lift needs the 2xx AT THE ROW'S OWN URL (the L10 pass on the
 	// first version: a forge-archived repository renamed onto a tracked one
-	// is a data-bearing duplicate prelim dequeued — two such rows on kate,
+	// is a data-bearing duplicate prelim dequeued — two such rows on a production fleet,
 	// redirecting to google/bigframes and CDCgov/... — and lifting it made
 	// prelim dequeue it again, every run).
 	// A redirect to an UNTRACKED target is lifted too (the L10 pass on the

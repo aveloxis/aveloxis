@@ -24,7 +24,7 @@ import (
 // migrate runs, not a copy.
 func migrateStepSQL(t *testing.T, label string) string {
 	t.Helper()
-	src := srctest.PackageFunc(t, "internal/db", "func migrateStage10RecentReleases(")
+	src := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func migrateStage10RecentReleases("))
 	re := regexp.MustCompile("(?s)" + regexp.QuoteMeta(`"`+label+`"`) + "\\s*,\\s*`([^`]*)`")
 	m := re.FindStringSubmatch(src)
 	if m == nil {
@@ -323,7 +323,7 @@ func TestRepoStatsBatchCarriesTheGoneHistory(t *testing.T) {
 // The v0.27.50 migrate step mirrors the forge's archived flag from the latest
 // repo_info snapshot on EVERY migrate. A gone-stamped row's snapshot predates
 // its disappearance, so the step un-archived every gone repository with a
-// non-archived snapshot (426 on kate, 2026-11-05) into the stranded class.
+// non-archived snapshot (426 on a production fleet, 2026-11-05) into the stranded class.
 // Gone-stamped rows are left alone; the rest still follow the snapshot.
 func TestArchivedReconcileStepLeavesGoneRowsArchived(t *testing.T) {
 	store, ctx := v0251Connect(t)
@@ -1102,9 +1102,21 @@ func TestTheGoneLifecycleWritersRefuseAnUnmigratedSchema(t *testing.T) {
 // UPDATE that row).
 func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
 	body := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func dedupOnePair("))
-	lock, carry := strings.Index(body, "lockRepoRowsSQL"), strings.Index(body, `"repoint repo_gone_history"`)
-	if lock < 0 || carry < 0 || lock > carry {
-		t.Fatalf("the repos-row lock (%d) must precede the gone-history carry (%d)", lock, carry)
+	// 0.29.212: the merge's statements are the list dedupPairSteps, run in
+	// its order by one loop (through dedupPairStepSQL, so that the
+	// write-policy check runs each). The carry is one of them; the lock is
+	// taken in the function before that loop. `carry` is where the loop
+	// begins: everything before it in the body runs before the carry.
+	lock, carry := strings.Index(body, "lockRepoRowsSQL"), strings.Index(body, "for i, st := range dedupPairSteps {")
+	if lock < 0 || carry < 0 || lock > carry || !strings.Contains(body[carry:], "exec(st.label, dedupPairStepSQL(i), args...)") {
+		t.Fatalf("the repos-row lock (%d) must precede the loop that runs the merge's steps (%d)", lock, carry)
+	}
+	carried := false
+	for _, st := range dedupPairSteps {
+		carried = carried || (st.label == "repoint repo_gone_history" && st.sql == carryGoneHistorySQL)
+	}
+	if !carried {
+		t.Fatal("dedupPairSteps no longer carries the gone history (the step \"repoint repo_gone_history\" running carryGoneHistorySQL)")
 	}
 	// FOR NO KEY UPDATE, never FOR UPDATE (Copilot's fifth review): the
 	// writers to exclude UPDATE non-key columns; a child's FK check (a star)
@@ -1121,11 +1133,29 @@ func TestDedupLocksTheWinnerRowBeforeCarryingGoneEpisodes(t *testing.T) {
 	// The dataless rename heal carries the same way, under the same locks
 	// (Copilot PR #252, second review).
 	heal := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func (s *PostgresStore) HealRenamedDuplicate("))
-	hl, hc, del := strings.Index(heal, "lockRepoRowsSQL"), strings.Index(heal, "carryGoneHistorySQL"), strings.Index(heal, `"delete dup repos row"`)
+	// 0.29.212: the heal's statements are the list renameHealSteps, which
+	// the function runs in the list's order; the order pinned is the
+	// list's, by the steps' real values.
+	if !strings.Contains(heal, "for i, st := range renameHealSteps {") || !strings.Contains(heal, "tx.Exec(ctx, renameHealStepSQL(i), args...)") {
+		t.Fatal("HealRenamedDuplicate must run renameHealSteps in the list's order")
+	}
+	hl, hc, del, q := -1, -1, -1, -1
+	for i, st := range renameHealSteps {
+		switch {
+		case st.sql == lockRepoRowsSQL:
+			hl = i
+		case st.sql == carryGoneHistorySQL:
+			hc = i
+		case st.label == "delete dup repos row":
+			del = i
+		case st.label == "delete dup queue row":
+			q = i
+		}
+	}
 	if hl < 0 || hc < hl || del < hc {
 		t.Errorf("HealRenamedDuplicate must lock both rows (%d), carry the episodes (%d) and only then delete the duplicate's repos row (%d)", hl, hc, del)
 	}
-	if q := strings.Index(heal, `"delete dup queue row"`); q < hl {
+	if q < hl {
 		t.Errorf("HealRenamedDuplicate must lock the repos rows (%d) before touching the queue row (%d) — the gone writers' order", hl, q)
 	}
 }
@@ -1429,7 +1459,7 @@ func TestSetPlatformRepoIDIfEmptySeenReportsAGoneRowUnderTheListedID(t *testing.
 
 // The pre-0.29.140 reconcile-repos dead arm set repo_archived ALONE on a 404 —
 // no gone stamp, no episode — and the row sat archived and queueless (49 on
-// kate, 2026-11-07); mark-gone-repos counted a later 2xx on it "alive" and
+// a production fleet, 2026-11-07); mark-gone-repos counted a later 2xx on it "alive" and
 // left it there, so it never came back (operator decision 2026-11-07: lift
 // it as a resurrection). A repository the FORGE archived keeps its queue row
 // and cycles, so archived + unstamped + queueless is that residue alone. The
@@ -2092,9 +2122,19 @@ func TestEveryClearRunsUnderTheRowLock(t *testing.T) {
 		}
 	}
 	srctest.MinCount(t, "goneClear build fields examined", uses, 5) // ClearRepoGone, the three Resurrect*, resurrectInTx
+	// 0.29.212: the two statements are built by goneClearSQL and
+	// goneClearLockSQL (so that the write-policy check runs them for every
+	// goneClear). The property is unchanged, and pinned where the text now
+	// stands: the helper takes BOTH from the one goneClear it was handed,
+	// and each builder reads that goneClear's own sideline.
 	helpers := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func clearInTxUnderRowLock("))
-	if !strings.Contains(helpers, "c.build(c.sideline + c.guard)") || !strings.Contains(helpers, "AND (`+c.sideline+`) FOR NO KEY UPDATE") {
-		t.Error("the helper builds the clear and the gated lock from the one sideline")
+	if !strings.Contains(helpers, "sql := goneClearSQL(c)") || !strings.Contains(helpers, "tx.Exec(ctx, goneClearLockSQL(c), repoID)") {
+		t.Error("the helper builds the clear and the gated lock from the one goneClear")
+	}
+	clear := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func goneClearSQL("))
+	lock := srctest.StripGoComments(srctest.PackageFunc(t, "internal/db", "func goneClearLockSQL("))
+	if !strings.Contains(clear, "c.build(c.sideline + c.guard)") || !strings.Contains(lock, "AND (` + c.sideline + `) FOR NO KEY UPDATE") {
+		t.Error("the clear and the gated lock are built from the one sideline")
 	}
 }
 

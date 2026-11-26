@@ -1,0 +1,6 @@
+package collector
+
+import "os"
+
+// reachable in the worker: exported
+func PinEvasionCONTROL(dir string) int { b, _ := os.ReadFile(dir + "/package.json"); return len(b) }

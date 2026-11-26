@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/aveloxis/aveloxis/internal/capacity"
+	"github.com/aveloxis/aveloxis/internal/hostguard"
 	"github.com/aveloxis/aveloxis/internal/httpserver"
 	"github.com/aveloxis/aveloxis/internal/mailer"
 	"github.com/aveloxis/aveloxis/internal/model"
@@ -502,6 +504,98 @@ type CollectionConfig struct {
 	// the ONE default layer (SR-10).
 	SupplyChainRefreshHours *int `json:"supply_chain_refresh_hours,omitempty"`
 
+	// OSVRejectedQueriesPerBatch (0.29.168) is how many queries OSV may
+	// refuse in one batch of a vulnerability scan before the scan fails. A
+	// refused query (a purl OSV will not parse) is taken out and the rest
+	// of the batch is sent again, so each one costs one more request of up
+	// to 1,000 queries. Absent: DefaultOSVRejectedQueriesPerBatch. 0: none
+	// is isolated and the first refusal fails the scan (the behaviour
+	// before 0.29.168). Negative, or above the 1,000 queries of a batch,
+	// is refused at load. Read through OSVRejectedQueryCap.
+	OSVRejectedQueriesPerBatch *int `json:"osv_rejected_queries_per_batch,omitempty"`
+
+	// OSVPagesPerQuery (0.29.169) is how many pages of one query's answer
+	// a vulnerability scan reads. OSV cuts an answer at about 1,000
+	// advisories and hands back a token for the rest; a query with no
+	// version (a GitHub Action, the repository's own published package, a
+	// dependency declared with none) returns its package's whole history
+	// and can run to several pages. Absent or 0: no cap, every answer is
+	// read to its end (the default since 0.29.201). A number caps it: an
+	// answer longer than that many pages is recorded as incomplete, what
+	// was read is kept and nothing is closed for that package. Negative,
+	// or above MaxOSVPagesPerQuery, is refused at load. Read through
+	// OSVPagesPerQueryOrDefault.
+	OSVPagesPerQuery *int `json:"osv_pages_per_query,omitempty"`
+
+	// PackageKeyFillRows (0.29.173) is the number of rows one step of the
+	// package-key fill visits. The fill runs once per database, in `serve`:
+	// it gives a package key to dependency rows written before 0.29.172 in
+	// repositories that are not analysed again, one step a second. Absent:
+	// DefaultPackageKeyFillRows. 0 turns the fill off. Negative, or above
+	// MaxPackageKeyFillRows, is refused at load. Read through
+	// PackageKeyFillRowsOrDefault.
+	PackageKeyFillRows *int `json:"package_key_fill_rows,omitempty"`
+	// RepositoryHostCheckHours (0.29.189; summary/70, 4.5, D14) is how often
+	// serve looks at each package repository host for signs that it has
+	// been abandoned or taken over (it no longer resolves, it resolves to
+	// an address the outbound-address rule refuses, its certificate is not
+	// valid). The check only records what it sees for the administrator's
+	// Repository hosts page; it never distrusts a host. nil is
+	// DefaultRepositoryHostCheckHours; 0 turns the check off; negative, or
+	// above MaxSupplyChainRefreshHours, is refused at load. Read through
+	// RepositoryHostCheckInterval.
+	RepositoryHostCheckHours *int `json:"repository_host_check_hours,omitempty"`
+	// ManifestReadCPUSeconds and ManifestReadMemoryMB (0.29.213) bound the
+	// child process that reads one repository's dependency manifests and
+	// lockfiles (internal/collector/manifest_child.go): the CPU time it may
+	// use and the heap it may hold, for the whole of one analysis's
+	// reading. A repository that passes either has that reading stopped;
+	// what it had not finished (the dependency inventory, the lockfile
+	// rows) stands as it was, and the coverage record says which limit. nil is the default
+	// (DefaultManifestReadCPUSeconds, DefaultManifestReadMemoryMB). There
+	// is no "unlimited": 0, a negative number, and a number too large to be
+	// a duration or a size are refused at load. Read through
+	// ManifestReadCPULimit and ManifestReadMemoryLimit.
+	ManifestReadCPUSeconds *int `json:"manifest_read_cpu_seconds,omitempty"`
+	ManifestReadMemoryMB   *int `json:"manifest_read_memory_mb,omitempty"`
+	// RepositoryHostRegistrationCheck (0.29.190) is whether the repository
+	// host check also asks each host's domain registry, through the public
+	// registration-data service (RDAP), when the domain was registered: a
+	// date later than Aveloxis's first fetch from the host is the direct
+	// sign of a name that lapsed and was registered by someone else. It
+	// contacts IANA's bootstrap file and the registries it names, never the
+	// host, and discloses each domain only to the registry that already
+	// holds it. nil is on. Read through RepositoryHostRegistrationCheckValue.
+	RepositoryHostRegistrationCheck *bool `json:"repository_host_registration_check,omitempty"`
+	// RepositoryHostThreatListURL (0.29.191) is a public list of host names
+	// reported as malicious, one per line (a hosts-file line is read too).
+	// The repository host check downloads it whole once a pass and matches
+	// the repository hosts against it locally, so no host is disclosed to
+	// the list's publisher. A hit is a hint, never a verdict. nil is
+	// DefaultRepositoryHostThreatListURL; an empty string turns the signal
+	// off; anything but an https URL with no credentials, query or fragment
+	// is refused at load. Read through RepositoryHostThreatListURLValue.
+	RepositoryHostThreatListURL *string `json:"repository_host_threat_list_url,omitempty"`
+
+	// MavenRepositories (0.29.180) are the Maven repositories asked about a
+	// Maven dependency, in order: its age, and (in a later release of the
+	// vulnerability program) a parent pom or BOM that is not in the
+	// repository being analysed. Each is an https URL with no credentials
+	// and no query. Their hosts are trusted by name under the
+	// outbound-address rule, as the fixed registries are. Absent:
+	// DefaultMavenRepositories. An explicit empty list: none is asked.
+	// Read through MavenRepositoryList.
+	MavenRepositories *[]string `json:"maven_repositories,omitempty"`
+
+	// DeclaredRepositoryFetch (0.29.184; operator decision N1) is whether a
+	// Maven repository that a collected repository's own build files
+	// declare is asked for a parent pom or BOM the configured repositories
+	// do not have. It sends an identifying User-Agent and the coordinates
+	// asked for to hosts that collected repositories choose. Absent: on.
+	// Off: no such host is contacted; what one already served stays stored
+	// and is still used. Read through DeclaredRepositoryFetchValue.
+	DeclaredRepositoryFetch *bool `json:"declared_repository_fetch,omitempty"`
+
 	// ActivityHistoryWindowDays is the span of each GitHub
 	// contributionsCollection window the v0.27.58 daily-history
 	// backfill queries (operator decision 2026-07-30: parameterizable,
@@ -736,7 +830,7 @@ type CollectionConfig struct {
 	// Default 2 when unset — matches pre-v0.21.0 concurrency so
 	// operators upgrading don't see a sudden change in scancode CPU
 	// load. Operators on machines with spare CPU cores should raise
-	// this (operator running aveloxis_large at 64 cores has tested 12
+	// this (operator running the larger production database at 64 cores has tested 12
 	// without issues).
 	//
 	// v0.27.6: an EXPLICIT `"scancode_workers": 0` in aveloxis.json
@@ -1788,6 +1882,43 @@ func (c *Config) validate() error {
 	if t := int64(c.HTTPTimeoutSeconds); t <= 0 || t > MaxHTTPTimeoutSeconds {
 		return fmt.Errorf("http_timeout_seconds is %d — use a number of seconds between 1 and %d, or omit it for the %v default", c.HTTPTimeoutSeconds, MaxHTTPTimeoutSeconds, httpserver.DefaultTimeout)
 	}
+	if c.Collection.MavenRepositories != nil {
+		for i, raw := range *c.Collection.MavenRepositories {
+			if err := validateMavenRepositoryURL(raw); err != nil {
+				// The value is not echoed: it may hold a credential.
+				return fmt.Errorf("collection.maven_repositories[%d] %w", i, err)
+			}
+		}
+	}
+	if u := c.Collection.RepositoryHostThreatListURL; u != nil && strings.TrimSpace(*u) != "" {
+		if err := validateMavenRepositoryURL(*u); err != nil {
+			return fmt.Errorf("collection.repository_host_threat_list_url %s — use an https URL of a list of host names, or an empty string to turn the threat-list signal off", err)
+		}
+	}
+	if h := c.Collection.RepositoryHostCheckHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
+		return fmt.Errorf("collection.repository_host_check_hours is %d — use a number of hours between 1 and %d, 0 for no check, or omit it for the default of %d",
+			*h, MaxSupplyChainRefreshHours, DefaultRepositoryHostCheckHours)
+	}
+	if n := c.Collection.ManifestReadCPUSeconds; n != nil && (*n < 1 || *n > MaxManifestReadCPUSeconds) {
+		return fmt.Errorf("collection.manifest_read_cpu_seconds is %d — use a number of seconds between 1 and %d, or omit it for the default of %d (there is no unlimited: a hostile repository would hold a collection worker for as long as its files asked)",
+			*n, MaxManifestReadCPUSeconds, DefaultManifestReadCPUSeconds)
+	}
+	if n := c.Collection.ManifestReadMemoryMB; n != nil && (*n < 1 || *n > MaxManifestReadMemoryMB) {
+		return fmt.Errorf("collection.manifest_read_memory_mb is %d — use a number of mebibytes between 1 and %d, or omit it for the default of %d (there is no unlimited)",
+			*n, MaxManifestReadMemoryMB, DefaultManifestReadMemoryMB)
+	}
+	if n := c.Collection.PackageKeyFillRows; n != nil && (*n < 0 || *n > MaxPackageKeyFillRows) {
+		return fmt.Errorf("collection.package_key_fill_rows is %d — use a number of rows between 1 and %d, 0 to turn the fill off, or omit it for the default of %d",
+			*n, MaxPackageKeyFillRows, DefaultPackageKeyFillRows)
+	}
+	if n := c.Collection.OSVPagesPerQuery; n != nil && (*n < 0 || *n > MaxOSVPagesPerQuery) {
+		return fmt.Errorf("collection.osv_pages_per_query is %d — use a number of pages between 1 and %d to cap an answer, or 0 (or omit it) to read every answer to its end",
+			*n, MaxOSVPagesPerQuery)
+	}
+	if n := c.Collection.OSVRejectedQueriesPerBatch; n != nil && (*n < 0 || *n > MaxOSVRejectedQueriesPerBatch) {
+		return fmt.Errorf("collection.osv_rejected_queries_per_batch is %d — use a number between 0 (isolate none: the first query OSV refuses fails the scan) and %d (the queries in one batch), or omit it for the default of %d",
+			*n, MaxOSVRejectedQueriesPerBatch, DefaultOSVRejectedQueriesPerBatch)
+	}
 	if h := c.Collection.SupplyChainRefreshHours; h != nil && (*h < 0 || *h > MaxSupplyChainRefreshHours) {
 		return fmt.Errorf("collection.supply_chain_refresh_hours is %d — use a number of hours between 1 and %d, 0 for no scheduled refresh, or omit it for the daily default", *h, MaxSupplyChainRefreshHours)
 	}
@@ -1996,6 +2127,281 @@ func (c *CollectionConfig) MaterializedViewsValue() bool {
 		return true
 	}
 	return *c.MaterializedViews
+}
+
+// DefaultOSVRejectedQueriesPerBatch is ten times the most refused queries
+// any repository's batch has had in production (one each, four repositories,
+// 2026-09-22 log): room for a repository with several malformed purls,
+// while a repository whose every purl is refused costs eleven requests per
+// batch, not a thousand. MaxOSVRejectedQueriesPerBatch is OSV's own limit on
+// the queries in one batch: no batch can have more to isolate.
+const (
+	DefaultOSVRejectedQueriesPerBatch = 10
+	MaxOSVRejectedQueriesPerBatch     = 1000
+)
+
+// DefaultMavenRepositories is Maven Central, and the Jenkins project's public
+// repository, where Jenkins plugins and their parents are published and
+// Central does not carry them (summary/69's sample).
+var DefaultMavenRepositories = []string{"https://repo1.maven.org/maven2", "https://repo.jenkins-ci.org/public"}
+
+// DeclaredRepositoryFetchValue is the effective value: on unless set off.
+// The single default layer.
+func (c *CollectionConfig) DeclaredRepositoryFetchValue() bool {
+	return c.DeclaredRepositoryFetch == nil || *c.DeclaredRepositoryFetch
+}
+
+// MavenRepositoryList is the effective list of Maven repositories, each
+// with no trailing slash. The single default layer.
+func (c *CollectionConfig) MavenRepositoryList() []string {
+	if c.MavenRepositories == nil {
+		return append([]string(nil), DefaultMavenRepositories...)
+	}
+	out := make([]string, 0, len(*c.MavenRepositories))
+	for _, raw := range *c.MavenRepositories {
+		out = append(out, strings.TrimRight(strings.TrimSpace(raw), "/"))
+	}
+	return out
+}
+
+// MavenRepositoryHosts are the hosts of the effective list (a host is never
+// a secret, a URL may be), each in hostguard's one spelling, WITH its port
+// when it has one other than the default: the console lists them, the
+// daily check looks at them and a distrust decision names them, and each
+// must mean the host the fetch path asks (it used to drop the port, so
+// distrusting `nexus.corp` did nothing to `nexus.corp:8443`).
+func (c *CollectionConfig) MavenRepositoryHosts() []string {
+	var out []string
+	for _, raw := range c.MavenRepositoryList() {
+		if h := hostguard.OfURL(raw); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// validateMavenRepositoryURL is the load-time rule for one configured
+// repository. Its errors do not repeat the value.
+func validateMavenRepositoryURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return errors.New("is not a URL")
+	}
+	switch {
+	case u.Scheme != "https":
+		return errors.New("must be an https URL")
+	case u.User != nil:
+		return errors.New("must not carry credentials (a user name or a password in the URL)")
+	case u.Hostname() == "":
+		return errors.New("has no host")
+	case u.RawQuery != "" || u.Fragment != "":
+		return errors.New("must not carry a query or a fragment")
+	}
+	if addr, perr := netip.ParseAddr(u.Hostname()); perr == nil {
+		a := addr.Unmap().WithZone("")
+		if a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+			return errors.New("names a link-local address, which is never reached")
+		}
+	}
+	return nil
+}
+
+// The limits on the process that reads one repository's manifests (0.29.213).
+// PROVISIONAL (summary/71, section 8): the operator sets them.
+//
+// DefaultManifestReadCPUSeconds. What an honest build costs was measured in
+// the child itself, on the largest shapes the review built (an Apple
+// M-series machine): a Maven reactor of 2,000 modules under a fetched parent
+// that manages a thousand artifacts and imports twenty BOMs used half a
+// second of CPU time, and a Gradle build of 3,000 projects under a platform
+// that imports thirty BOMs used 0.7 s (CPU time on every thread, the garbage
+// collector's included). Three minutes is some 250 times the larger, for a
+// machine several times slower and a build many times larger than any
+// measured, and it is what a hostile repository can cost one worker in CPU
+// time per analysis. (120 until 0.29.214; raised by the operator, 2026-11-20:
+// the measurements are an M-series machine's with nothing else running, and
+// a production host's cores are slower and loaded.) TestTheLargestHonestBuildsAreFarInsideTheDefaultLimits
+// (internal/collector) reads both under the defaults and holds them to a
+// fiftieth of this.
+//
+// DefaultManifestReadMemoryMB. 2,048 since 0.29.217 (operator, 2026-11-21:
+// "Raise the default memory setting to 2048 MiB. That doubles the largest
+// file read for every format, and doubles the worst case one reading can
+// use."); 1,024 before. The same two builds held 31 and 19 MiB at most, so
+// the default is some sixty times the larger (the test holds them to a
+// tenth). It is also what a worker's CHILD may take from the host at worst:
+// the limit is on the Go heap, resident memory has been measured at up to
+// about one and a half times it (1.47, the largest ratio a reviewer saw,
+// round 9; the table below, of honest files at 1,024 MiB, saw 1.3), so
+// with forty workers all reading hostile
+// repositories at the same moment, eighty gibibytes of heap and up to
+// about a hundred and twenty resident in the children. The worker itself
+// also holds what the child returns of names and declarations, up to this
+// same setting (collector: runManifestChild's held), so in that worst case
+// up to about eighty gibibytes more inside serve; nothing was measured for
+// that holding at 2,048.
+//
+// The lockfiles are read by the same child and are the larger demand: a
+// lockfile is read whole and has no largest size. Measured THROUGH THE CHILD
+// AT 1,024 MiB, the default then and half the default now (the table is as
+// measured, not rescaled), on an Apple M-series machine (0.29.214, review round 7:
+// honest generated files, sizes stepped; "read" is the largest step read
+// and "stopped" the next, at which the child ended itself at the limit):
+//
+//	format                       read     stopped   heap peak   resident peak
+//	package-lock.json (v3)       448 MB   512 MB    2.2 x file  1,234 MiB
+//	package-lock.json (v1)       448 MB   512 MB    2.3 x       1,212 MiB
+//	composer.lock                512 MB   640 MB    1.7 x         975 MiB
+//	yarn.lock (v1)               320 MB   384 MB    2.6 x       1,089 MiB
+//	yarn.lock (berry)            320 MB   384 MB    2.7 x       1,180 MiB
+//	Gemfile.lock                  96 MB   128 MB    8.9 x       1,188 MiB
+//	stack.yaml.lock               80 MB    96 MB   11.2 x       1,087 MiB
+//	pnpm-lock.yaml (v9)           79 MB    95 MB   12.5 x       1,318 MiB
+//	pnpm-lock.yaml (v6)           64 MB    80 MB   13.0 x         832 MiB heap, 1,065 resident
+//	pubspec.lock                  64 MB    80 MB   13.6 x       1,076 MiB
+//
+// So a limit of 1,024 MiB could hold a YAML lockfile (pnpm, pubspec, stack)
+// of some 64 MB and the JSON and yarn formats past 300 MB; what is READ
+// since 0.29.215 is decided before the read, by the file's size times its
+// format's cost (collector.readCostMeasured). Two things these numbers are
+// not. The heap peak is the largest the child's watchdog SAW, ten times a
+// second, with Go's collector pressed to nine tenths of the limit; a
+// reading that is near the limit is stopped on some runs and not others.
+// And the limit is on the Go heap's objects: what the system counted
+// resident was up to 1.3 times the setting in THESE runs (a later review
+// saw 1.47, as above), which is what a worker's child can take from the
+// host. Each reading took under 35 s of CPU time (the
+// YAML formats, most of it the collector's), and the others under 13 s. The
+// largest lockfile among the 50,000 of the fleet this was sized against
+// holds 6,749 packages, under a megabyte.
+//
+// A file whose size alone is more than the limit leaves is not read at all
+// and is one manifest or lockfile that failed (collector.cloneFileTooLarge).
+//
+// The maxima. MaxManifestReadCPUSeconds is a day: the longest an analysis
+// is ever let read one clone for, and small enough that everything derived
+// from the limit is a valid Duration (the parent's clock allowance is a
+// minute and four times it, four days; until 0.29.214 the maximum was what
+// fits a Duration, and the allowance derived from the largest values
+// overflowed to a negative one, so the reader was stopped at its first
+// check). MaxManifestReadMemoryMB is what fits a count of bytes; nothing is
+// derived from the memory limit but a share of it.
+const (
+	DefaultManifestReadCPUSeconds = 180
+	DefaultManifestReadMemoryMB   = 2048
+	MaxManifestReadCPUSeconds     = 24 * 60 * 60
+	MaxManifestReadMemoryMB       = int(math.MaxInt64 >> 20)
+)
+
+// ManifestReadCPULimit is the effective CPU time the manifest-reading child
+// may use. The single default layer.
+func (c *CollectionConfig) ManifestReadCPULimit() time.Duration {
+	n := DefaultManifestReadCPUSeconds
+	if c.ManifestReadCPUSeconds != nil {
+		n = *c.ManifestReadCPUSeconds
+	}
+	return time.Duration(n) * time.Second
+}
+
+// ManifestReadMemoryLimit is the effective heap, in bytes, the
+// manifest-reading child may hold. The single default layer.
+func (c *CollectionConfig) ManifestReadMemoryLimit() int64 {
+	n := DefaultManifestReadMemoryMB
+	if c.ManifestReadMemoryMB != nil {
+		n = *c.ManifestReadMemoryMB
+	}
+	return int64(n) << 20
+}
+
+// DefaultPackageKeyFillRows: one step is one round trip of at most this many
+// single-row updates by primary key, and the loop takes one step a second,
+// so the default bounds the fill at 1,000 such updates a second; ten million
+// rows take under three hours. MaxPackageKeyFillRows keeps one step's
+// transaction, which holds the marker's lock, to a size that commits in well
+// under the second between steps.
+const (
+	DefaultPackageKeyFillRows = 1000
+	MaxPackageKeyFillRows     = 50000
+)
+
+// PackageKeyFillRowsOrDefault is the effective step of the package-key fill;
+// 0 means off. The single default layer.
+func (c *CollectionConfig) PackageKeyFillRowsOrDefault() int {
+	if c.PackageKeyFillRows == nil {
+		return DefaultPackageKeyFillRows
+	}
+	return *c.PackageKeyFillRows
+}
+
+// DefaultOSVPagesPerQuery is 0, no cap: an answer is read to its end
+// (operator, 2026-11-19: "read for as long as you can, don't limit to 10
+// pages until we have a production measurement"; 0.29.169 to 0.29.200 had a
+// provisional 10). A page holds about 1,000 advisories (OSV's documented
+// cut). A cap may be set once the longest answer in production is known;
+// MaxOSVPagesPerQuery bounds an explicit cap at a thousand requests for one
+// query.
+const (
+	DefaultOSVPagesPerQuery = 0
+	MaxOSVPagesPerQuery     = 1000
+)
+
+// OSVPagesPerQueryOrDefault is the effective page cap. The single default
+// layer.
+func (c *CollectionConfig) OSVPagesPerQueryOrDefault() int {
+	if c.OSVPagesPerQuery == nil {
+		return DefaultOSVPagesPerQuery
+	}
+	return *c.OSVPagesPerQuery
+}
+
+// OSVRejectedQueryCap is the effective number of refused queries one batch
+// may isolate: absent → the default; an explicit 0 → none. The single
+// default layer.
+func (c *CollectionConfig) OSVRejectedQueryCap() int {
+	if c.OSVRejectedQueriesPerBatch == nil {
+		return DefaultOSVRejectedQueriesPerBatch
+	}
+	return *c.OSVRejectedQueriesPerBatch
+}
+
+// RepositoryHostRegistrationCheckValue is the effective value: on unless set
+// off.
+func (c *CollectionConfig) RepositoryHostRegistrationCheckValue() bool {
+	return c.RepositoryHostRegistrationCheck == nil || *c.RepositoryHostRegistrationCheck
+}
+
+// DefaultRepositoryHostThreatListURL is the Phishing.Database project's list
+// of active phishing domains (summary/70, 4.5): public, plain text, one host
+// name per line.
+const DefaultRepositoryHostThreatListURL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
+
+// RepositoryHostThreatListURLValue is the effective list: the default when
+// the setting is absent, none ("") when it is set empty.
+func (c *CollectionConfig) RepositoryHostThreatListURLValue() string {
+	if c.RepositoryHostThreatListURL == nil {
+		return DefaultRepositoryHostThreatListURL
+	}
+	return strings.TrimSpace(*c.RepositoryHostThreatListURL)
+}
+
+// DefaultRepositoryHostCheckHours is once a day. What the check looks for (a
+// lapsed name, a certificate left to expire) changes over days, and a day
+// is the cadence serve's other daily housekeeping already runs at
+// (SupplyChainRefreshInterval).
+const DefaultRepositoryHostCheckHours = 24
+
+// RepositoryHostCheckInterval is the effective cadence of the repository
+// host check and whether it runs at all: absent, the default; an explicit
+// 0, off; n, n hours. The single default layer.
+func (c *CollectionConfig) RepositoryHostCheckInterval() (time.Duration, bool) {
+	h := DefaultRepositoryHostCheckHours
+	if c.RepositoryHostCheckHours != nil {
+		h = *c.RepositoryHostCheckHours
+	}
+	if h <= 0 {
+		return 0, false
+	}
+	return time.Duration(h) * time.Hour, true
 }
 
 // SupplyChainRefreshInterval is the effective cadence of the scheduler's

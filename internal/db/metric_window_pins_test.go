@@ -63,7 +63,7 @@ func TestMetricReadersUseHalfOpenWindows(t *testing.T) {
 	}
 }
 
-// 0.29.137 (kate, 2026-11-04: the contributors series probed the contributors
+// 0.29.137 (a production fleet, 2026-11-04: the contributors series probed the contributors
 // primary key once per commit-FILE row — 497,889 nested-loop probes for one
 // repository, 1.5 s of its 5 s): the two person-counting series deduplicate
 // (bucket, person) first and anti-join the deleted-loser rule on the

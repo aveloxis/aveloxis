@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aveloxis/aveloxis/internal/pkgid"
 	"github.com/aveloxis/aveloxis/internal/srctest"
 )
 
@@ -28,10 +29,13 @@ func TestEdgesGatedOnTransitiveKnobAndSameSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "if ac.TransitiveLockfiles {\n\t\t\tedgeSeen := map[string]bool{}") {
+	// The gate itself is pinned by what comes out
+	// (TestRowsOfALockfileUnderTheTransitiveKnob); here, that the phase
+	// builds its rows by that function with the knob.
+	if !strings.Contains(s, "rowsOfLockfile(pl, declared, ac.TransitiveLockfiles)") {
 		t.Error("edge collection must be gated on ac.TransitiveLockfiles")
 	}
-	if !strings.Contains(s, "ReplaceRepoLockfileSnapshot(ctx, repoID, inventory, packages, edges)") {
+	if !strings.Contains(s, "ReplaceRepoLockfileSnapshotFrom(ctx, repoID, feed, failed, inTx)" /* 0.29.176: and the failed lockfiles; 0.29.215: handed over a lockfile at a time, with how the reading ended */) {
 		t.Error("edges must ride the SAME snapshot transaction as the package rows")
 	}
 	if !strings.Contains(s, "ac.scanGoModGraph(ctx, repoID, workDir, declared)") {
@@ -58,14 +62,22 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 		`exec.LookPath("go")`,
 		"goModGraphTimeout",
 		"context.WithTimeout(ctx, goModGraphTimeout)",
-		`run("list", "-m", "all")`,
-		`run("mod", "graph")`,
+		`"list", "-m", "all")`,
+		`"mod", "graph")`,
+		// 0.29.215: the toolchain's output is taken as a bounded stream,
+		// never whole (TestAGoModuleGraphLargerThanIsTakenIsAbandonedAsIncomplete
+		// drives it).
+		"boundedLines(cmd, goModOutputBytes",
+		// The walk for go.mod files runs in the worker, under the bound a
+		// worker's own walk of a clone has (walkBounded's own tests drive
+		// the bound; this holds the caller to it).
+		"walkBounded(workDir, cloneWalkEntries, func(",
 	} {
 		if !strings.Contains(s, needle) {
 			t.Errorf("gomod_graph.go missing %q", needle)
 		}
 	}
-	body := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) goModGraphOne(")
+	body := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) goModGraphOne("))
 	if !strings.Contains(body, "ac.logger.Warn") {
 		t.Error("toolchain failures must WARN and skip, never propagate")
 	}
@@ -77,7 +89,7 @@ func TestGoModGraphIsBestEffort(t *testing.T) {
 	if strings.Contains(body, "context.WithTimeout") {
 		t.Error("goModGraphOne must NOT create its own timeout — the budget is repo-wide (round 28)")
 	}
-	scan := srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph(")
+	scan := srctest.StripGoComments(srctest.FuncBody(t, s, "func (ac *AnalysisCollector) scanGoModGraph("))
 	if !strings.Contains(scan, "context.WithTimeout(ctx, goModGraphTimeout)") {
 		t.Error("scanGoModGraph must own the ONE repo-wide budget")
 	}
@@ -108,17 +120,10 @@ func TestVulnAPIAttachesIntroducedBy(t *testing.T) {
 // NO purl mapping (their transitives were silently dropped from the
 // scan — the C2 exploration find).
 func TestPurlEcosystemAliasesForRosterStrings(t *testing.T) {
-	src, err := os.ReadFile("vuln_targets.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	for _, needle := range []string{`"rubygems":`, `"packagist":`, `"swiftpm":`, `"hackage":`} {
-		if !strings.Contains(s, needle) {
-			t.Errorf("purlEcosystemTypes missing the roster alias %s — its transitives are silently dropped", needle)
-		}
-	}
-	if purlForPackage("rubygems", "", "rails", "7.0.8") == "" {
+	// The map itself is pkgid's (TestEveryLockfileRosterAliasHasAPurlType
+	// there checks each alias by behaviour; this test used to read the
+	// source for the map's keys).
+	if pkgid.PurlForPackage("rubygems", "", "rails", "7.0.8") == "" {
 		t.Error("a rubygems transitive must produce a purl")
 	}
 }

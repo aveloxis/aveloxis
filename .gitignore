@@ -10,7 +10,7 @@ long-jobs/
 loadorgs
 el-orgs.txt
 long-running-jobs/**
-scancode-logs-chaoss.tv/**
+scancode-logs-*/**
 *.err
 syslog
 *.json
@@ -20,6 +20,11 @@ syslog
 !internal/collector/testdata/*.json
 !internal/collector/testdata/registries/*.json
 !internal/collector/testdata/manifest_corpus/*.json
+# 0.29.208: the corpus moved to internal/manifest with its readers, and
+# pkgid's purl cases with the purl builder. A fixture directory that moves
+# loses its exception (scripts/testdata_not_ignored_test.go catches it).
+!internal/manifest/testdata/manifest_corpus/*.json
+!internal/pkgid/testdata/*.json
 # data-test snapshot inputs (0.29.142): the release's content rules, the
 # statement probes and the fleet shapes — named patterns only, so a scratch
 # config dropped in testdata stays ignored.
@@ -29,8 +34,6 @@ syslog
 !cmd/aveloxis/testdata/settings-*.json
 *code-workspace
 db.config.json
-aveloxis.chaoss.tv.json
-aveloxis.kate.json
 aveloxis.runlocal.json
 prompt-notes/**
 summary/**
@@ -69,6 +72,10 @@ CLAUDE.md
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
+# ... but never Go source: internal/vulnclass/coverage.go matched the line
+# above and went uncommitted for the whole of 0.29.147-0.29.208
+# (scripts/testdata_not_ignored_test.go now fails on any ignored source file).
+!coverage.go
 *.coverprofile
 profile.cov
 
@@ -118,4 +125,4 @@ __pycache__/
 *.pyd
 
 # Production logs copied in for a review session (0.29.140); never committed.
-kate-logs/
+*-logs/

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // v0.27.115 — pins for the 2026-08-20 schema-drift-audit remediation
-// (fresh migrate vs aveloxis_large; operator decisions on all four
+// (fresh migrate vs the larger production database; operator decisions on all four
 // findings). See scripts/schema_structure_dump.sql for the audit tool.
 
 package db

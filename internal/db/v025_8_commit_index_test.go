@@ -10,7 +10,7 @@ import (
 
 // v0.25.8 — source-contract tests for:
 //   1. idx_commits_cmt_ght_author_id — the missing index that caused a
-//      2+ day stalled rebuild of explorer_new_contributors on aveloxis_large
+//      2+ day stalled rebuild of explorer_new_contributors on the larger production database
 //      (2026-06-02 incident). cmt_ght_author_id is a plain UUID column with
 //      no REFERENCES clause, so it was invisible to the v0.22.6 FK-index
 //      audit that used pg_constraint.
@@ -29,7 +29,7 @@ func TestCommitIndexDeclaredInSchema(t *testing.T) {
 	src := readSchemaSQLForV0257(t)
 
 	if !strings.Contains(src, "idx_commits_cmt_ght_author_id") {
-		t.Error("schema.sql must declare idx_commits_cmt_ght_author_id — the index on commits.cmt_ght_author_id that was missing in pre-v0.25.8 and caused a 2+ day matview rebuild on aveloxis_large")
+		t.Error("schema.sql must declare idx_commits_cmt_ght_author_id — the index on commits.cmt_ght_author_id that was missing in pre-v0.25.8 and caused a 2+ day matview rebuild on the larger production database")
 	}
 	if !strings.Contains(src, "WHERE cmt_ght_author_id IS NOT NULL") {
 		t.Error("idx_commits_cmt_ght_author_id must be a partial index (WHERE cmt_ght_author_id IS NOT NULL) to mirror the matview commit branch's filter and keep the index ~8% smaller than a full index")

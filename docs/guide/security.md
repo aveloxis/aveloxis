@@ -190,6 +190,149 @@ operator's (logrotate). The security-relevant lines (ASVS V16.1.1):
 User-supplied strings are scrubbed before they are logged; tokens, passwords
 and e-mail addresses from commit metadata never are.
 
+## Requests to package registries
+
+To measure how old a dependency is, the analysis asks that dependency's package registry
+about it. These are the hosts it asks: `registry.npmjs.org`, `pypi.org`,
+`proxy.golang.org`, `crates.io`, `rubygems.org`, `repo1.maven.org`, `repo.packagist.org`,
+`hex.pm`, `api.nuget.org`, `pub.dev`, `hackage.haskell.org` and `crandb.r-pkg.org` (R: CRAN
+itself has no JSON interface; crandb is the R-hub project's database of it). What is sent is a package
+name and version from a repository's manifests; nothing about the repository itself.
+
+For Maven the hosts are the ones in `collection.maven_repositories` (0.29.180): by default
+`repo1.maven.org` and `repo.jenkins-ci.org`. Since 0.29.182 they are also asked for parent
+poms and BOMs that a repository's own poms name and do not contain; what is sent is the
+pom's coordinates (group, artifact, version). A host you add there is asked about every
+Maven dependency the earlier repositories in the list do not have, so it learns which
+Maven artifacts your repositories use.
+
+Since 0.29.179 every such request is made under the same outbound-address rule as a
+repository clone (see `collection.private_network_hosts` in
+[Configuration](../getting-started/configuration.md)):
+
+- The registries above are trusted by name, as a configured forge host is: they may
+  resolve to any address except a link-local one, so a registry mirror on your own network
+  works. Link-local addresses (the cloud metadata address among them) are never reached.
+- A redirect is followed only when its target is an `http` or `https` URL with no
+  credentials in it, whose host the rule permits; at most ten in a chain. A registry
+  cannot send the collector to a host on your private network.
+- The connection is made to the address that was checked, so a name cannot resolve to one
+  address for the check and another for the connection.
+- A response is read up to a bound and no further.
+- A registry host that fails ten times in a row is not asked again for a minute. The
+  dependencies it would have answered for keep their rows, with no age.
+
+### Hosts that collected repositories choose
+
+A build file can name the repositories its dependencies live on: a pom's
+`<repositories>`, and from 0.29.195 a Gradle `repositories { }` block, where `google()`
+stands for `dl.google.com`, `mavenCentral()` for `repo1.maven.org` and
+`gradlePluginPortal()` for `plugins.gradle.org`. A Gradle build's repositories are asked
+only for the BOM of a `platform(...)` it uses. Since 0.29.184, when `collection.declared_repository_fetch` is on (the
+default), such a repository is asked for a parent pom or BOM that the repositories in
+`collection.maven_repositories` do not have. **These hosts are chosen by the repositories
+you collect, not by you.** What they are sent: an identifying User-Agent and the
+coordinates (group, artifact, version) of the pom asked for.
+
+What limits it:
+
+- A declared host is never trusted, by name or by address range. It is reached only at a
+  public address; a host that resolves to a private, loopback or link-local address is
+  refused. The hosts and ranges you trust for your own forge instances, mirrors and
+  `collection.private_network_hosts` do not apply to it: until 0.29.208 they did, so a
+  build file that named one of your trusted internal hosts was fetched from. Its
+  requests also use connections of their own, never one opened to a repository you
+  configured at the same host and port.
+- `https` only, on the first request and on every redirect.
+- Never an address that carries credentials (it is recorded without them, and not
+  asked), one built from a variable that cannot be read, or a plugin repository.
+- The configured repositories are asked first; a declared one is asked only for what
+  they do not have.
+- A repository that answers 401 or 403 is recorded as refusing, and nothing is stored
+  from it. It is asked again at the next analysis that needs that pom.
+- Addresses inside a fetched pom are not followed.
+- A group, artifact or version that is not made of letters, digits and `. _ + -` is not
+  asked for (0.29.208): the three become the path of the request.
+- A redirect to a host you have distrusted is not followed (0.29.208).
+- One analysis waits on declared repositories for five minutes in all (0.29.208; since
+  0.29.209 a request already under way is cut off when the five minutes end). Past
+  that, none is asked for the rest of that analysis: what is already stored is used, and
+  a version that depended on an answer is recorded as not known, never as absent. The
+  log line `maven: this analysis waited on the repositories its build files declare for
+  as long as it may` gives the `repo_id` of the collected repository when it happens.
+- One lookup consults at most 32 of the repositories a build declares, nearest file
+  first (0.29.209). With more declared, the rest are neither asked nor looked up among
+  stored answers, the version is recorded as not known, and the log line `maven: a build
+  declares more repositories than one lookup consults` gives the `repo_id`. This holds
+  with `declared_repository_fetch` off too, when none is asked and stored answers are
+  all that is read.
+- A distrust covers a host on one port. `repo.example` and `repo.example:8443` are two
+  hosts on the Repository hosts page, and each is distrusted on its own.
+
+Every declared repository is recorded in `repo_declared_repositories`, asked or not, so
+you can see which hosts these are:
+
+```sql
+SELECT host, COUNT(DISTINCT repo_id) AS repositories
+  FROM aveloxis_data.repo_declared_repositories
+ WHERE not_fetched_reason IS NULL
+ GROUP BY host ORDER BY repositories DESC;
+```
+
+To contact none of them, set `"declared_repository_fetch": false`. Poms already obtained
+from such hosts stay stored and in use, so switching it off changes no dependency's
+version.
+
+### The repository host check
+
+Since 0.29.189 `serve` looks at each of those hosts once every
+`collection.repository_host_check_hours` (24 by default; `0` turns the check off): the
+configured Maven repositories and, when `declared_repository_fetch` is on, the declared
+hosts that have answered. A look resolves the host's name and completes one TLS handshake
+with it on the port it is fetched from (443 when the repository URL names none). Nothing is
+requested and nothing is sent beyond the handshake. The name is resolved and its address
+judged by the outbound-address rule before any connection, the connection is made to the
+address that was judged, and a link-local address is never dialed. A configured
+repository is looked at under your trust, as it is fetched; a declared host under none
+(0.29.208). At most one host is
+looked at per second. With `declared_repository_fetch` off, declared hosts are not
+contacted by the check either. A distrusted host is not contacted at all.
+
+Since 0.29.190 the check also asks when each host's domain was registered
+(`collection.repository_host_registration_check`, on by default). A registration later
+than Aveloxis's first fetch from the host is the direct sign of a name that lapsed and
+was registered by someone else. The date comes from the registries' public
+registration-data service (RDAP), and this part contacts two kinds of host that are
+neither fixed registries nor configured by you:
+
+- `data.iana.org`, for IANA's bootstrap file, which names the registration-data server of
+  each top-level domain. It is fetched once per pass and discloses nothing.
+- the server that file names for the domain's top-level domain, asked about the
+  registrable domain (`example.com` for `repo.example.com`). A domain is therefore
+  disclosed only to the registry that already holds it. Each domain is asked once per
+  pass.
+
+Because those servers are not a fixed list, none is trusted by name: every request is
+https, every redirect stays on https, every hop's address is judged by the
+outbound-address rule, and each body is bounded at 4 MiB. The repository host itself is
+not contacted by this part, so it covers every host that has answered whatever
+`declared_repository_fetch` says. Set `"repository_host_registration_check": false` to
+contact none of them.
+
+Since 0.29.191 the check also downloads a public list of host names reported as
+malicious (`collection.repository_host_threat_list_url`; by default the Phishing.Database
+project's list of active domains, served from `raw.githubusercontent.com`), once per
+pass, and matches the repository hosts against it on your machine. No repository host is
+sent anywhere: the one request is the download, over https under the outbound-address
+rule, bounded at 128 MiB. A match is a hint and never a verdict, since such lists also
+name shared hosting. An empty setting turns it off.
+
+What the check sees (the name no longer resolves, it resolves to an address Aveloxis does
+not reach, the certificate is not valid, the domain was registered after the first fetch,
+the host is on the threat list) is listed on the administrator's Repository hosts
+page. It is a reason to look and never a verdict: the check does not distrust a host or
+change any collected data.
+
 ## Why the web process has no request limiter of its own
 
 The API process limits every visitor (per address, and per account by the
